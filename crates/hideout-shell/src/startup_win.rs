@@ -66,10 +66,15 @@ fn refuse_reparse(p: &Path) -> Result<(), String> {
     }
 }
 
-/// The Startup folder and the shortcut in it must both be plain (no reparse point).
+/// The Startup folder and the shortcut in it must both be plain (no reparse point), and so must
+/// every folder above them: a junction higher up redirects the write just the same.
 fn check_plain(dir: &Path, lnk: &Path) -> Result<(), String> {
     refuse_reparse(dir)?;
-    refuse_reparse(lnk)
+    refuse_reparse(lnk)?;
+    for above in dir.ancestors().skip(1).chain(lnk.ancestors().skip(1)) {
+        refuse_reparse(above)?;
+    }
+    Ok(())
 }
 
 /// `<Startup folder>\Hideout.lnk`.
@@ -413,6 +418,20 @@ mod tests {
         assert!(check_plain(&d, &link).is_err());
         assert!(!RealStartup { dir: d.clone() }.exists(&link));
         assert!(RealStartup { dir: d.clone() }.read().is_none());
+        unjunction(&link);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn junction_above_the_startup_folder_is_refused() {
+        let d = temp("jabove");
+        let real = d.join("real");
+        std::fs::create_dir_all(real.join("Startup")).unwrap();
+        let link = d.join("Roaming");
+        junction(&link, &real);
+        let dir = link.join("Startup");
+        let r = check_plain(&dir, &dir.join(LINK_NAME));
+        assert!(r.unwrap_err().contains("link or junction"));
         unjunction(&link);
         let _ = std::fs::remove_dir_all(&d);
     }

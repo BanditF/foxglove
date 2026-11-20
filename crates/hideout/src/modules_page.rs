@@ -408,6 +408,7 @@ impl ModulesPage {
         };
         match a.turn_on(id) {
             Ok(()) => {
+                self.ask.clear_turn_on_failed(id);
                 self.set_enabled(id, true);
                 // The user's Allow started it: the Done card says so, live.
                 self.done.show_for(id);
@@ -417,7 +418,16 @@ impl ModulesPage {
                     }
                 }
             }
-            Err(why) => log::warn!("Modules page: {id} not turned on ({why})"),
+            Err(why) => {
+                log::warn!("Modules page: {id} not turned on ({why})");
+                let name = self
+                    .installed
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map_or(id, |m| m.name.as_str());
+                let line = hideout_shell::modules_list::turn_on_failed(name, &why);
+                self.ask.set_turn_on_failed(id, line);
+            }
         }
         if let Some(p) = self.perm.as_mut() {
             p.refresh();
@@ -619,6 +629,7 @@ impl ModulesPage {
         }
         for r in &mut rows {
             r.removal = self.ask.state(&r.id);
+            r.turn_on_note = self.ask.turn_on_line(&r.id).map(String::from);
         }
         hideout_shell::modules_list::order(&mut rows);
         (rows, counting)

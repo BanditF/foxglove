@@ -10,21 +10,21 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 /// The menu's status line while there are no modules at all (and only then).
-pub const QUIET_LINE: &str = "No modules yet";
+pub const QUIET_LINE: &str = "No apps yet";
 /// Modules exist but none is running (all turned off).
-pub const NONE_RUNNING: &str = "No module is running";
+pub const NONE_RUNNING: &str = "No app is running";
 /// The menu's status line while Hideout is paused.
 pub const PAUSED_LINE: &str = "Paused";
 
 /// The longest module name a tray line shows whole.
 const NAME_MAX: usize = 30;
 
-/// "1 module is running", "3 modules are running".
+/// "1 app is running", "3 apps are running".
 pub fn running_line(n: usize) -> String {
     if n == 1 {
-        "1 module is running".into()
+        "1 app is running".into()
     } else {
-        format!("{n} modules are running")
+        format!("{n} apps are running")
     }
 }
 
@@ -157,12 +157,12 @@ impl Marks {
             "updating" => format!("{name} is updating"),
             "restarting" => format!("{name} is restarting"),
             "starting" => format!("{name} is starting"),
-            _ => format!("{name} is waiting for another module"),
+            _ => format!("{name} is waiting for another app"),
         }
     }
 
     /// The status line when no module needs the red dot: the most pressing note, else how many
-    /// run. "No modules yet" only when Hideout knows no module at all.
+    /// run. "No apps yet" only when Hideout knows no module at all.
     fn quiet_line(&self) -> String {
         for want in NOTES {
             if let Some(id) = self.states.keys().find(|id| self.note(id) == Some(*want)) {
@@ -661,23 +661,23 @@ mod tests {
         assert!(!m.changed());
     }
 
-    /// Every state has a plain line; "No modules yet" is only for no modules at all (#8).
+    /// Every state has a plain line; "No apps yet" is only for no modules at all (#8).
     #[test]
     fn every_state_has_a_status_line() {
         let mut m = Marks::default();
-        assert_eq!(m.look().1, "No modules yet");
+        assert_eq!(m.look().1, "No apps yet");
         m.name("a.art", "Art");
-        assert_eq!(m.look().1, "No module is running", "known but off");
+        assert_eq!(m.look().1, "No app is running", "known but off");
         let line = |m: &mut Marks, state: &str| {
             m.fact("module.a.art.state", &json!(state));
             m.look()
         };
         for (state, want) in [
-            ("running", "1 module is running"),
-            ("off", "No module is running"),
+            ("running", "1 app is running"),
+            ("off", "No app is running"),
             ("starting", "Art is starting"),
             ("restarting", "Art is restarting"),
-            ("waiting", "Art is waiting for another module"),
+            ("waiting", "Art is waiting for another app"),
             ("updating", "Art is updating"),
             ("update-busy", "Art will update when it is idle"),
             ("update-waiting", "Art has an update ready to install"),
@@ -685,7 +685,7 @@ mod tests {
         ] {
             let (_, got, tip) = line(&mut m, state);
             assert_eq!(got, want, "{state}");
-            assert_ne!(got, "No modules yet", "{state}");
+            assert_ne!(got, "No apps yet", "{state}");
             assert_eq!(tip, format!("Hideout \u{b7} {want}"), "{state}");
         }
         // Refused for a missing OK, or for a launch failure: told apart by `failed`.
@@ -699,7 +699,7 @@ mod tests {
         // Two running, and a module that waits on the user is named over the count.
         m.fact("module.a.art.state", &json!("running"));
         m.fact("module.b.x.state", &json!("running"));
-        assert_eq!(m.look().1, "2 modules are running");
+        assert_eq!(m.look().1, "2 apps are running");
         m.name("b.x", "Echo");
         m.fact("module.b.x.state", &json!("update-waiting"));
         assert_eq!(m.look().1, "Echo has an update ready to install");
@@ -709,7 +709,7 @@ mod tests {
         m.set_paused(false);
         // A module that goes away leaves nothing behind.
         m.fact("module.b.x.state", &serde_json::Value::Null);
-        assert_eq!(m.look().1, "1 module is running");
+        assert_eq!(m.look().1, "1 app is running");
     }
 
     /// A long manifest name is cut with an ellipsis; the tooltip fits Windows' 127 characters.
@@ -747,9 +747,9 @@ mod tests {
         let mut m = Marks::default();
         m.name("a.art", "Art");
         m.fact("module.a.art.state", &json!("running"));
-        assert_eq!(m.look().2, "Hideout \u{b7} 1 module is running");
+        assert_eq!(m.look().2, "Hideout \u{b7} 1 app is running");
         m.set_lab(true);
-        assert_eq!(m.look().2, "Hideout (lab) \u{b7} 1 module is running");
+        assert_eq!(m.look().2, "Hideout (lab) \u{b7} 1 app is running");
         m.fact("hub.safe_mode", &json!(true));
         assert_eq!(m.look().2, "Hideout (lab) \u{b7} safe mode");
         m.set_paused(true);

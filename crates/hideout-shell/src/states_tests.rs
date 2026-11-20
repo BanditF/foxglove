@@ -741,17 +741,17 @@ fn the_tray_names_only_what_needs_the_user() {
     );
 }
 
-/// #8: every supervisor state has its own plain status line and tooltip; "No modules yet" is
+/// #8: every supervisor state has its own plain status line and tooltip; "No apps yet" is
 /// for no modules only; the quiet states keep the dot quiet.
 #[test]
 fn the_tray_has_a_line_for_every_state() {
     for (s, want) in [
-        ("waiting", "Art is waiting for another module"),
+        ("waiting", "Art is waiting for another app"),
         ("quarantined", "Art's page couldn't be shown"),
         ("updating", "Art is updating"),
         ("update-busy", "Art will update when it is idle"),
         ("update-waiting", "Art has an update ready to install"),
-        ("running", "1 module is running"),
+        ("running", "1 app is running"),
     ] {
         let m = tray_for(&[("m.art", s)]);
         let (state, line, tip) = m.look();
@@ -759,7 +759,7 @@ fn the_tray_has_a_line_for_every_state() {
         assert_eq!(line, want, "{s}");
         assert_eq!(tip, format!("Hideout \u{b7} {want}"), "{s}");
     }
-    assert_eq!(Marks::default().look().1, "No modules yet");
+    assert_eq!(Marks::default().look().1, "No apps yet");
 }
 
 /// The menu has no Open log folder (it is in Settings, About).

@@ -33,7 +33,9 @@ pub fn health_only(r: &HealthRow) -> bool {
     let refusal = r.subsystem == "raw_hid" && r.detail.contains("refused");
     let not_tested = r.item.to_ascii_lowercase().contains("not tested")
         || r.detail.to_ascii_lowercase().contains("not tested");
-    refusal || not_tested
+    // A refused wallpaper connection is fixed by itself; the health row says it, no toast.
+    let wallpaper = r.subsystem == "live_feed" && r.detail == "a wallpaper couldn't connect";
+    refusal || not_tested || wallpaper
 }
 
 fn kind(r: &HealthRow) -> String {
@@ -329,7 +331,7 @@ mod tests {
             "live_feed",
             "Live wallpaper",
             Level::Warn,
-            "a wallpaper couldn't connect",
+            "a wallpaper drew nothing",
         )
         .with_notice("Short title", "The body.");
         assert_eq!(
@@ -340,13 +342,13 @@ mod tests {
             "live_feed",
             "Live wallpaper",
             Level::Warn,
-            "a wallpaper couldn't connect",
+            "a wallpaper drew nothing",
         );
         assert_eq!(
             text(&plain),
             (
                 "Live wallpaper: warning".to_string(),
-                "a wallpaper couldn't connect. See Keyboard health on the App page.".to_string()
+                "a wallpaper drew nothing. See Keyboard health on the App page.".to_string()
             )
         );
         assert_eq!(
