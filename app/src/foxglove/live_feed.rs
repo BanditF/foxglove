@@ -1772,8 +1772,6 @@ pub(super) fn fullscreen_now() -> bool {
 enum TokenReason {
     /// Turned on for the first time: no saved section yet.
     FirstEnable,
-    /// "New token" was clicked.
-    NewToken,
     /// Turned on with a saved section but no token in it.
     EmptyOnEnable,
 }
@@ -1782,7 +1780,6 @@ impl TokenReason {
     fn words(self) -> &'static str {
         match self {
             TokenReason::FirstEnable => "first enable",
-            TokenReason::NewToken => "New token",
             TokenReason::EmptyOnEnable => "empty on enable",
         }
     }
@@ -1860,7 +1857,6 @@ fn ticket_redeemed(store: Store) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Change {
     Turn(bool),
-    NewToken,
 }
 
 /// One change to the settings. A verified feed has no token: it is blanked here too.
@@ -1874,13 +1870,6 @@ fn changed(
     }
     match what {
         Change::Turn(on) => turned(s, on, saved),
-        Change::NewToken if s.ticket_verified => {
-            Err("Wallpapers connect without a pairing token now".into())
-        }
-        Change::NewToken => {
-            s.token = wire::new_token().ok_or("no random source for the pairing token")?;
-            Ok((s, Some(TokenReason::NewToken)))
-        }
     }
 }
 
@@ -1939,13 +1928,12 @@ fn set_enabled(on: bool) -> Result<(), String> {
     apply(Change::Turn(on))
 }
 
-/// A new token: wallpapers paired with the old one are let go.
-fn new_token() -> Result<(), String> {
-    apply(Change::NewToken)
-}
-
 /// What the settings card says the feed sends.
-pub const EXPLAINER: &str = "A live wallpaper paired with Foxglove shows your typing as ripples, with the layer, the art screen's art, battery, connection and the keyboard's light colour. It gets which key position was pressed and when, never the letter or keycode, and only when it is paired with Foxglove. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
+pub const EXPLAINER: &str = "A live wallpaper you allow shows your typing as ripples, with the layer, the art screen's art, battery, connection and the keyboard's light colour. It gets which key position was pressed and when, never the letter or keycode, and only for wallpapers you allow. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
+
+/// With the hub: the card shows no list, so one surface decides.
+pub const IN_HIDEOUT: &str =
+    "Choose which wallpapers get your keyboard in Hideout's Wallpaper Engine section.";
 
 /// The notification switch's label and hover.
 pub const NOTIFY_LABEL: &str = "Show notifications on the wallpaper when it's on screen";
@@ -1974,33 +1962,15 @@ pub fn group(ui: &mut egui::Ui) {
             error = set_enabled(on).err();
         }
         ui.weak(EXPLAINER);
-        // What the store holds: a refused change shows no token (#741).
+        // What the store holds: a refused change shows no setting it didn't save (#741).
         let s = settings();
         if s.enabled {
-            // Hidden once tickets took over: there is no token to show (S5 removes the box).
-            if !s.ticket_verified {
-                ui.horizontal(|ui| {
-                    ui.label("Pairing token");
-                    let mut shown = s.token.clone();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut shown)
-                            .desired_width(200.0)
-                            .interactive(false),
-                    );
-                    if ui.button("Copy").clicked() {
-                        ui.ctx().copy_text(s.token.clone());
-                    }
-                    if ui
-                        .button("New token")
-                        .on_hover_text("Wallpapers paired with the old token are disconnected")
-                        .clicked()
-                    {
-                        error = new_token().err();
-                    }
-                });
-                ui.weak(
-                    "Paste it into the wallpaper's \"Foxglove pairing token\" in Wallpaper Engine.",
-                );
+            // One surface decides which wallpapers get the keyboard: Hideout's section when the
+            // hub has the module, else the same list here.
+            if super::hub_link::module_mode() {
+                ui.weak(IN_HIDEOUT);
+            } else if let Some(e) = super::we_panel::settings_card(ui) {
+                error = Some(e);
             }
             // #801: which keyboard the wallpaper shows, the focus or a pin.
             super::focus_pins::feed_row(ui);
@@ -2204,10 +2174,8 @@ mod tests {
         let load = || store::try_load_at::<LiveSettings>(&path, SECTION);
 
         store::FAIL_READS.lock().unwrap().insert(path.clone());
-        for what in [Change::Turn(true), Change::NewToken] {
-            let err = change(what, upd(&path)).unwrap_err();
-            assert!(err.starts_with("settings unreadable: "), "{err}");
-        }
+        let err = change(Change::Turn(true), upd(&path)).unwrap_err();
+        assert!(err.starts_with("settings unreadable: "), "{err}");
         // The store's health row says so meanwhile.
         let rows = store::rows_for_test(&path);
         assert_eq!(rows.len(), 1);
@@ -2226,14 +2194,9 @@ mod tests {
         let (s, why) = change(Change::Turn(true), upd(&path)).unwrap();
         assert_eq!((s.token.as_str(), why), ("the-saved-one", None));
         assert!(store::rows_for_test(&path).is_empty());
-        // A new token: saved before it's shown, and the one admitted.
-        let (s, why) = change(Change::NewToken, upd(&path)).unwrap();
-        assert_eq!(why, Some(TokenReason::NewToken));
         let on_disk = load().unwrap().unwrap();
         assert_eq!(on_disk.token, s.token);
         assert!(on_disk.enabled);
-        assert!(wire::admit(None, Some(&on_disk.token), &s.token).is_ok());
-        assert!(wire::admit(None, Some("the-saved-one"), &s.token).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2289,10 +2252,6 @@ mod tests {
         // A restart: a fresh cache reads the same token.
         let mut restarted = None;
         assert_eq!(cached(&mut restarted, load).token, token);
-        assert_eq!(
-            token_line(TokenReason::NewToken),
-            "Foxglove: live feed: new pairing token (New token)"
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3364,14 +3323,9 @@ mod tests {
         assert!(s.token.is_empty());
         assert!(load().unwrap().unwrap().token.is_empty());
 
-        // Verified stays blank: turning on makes no token, and New token is refused.
+        // Verified stays blank: turning on makes no token.
         let (s, why) = change(Change::Turn(true), upd(&path)).unwrap();
         assert!(s.token.is_empty() && why.is_none());
-        let err = change(Change::NewToken, upd(&path)).unwrap_err();
-        assert!(
-            !err.contains(pasted) && !err.to_lowercase().contains("paste"),
-            "{err}"
-        );
         assert!(load().unwrap().unwrap().token.is_empty());
 
         // Nothing shown or logged holds the token.
@@ -3383,7 +3337,7 @@ mod tests {
             title,
             body,
             EXPLAINER.to_string(),
-            token_line(TokenReason::NewToken),
+            token_line(TokenReason::FirstEnable),
         ]);
         for text in &texts {
             assert!(!text.contains(pasted), "{text}");

@@ -14,7 +14,6 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use super::live_pairing::{Link, Links};
-#[cfg(not(test))]
 use super::live_wire::Why;
 use super::wallpaper_manifest::{self as manifest, Manifest};
 use super::wallpaper_sync::Target;
@@ -38,11 +37,9 @@ pub fn changed() {
 
 /// Every wallpaper key numbered this session, oldest first. Append-only: a key's number never
 /// changes while Foxglove runs, so a click made against an older tree still means its own row.
-#[cfg(not(test))]
 static SLOTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// The slots with `keys` appended (those not numbered yet).
-#[cfg(not(test))]
 fn slots_with<'a>(keys: impl Iterator<Item = &'a String>) -> Vec<String> {
     let mut s = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
     for k in keys {
@@ -54,7 +51,6 @@ fn slots_with<'a>(keys: impl Iterator<Item = &'a String>) -> Vec<String> {
 }
 
 /// The inputs from what Foxglove knows now (the app; tests build [`Inputs`] themselves).
-#[cfg(not(test))]
 pub fn inputs_now(engine_running: bool) -> Inputs {
     let saved = super::live_feed::settings();
     let allowed: BTreeSet<String> = saved.allowed.iter().cloned().collect();
@@ -107,17 +103,7 @@ pub fn plan(node: &str, value: Option<bool>, keys: &[String], held: bool) -> Res
 /// `Err` carries the words the hub shows beside the switch (never the store's own text).
 pub fn handle(node: &str, value: Option<bool>, keys: &[String]) -> Result<(), String> {
     let held = super::live_pairing::links(super::live_pairing::store()).held;
-    match plan(node, value, keys, held)? {
-        Act::Allow(key, on) => super::live_feed::allow_wallpaper(&key, on),
-        Act::Reconnect => {
-            super::live_feed::reconnect();
-            Ok(())
-        }
-        Act::DisconnectAll => {
-            super::live_feed::disconnect_all();
-            Ok(())
-        }
-    }
+    run(plan(node, value, keys, held)?)
 }
 
 /// The allow list's section, inside the Wallpaper Engine section.
@@ -444,6 +430,92 @@ pub fn nodes(v: &View) -> Vec<Value> {
         out.push(ui::event_button(DISCONNECT_ALL_NODE, DISCONNECT_ALL));
     }
     out
+}
+
+/// The same list in Foxglove's own Settings (no hub): one checkbox per wallpaper, the status,
+/// Reconnect and Disconnect all, from the same [`View`] the Hideout section draws. Returns what
+/// the user did this frame; [`run`] does it.
+pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Act> {
+    let pal = super::theme::palette(ui);
+    let tone = |t: Tone| match t {
+        "ok" => pal.ok,
+        "attention" => pal.warn,
+        "active" => pal.accent,
+        _ => pal.muted,
+    };
+    let mut act = None;
+    if let Some(l) = &v.line {
+        ui.weak(&l.text);
+        if l.reconnect && ui.button(RECONNECT_LABEL).clicked() {
+            act = Some(Act::Reconnect);
+        }
+    }
+    if !v.rows.is_empty() {
+        ui.add_space(4.0);
+        ui.strong(HEADER);
+    }
+    for r in &v.rows {
+        ui.add_space(4.0);
+        let mut on = r.allowed;
+        ui.horizontal(|ui| {
+            let c = ui
+                .checkbox(&mut on, &r.title)
+                .on_hover_text(format!("Let {} use your keyboard", r.title));
+            if c.changed() {
+                if let Some(k) = v.keys.get(r.slot) {
+                    act = Some(Act::Allow(k.clone(), on));
+                }
+            }
+            if let Some((word, t)) = &r.status {
+                ui.label(egui::RichText::new(word).color(tone(t)));
+            }
+        });
+        if r.reconnect {
+            if let Some(h) = &r.help {
+                ui.weak(h);
+            }
+            if ui
+                .button(RECONNECT_LABEL)
+                .on_hover_text(format!("Reconnect {}", r.title))
+                .clicked()
+            {
+                act = Some(Act::Reconnect);
+            }
+            ui.weak(&r.capability);
+        } else {
+            ui.weak(&r.capability);
+            if let Some(h) = &r.help {
+                ui.weak(h);
+            }
+        }
+    }
+    ui.add_space(4.0);
+    if v.disconnect_all && ui.button(DISCONNECT_ALL).clicked() {
+        act = Some(Act::DisconnectAll);
+    }
+    act
+}
+
+/// Does `act`, then tells the panels. The error is the fixed words.
+pub fn run(act: Act) -> Result<(), String> {
+    match act {
+        Act::Allow(key, on) => super::live_feed::allow_wallpaper(&key, on),
+        Act::Reconnect => {
+            super::live_feed::reconnect();
+            Ok(())
+        }
+        Act::DisconnectAll => {
+            super::live_feed::disconnect_all();
+            Ok(())
+        }
+    }
+}
+
+/// The card's list from what Foxglove knows now. Wallpaper Engine counts as running (the list
+/// must not scan processes every frame; a wallpaper that isn't on screen says so itself).
+pub fn settings_card(ui: &mut egui::Ui) -> Option<String> {
+    let v = view(&inputs_now(true));
+    draw(ui, &v).and_then(|a| run(a).err())
 }
 
 /// What a click or a switch on `node` means (S5b's router uses it).
@@ -896,6 +968,52 @@ mod tests {
             plan(DISCONNECT_ALL_NODE, None, &keys, false),
             Ok(Act::DisconnectAll)
         );
+    }
+
+    /// S5c: no string the app shows tells the user to paste a pairing token (the Calibrate
+    /// copy-paste is another feature, exempt by path; log lines start with "Foxglove:").
+    #[test]
+    fn no_ui_string_talks_of_pasting_or_a_pairing_token() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let mut hits = Vec::new();
+        for f in files {
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+            if name.starts_with("calibrate") || name == "tests.rs" || name == "theme_preview.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).unwrap();
+            // Only the code above the file's test module.
+            let code = text.split("#[cfg(test)]").next().unwrap();
+            for (n, line) in code.lines().enumerate() {
+                let t = line.trim_start();
+                if t.starts_with("//") {
+                    continue;
+                }
+                for lit in line.split('"').skip(1).step_by(2) {
+                    let low = lit.to_lowercase();
+                    if !lit.starts_with("Foxglove:")
+                        && (low.contains("paste ") || low.contains("pairing token"))
+                    {
+                        hits.push(format!("{name}:{}: {lit}", n + 1));
+                    }
+                }
+            }
+        }
+        assert!(hits.is_empty(), "{hits:#?}");
     }
 
     #[test]

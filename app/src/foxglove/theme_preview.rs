@@ -4006,27 +4006,24 @@ fn live_wallpaper_notify_row_renders() {
             egui::Area::new(egui::Id::new("notify-settings"))
                 .fixed_pos(egui::pos2(20.0, 14.0))
                 .show(ctx, |ui| {
-                ui.set_width(720.0);
-                crate::foxglove::settings_ui::section(ui, "Live wallpaper", |ui| {
-                    ui.checkbox(&mut true, "Live keyboard feed for wallpapers");
-                    ui.weak(EXPLAINER);
-                    ui.weak(
-                        "Paste it into the wallpaper's \"Foxglove pairing token\" in Wallpaper Engine.",
-                    );
-                    let row = notify_row(ui, &mut true);
-                    ui.weak("Listening on 127.0.0.1:8768: 1 wallpaper connected");
-                    // The hover, drawn where egui puts it.
-                    egui::Area::new(egui::Id::new("notify-hover"))
-                        .fixed_pos(row.rect.left_bottom() + egui::vec2(24.0, 30.0))
-                        .order(egui::Order::Tooltip)
-                        .show(ui.ctx(), |ui| {
-                            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                ui.set_max_width(420.0);
-                                ui.label(NOTIFY_HOVER);
+                    ui.set_width(720.0);
+                    crate::foxglove::settings_ui::section(ui, "Live wallpaper", |ui| {
+                        ui.checkbox(&mut true, "Live keyboard feed for wallpapers");
+                        ui.weak(EXPLAINER);
+                        let row = notify_row(ui, &mut true);
+                        ui.weak("Listening on 127.0.0.1:8768: 1 wallpaper connected");
+                        // The hover, drawn where egui puts it.
+                        egui::Area::new(egui::Id::new("notify-hover"))
+                            .fixed_pos(row.rect.left_bottom() + egui::vec2(24.0, 30.0))
+                            .order(egui::Order::Tooltip)
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                    ui.set_max_width(420.0);
+                                    ui.label(NOTIFY_HOVER);
+                                });
                             });
-                        });
+                    });
                 });
-            });
         });
         keep(&format!("ui-notify-route-settings-{name}.png"), &img);
         let n = img
@@ -4034,6 +4031,91 @@ fn live_wallpaper_notify_row_renders() {
             .filter(|p| p.0[..3] == [ground.r(), ground.g(), ground.b()])
             .count();
         assert!(n > 1000, "{name}: the theme's ground shows");
+    }
+}
+
+/// Settings > Live wallpaper after the pairing token is gone (S5c): the allow list in the card
+/// when no hub is connected, and the one-line pointer when Hideout has the module. Light and
+/// dark, at the window's width and at a narrow 380 px (`settings-live-*.png`).
+#[test]
+fn live_wallpaper_card_allow_list_renders() {
+    use crate::foxglove::live_feed::{notify_row, EXPLAINER, IN_HIDEOUT};
+    use crate::foxglove::live_pairing::{Link, Links};
+    use crate::foxglove::theme::{Choice, DARK, LIGHT};
+    use crate::foxglove::we_panel::{self, Ask, Hold, Inputs};
+    let ask = |k: &str, t: &str, on_screen, allowed| Ask {
+        key: k.into(),
+        title: t.into(),
+        on_screen,
+        allowed,
+        needs_update: false,
+    };
+    let mut links = Links::default();
+    links.by_dir.insert("hud".into(), Link::Connected);
+    links.by_dir.insert("courier".into(), Link::Capped);
+    let mut upd = ask("neon", "Neon Rain (Workshop)", false, false);
+    upd.needs_update = true;
+    let list = Inputs {
+        feed_on: true,
+        engine_running: true,
+        asks: vec![
+            ask("hud", "Bandit HUD", true, true),
+            ask("courier", "Courier", true, true),
+            upd,
+            ask("atlas", "Atlas", false, false),
+        ],
+        links,
+        hold: Some(Hold::Paused),
+        slots: Vec::new(),
+    };
+    let held_links = Links {
+        held: true,
+        ..Links::default()
+    };
+    let held = Inputs {
+        links: held_links,
+        hold: None,
+        ..list.clone()
+    };
+    for (choice, theme, ground) in [
+        (Choice::Dark, "dark", DARK.ground),
+        (Choice::Light, "light", LIGHT.ground),
+    ] {
+        for (width, size) in [(720.0f32, "wide"), (360.0, "narrow")] {
+            for (case, inputs, hub) in [
+                ("list", &list, false),
+                ("held", &held, false),
+                ("hub", &list, true),
+            ] {
+                let ctx = preview_ctx();
+                crate::foxglove::theme::apply_choice(&ctx, choice);
+                let v = we_panel::view(inputs);
+                let img = render(&ctx, egui::vec2(width + 40.0, 560.0), ground, |ctx| {
+                    egui::Area::new(egui::Id::new("live-card"))
+                        .fixed_pos(egui::pos2(20.0, 14.0))
+                        .show(ctx, |ui| {
+                            ui.set_width(width);
+                            crate::foxglove::settings_ui::section(ui, "Live wallpaper", |ui| {
+                                ui.checkbox(&mut true, "Live keyboard feed for wallpapers");
+                                ui.weak(EXPLAINER);
+                                if hub {
+                                    ui.weak(IN_HIDEOUT);
+                                } else {
+                                    we_panel::draw(ui, &v);
+                                }
+                                notify_row(ui, &mut true);
+                                ui.weak("Listening on 127.0.0.1:8768: 1 wallpaper connected");
+                            });
+                        });
+                });
+                keep(&format!("settings-live-{case}-{size}-{theme}.png"), &img);
+                let n = img
+                    .pixels()
+                    .filter(|p| p.0[..3] == [ground.r(), ground.g(), ground.b()])
+                    .count();
+                assert!(n > 1000, "{theme} {size} {case}: the theme's ground shows");
+            }
+        }
     }
 }
 
@@ -4077,9 +4159,6 @@ fn focus_pins_render() {
         section(ui, "Live wallpaper", |ui| {
             ui.checkbox(&mut true, "Live keyboard feed for wallpapers");
             ui.weak(EXPLAINER);
-            ui.weak(
-                "Paste it into the wallpaper's \"Foxglove pairing token\" in Wallpaper Engine.",
-            );
             feed_row(ui);
             ui.weak("Listening on 127.0.0.1:8768: 1 wallpaper connected");
         });
