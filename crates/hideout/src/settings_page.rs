@@ -15,6 +15,8 @@ pub struct SettingsPage {
     forgotten: bool,
     /// The Start with Windows switch (H5.2): off by default; `None` where the hub gives none.
     startup: Option<Box<dyn hideout_shell::startup_switch::StartupControl>>,
+    /// Settings > Developer (R5): `None` where the hub gives none.
+    dev: Option<Box<dyn hideout_shell::dev_settings::DevControl>>,
 }
 
 impl SettingsPage {
@@ -24,6 +26,7 @@ impl SettingsPage {
             version,
             forgotten: false,
             startup: None,
+            dev: None,
         }
     }
 
@@ -33,6 +36,12 @@ impl SettingsPage {
         s: Box<dyn hideout_shell::startup_switch::StartupControl>,
     ) -> Self {
         self.startup = Some(s);
+        self
+    }
+
+    /// Gives the page its Developer section.
+    pub fn with_dev(mut self, d: Box<dyn hideout_shell::dev_settings::DevControl>) -> Self {
+        self.dev = Some(d);
         self
     }
 
@@ -64,12 +73,14 @@ impl hideout_shell::Page for SettingsPage {
 
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
         let row = self.startup.as_mut().map(|s| s.row());
-        let acts = hideout_shell::settings_view::settings_ui_with(
+        let dev = self.dev.as_mut().map(|d| d.view());
+        let acts = hideout_shell::settings_view::settings_ui_full(
             ui,
             t,
             self.version,
             self.forgotten,
             row.as_ref(),
+            dev.as_ref(),
         );
         if acts.forget {
             self.forget();
@@ -79,6 +90,9 @@ impl hideout_shell::Page for SettingsPage {
         }
         if let (Some(c), Some(s)) = (acts.startup, self.startup.as_mut()) {
             s.click(c);
+        }
+        if let (Some(c), Some(d)) = (acts.dev, self.dev.as_mut()) {
+            d.click(c);
         }
     }
 }

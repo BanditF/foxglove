@@ -11,6 +11,7 @@
 //! calls are Windows-only.
 
 pub mod autostart;
+pub mod dev_settings;
 pub mod drag;
 pub mod flyout;
 pub mod icon;

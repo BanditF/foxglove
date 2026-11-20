@@ -172,6 +172,31 @@ impl HubConfig {
         }
     }
 
+    /// `[dev] restart_after_rebuild`: Hideout restarts an app by itself after a rebuild. On
+    /// unless the file says `false`.
+    pub fn restart_after_rebuild(&self) -> bool {
+        self.table
+            .get("dev")
+            .and_then(|d| d.get("restart_after_rebuild"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    }
+
+    /// Sets it; on (the default) removes the key.
+    pub fn set_restart_after_rebuild(&mut self, on: bool) {
+        let dev = self
+            .table
+            .entry("dev")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let toml::Value::Table(dev) = dev {
+            if on {
+                dev.remove("restart_after_rebuild");
+            } else {
+                dev.insert("restart_after_rebuild".into(), toml::Value::Boolean(false));
+            }
+        }
+    }
+
     /// Drops a removed module's table.
     pub fn forget(&mut self, id: &str) {
         if let Some(toml::Value::Table(modules)) = self.table.get_mut("modules") {

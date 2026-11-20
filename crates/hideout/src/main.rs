@@ -18,6 +18,8 @@ mod catalog_fetch;
 #[cfg(windows)]
 mod control;
 #[cfg(windows)]
+mod dev_settings;
+#[cfg(windows)]
 mod discover;
 mod find_installed;
 #[cfg(windows)]
@@ -428,6 +430,14 @@ fn main() {
                 None => Box::new(sw),
             };
         settings = settings.with_startup(sw);
+    }
+    // Developer (R5): dev folders, Add a folder..., the restart switch; the hub that holds the
+    // router only, like Add an app....
+    if started._router.is_some() {
+        settings = settings.with_dev(Box::new(dev_settings::RegistryDev::new(
+            paths.root.clone(),
+            Box::new(hideout_shell::pick_folder),
+        )));
     }
     pages.push(Box::new(settings));
     let opts = hideout_shell::ShellOptions {

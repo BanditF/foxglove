@@ -124,16 +124,59 @@ fn env_path(name: &str) -> Option<String> {
 /// another account can swap out. "Another account" is anyone but you, SYSTEM, Administrators and
 /// TrustedInstaller. Names are compared in canonical long form.
 pub fn folder_problem(canon: &str) -> Option<&'static str> {
+    folder_check(canon).map(FolderProblem::text)
+}
+
+/// Why a canonical folder can't be a dev folder, as a value (the Settings page words each one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderProblem {
+    /// A drive root.
+    Drive,
+    /// The user's whole profile folder (or one holding it).
+    Profile,
+    /// AppData, Temp or Downloads, or something inside or above them.
+    DropZone,
+    /// Windows, Program Files, ProgramData or Public.
+    System,
+    /// The current user could not be read, so the folder's permissions can't be judged.
+    WhoUnknown,
+    /// Another account can change files in the folder (or owns it).
+    FolderOpen,
+    /// Another account can change a folder above it.
+    ParentOpen,
+}
+
+impl FolderProblem {
+    /// The plain reason, for logs and errors.
+    pub fn text(self) -> &'static str {
+        match self {
+            FolderProblem::Drive => "a drive is too much to trust as a dev folder",
+            FolderProblem::Profile => "that folder holds your whole profile",
+            FolderProblem::DropZone => "AppData, Temp and Downloads can't hold a dev folder",
+            FolderProblem::System => "a system or shared folder can't be a dev folder",
+            FolderProblem::WhoUnknown => {
+                "couldn't tell who you are to check the folder's permissions"
+            }
+            FolderProblem::FolderOpen => {
+                "other accounts on this PC can change files in that folder"
+            }
+            FolderProblem::ParentOpen => "other accounts on this PC can change a folder above it",
+        }
+    }
+}
+
+/// [`folder_problem`] as a value.
+pub fn folder_check(canon: &str) -> Option<FolderProblem> {
     let trimmed = canon.trim_end_matches(['\\', '/']);
     if norm(trimmed).len() <= 2 {
-        return Some("a drive is too much to trust as a dev folder");
+        return Some(FolderProblem::Drive);
     }
     let profile = env_path("USERPROFILE");
     if profile
         .iter()
         .any(|b| same_path(trimmed, b) || path_within(trimmed, b))
     {
-        return Some("that folder holds your whole profile");
+        return Some(FolderProblem::Profile);
     }
     let drop_zones = [
         env_path("APPDATA"),
@@ -147,7 +190,7 @@ pub fn folder_problem(canon: &str) -> Option<&'static str> {
         .flatten()
         .any(|b| same_path(trimmed, b) || path_within(trimmed, b) || path_within(b, trimmed))
     {
-        return Some("AppData, Temp and Downloads can't hold a dev folder");
+        return Some(FolderProblem::DropZone);
     }
     let system = [
         env_path("SystemRoot"),
@@ -161,14 +204,14 @@ pub fn folder_problem(canon: &str) -> Option<&'static str> {
         .flatten()
         .any(|b| same_path(trimmed, b) || path_within(b, trimmed) || path_within(trimmed, b))
     {
-        return Some("a system or shared folder can't be a dev folder");
+        return Some(FolderProblem::System);
     }
     let Ok(me) = current_sid() else {
-        return Some("couldn't tell who you are to check the folder's permissions");
+        return Some(FolderProblem::WhoUnknown);
     };
     let mut dir = std::path::Path::new(trimmed);
     if writable_by_others(dir, FOLDER_WRITE, Where::Folder, &me) {
-        return Some("other accounts on this PC can change files in that folder");
+        return Some(FolderProblem::FolderOpen);
     }
     while let Some(parent) = dir.parent() {
         let root = parent.parent().is_none();
@@ -178,7 +221,7 @@ pub fn folder_problem(canon: &str) -> Option<&'static str> {
             (PARENT_WRITE, Where::Folder)
         };
         if writable_by_others(parent, mask, at, &me) {
-            return Some("other accounts on this PC can change a folder above it");
+            return Some(FolderProblem::ParentOpen);
         }
         if root {
             break;
@@ -213,6 +256,50 @@ fn exe_open_to_others(folder: &str, exe: &str) -> bool {
     false
 }
 
+/// Why [`Registry::try_add_dev_folder`] refused.
+#[derive(Debug)]
+pub enum DevFolderRefusal {
+    /// Developer mode is off.
+    ModeOff,
+    /// Not a folder that exists.
+    NotAFolder,
+    /// Not on this PC's own (local fixed) drive.
+    NotLocal,
+    /// [`folder_check`] said no.
+    Problem(FolderProblem),
+    /// The list could not be saved (or the path could not be resolved).
+    Failed(Failure),
+}
+
+/// What a successful add did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevFolderAdded {
+    /// The canonical path stored.
+    pub path: String,
+    /// It was on the list already; nothing was written.
+    pub was_listed: bool,
+}
+
+/// Why a listed folder is not trusted right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowProblem {
+    /// The folder is gone.
+    Missing,
+    /// It is not on a local fixed drive.
+    NotLocal,
+    /// [`folder_check`] said no.
+    Folder(FolderProblem),
+}
+
+/// One listed dev folder for the Settings page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevFolderRow {
+    pub path: String,
+    pub problem: Option<RowProblem>,
+    /// Names of the apps enrolled in it.
+    pub apps: Vec<String>,
+}
+
 impl Registry {
     /// The dev folders as `hideout.toml` has them on disk now (a file that can't be read gives
     /// none: fail closed).
@@ -235,29 +322,111 @@ impl Registry {
     /// canonicalize onto this PC's local fixed drive and not be a drive root. Returns the stored
     /// canonical path. Adding one that is already there is fine.
     pub fn add_dev_folder(&mut self, path: &str) -> Result<String, Failure> {
+        match self.try_add_dev_folder(path) {
+            Ok(a) => Ok(a.path),
+            Err(DevFolderRefusal::ModeOff) => {
+                Err(crate::permission::io_invalid("developer mode is off"))
+            }
+            Err(DevFolderRefusal::NotAFolder) => {
+                Err(crate::permission::io_invalid("that is not a folder"))
+            }
+            Err(DevFolderRefusal::NotLocal) => Err(crate::permission::io_invalid(
+                "a dev folder must be on this PC's own drive",
+            )),
+            Err(DevFolderRefusal::Problem(p)) => Err(crate::permission::io_invalid(p.text())),
+            Err(DevFolderRefusal::Failed(f)) => Err(f),
+        }
+    }
+
+    /// [`Registry::add_dev_folder`] with the refusal as a value. The one way a folder gets on the
+    /// list (the Settings page calls this and nothing else): every check runs here, in this
+    /// order, before anything is written.
+    pub fn try_add_dev_folder(&mut self, path: &str) -> Result<DevFolderAdded, DevFolderRefusal> {
         if !self.dev_folders_on() {
-            return Err(crate::permission::io_invalid("developer mode is off"));
+            return Err(DevFolderRefusal::ModeOff);
         }
         let p = std::path::Path::new(path);
         if !p.is_dir() {
-            return Err(crate::permission::io_invalid("that is not a folder"));
+            return Err(DevFolderRefusal::NotAFolder);
         }
-        let canon = canonical_path(p)?;
+        let canon = canonical_path(p).map_err(|e| DevFolderRefusal::Failed(Failure::Io(e)))?;
         let probe = format!("{}\\x", canon.trim_end_matches('\\'));
         if !on_local_fixed_drive(&probe) {
-            return Err(crate::permission::io_invalid(
-                "a dev folder must be on this PC's own drive",
-            ));
+            return Err(DevFolderRefusal::NotLocal);
         }
-        if let Some(why) = folder_problem(&canon) {
-            return Err(crate::permission::io_invalid(why));
+        if let Some(why) = folder_check(&canon) {
+            return Err(DevFolderRefusal::Problem(why));
         }
         let mut list = self.dev_folders();
-        if !list.iter().any(|f| same_path(f, &canon)) {
+        let was_listed = list.iter().any(|f| same_path(f, &canon));
+        if !was_listed {
             list.push(canon.clone());
-            self.change_hub(|h| h.set_dev_folders(&list))?;
+            self.change_hub(|h| h.set_dev_folders(&list))
+                .map_err(DevFolderRefusal::Failed)?;
         }
-        Ok(canon)
+        Ok(DevFolderAdded {
+            path: canon,
+            was_listed,
+        })
+    }
+
+    /// Whether a rebuild restarts the app by itself (`[dev] restart_after_rebuild`, on unless the
+    /// user turned it off). Off only narrows what Hideout does; it never grants anything.
+    pub fn restart_after_rebuild(&self) -> bool {
+        HubConfig::load(&self.home.join("hideout.toml"))
+            .ok()
+            .and_then(Result::ok)
+            // An unreadable file restarts nothing on its own: fail closed.
+            .is_some_and(|h| h.restart_after_rebuild())
+    }
+
+    /// Sets [`Registry::restart_after_rebuild`].
+    pub fn set_restart_after_rebuild(&mut self, on: bool) -> Result<(), Failure> {
+        self.change_hub(|h| h.set_restart_after_rebuild(on))
+    }
+
+    /// The listed dev folders as the Settings page shows them, checked now with the same checks
+    /// as adding (so a folder whose permissions changed since shows its problem), each with the
+    /// names of the apps enrolled in it. Read only.
+    pub fn dev_folder_rows(&self) -> Vec<DevFolderRow> {
+        let enrolled: Vec<(String, String)> = self
+            .inventory
+            .modules
+            .keys()
+            .filter_map(|id| {
+                let f = self.dev_folder_of(id)?;
+                let name = self
+                    .manifest(id)
+                    .map(|m| m.name)
+                    .unwrap_or_else(|| id.clone());
+                Some((f, name))
+            })
+            .collect();
+        self.dev_folders()
+            .into_iter()
+            .map(|path| {
+                let probe = format!("{}\\x", path.trim_end_matches('\\'));
+                let problem = if !std::path::Path::new(&path).is_dir() {
+                    Some(RowProblem::Missing)
+                } else if !on_local_fixed_drive(&probe) {
+                    Some(RowProblem::NotLocal)
+                } else {
+                    folder_check(&path).map(RowProblem::Folder)
+                };
+                let mut apps: Vec<String> = enrolled
+                    .iter()
+                    .filter(|(f, _)| same_path(f, &path))
+                    .map(|(_, n)| n.clone())
+                    .collect();
+                apps.sort();
+                apps.dedup();
+                DevFolderRow {
+                    path,
+                    problem,
+                    apps,
+                }
+            })
+            .collect()
     }
 
     /// Takes `path` off the list. Apps in it stop being carried: their next changed file voids
