@@ -43,6 +43,9 @@ mod router_start;
 mod settings_page;
 #[cfg(windows)]
 mod signin_fact;
+#[cfg(windows)]
+mod signin_signal;
+mod signin_watch;
 
 /// What runs beside the shell: kept alive for the life of the process.
 #[cfg(windows)]
@@ -339,6 +342,9 @@ fn main() {
     }
     // Lab control only where the registry allows lab mode (never on the user's folder).
     hideout_shell::lab_control::allow(hideout_registry::lab::lab_mode_from_env(&paths.root).on());
+    // A sign-in start opens the hand-over event before the router's first fact (slice 3).
+    #[cfg(windows)]
+    signin_signal::install(std::env::args().any(|a| a == "--tray"), paths.overridden);
     let mut started = start(&paths);
     if started.owner {
         // Quit, the session's end and Ctrl+C mark the run clean (#1033).
@@ -383,12 +389,33 @@ fn main() {
     // Start with Windows (H5.2): OFF until the user's click in its dialog; nothing here turns it
     // on, and a hub that is not the installed one (or a test run) cannot write it.
     if let Some(mut sw) = startup_switch(&paths) {
+        // What the status and the dialog say about apps comes from the router: apps running now,
+        // and apps told that Hideout starts at sign-in (they remember it).
+        if let Some(hub) = started._router.clone() {
+            sw = sw.with_apps_source(Box::new(move || {
+                let (running, told) = hub.read(|r| r.apps_at_sign_in());
+                hideout_shell::startup_switch::AppsNow { running, told }
+            }));
+        }
         // A sign-in start says what the switch is, in the log (reads the shell; writes nothing).
         if start_in_tray {
             log::info!("{}", sw.sign_in_line());
         }
+        // The startup pass's one repair: --tray on an enabled Hideout.lnk of this exe.
+        match sw.repair_tray_arg() {
+            Ok(hideout_shell::autostart::Outcome::Changed) => {
+                log::info!("Start with Windows: added --tray to the enabled Hideout.lnk")
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("start with Windows: repair not done: {e}"),
+        }
         // The router hears whether Hideout starts at sign-in and tells running modules
         // (`module.<id>.starts_at_sign_in`, read-only): only the hub that holds the router.
+        // The fact also follows a change made outside this page (Windows Settings > Apps >
+        // Startup, a deleted shortcut): a change notification, not a timer; read only.
+        if let Some(hub) = started._router.clone() {
+            watch_sign_in_fact(&paths, hub);
+        }
         let sw: Box<dyn hideout_shell::startup_switch::StartupControl> =
             match started._router.clone() {
                 Some(hub) => Box::new(signin_fact::Announcing::new(
@@ -465,6 +492,35 @@ fn capture_client(
 
 /// The Start with Windows switch over the real Startup folder, for this exe.
 #[cfg(windows)]
+/// Re-reads Start with Windows when the Startup folder or the StartupApproved key changes, and
+/// tells the router when "Hideout starts at sign-in" changed. Nothing is written.
+#[cfg(windows)]
+fn watch_sign_in_fact(paths: &hideout_shell::paths::HubPaths, hub: hideout_router::server::Hub) {
+    let Ok(folder) = hideout_shell::startup_win::RealStartup::new() else {
+        return;
+    };
+    let dir = folder.dir().to_path_buf();
+    let own = paths.clone();
+    let mut refresh = signin_watch::Refresh::new(
+        move || {
+            use hideout_shell::startup_switch::StartupControl;
+            // A fresh switch: its own snapshot cache is two seconds old at worst otherwise.
+            startup_switch(&own).map(|mut s| s.row().turn_off)
+        },
+        move |on| hub.act(|r| r.set_starts_at_sign_in(on)),
+        None,
+    );
+    let wake = Box::new(move || {
+        refresh.wake();
+    });
+    if let Err(e) = signin_watch::start(&dir, hideout_shell::startup_win::APPROVED_PARENT, wake) {
+        log::warn!("sign-in watch not started: {e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn watch_sign_in_fact(_: &hideout_shell::paths::HubPaths, _: hideout_router::server::Hub) {}
+
 fn startup_switch(
     paths: &hideout_shell::paths::HubPaths,
 ) -> Option<

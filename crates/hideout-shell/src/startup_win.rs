@@ -24,6 +24,9 @@ use windows::Win32::UI::Shell::{
 use crate::autostart::{Approval, Link, StartupFolder, LINK_NAME};
 use crate::startup_switch::{approved_bytes, approved_enabled};
 
+/// The key under HKCU that holds the StartupApproved values, watched for changes.
+pub const APPROVED_PARENT: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved";
 const APPROVED_KEY: &str =
     r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder";
 const INSTALLER_KEY: &str = r"Software\Hideout\Installer";
@@ -89,6 +92,11 @@ impl RealStartup {
 
     fn path(&self) -> PathBuf {
         self.dir.join(LINK_NAME)
+    }
+
+    /// The Startup folder (for a change watch; reads nothing).
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 }
 

@@ -75,7 +75,11 @@ fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
                 if row.apps {
                     ui.add(
                         egui::Label::new(
-                            RichText::new(startup_switch::DIALOG_APPS).color(c(t.text)),
+                            RichText::new(startup_switch::dialog_apps(
+                                &startup_switch::join_names(&row.app_names),
+                                row.app_names.len() <= 1,
+                            ))
+                            .color(c(t.text)),
                         )
                         .wrap(),
                     );

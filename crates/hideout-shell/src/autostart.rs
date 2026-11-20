@@ -168,6 +168,31 @@ pub fn ensure(
     }
 }
 
+/// The narrow startup repair (sign-in hand-over slice 3): a `Hideout.lnk` that starts this exe,
+/// is enabled in Windows, and lacks `--tray` gets its arguments rewritten in place (the approval
+/// is not touched). It never creates a missing shortcut, never turns a disabled or removed entry
+/// back on, never changes another exe's shortcut, and writes nothing in a lab or test run.
+pub fn repair_tray_arg(
+    ctx: &Context,
+    folder: &mut impl StartupFolder,
+    approval: &impl Approval,
+) -> Result<Outcome, String> {
+    if ctx.overridden {
+        return Ok(Outcome::SkippedLabRun);
+    }
+    match folder.read() {
+        Some(link)
+            if same_path(&link.target, &ctx.exe)
+                && !has_tray(&link.args)
+                && approval.read() == Some(true) =>
+        {
+            folder.write(&wanted(ctx))?;
+            Ok(Outcome::Changed)
+        }
+        _ => Ok(Outcome::Unchanged),
+    }
+}
+
 /// The user's switch. Writes what Windows' own toggle writes; turning on also makes the shortcut
 /// when it is missing, starts another exe, or lacks `--tray`.
 pub fn set_enabled(
@@ -502,5 +527,66 @@ mod tests {
         assert_eq!(remove(&c, &mut f, &mut r), Ok(Outcome::SkippedLabRun));
         assert_eq!((f.writes, r.writes), (0, 0));
         assert_eq!(state(&c, &f, &r), State::On);
+    }
+
+    #[test]
+    fn repair_adds_the_tray_arg_to_an_enabled_shortcut_in_place() {
+        let mut f = Folder {
+            link: Some(link(EXE, "")),
+            ..Default::default()
+        };
+        let a = Reg {
+            v: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(repair_tray_arg(&ctx(), &mut f, &a), Ok(Outcome::Changed));
+        assert_eq!(f.link, Some(link(EXE, TRAY_ARG)));
+        assert_eq!((f.writes, a.writes), (1, 0));
+        // Idempotent.
+        assert_eq!(repair_tray_arg(&ctx(), &mut f, &a), Ok(Outcome::Unchanged));
+        assert_eq!(f.writes, 1);
+    }
+
+    #[test]
+    fn repair_leaves_disabled_removed_missing_and_foreign_alone() {
+        for (l, v) in [
+            (Some(link(EXE, "")), Some(false)),  // disabled
+            (Some(link(EXE, "")), None),         // no approval value
+            (None, Some(true)),                  // removed
+            (None, None),                        // missing
+            (Some(link(OTHER, "")), Some(true)), // foreign target
+        ] {
+            let mut f = Folder {
+                link: l.clone(),
+                ..Default::default()
+            };
+            let a = Reg {
+                v,
+                ..Default::default()
+            };
+            assert_eq!(repair_tray_arg(&ctx(), &mut f, &a), Ok(Outcome::Unchanged));
+            assert_eq!((f.link, f.writes, a.writes), (l, 0, 0));
+        }
+    }
+
+    #[test]
+    fn repair_skips_a_lab_run() {
+        let mut f = Folder {
+            link: Some(link(EXE, "")),
+            ..Default::default()
+        };
+        let a = Reg {
+            v: Some(true),
+            ..Default::default()
+        };
+        let lab = Context {
+            overridden: true,
+            ..ctx()
+        };
+        assert_eq!(
+            repair_tray_arg(&lab, &mut f, &a),
+            Ok(Outcome::SkippedLabRun)
+        );
+        assert_eq!(f.writes, 0);
     }
 }

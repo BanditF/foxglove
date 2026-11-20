@@ -135,6 +135,76 @@ pub fn handoff<C: super::hub_fact::Connect>(
     start
 }
 
+/// The longest a `--tray` start waits for Hideout's answer (sign-in hand-over, slice 3).
+pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What a start does before the check, from the `[signin]` setting (a pure table).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    /// Today's start, no wait: not a `--tray` start, or Hideout was not said to start Foxglove.
+    No,
+    /// Hideout starts Foxglove and its exe is there: wait for its answer, at most [`WAIT_LIMIT`].
+    ForHideout,
+    /// The setting is on but the recorded `hideout.exe` is gone: forget it, no wait.
+    ForgetAndStart,
+}
+
+/// The wait decision: only a `--tray` start, only with the flag, only with the recorded exe.
+pub fn wait_plan(launch: Launch, starts_me: bool, exe_present: bool) -> Wait {
+    match (launch, starts_me, exe_present) {
+        (Launch::Tray, true, true) => Wait::ForHideout,
+        (Launch::Tray, true, false) => Wait::ForgetAndStart,
+        _ => Wait::No,
+    }
+}
+
+/// The hand-over event (a kernel event on Windows; a fake in tests).
+pub trait Answer {
+    /// True when Hideout answered within `limit`.
+    fn wait(&self, limit: std::time::Duration) -> bool;
+}
+
+/// How the wait ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waited {
+    Answered(std::time::Duration),
+    TimedOut,
+}
+
+/// Waits on `event` at most [`WAIT_LIMIT`]; `now` is the clock (injected for tests).
+pub fn wait_for(event: &dyn Answer, now: impl Fn() -> std::time::Instant) -> Waited {
+    let t0 = now();
+    if event.wait(WAIT_LIMIT) {
+        Waited::Answered(now().saturating_duration_since(t0))
+    } else {
+        Waited::TimedOut
+    }
+}
+
+/// `4.2 s`: the "waited" figure of the log lines.
+pub fn secs(d: std::time::Duration) -> String {
+    format!("{:.1} s", d.as_secs_f64())
+}
+
+pub const LOG_WAITING: &str = "sign-in: Hideout starts Foxglove; waiting up to 30 s for it";
+
+pub fn gone_line(exe: &std::path::Path) -> String {
+    format!(
+        "sign-in: the recorded Hideout ({}) is gone; starting on its own and forgetting it",
+        exe.display()
+    )
+}
+
+#[cfg(windows)]
+struct Event(hideout_acl::signin_event::SignInEvent);
+
+#[cfg(windows)]
+impl Answer for Event {
+    fn wait(&self, limit: std::time::Duration) -> bool {
+        self.0.wait(limit)
+    }
+}
+
 /// The launch kind from this process's flags.
 pub fn launch_of(module: bool, tray: bool) -> Launch {
     if module {
@@ -165,6 +235,45 @@ pub fn at_startup() -> bool {
         if launch == Launch::Module {
             return false;
         }
+        // Hideout starts Foxglove at sign-in (remembered from its fact): wait for its answer first.
+        let settings = super::store::section("core", "signin")
+            .try_load::<super::signin_flag::SigninSettings>()
+            .unwrap_or_default();
+        let exe_present = settings
+            .hideout_exe
+            .as_deref()
+            .is_some_and(|p| super::signin_flag::usable_exe(p, |p| p.try_exists().unwrap_or(false)));
+        let waited = match wait_plan(launch, settings.hideout_starts_me, exe_present) {
+            Wait::No => None,
+            Wait::ForgetAndStart => {
+                let exe = settings.hideout_exe.clone().unwrap_or_default();
+                super::app_log::early(&gone_line(&exe));
+                super::signin_flag::forget();
+                None
+            }
+            Wait::ForHideout => match hideout_acl::signin_event::SignInEvent::open() {
+                Ok(ev) => {
+                    super::app_log::early(LOG_WAITING);
+                    Some(wait_for(&Event(ev), std::time::Instant::now))
+                }
+                Err(e) => {
+                    super::app_log::early(&format!(
+                        "sign-in: the hand-over event could not be opened ({e}); starting on its own"
+                    ));
+                    None
+                }
+            },
+        };
+        if waited == Some(Waited::TimedOut) {
+            // No answer in 30 s: start on its own, without asking a hub that is not answering.
+            super::signin_counts::note(super::signin_counts::Kind::Timeout);
+            super::app_log::early(super::signin_counts::LOG_TIMEOUT);
+            return false;
+        }
+        let waited = match waited {
+            Some(Waited::Answered(d)) => Some(d),
+            _ => None,
+        };
         let pipe = foxglove_plugin_host::pipe::name();
         let hub = super::one_owner::log_for(&pipe, foxglove_plugin::owner::Expect::HIDEOUT);
         let start = handoff(
@@ -176,7 +285,7 @@ pub fn at_startup() -> bool {
         if let Start::DeferToHub { show } = start {
             if launch == Launch::Tray {
                 super::signin_counts::note(super::signin_counts::Kind::Deferred);
-                super::app_log::early(super::signin_counts::LOG_DEFERRED);
+                super::app_log::early(&super::signin_counts::deferred_line(waited));
             } else {
                 super::app_log::early(&format!(
                     "Foxglove: Hideout already runs Foxglove as its app; exiting{}",
@@ -190,15 +299,11 @@ pub fn at_startup() -> bool {
             return true;
         }
         // Hideout starts Foxglove at sign-in, yet this copy starts on its own: the backup ran.
-        if launch == Launch::Tray
-            && super::store::section("core", "signin")
-                .try_load::<super::signin_flag::SigninSettings>()
-                .unwrap_or_default()
-                .hideout_starts_me
-        {
+        if launch == Launch::Tray && settings.hideout_starts_me && exe_present {
             super::signin_counts::note(super::signin_counts::Kind::OnItsOwn);
             super::app_log::early(&super::signin_counts::on_its_own_line(
                 "not running as an app",
+                waited,
             ));
         }
     }
@@ -271,6 +376,72 @@ mod tests {
         assert_eq!(orphaned(true, false, true), Orphan::Nothing);
         assert_eq!(orphaned(true, true, false), Orphan::Stay);
         assert_eq!(orphaned(false, false, false), Orphan::Nothing);
+    }
+
+    struct Fake {
+        answers: bool,
+        asked: std::cell::Cell<Option<std::time::Duration>>,
+    }
+    impl Answer for Fake {
+        fn wait(&self, limit: std::time::Duration) -> bool {
+            self.asked.set(Some(limit));
+            self.answers
+        }
+    }
+
+    #[test]
+    fn only_a_tray_start_with_the_flag_and_the_exe_waits() {
+        for l in [Launch::Tray, Launch::Window, Launch::Module] {
+            for starts in [false, true] {
+                for exe in [false, true] {
+                    let want = match (l, starts, exe) {
+                        (Launch::Tray, true, true) => Wait::ForHideout,
+                        (Launch::Tray, true, false) => Wait::ForgetAndStart,
+                        _ => Wait::No,
+                    };
+                    assert_eq!(wait_plan(l, starts, exe), want, "{l:?} {starts} {exe}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_wait_is_bounded_at_30_seconds() {
+        assert_eq!(WAIT_LIMIT, std::time::Duration::from_secs(30));
+        let ev = Fake { answers: false, asked: Default::default() };
+        assert_eq!(wait_for(&ev, std::time::Instant::now), Waited::TimedOut);
+        assert_eq!(ev.asked.get(), Some(WAIT_LIMIT));
+        let ev = Fake { answers: true, asked: Default::default() };
+        assert!(matches!(
+            wait_for(&ev, std::time::Instant::now),
+            Waited::Answered(_)
+        ));
+    }
+
+    #[test]
+    fn the_wait_lines_are_exact() {
+        assert_eq!(
+            LOG_WAITING,
+            "sign-in: Hideout starts Foxglove; waiting up to 30 s for it"
+        );
+        assert_eq!(
+            gone_line(std::path::Path::new(r"C:\H\hideout.exe")),
+            r"sign-in: the recorded Hideout (C:\H\hideout.exe) is gone; starting on its own and forgetting it"
+        );
+        assert_eq!(secs(std::time::Duration::from_millis(4200)), "4.2 s");
+    }
+
+    #[test]
+    fn the_wait_sits_before_the_single_instance_claim_and_before_the_check() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/foxglove/signin_handoff.rs"),
+        )
+        .unwrap();
+        let body = &src[src.find("pub fn at_startup").unwrap()..src.find("#[cfg(test)]").unwrap()];
+        let sandbox = body.find("test_sandbox()").expect("sandbox guard");
+        let wait = body.find("wait_for(").expect("wait");
+        let check = body.find("let start = handoff(").expect("check");
+        assert!(sandbox < wait && wait < check, "guard, then wait, then the check");
     }
 
     use super::super::hub_fact::{Connect, Ends, Refused};
