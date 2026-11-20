@@ -78,9 +78,17 @@ pub fn paused_by(who: &str) -> String {
 pub fn press_play(engine: &str) -> String {
     format!("Press Play in {engine}.")
 }
+/// The text with its first letter capitalised, for the start of a sentence ("an app" -> "An app").
+pub fn sentence_start(text: &str) -> String {
+    let mut c = text.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
 /// "<wallpaper app> isn't running."
 pub fn isnt_running(engine: &str) -> String {
-    format!("{engine} isn't running.")
+    format!("{} isn't running.", sentence_start(engine))
 }
 /// "Resumed. Arete can pause them again."
 pub fn resumed(who: &str) -> String {
@@ -731,7 +739,7 @@ fn wallpaper_section(w: &Wallpaper) -> Value {
             After::Resumed(_) if w.full_screen => {
                 format!("Resumed. {FULL_SCREEN_SUB}")
             }
-            After::Resumed(names) => resumed(&holder_words(names)),
+            After::Resumed(names) => resumed(&sentence_start(&holder_words(names))),
             After::Stopped(name) => stopped(&match name {
                 Some(n) => cut_to(n, NAME_CUT),
                 None => "An app".into(),

@@ -288,6 +288,11 @@ impl Leases {
         self.we_paused
     }
 
+    /// Leases are live but hold nothing: Wallpaper Engine quit and came back playing.
+    pub fn pause_stale(&self) -> bool {
+        self.restarted && !self.live.is_empty()
+    }
+
     /// The names of the local holders (not the hub's callers), in start order, each once, for
     /// the hub's `lease.holders` (contract 1.21): the hub can't see these callers.
     pub fn local_names(&self) -> Vec<String> {
@@ -533,13 +538,16 @@ mod tests {
         assert!(!l.engine_gone(), "nothing of ours to end");
         let (a, _) = l.pause(&mut &mut f, 1, "a", false).unwrap();
         let (b, _) = l.pause(&mut &mut f, 1, "b", false).unwrap();
+        assert!(!l.pause_stale());
         assert!(l.engine_gone());
+        assert!(l.pause_stale(), "live leases that hold nothing");
         assert!(!l.paused_by_lease());
         assert!(!l.engine_gone(), "once");
         assert_eq!(l.count(), 2);
         let e = l.release(&mut &mut f, 1, &a, false).unwrap();
         assert_eq!(e.why, Some("held"));
         let e = l.release(&mut &mut f, 1, &b, false).unwrap();
+        assert!(!l.pause_stale());
         assert_eq!((e.played, e.why, e.last), (false, Some("restarted"), true));
         assert_eq!(
             f.calls,

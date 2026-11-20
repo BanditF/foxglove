@@ -73,6 +73,16 @@ fn a_stopped_app_is_named_only_when_it_was_the_last_and_stopped() {
 }
 
 #[test]
+fn a_holder_leaving_while_others_stay_is_not_a_stop() {
+    let mut t = Tracker::default();
+    let t0 = Instant::now();
+    t.update(&names(&["A", "B"]), true, true, false, false, t0);
+    assert!(t.shrank(&names(&["B"]), true));
+    assert!(!t.shrank(&names(&["A", "B"]), true));
+    assert!(!t.shrank(&[], false), "the last one going is the stop");
+}
+
+#[test]
 fn a_stop_hint_is_used_once_and_goes_stale() {
     let t0 = Instant::now();
     holder_stopped(t0);

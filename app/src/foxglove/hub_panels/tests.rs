@@ -928,6 +928,11 @@ fn the_after_lines_and_the_quit_line() {
         ..Wallpaper::default()
     };
     assert_eq!(
+        says(after(After::Resumed(vec![])))[1],
+        "Resumed. An app can pause them again.",
+        "a sentence starts with a capital"
+    );
+    assert_eq!(
         says(after(After::Resumed(vec!["Arete".into()]))),
         [NONE_PAUSING, "Resumed. Arete can pause them again."]
     );

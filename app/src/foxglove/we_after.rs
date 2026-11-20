@@ -35,6 +35,11 @@ pub fn take_stop(now: Instant) -> bool {
     at.is_some_and(|t| now.saturating_duration_since(t) <= HINT_LIVES)
 }
 
+/// Drops a stop hint (a holder stopped, but others still hold the pause: not the last).
+pub fn clear_stop() {
+    HINT.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
 /// What the section showed when its line began; a change ends the line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Seen {
@@ -60,6 +65,12 @@ impl Tracker {
     /// The user pressed Resume while `names` held the wallpapers.
     pub fn resume_pressed(&mut self, names: &[String], now: Instant) {
         self.pending = Some((names.to_vec(), now));
+    }
+
+    /// Fewer apps hold it than at the last update, and some still do: whoever stopped was not the
+    /// last, so a stop hint belongs to no "stopped" line.
+    pub fn shrank(&self, names: &[String], held: bool) -> bool {
+        held && self.was_held && names.len() < self.prev.len()
     }
 
     /// The section's facts now; the line to show, if any.

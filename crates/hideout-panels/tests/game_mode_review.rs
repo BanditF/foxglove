@@ -461,3 +461,90 @@ fn renders_the_wallpaper_pause_section_for_review() {
         }
     }
 }
+
+/// Review images for the section's edge cases (#1142): a long unbroken name, a right-to-left
+/// name, and the plain Playing / Paused by you / Not running rows, built from the app's vector
+/// states with the name or words swapped in. Light and dark, 720 and 360 px.
+#[test]
+fn renders_the_wallpaper_pause_edge_cases_for_review() {
+    let vectors: Value = serde_json::from_str(FOX_VECTORS).unwrap();
+    let text = FOX
+        .replace("@VERSION@", "0.2.0")
+        .replace("@EXE@", "C:/x/foxglove.exe");
+    let state = |name: &str| -> Value {
+        vectors["states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["state"] == name)
+            .unwrap_or_else(|| panic!("no state {name}"))["panels"]
+            .clone()
+    };
+    let long = "n".repeat(32);
+    let rtl =
+        "\u{5e2}\u{5e8}\u{5d1}\u{5d9}\u{5ea} \u{627}\u{644}\u{639}\u{631}\u{628}\u{64a}\u{629}";
+    let swapped = |from: &str, to: &str| -> Value {
+        serde_json::from_str(
+            &state("Wallpapers paused by Arete")
+                .to_string()
+                .replace(from, to),
+        )
+        .unwrap()
+    };
+    let cases: Vec<(&str, Value)> = vec![
+        ("long-name", swapped("Arete", &long)),
+        ("rtl-name", swapped("Arete", rtl)),
+        ("playing", state("Wallpapers: no app is pausing them")),
+        (
+            "paused-by-you",
+            state("Wallpapers paused by you, an app waiting too"),
+        ),
+        (
+            "not-running",
+            state("Wallpapers: the wallpaper app quit during a pause"),
+        ),
+    ];
+    for (name, panels) in cases {
+        let mut host = PanelHost::default();
+        host.set_manifest(Module::parse(&text, &Context::default()).unwrap());
+        host.set_fact("module.foxglove.state", json!("running"));
+        let params: Register =
+            serde_json::from_value(json!({"instance": "f1", "panels": panels})).unwrap();
+        let declared: Vec<String> = serde_json::from_value(vectors["declared"].clone()).unwrap();
+        let rej = host.register_with("foxglove", "Foxglove", Some(&declared), Some(&[]), &params);
+        assert!(rej.is_empty(), "{rej:?}");
+        for ((size, w), (theme, dark)) in [("wide", 720u32), ("narrow", 360u32)]
+            .into_iter()
+            .flat_map(|s| [(s, ("light", false)), (s, ("dark", true))])
+        {
+            let h = 700u32;
+            let Some(px) = rasterise(w, h, |ctx| {
+                ctx.set_visuals(if dark {
+                    egui::Visuals::dark()
+                } else {
+                    egui::Visuals::light()
+                });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let key = PanelKey::new("foxglove", "page");
+                        panel_ui(&mut host, ui, &key);
+                        page_sections_ui(&mut host, ui, &key);
+                    });
+                });
+            }) else {
+                eprintln!("no system font; review images skipped");
+                return;
+            };
+            println!(
+                "{}",
+                save_png(
+                    &format!("we-pause-edge-{name}-{size}-{theme}.png"),
+                    w,
+                    h,
+                    px
+                )
+                .display()
+            );
+        }
+    }
+}

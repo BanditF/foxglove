@@ -26,6 +26,8 @@ pub struct ViewState {
     /// A `value` node that takes the keyboard focus at its next draw (a button's `focus_after`,
     /// pressed: the button is gone, so a screen reader lands on the line that says what happened).
     pub refocus: Option<String>,
+    /// The frame `refocus` was asked in: a line that is not drawn within a few frames drops it.
+    pub refocus_frame: u64,
     /// Set when the panel was (re)built: the next draw pushes the scroll offsets back into egui.
     pub(crate) restore: bool,
 }

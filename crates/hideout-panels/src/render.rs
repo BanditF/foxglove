@@ -109,6 +109,11 @@ fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, body: Body) -> 
     if let Some((panel, view, facts, assets, keys, streams)) = host.parts(key) {
         let running = panel.state == PanelState::Live
             || (swap_grace && panel.state == PanelState::Greyed("updating".into()));
+        if view.refocus.is_some()
+            && ui.ctx().cumulative_frame_nr() > view.refocus_frame.saturating_add(3)
+        {
+            view.refocus = None;
+        }
         let mut d = Draw {
             key,
             view,
@@ -442,7 +447,7 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
             ui.label(toned(ui, &p, RichText::new(text)));
         }
         "value" => {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if !label.is_empty() {
                     ui.label(RichText::new(&label).weak());
                 }
@@ -456,14 +461,31 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 }
                 let text = RichText::new(value);
                 let text = toned(ui, &p, text.strong().size(18.0));
+                // A long word (an app's name, untrusted) breaks anywhere rather than run off the page.
+                let text = {
+                    use egui::text::LayoutJob;
+                    let mut job = LayoutJob::default();
+                    text.append_to(
+                        &mut job,
+                        ui.style(),
+                        egui::FontSelection::Default,
+                        egui::Align::LEFT,
+                    );
+                    job.wrap.break_anywhere = true;
+                    job
+                };
                 // A named value is reachable by a screen reader (focusable, not clickable);
                 // an unnamed one stays plain text.
                 // `live`: a status line, polite, announced when its words change (#1142).
                 let live = p.get("live").and_then(Value::as_bool).unwrap_or(false);
                 let r = if s(&p, "name").is_some() || live {
-                    ui.add(egui::Label::new(text).sense(egui::Sense::focusable_noninteractive()))
+                    ui.add(
+                        egui::Label::new(text)
+                            .wrap_mode(egui::TextWrapMode::Wrap)
+                            .sense(egui::Sense::focusable_noninteractive()),
+                    )
                 } else {
-                    ui.label(text)
+                    ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Wrap))
                 };
                 // A declared accessible name beats the visible words ("Graphics card
                 // temperature, 64 degrees Celsius" for "64 °C").
@@ -544,8 +566,12 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                     (Some(action), _) => d.go.push(Go::Action { module, action }),
                     (None, Some(target)) => d.go.push(Go::Open { module, target }),
                     (None, None) => {
-                        if let Some(to) = s(&p, "focus_after") {
+                        // Only a keyboard press moves the focus (a mouse click leaves it).
+                        if let (Some(to), true) =
+                            (s(&p, "focus_after"), button.has_focus() || pressed)
+                        {
                             d.view.refocus = Some(to.to_string());
+                            d.view.refocus_frame = ui.ctx().cumulative_frame_nr();
                         }
                         d.emit(&n.id, "click", Value::Null, false)
                     }

@@ -831,6 +831,9 @@ fn wallpaper_now(holders: &[String]) -> Option<super::hub_panels::Wallpaper> {
         super::screen_glow::full_screen_now(),
         super::screen_glow::FullScreen::Nothing
     );
+    // Wallpaper Engine quit during a pause and came back playing: the leases are still live
+    // but hold nothing, so the page names no holder and offers no Resume.
+    let stale = super::wallpaper_sync::pause_stale_now();
     Some(super::hub_panels::Wallpaper {
         running,
         user_paused: super::live_feed::wallpaper_paused(),
@@ -838,8 +841,12 @@ fn wallpaper_now(holders: &[String]) -> Option<super::hub_panels::Wallpaper> {
         engine: super::wallpaper_engine::NAME.to_string(),
         after: None,
         full_screen,
-        holders: holders.to_vec(),
-        reasons: super::wallpaper_sync::reasons_now(),
+        holders: if stale { Vec::new() } else { holders.to_vec() },
+        reasons: if stale {
+            Vec::new()
+        } else {
+            super::wallpaper_sync::reasons_now()
+        },
         allow: Some(super::we_panel::inputs_now(running)),
     })
 }
@@ -1014,6 +1021,9 @@ impl<W: Write> Link<W> {
         let mut wallpaper = (self.wallpaper)(&self.hub.holders);
         if let Some(w) = wallpaper.as_mut() {
             let now = Instant::now();
+            if self.after.shrank(&w.holders, w.held()) {
+                super::we_after::clear_stop();
+            }
             let stop = !w.held() && super::we_after::take_stop(now);
             w.after = self
                 .after
