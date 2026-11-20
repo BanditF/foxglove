@@ -2022,6 +2022,8 @@ name = "hideout"
 version = "0.1.0"
 dependencies = [
  "foxglove-plugin",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
  "foxglove-plugin-trust",
  "hideout-acl",
  "hideout-appwatch",
