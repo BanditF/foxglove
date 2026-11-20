@@ -506,6 +506,7 @@ pub fn list(reg: &hideout_registry::Registry) -> Vec<hideout_shell::modules_list
             version: m.version.clone(),
             enabled: reg.hub.enabled(id),
             adopted: m.source == hideout_registry::inventory::ADOPTED,
+            dev_folder: reg.dev_folder_of(id),
             dev: reg.dev_folder_of(id).is_some(),
         })
         .collect();
@@ -692,6 +693,7 @@ mod tests {
         let inst = |id: &str, name: &str| Installed {
             adopted: false,
             dev: false,
+            dev_folder: None,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),
@@ -730,6 +732,7 @@ mod tests {
         let inst = |id: &str, name: &str| Installed {
             adopted: false,
             dev: false,
+            dev_folder: None,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),
@@ -842,6 +845,7 @@ mod tests {
             version: "1.0.0".into(),
             enabled: false,
             dev: false,
+            dev_folder: None,
         };
         let log = Log::default();
         let mut page = ModulesPage {
@@ -882,6 +886,7 @@ mod tests {
         let inst = |id: &str| Installed {
             adopted: false,
             dev: false,
+            dev_folder: None,
             id: id.into(),
             name: id.into(),
             version: "1.0.0".into(),
@@ -936,6 +941,7 @@ mod tests {
         let inst = |id: &str, name: &str| Installed {
             adopted: false,
             dev: false,
+            dev_folder: None,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),
@@ -1001,6 +1007,7 @@ mod tests {
             installed: vec![Installed {
                 adopted: false,
                 dev: false,
+                dev_folder: None,
                 id: "m.a".into(),
                 name: "Art".into(),
                 version: "0.5.0".into(),
@@ -1047,6 +1054,7 @@ mod tests {
         let inst = |id: &str, name: &str, enabled: bool| Installed {
             adopted: false,
             dev: false,
+            dev_folder: None,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),
@@ -1101,6 +1109,7 @@ mod tests {
             version: "1.0.0".into(),
             enabled: true,
             dev: false,
+            dev_folder: None,
         };
         let log = Log::default();
         let mut page = ModulesPage {
@@ -1167,6 +1176,7 @@ mod tests {
             version: "1.0.0".into(),
             enabled: true,
             dev: false,
+            dev_folder: None,
         };
         let fresh = Fresh::default();
         let mut page = ModulesPage {
@@ -1218,6 +1228,7 @@ mod tests {
                 version: "1.0.0".into(),
                 enabled: true,
                 dev: false,
+                dev_folder: None,
             }],
             facts: None,
             actions: None,

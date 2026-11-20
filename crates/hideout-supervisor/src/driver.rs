@@ -260,6 +260,9 @@ struct Inner {
     /// still a module process for the caller check (#1178), until the job is empty.
     retired: Mutex<Vec<Arc<Job>>>,
     expected: Arc<Mutex<BTreeMap<String, Expected>>>,
+    /// The program hash of each app's latest start, kept after it ends: a rebuild that wrote the
+    /// same bytes again is not a new build, even while the app is stopped after crashes.
+    last_started: Mutex<BTreeMap<String, String>>,
     records: Mutex<Instances>,
     next_instance: AtomicU64,
     nudge: Mutex<Sender<()>>,
@@ -458,6 +461,7 @@ impl Supervisor {
             live: Mutex::new(BTreeMap::new()),
             retired: Mutex::new(Vec::new()),
             expected: expected.clone(),
+            last_started: Mutex::new(BTreeMap::new()),
             records: Mutex::new(Instances::default()),
             next_instance: AtomicU64::new(unix_ms()),
             nudge: Mutex::new(nudge),
@@ -792,6 +796,7 @@ impl Supervisor {
         }
         crate::sandbox::delete_profile(id);
         self.0.expected.lock().unwrap().remove(id);
+        self.0.last_started.lock().unwrap().remove(id);
         self.0.withdrawals.lock().unwrap().remove(id);
         let recorded = self.0.records.lock().unwrap().modules.remove(id).is_some();
         if recorded {
@@ -1058,13 +1063,7 @@ impl Supervisor {
     /// Every refusal is one log line and nothing else: a running copy is never stopped for a
     /// build Hideout would not start.
     pub fn rebuilt(&self, id: &str, exe_sha256: &str) {
-        let running = self
-            .0
-            .expected
-            .lock()
-            .unwrap()
-            .get(id)
-            .map(|e| e.sha256.clone());
+        let running = self.0.last_started.lock().unwrap().get(id).cloned();
         let gate = Registry::open_from_env(&self.0.home)
             .map_err(|e| format!("registry not read: {e:?}"))
             .and_then(|reg| {
@@ -1462,7 +1461,15 @@ impl Supervisor {
                         l.kill(1);
                     }
                 }
-                Cmd::Publish { key, value } => self.0.hub.act(|r| r.publish(&key, value)),
+                // The policy has no clock: a `rebuilt` true becomes the local time of day.
+                Cmd::Publish { key, value } => {
+                    let value = if key.ends_with(".rebuilt") && value == Value::Bool(true) {
+                        Value::String(local_clock())
+                    } else {
+                        value
+                    };
+                    self.0.hub.act(|r| r.publish(&key, value))
+                }
                 Cmd::Notify {
                     id,
                     title,
@@ -1724,6 +1731,11 @@ impl Supervisor {
             .started()
             .map_err(|e| log::warn!("supervisor: {id}: start time of pid {pid}: {e}"))
             .ok();
+        self.0
+            .last_started
+            .lock()
+            .unwrap()
+            .insert(id.into(), sha256.clone());
         self.0.expected.lock().unwrap().insert(
             id.into(),
             Expected {
@@ -1855,6 +1867,11 @@ impl Supervisor {
             r.set_token(id, &rec.token);
             Vec::new()
         });
+        self.0
+            .last_started
+            .lock()
+            .unwrap()
+            .insert(id.into(), rec.sha256.clone());
         self.0.expected.lock().unwrap().insert(
             id.into(),
             Expected {
@@ -2282,6 +2299,23 @@ pub fn revoke_items_in(
     let left = reg.revoke_items(id, items).map_err(|e| format!("{e:?}"))?;
     log::info!("permissions: {id}: turned off {items:?} by user");
     Ok(left)
+}
+
+/// The PC's local time of day as "20:41", for the row's "Rebuilt and restarted at" line.
+#[cfg(windows)]
+fn local_clock() -> String {
+    let mut t = std::mem::MaybeUninit::<windows_sys::Win32::Foundation::SYSTEMTIME>::zeroed();
+    // SAFETY: GetLocalTime fills the struct it is given and cannot fail.
+    let t = unsafe {
+        windows_sys::Win32::System::SystemInformation::GetLocalTime(t.as_mut_ptr());
+        t.assume_init()
+    };
+    format!("{:02}:{:02}", t.wHour, t.wMinute)
+}
+
+#[cfg(not(windows))]
+fn local_clock() -> String {
+    String::new()
 }
 
 #[cfg(test)]

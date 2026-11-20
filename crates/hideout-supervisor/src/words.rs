@@ -583,6 +583,128 @@ pub fn every_string() -> Vec<String> {
     v
 }
 
+// ---- Rebuilds of an app in a dev folder (UX plan: 0-click rebuild, section 3) ------------------
+// The noun is "app". Never "module", "hash", "enrol" or "grant" in these lines.
+
+/// The Dev chip's tooltip and accessible description, for the dev folder `folder`.
+pub fn dev_chip_said(folder: &str) -> String {
+    format!("Dev build from {folder}. Rebuilds keep what you allowed.")
+}
+
+/// The Dev chip's description when the folder is not known.
+pub const DEV_CHIP_SAID: &str = "Dev build. Rebuilds keep what you allowed.";
+
+/// The row's state line after a rebuild restart, until the next state change. `at` is the local
+/// time of day, "20:41".
+pub fn rebuilt_row(at: &str) -> String {
+    format!("On \u{b7} Rebuilt and restarted at {at}")
+}
+
+/// What a screen reader is told, once per rebuild restart (polite, only while the window is
+/// open).
+pub fn rebuilt_said(name: &str) -> String {
+    format!("{name} rebuilt and restarted")
+}
+
+/// A rebuild is carried but waits for the end of a game.
+pub const NEW_BUILD_HELD_FOR_GAME: &str = "New build ready. Restarts after your game.";
+/// A rebuild is carried, and the "Restart apps after a rebuild" switch is off.
+pub const NEW_BUILD_READY: &str = "New build ready";
+/// The extra line under a dev app that stopped after crashes.
+pub const REBUILD_STARTS_IT: &str = "Rebuild it and Hideout starts the new build.";
+/// The accessible name of the Restart button of a [`NEW_BUILD_READY`] row.
+pub fn restart_with_new_build(name: &str) -> String {
+    format!("Restart {name} with the new build")
+}
+
+/// The new build was written but looks unfinished, and an earlier copy runs.
+pub fn build_unfinished_running(name: &str) -> String {
+    format!("The new build of {name} looks unfinished. The earlier one keeps running.")
+}
+/// The same, with nothing running.
+pub fn build_unfinished_stopped(name: &str) -> String {
+    format!("The new build of {name} looks unfinished. Hideout starts it when the build is done.")
+}
+/// The new build could not be read at all; the row's button is [`TRY_AGAIN`].
+pub fn build_unreadable(name: &str) -> String {
+    format!("Hideout couldn't read the new build of {name}. Build it again, or Try again.")
+}
+/// The new build is not carried (a [`not_carried`] line follows in Details).
+pub fn build_needs_ok(name: &str) -> String {
+    format!("The new build of {name} needs your OK")
+}
+
+fn more_things(n: usize) -> String {
+    if n == 1 {
+        "1 more thing".into()
+    } else {
+        format!("{n} more things")
+    }
+}
+
+/// The header when a rebuilt app asks for more than it was allowed: `n` new items.
+pub fn build_asks_for_more(name: &str, n: usize) -> String {
+    format!("{name}'s new build asks for {}", more_things(n))
+}
+/// Its second line.
+pub const RUNS_WITH_WHAT_YOU_ALLOWED: &str = "It runs with what you allowed until then.";
+
+/// What happened to a new build, for the Details history line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewBuild {
+    /// Carried, nothing new asked.
+    Kept,
+    /// Carried; `n` new items wait for the user.
+    AsksMore(usize),
+    Unfinished,
+    Unreadable,
+    HeldForOk,
+    StoppedAfterCrashes,
+}
+
+/// The Details history line for a new build at `when` ("19 Nov 2026, 20:41").
+pub fn new_build_line(when: &str, what: NewBuild) -> String {
+    let head = format!("New build on {when}");
+    match what {
+        NewBuild::Kept => format!("{head}. What you allowed stayed."),
+        NewBuild::AsksMore(n) => {
+            let wait = if n == 1 { "that waits" } else { "those wait" };
+            format!("{head}. It asks for {}; {wait} for you.", more_things(n))
+        }
+        NewBuild::Unfinished => format!("{head}, not used: it looked unfinished."),
+        NewBuild::Unreadable => format!("{head}, not used: Hideout couldn't read it."),
+        NewBuild::HeldForOk => format!("{head}, held for your OK."),
+        NewBuild::StoppedAfterCrashes => format!("{head} stopped after 5 crashes."),
+    }
+}
+
+/// Why a new build is not carried (the row 9 reason lines).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotCarried {
+    DevModeOff,
+    FolderGone,
+    OthersCanWrite,
+    AllowedFromCommandLine,
+    OutsideDevFolders,
+}
+
+/// The one Details line for [`NotCarried`]; `folder` is the dev folder where it applies.
+pub fn not_carried(why: NotCarried, folder: &str) -> String {
+    match why {
+        NotCarried::DevModeOff => "Developer mode is off, so Hideout asks again.".into(),
+        NotCarried::FolderGone => {
+            format!("{folder} is no longer a dev folder, so Hideout asks again.")
+        }
+        NotCarried::OthersCanWrite => format!(
+            "Other accounts on this PC can change {folder} or this app, so Hideout no longer trusts its builds."
+        ),
+        NotCarried::AllowedFromCommandLine => "This app was allowed from the command line. Allow it here once to keep its OK over rebuilds.".into(),
+        NotCarried::OutsideDevFolders => {
+            "This build is outside your dev folders, so Hideout asks again.".into()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,6 +852,88 @@ mod tests {
         assert_eq!(restarting_row(90, 2), "Restarting in 60 s (2 of 5)");
         for secs in 0..200 {
             assert!(!crash_bar("Art", secs, 1).0.contains(" 0 s"));
+        }
+    }
+
+    #[test]
+    fn the_rebuild_lines_read_as_the_plan_words_them() {
+        assert_eq!(
+            dev_chip_said("C:\\dev\\out"),
+            "Dev build from C:\\dev\\out. Rebuilds keep what you allowed."
+        );
+        assert_eq!(
+            rebuilt_row("20:41"),
+            "On \u{b7} Rebuilt and restarted at 20:41"
+        );
+        assert_eq!(rebuilt_said("Foxglove"), "Foxglove rebuilt and restarted");
+        assert_eq!(
+            build_asks_for_more("Foxglove", 1),
+            "Foxglove's new build asks for 1 more thing"
+        );
+        assert_eq!(
+            build_asks_for_more("Foxglove", 2),
+            "Foxglove's new build asks for 2 more things"
+        );
+        let at = "19 Nov 2026, 20:41";
+        assert_eq!(
+            new_build_line(at, NewBuild::Kept),
+            "New build on 19 Nov 2026, 20:41. What you allowed stayed."
+        );
+        assert_eq!(
+            new_build_line(at, NewBuild::AsksMore(2)),
+            "New build on 19 Nov 2026, 20:41. It asks for 2 more things; those wait for you."
+        );
+        assert_eq!(
+            new_build_line(at, NewBuild::AsksMore(1)),
+            "New build on 19 Nov 2026, 20:41. It asks for 1 more thing; that waits for you."
+        );
+        assert_eq!(
+            new_build_line(at, NewBuild::StoppedAfterCrashes),
+            "New build on 19 Nov 2026, 20:41 stopped after 5 crashes."
+        );
+    }
+
+    #[test]
+    fn the_rebuild_lines_use_the_house_noun_and_no_jargon() {
+        let mut all = vec![
+            dev_chip_said("D:\\out"),
+            DEV_CHIP_SAID.into(),
+            rebuilt_row("20:41"),
+            rebuilt_said("Foxglove"),
+            NEW_BUILD_HELD_FOR_GAME.into(),
+            NEW_BUILD_READY.into(),
+            REBUILD_STARTS_IT.into(),
+            restart_with_new_build("Foxglove"),
+            build_unfinished_running("Foxglove"),
+            build_unfinished_stopped("Foxglove"),
+            build_unreadable("Foxglove"),
+            build_needs_ok("Foxglove"),
+            build_asks_for_more("Foxglove", 3),
+            RUNS_WITH_WHAT_YOU_ALLOWED.into(),
+        ];
+        for w in [
+            NewBuild::Kept,
+            NewBuild::AsksMore(2),
+            NewBuild::Unfinished,
+            NewBuild::Unreadable,
+            NewBuild::HeldForOk,
+            NewBuild::StoppedAfterCrashes,
+        ] {
+            all.push(new_build_line("19 Nov 2026, 20:41", w));
+        }
+        for w in [
+            NotCarried::DevModeOff,
+            NotCarried::FolderGone,
+            NotCarried::OthersCanWrite,
+            NotCarried::AllowedFromCommandLine,
+            NotCarried::OutsideDevFolders,
+        ] {
+            all.push(not_carried(w, "D:\\out"));
+        }
+        for line in &all {
+            for bad in ["module", "hash", "enrol", "grant", "sha", "bound"] {
+                assert!(!line.to_lowercase().contains(bad), "{bad:?} in {line:?}");
+            }
         }
     }
 }
