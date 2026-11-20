@@ -92,7 +92,9 @@ fn strip_xml_comments(s: &str) -> String {
 /// sequence for fails loudly: whoever changes the installer adds its screens here.
 fn installer_clicks(wxs: &str) -> Vec<String> {
     let wxs = strip_xml_comments(wxs);
-    if wxs.contains(r#"<Dialog Id="HideoutInstallDlg""#) && wxs.contains(r#"<Control Id="LicenseAccepted""#) {
+    if wxs.contains(r#"<Dialog Id="HideoutInstallDlg""#)
+        && wxs.contains(r#"<Control Id="LicenseAccepted""#)
+    {
         // FR6: one page (tick I accept, Install; the license is a read-only button), then finish.
         vec![
             "installer: tick I accept the terms of the license".into(),
