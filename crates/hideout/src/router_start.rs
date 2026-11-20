@@ -181,6 +181,8 @@ pub fn start(
         Err(e) => log::warn!("router: registry not read ({e:?}); no modules"),
     }
     log::info!("router: {} module manifest(s) loaded", manifests.len());
+    // Foxglove is not an app of this hub: a copy waiting at sign-in is told at once.
+    crate::signin_signal::on_inventory(&manifests.iter().map(|m| m.id.clone()).collect::<Vec<_>>());
     // The panel host draws from every fact it may need: module states, `when` facts such as
     // `apps.seen.<name>`, and bindings. Facts that exist already come out first.
     let early = router.watch_facts(vec![String::new()]);
@@ -225,6 +227,7 @@ pub fn start(
     // The inventory watch starts at the end, once the supervisor runs (#1054).
     let gone = side.clone();
     for o in &early {
+        crate::signin_signal::on_event(o);
         side.on_router(o);
     }
     #[cfg(windows)]
@@ -285,6 +288,7 @@ pub fn start(
         .name("hideout-router-events".into())
         .spawn(move || {
             for event in rx {
+                crate::signin_signal::on_event(&event);
                 s.on_router(&event);
                 side.on_router(&event);
                 log::debug!("router: {event:?}");

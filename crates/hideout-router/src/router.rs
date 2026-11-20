@@ -1204,6 +1204,36 @@ impl Router {
         out
     }
 
+    /// The display names of the apps running now, and of those among them that were told
+    /// Hideout starts at sign-in. A told app remembers it (`[signin]`), so the second list is
+    /// what the next sign-in will do.
+    pub fn apps_at_sign_in(&self) -> (Vec<String>, Vec<String>) {
+        let mut now = Vec::new();
+        let mut told = Vec::new();
+        for (k, v) in &self.facts {
+            let Some(id) = k
+                .strip_prefix("module.")
+                .and_then(|r| r.strip_suffix(".state"))
+            else {
+                continue;
+            };
+            if v.as_str() != Some("running") {
+                continue;
+            }
+            let name = hideout_contract::module::display_name(
+                self.modules.get(id).map_or(id, |m| m.name.as_str()),
+                "An app",
+            );
+            if self.facts.get(&format!("module.{id}.starts_at_sign_in")) == Some(&json!(true)) {
+                told.push(name.clone());
+            }
+            now.push(name);
+        }
+        now.sort();
+        told.sort();
+        (now, told)
+    }
+
     /// How many wire faults (§8.1 frame-too-large) module `id` has caused; the supervisor counts
     /// each as one crash (§7.7).
     pub fn module_faults(&self, id: &str) -> u32 {

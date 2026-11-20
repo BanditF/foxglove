@@ -4,10 +4,7 @@
 //!
 //! Counters: `signin.deferred` (Hideout runs Foxglove as its app; this copy exited),
 //! `signin.on_its_own` (started on its own although Hideout starts Foxglove) and
-//! `signin.timeout` (no answer from Hideout in time; the wait itself is a later slice, so nothing
-//! counts it yet). Counts only; no path, token or secret is stored or logged.
-
-#![allow(dead_code)] // `Kind::Timeout` waits for the wait slice
+//! `signin.timeout` (no answer from Hideout within 30 s; counted by the wait in `signin_handoff`). Counts only; no path, token or secret is stored or logged.
 
 use serde::{Deserialize, Serialize};
 
@@ -51,11 +48,23 @@ impl Counts {
 pub const LOG_DEFERRED: &str = "sign-in: Hideout runs Foxglove as its app; this copy exits";
 pub const LOG_TIMEOUT: &str = "sign-in: no answer from Hideout in 30 s; starting on its own";
 
+/// ` (waited 4.2 s)` after a wait that Hideout answered; nothing for a start that did not wait.
+fn waited_suffix(waited: Option<std::time::Duration>) -> String {
+    waited.map_or_else(String::new, |d| {
+        format!(" (waited {})", super::signin_handoff::secs(d))
+    })
+}
+
+pub fn deferred_line(waited: Option<std::time::Duration>) -> String {
+    format!("{LOG_DEFERRED}{}", waited_suffix(waited))
+}
+
 /// `reason`: why Hideout does not run Foxglove (safe mode, stopped after crashes, waiting for an
 /// answer, runs on its own).
-pub fn on_its_own_line(reason: &str) -> String {
+pub fn on_its_own_line(reason: &str, waited: Option<std::time::Duration>) -> String {
     format!(
-        "sign-in: Hideout answered that it does not run Foxglove ({reason}); starting on its own"
+        "sign-in: Hideout answered that it does not run Foxglove ({reason}); starting on its own{}",
+        waited_suffix(waited)
     )
 }
 
@@ -177,9 +186,19 @@ mod tests {
             "sign-in: no answer from Hideout in 30 s; starting on its own"
         );
         assert_eq!(
-            on_its_own_line("safe mode"),
+            on_its_own_line("safe mode", None),
             "sign-in: Hideout answered that it does not run Foxglove (safe mode); starting on its own"
         );
+        let w = Some(std::time::Duration::from_millis(1100));
+        assert_eq!(
+            on_its_own_line("safe mode", w),
+            "sign-in: Hideout answered that it does not run Foxglove (safe mode); starting on its own (waited 1.1 s)"
+        );
+        assert_eq!(
+            deferred_line(Some(std::time::Duration::from_millis(4200))),
+            "sign-in: Hideout runs Foxglove as its app; this copy exits (waited 4.2 s)"
+        );
+        assert_eq!(deferred_line(None), LOG_DEFERRED);
     }
 
     #[test]

@@ -116,3 +116,20 @@ fn the_module_cannot_write_it() {
     assert_eq!(sends(&out, c)[0]["error"]["code"], 5, "{out:?}");
     assert_eq!(r.fact(KEY), Some(&json!(false)));
 }
+
+#[test]
+fn the_apps_line_gets_the_running_apps_by_name_and_follows_the_switch() {
+    let now = Instant::now();
+    let mut r = router();
+    assert_eq!(r.apps_at_sign_in(), (vec![], vec![]), "nothing runs");
+    ready(&mut r, now);
+    // Running, switch off: named as running, not as told.
+    assert_eq!(r.apps_at_sign_in(), (vec![M.to_string()], vec![]));
+    r.set_starts_at_sign_in(true);
+    assert_eq!(
+        r.apps_at_sign_in(),
+        (vec![M.to_string()], vec![M.to_string()])
+    );
+    r.set_starts_at_sign_in(false);
+    assert_eq!(r.apps_at_sign_in().1, Vec::<String>::new());
+}

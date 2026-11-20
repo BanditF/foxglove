@@ -120,6 +120,16 @@ pub fn hosted_note(ui: &mut egui::Ui, hosted: bool, switch_on: bool) {
     }
 }
 
+/// Forgets the flag and the exe (the recorded Hideout is gone). Written only when it was set.
+pub fn forget() {
+    let section = super::store::section(STORE_OWNER, SECTION);
+    if section.try_load::<SigninSettings>().unwrap_or_default() != SigninSettings::default() {
+        if let Err(e) = section.save(&SigninSettings::default()) {
+            eprintln!("Foxglove: sign-in hand-over: couldn't forget the hub: {e}");
+        }
+    }
+}
+
 /// The hub said `fact` (its exe is `hub_exe` while its process is alive).
 pub fn on_fact(fact: bool, hub_exe: Option<PathBuf>) {
     apply(

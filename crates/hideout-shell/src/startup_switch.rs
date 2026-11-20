@@ -3,7 +3,11 @@
 //!
 //! Rules (the user's, 11/18):
 //! - It is OFF by default and nothing turns it on: not the install, not the first run, not a
-//!   startup pass. [`crate::autostart::ensure`] is deliberately not called anywhere.
+//!   startup pass. [`crate::autostart::ensure`] is deliberately not called anywhere. The one
+//!   thing the startup pass does is [`Switch::repair_tray_arg`] (sign-in hand-over slice 3): a
+//!   `Hideout.lnk` that already starts this exe, is enabled, and lacks `--tray` gets that one
+//!   argument added in place. It never creates a shortcut, never re-enables a disabled or removed
+//!   one, never runs in a lab run or a hub that is not installed.
 //! - Turning it on needs the user's click on **Turn on** in the dialog this module opens
 //!   ([`Dialog`]). The only way to the on-write is [`UserOk`], which only
 //!   [`Dialog::turn_on`] makes, so no other code path can write an enabled state.
@@ -27,9 +31,22 @@ use crate::autostart::{self, Approval, Context, Outcome, StartupFolder, State};
 pub const HEADING: &str = "Start with Windows";
 pub const STATUS_OFF: &str = "Hideout does not start when you sign in to Windows.";
 pub const STATUS_ON: &str = "Hideout starts in the tray when you sign in to Windows.";
-/// Shown instead of [`STATUS_ON`] when at least one app runs in Hideout.
-pub const STATUS_ON_APPS: &str =
-    "Hideout starts in the tray when you sign in, and starts your apps: Foxglove.";
+/// Shown instead of [`STATUS_ON`] when at least one app has been told that Hideout starts at
+/// sign-in (it remembers that), so the line says what the next sign-in will do. `names` is
+/// [`join_names`] of those apps.
+pub fn status_on_apps(names: &str) -> String {
+    format!("Hideout starts in the tray when you sign in, and starts your apps: {names}.")
+}
+
+/// "A", "A and B", "A, B and C"; "your apps" when no name is known.
+pub fn join_names(names: &[String]) -> String {
+    match names {
+        [] => "your apps".to_string(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
 pub const STATUS_OFF_IN_WINDOWS: &str = "Off. Hideout does not start when you sign in. You can \
 turn it on here or in Windows Settings > Apps > Startup.";
 pub const STATUS_FOREIGN: &str = "Another Hideout shortcut is set to start when you sign in.";
@@ -43,9 +60,19 @@ pub const DIALOG_TITLE: &str = "Start Hideout when you sign in?";
 pub const DIALOG_BODY: &str = "Hideout adds a shortcut to your Startup folder. It then starts in \
 the tray each time you sign in to Windows. You can turn it off here, or in Windows Settings under \
 Apps, then Startup.";
-/// Shown in the dialog only when an app runs in Hideout.
-pub const DIALOG_APPS: &str = "Hideout then starts Foxglove too. Foxglove's own startup entry \
-stays as a backup: if Hideout does not start, Foxglove starts on its own.";
+/// Shown in the dialog only when an app runs in Hideout; `names` is [`join_names`] of the apps
+/// running now, `one` whether that is a single app.
+pub fn dialog_apps(names: &str, one: bool) -> String {
+    if one {
+        format!(
+            "Hideout then starts {names} too. If {names}'s own Start with Windows is on, it stays as a backup: if Hideout does not start, {names} starts on its own."
+        )
+    } else {
+        format!(
+            "Hideout then starts {names} too. If an app's own Start with Windows is on, it stays as a backup: if Hideout does not start, that app starts on its own."
+        )
+    }
+}
 pub const DIALOG_REPLACES: &str =
     "The other copy of Hideout will no longer start when you sign in.";
 pub const DIALOG_CONFIRM: &str = "Turn on";
@@ -146,8 +173,10 @@ pub struct Row {
     pub turn_off: bool,
     pub remove: bool,
     pub message: Option<String>,
-    /// At least one app runs in Hideout: the status and the dialog say that apps start too.
+    /// At least one app runs in Hideout: the dialog says that apps start too.
     pub apps: bool,
+    /// Their display names (the dialog names them).
+    pub app_names: Vec<String>,
     /// `Some(replaces)` while the dialog is open.
     pub dialog: Option<bool>,
 }
@@ -167,6 +196,16 @@ pub trait StartupControl {
     fn click(&mut self, c: Click);
 }
 
+/// The apps' display names: those running in Hideout now, and those among them that remember
+/// that Hideout starts them at sign-in.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AppsNow {
+    pub running: Vec<String>,
+    pub told: Vec<String>,
+}
+
+pub type AppsSource = Box<dyn Fn() -> AppsNow + Send>;
+
 pub struct Switch<F: StartupFolder, A: Approval> {
     ctx: Context,
     installed: Option<PathBuf>,
@@ -174,8 +213,8 @@ pub struct Switch<F: StartupFolder, A: Approval> {
     approval: A,
     dialog: Option<Dialog>,
     message: Option<String>,
-    /// Set by the hub while at least one app runs in Hideout (copy only; never a write gate).
-    apps: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Read at each `row()`: the apps running now and those that remember the hand-over.
+    source: Option<AppsSource>,
     /// (state, a shortcut exists, when read): the page draws many frames, the shell and COM
     /// are read at most every two seconds and after every click.
     snap: Option<(State, bool, std::time::Instant)>,
@@ -192,19 +231,19 @@ impl<F: StartupFolder, A: Approval> Switch<F, A> {
             approval,
             dialog: None,
             message: None,
-            apps: Default::default(),
+            source: None,
             snap: None,
         }
     }
 
-    /// Gives the switch the flag the hub keeps while an app runs in Hideout.
-    pub fn with_apps(mut self, apps: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
-        self.apps = apps;
+    /// Gives the switch a reader of the apps' names; the hub's router.
+    pub fn with_apps_source(mut self, source: AppsSource) -> Self {
+        self.source = Some(source);
         self
     }
 
-    fn apps_run(&self) -> bool {
-        self.apps.load(std::sync::atomic::Ordering::Relaxed)
+    fn apps_now(&self) -> AppsNow {
+        self.source.as_ref().map(|f| f()).unwrap_or_default()
     }
 
     fn snapshot(&mut self) -> (State, bool) {
@@ -261,6 +300,15 @@ impl<F: StartupFolder, A: Approval> Switch<F, A> {
         sign_in_line(state, has_link)
     }
 
+    /// The startup pass's one repair: adds `--tray` to an enabled `Hideout.lnk` of this exe that
+    /// lacks it (approval untouched). Only from an installed hub; see [`autostart::repair_tray_arg`].
+    pub fn repair_tray_arg(&mut self) -> Result<Outcome, String> {
+        if self.availability() != Availability::Ready {
+            return Ok(Outcome::Unchanged);
+        }
+        autostart::repair_tray_arg(&self.ctx, &mut self.folder, &self.approval)
+    }
+
     /// The rollback: removes `Hideout.lnk` and its approval value, only when it starts this exe.
     pub fn remove_shortcut(&mut self) -> Result<Outcome, String> {
         autostart::remove(&self.ctx, &mut self.folder, &mut self.approval)
@@ -271,19 +319,19 @@ impl<F: StartupFolder, A: Approval> StartupControl for Switch<F, A> {
     fn row(&mut self) -> Row {
         let avail = self.availability();
         let (state, has_link) = self.snapshot();
-        let apps = self.apps_run();
-        let status = match (avail, state) {
-            (Availability::TestRun, _) => STATUS_TEST_RUN,
-            (Availability::NotInstalled, _) => STATUS_NOT_INSTALLED,
-            (_, State::On) if apps => STATUS_ON_APPS,
-            (_, State::On) => STATUS_ON,
-            (_, State::Foreign) => STATUS_FOREIGN,
-            (_, State::Off) if has_link => STATUS_OFF_IN_WINDOWS,
-            (_, _) => STATUS_OFF,
+        let now = self.apps_now();
+        let status: String = match (avail, state) {
+            (Availability::TestRun, _) => STATUS_TEST_RUN.to_string(),
+            (Availability::NotInstalled, _) => STATUS_NOT_INSTALLED.to_string(),
+            (_, State::On) if !now.told.is_empty() => status_on_apps(&join_names(&now.told)),
+            (_, State::On) => STATUS_ON.to_string(),
+            (_, State::Foreign) => STATUS_FOREIGN.to_string(),
+            (_, State::Off) if has_link => STATUS_OFF_IN_WINDOWS.to_string(),
+            (_, _) => STATUS_OFF.to_string(),
         };
         let ready = avail == Availability::Ready;
         Row {
-            status: status.to_string(),
+            status,
             turn_on: ready && state != State::On && self.dialog.is_none(),
             turn_off: ready && state == State::On,
             remove: avail != Availability::TestRun
@@ -291,7 +339,8 @@ impl<F: StartupFolder, A: Approval> StartupControl for Switch<F, A> {
                 && matches!(state, State::On | State::Off)
                 && has_link,
             message: self.message.clone(),
-            apps,
+            apps: !now.running.is_empty(),
+            app_names: now.running,
             dialog: self.dialog.as_ref().map(Dialog::replaces_other),
         }
     }
@@ -614,6 +663,8 @@ mod tests {
         // The copy may say "Foxglove"; the code never names its shortcut or startup entry.
         assert!(!code.to_lowercase().contains("foxglove.lnk"));
         assert!(!code.contains("autostart::ensure("));
+        // The startup pass may call exactly the narrow repair, and only that.
+        assert_eq!(code.matches("autostart::repair_tray_arg(").count(), 1);
     }
 
     /// Every user-visible string, exact (the PR body lists the same).
@@ -628,7 +679,7 @@ mod tests {
             "Hideout starts in the tray when you sign in to Windows."
         );
         assert_eq!(
-            STATUS_ON_APPS,
+            status_on_apps("Foxglove"),
             "Hideout starts in the tray when you sign in, and starts your apps: Foxglove."
         );
         assert_eq!(
@@ -645,26 +696,60 @@ mod tests {
             "Hideout adds a shortcut to your Startup folder. It then starts in the tray each time you sign in to Windows. You can turn it off here, or in Windows Settings under Apps, then Startup."
         );
         assert_eq!(
-            DIALOG_APPS,
-            "Hideout then starts Foxglove too. Foxglove's own startup entry stays as a backup: if Hideout does not start, Foxglove starts on its own."
+            dialog_apps("Foxglove", true),
+            "Hideout then starts Foxglove too. If Foxglove's own Start with Windows is on, it stays as a backup: if Hideout does not start, Foxglove starts on its own."
         );
     }
 
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn shared(run: &std::sync::Arc<std::sync::Mutex<AppsNow>>) -> AppsSource {
+        let run = run.clone();
+        Box::new(move || run.lock().unwrap().clone())
+    }
+
     #[test]
-    fn the_apps_line_shows_only_when_an_app_runs_in_hideout() {
-        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut s = sw(true, false).with_apps(flag.clone());
+    fn the_status_names_apps_only_when_one_remembers_it_the_dialog_when_one_runs() {
+        let now = std::sync::Arc::new(std::sync::Mutex::new(AppsNow::default()));
+        let mut s = sw(true, false).with_apps_source(shared(&now));
         s.click(Click::Ask);
         s.click(Click::Confirm);
         assert_eq!(s.row().status, STATUS_ON);
-        assert!(!s.row().apps);
-        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        // An app running now is not yet a claim about the next sign-in.
+        now.lock().unwrap().running = names(&["Foxglove"]);
         s.snap = None;
-        assert_eq!(s.row().status, STATUS_ON_APPS);
+        assert_eq!(s.row().status, STATUS_ON);
         assert!(s.row().apps);
+        now.lock().unwrap().told = names(&["Foxglove"]);
+        s.snap = None;
+        assert_eq!(s.row().status, status_on_apps("Foxglove"));
         // Off states never claim apps start.
         s.click(Click::TurnOff);
         assert_eq!(s.row().status, STATUS_OFF_IN_WINDOWS);
+    }
+
+    #[test]
+    fn the_apps_line_names_the_real_apps_not_a_product() {
+        let now = std::sync::Arc::new(std::sync::Mutex::new(AppsNow {
+            running: names(&["Vulpes"]),
+            told: names(&["Vulpes", "Other App"]),
+        }));
+        let mut s = sw(true, false).with_apps_source(shared(&now));
+        s.click(Click::Ask);
+        s.click(Click::Confirm);
+        let r = s.row();
+        assert_eq!(
+            r.status,
+            "Hideout starts in the tray when you sign in, and starts your apps: Vulpes and Other App."
+        );
+        assert_eq!(r.app_names, names(&["Vulpes"]));
+        assert!(!r.status.contains("Foxglove"));
+        assert_eq!(join_names(&names(&["A", "B", "C"])), "A, B and C");
+        assert_eq!(join_names(&[]), "your apps");
+        assert!(dialog_apps("A and B", false).contains("that app starts on its own"));
+        assert!(!dialog_apps("Vulpes", true).contains("Foxglove"));
     }
 
     #[test]

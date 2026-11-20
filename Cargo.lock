@@ -2004,6 +2004,7 @@ version = "0.1.0"
 dependencies = [
  "foxglove-plugin",
  "foxglove-plugin-trust",
+ "hideout-acl",
  "hideout-appwatch",
  "hideout-contract",
  "hideout-registry",

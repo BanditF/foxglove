@@ -12,6 +12,8 @@
 //! On other platforms the folder helpers only create the folder.
 
 #[cfg(windows)]
+pub mod signin_event;
+#[cfg(windows)]
 mod win;
 #[cfg(windows)]
 pub use win::*;
