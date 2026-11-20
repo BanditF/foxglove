@@ -58,6 +58,7 @@ pub(crate) fn live_of(look: Look, rgb: Option<&RgbState>, animations: bool) -> L
         line,
         name,
         animations,
+        blocks: false,
     }
 }
 
@@ -260,4 +261,49 @@ fn the_line_says_when_a_pick_is_not_applied_or_a_half_is_unheard() {
     assert!(name.contains("no report yet"), "{name}");
     let (line, _) = words_with(&l, Some(&solid), [100, 100], &parts(), true, false);
     assert!(!line.contains("no report yet"), "{line}");
+}
+
+#[test]
+fn a_keyboard_driven_through_windows_draws_its_row_tint_and_one_not_read_draws_outlines() {
+    use crate::foxglove::device_thumb::Tint;
+    let orange = Color32::from_rgb(230, 110, 20);
+    let lamp = live_not_read(Some(Tint::Lit(vec![orange, Color32::BLACK])), layout());
+    assert_eq!(lamp.look.state, State::Lamp);
+    assert_eq!(lamp.line, LAMP_LINE);
+    assert!(lamp.look.next_frame().is_none(), "a tint is still");
+    let keys = lamp.look.colours(&lamp.layout, SceneTime(0));
+    let all: Vec<_> = keys.iter().flatten().collect();
+    assert_eq!(all.first(), Some(&&Some(orange)));
+    assert_eq!(all.last(), Some(&&Some(Color32::BLACK)));
+    assert!(!lamp.blocks);
+    // Colours unknown, or a keyboard Foxglove doesn't read: outlines and the existing line.
+    for t in [None, Some(Tint::Unknown)] {
+        let l = live_not_read(t, layout());
+        assert_eq!(l.look.state, State::NotRead);
+        assert_eq!(l.line, crate::foxglove::lights_page::NOT_READ);
+        assert!(l
+            .look
+            .colours(&l.layout, SceneTime(0))
+            .iter()
+            .flatten()
+            .all(Option::is_none));
+    }
+}
+
+#[test]
+fn a_keyboard_without_a_layout_gets_one_block_per_part() {
+    let mut bare = layout();
+    let halves = bare.parts.len().clamp(1, 2);
+    bare.parts = vec![vec![]; halves];
+    let l = live_not_read(
+        Some(crate::foxglove::device_thumb::Tint::Lit(vec![Color32::RED])),
+        bare,
+    );
+    assert!(l.blocks);
+    assert_eq!(l.layout.parts.len(), halves);
+    assert!(l.layout.parts.iter().all(|p| p.len() == 1));
+    let keys = l.look.colours(&l.layout, SceneTime(0));
+    assert!(keys.iter().flatten().all(|c| *c == Some(Color32::RED)));
+    // A layout with keys is left alone.
+    assert!(!live_not_read(None, layout()).blocks);
 }

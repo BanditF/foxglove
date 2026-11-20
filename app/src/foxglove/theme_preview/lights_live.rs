@@ -155,6 +155,26 @@ fn states() -> Vec<(&'static str, Live)> {
         true,
     );
     v.push(("Right follows left is off, right half not reported", live));
+    // Keyboards Foxglove drives through Windows or can't read (L4).
+    use crate::foxglove::device_thumb::Tint;
+    let orange = egui::Color32::from_rgb(230, 110, 20);
+    let blue = egui::Color32::from_rgb(40, 90, 230);
+    let lamp = |t| lights_live_ui::live_not_read(Some(t), layout());
+    v.push((
+        "Windows-lit keyboard, colours Foxglove last set (row tint)",
+        lamp(Tint::Lit(vec![orange, orange, blue, blue])),
+    ));
+    v.push(("Windows-lit keyboard, lights off", lamp(Tint::Off)));
+    v.push((
+        "Read-only keyboard, colour not read",
+        lights_live_ui::live_not_read(None, layout()),
+    ));
+    let mut bare = layout();
+    bare.parts = vec![vec![], vec![]];
+    v.push((
+        "No layout for this keyboard: one block per half (hover says why)",
+        lights_live_ui::live_not_read(Some(Tint::Lit(vec![orange, blue])), bare),
+    ));
     let l = look(&report(None, true), None, None, None, None);
     v.push(("Reading the keyboard", live_of(l, None, true)));
     let l = look(&report(None, false), None, None, None, None);

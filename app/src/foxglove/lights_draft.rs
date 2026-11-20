@@ -76,20 +76,68 @@ pub fn settled(sent: &Sent, last_read: Option<Instant>, now: Instant) -> bool {
     last_read.is_some_and(|r| r > sent.at) || now.saturating_duration_since(sent.at) >= GIVE_UP
 }
 
+/// The card says why a drawing went back to the report.
+pub const NOT_TAKEN: &str = "The keyboard didn't take that change.";
+/// How long [`NOT_TAKEN`] stays on the card.
+pub const NOT_TAKEN_FOR: Duration = Duration::from_secs(8);
+
+/// What became of a sent change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Nothing sent, or the keyboard hasn't answered yet.
+    Waiting,
+    /// The report shows the change.
+    Took,
+    /// The keyboard answered (or was given long enough) and does not show it.
+    Refused,
+}
+
+/// Whether `h` shows `change` (a hue within a couple of degrees: the keyboard rounds it).
+fn shows(change: Change, h: &RgbHalf) -> bool {
+    match change {
+        Change::Colour {
+            hue,
+            sat,
+            brightness,
+        } => {
+            h.hue.abs_diff(hue) <= 2
+                && h.sat.abs_diff(sat) <= 1
+                && h.brightness.abs_diff(brightness) <= 1
+        }
+        c => c.apply(*h) == *h,
+    }
+}
+
 /// Lets go of `sent` once settled, and of a speed pick with it: the keyboard has had its say, so
-/// a refused speed is not kept drawn. Returns whether the change settled.
-pub fn settle(draft: &mut Draft, last_read: Option<Instant>, now: Instant) -> bool {
+/// a refused speed is not kept drawn. `rgb` is the report the drawing goes back to.
+pub fn settle(
+    draft: &mut Draft,
+    last_read: Option<Instant>,
+    now: Instant,
+    rgb: Option<&RgbState>,
+) -> Outcome {
     let Some(sent) = draft.sent else {
-        return false;
+        return Outcome::Waiting;
     };
     if !settled(&sent, last_read, now) {
-        return false;
+        return Outcome::Waiting;
     }
     draft.sent = None;
     if matches!(sent.change, Change::Speed(_)) {
         draft.speed = None;
     }
-    true
+    match rgb {
+        Some(r) if !shows(sent.change, &r.left) => Outcome::Refused,
+        _ => Outcome::Took,
+    }
+}
+
+/// The name screen readers get while the user drags a slider: the one from before the drag.
+pub fn held_name(held: &mut Option<String>, name: &str, dragging: bool) -> String {
+    if !dragging || held.is_none() {
+        *held = Some(name.to_string());
+    }
+    held.clone().unwrap_or_default()
 }
 
 /// The lights to draw instead of the report's: the pick not applied yet (colour, brightness,
@@ -269,12 +317,61 @@ mod tests {
                 .speed,
             5
         );
-        assert!(!settle(&mut d, None, t0 + Duration::from_millis(10)));
+        assert_eq!(
+            settle(&mut d, None, t0 + Duration::from_millis(10), Some(&rgb)),
+            Outcome::Waiting
+        );
         assert_eq!(d.speed, Some(5));
         let later = t0 + Duration::from_millis(50);
-        assert!(settle(&mut d, Some(later), later));
+        assert_eq!(
+            settle(&mut d, Some(later), later, Some(&rgb)),
+            Outcome::Refused
+        );
         assert_eq!(d.speed, None);
         assert_eq!(shown(&d, &rgb, d.sent.as_ref()), None, "the report wins");
+    }
+
+    #[test]
+    fn a_change_the_report_shows_was_taken_and_one_it_does_not_was_refused() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_millis(50);
+        let mut taken = Draft {
+            sent: Some(sent(Change::Effect(0), t0)),
+            ..Draft::default()
+        };
+        // state() shows effect 0: the change is on the keyboard.
+        assert_eq!(
+            settle(&mut taken, Some(later), later, Some(&state())),
+            Outcome::Took
+        );
+        let mut refused = Draft {
+            sent: Some(sent(Change::Effect(3), t0)),
+            ..Draft::default()
+        };
+        assert_eq!(
+            settle(&mut refused, None, t0 + GIVE_UP, Some(&state())),
+            Outcome::Refused
+        );
+        assert_eq!(refused.sent, None);
+        // A colour the keyboard rounds by a degree was taken.
+        let c = Change::Colour {
+            hue: 31,
+            sat: 100,
+            brightness: 60,
+        };
+        assert!(shows(c, &state().left));
+    }
+
+    #[test]
+    fn a_drag_keeps_the_name_it_started_with() {
+        let mut held = None;
+        assert_eq!(
+            held_name(&mut held, "Solid, orange", false),
+            "Solid, orange"
+        );
+        assert_eq!(held_name(&mut held, "Solid, blue", true), "Solid, orange");
+        assert_eq!(held_name(&mut held, "Solid, red", true), "Solid, orange");
+        assert_eq!(held_name(&mut held, "Solid, red", false), "Solid, red");
     }
 
     #[test]
