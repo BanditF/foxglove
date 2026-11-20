@@ -467,8 +467,8 @@ fn first_run_with_a_generic_keyboard_app_costs_exactly_the_bound() {
     );
 }
 
-/// The same path for Foxglove's real manifest: the keyboard-sharing section is on the dialog
-/// but off, and costs nothing unless used. The harness code names no product; only the file
+/// The same path for Foxglove's real manifest: the keyboard-sharing section is not on the
+/// first-run dialog (FR2), so it costs nothing and shows no concept. The harness code names no product; only the file
 /// it reads does.
 #[test]
 fn first_run_with_the_shipped_foxglove_manifest_costs_the_same() {
@@ -523,4 +523,80 @@ fn no_sensitive_item_is_granted_without_its_i_understand() {
         }
         assert_eq!(v.granted.len(), EVERYDAY);
     }
+}
+
+/// FR2: what the first-run dialog says and offers, for the generic fixture and for the shipped
+/// manifest. No product name is behind it, the keyboard-sharing section stays out, and the
+/// dialog still grants nothing on its own.
+#[test]
+fn the_first_run_dialog_shows_what_the_app_can_do_and_what_needs_ok() {
+    use hideout_shell::permission_dialog::{needs_ok_heading, ALLOW_AND_START};
+    for (tag, id, manifest, can) in [
+        (
+            "fr2-gizmo",
+            "gizmo-keys",
+            gizmo_manifest as fn(&Path) -> String,
+            "Gizmo Keys can: use your keyboard and PC lights, talk to other devices from the \
+             same maker, go online, and read and save its own files.",
+        ),
+        (
+            "fr2-foxglove",
+            "foxglove",
+            foxglove_manifest as fn(&Path) -> String,
+            "Foxglove can: use your keyboard and PC lights",
+        ),
+    ] {
+        let mut fx = Fx::new(tag, id, manifest);
+        let mut c = Clicks::default();
+        fx.look();
+        fx.add(&mut c);
+        let d = fx.page.perm.as_ref().unwrap().dialog.as_ref().unwrap();
+        assert!(
+            d.keyboard.is_none(),
+            "{id}: no keyboard-sharing section on first run"
+        );
+        assert!(d.view.starts, "{id}: Allow starts the app");
+        assert_eq!(d.sensitive_count(), SENSITIVE.len(), "{id}");
+        assert_eq!(d.everyday(), EVERYDAY, "{id}");
+        assert!(
+            !d.everyday_shown(),
+            "{id}: the everyday items start collapsed"
+        );
+        assert_eq!(
+            needs_ok_heading(d.sensitive_count()),
+            "These need your OK (4)"
+        );
+        let line = d.capability_line().expect("the capability line");
+        assert!(line.starts_with(can), "{id}: {line}");
+        assert!(
+            d.source_line().unwrap().starts_with("Not signed \u{b7} "),
+            "{id}"
+        );
+        assert_eq!(d.allow_label(), ALLOW_AND_START);
+        // Collapsed means still ticked: Allow alone records the 17 and no sensitive item.
+        assert_eq!(d.count(), EVERYDAY, "{id}");
+        assert!(
+            fx.view().granted.is_empty(),
+            "{id}: showing the dialog grants nothing"
+        );
+        let n = fx.allow(&mut c);
+        assert_eq!(n, EVERYDAY, "{id}");
+    }
+}
+
+/// Allow with the keyboard section gone leaves the keyboard unasked, so the app's Permissions
+/// offer it later.
+#[test]
+fn leaving_the_keyboard_section_out_of_first_run_records_nothing_for_it() {
+    let mut fx = Fx::new("fr2-kbd", "foxglove", foxglove_manifest);
+    let mut c = Clicks::default();
+    fx.look();
+    fx.add(&mut c);
+    fx.tick_sensitive(&mut c);
+    fx.allow(&mut c);
+    let reg = Registry::open_from_env(&fx.home()).unwrap();
+    assert!(matches!(
+        reg.keyboard_state("foxglove"),
+        hideout_registry::keyboard::KeyboardState::NotAsked
+    ));
 }

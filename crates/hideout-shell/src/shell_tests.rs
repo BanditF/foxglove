@@ -3304,6 +3304,7 @@ fn renders_the_permission_dialog_for_review() {
             keep: None,
             removed: Vec::new(),
             same_place: false,
+            view: Default::default(),
             error: None,
         }
     };
@@ -3666,6 +3667,7 @@ fn renders_the_grants_more_header_for_review() {
             keep: None,
             removed: Vec::new(),
             same_place: false,
+            view: Default::default(),
             error: None,
         };
         let (w, h) = (760u32, 720u32);
@@ -3755,6 +3757,7 @@ fn renders_the_reask_with_allowed_before_for_review() {
             keep: None,
             removed: Vec::new(),
             same_place: false,
+            view: Default::default(),
             error: None,
         };
         assert_eq!(d.allow_label(), "Allow 2");
@@ -3835,6 +3838,7 @@ fn renders_the_gpu_manager_dialog_for_review() {
             keep: None,
             removed: Vec::new(),
             same_place: false,
+            view: Default::default(),
             error: None,
         };
         let (w, h) = (760u32, 620u32);
@@ -3880,6 +3884,10 @@ fn keep_test_dialog(
         keep,
         removed: Vec::new(),
         same_place: false,
+        view: crate::permission_dialog::View {
+            starts: false,
+            everyday_open: true,
+        },
         error: None,
     }
 }
@@ -3906,8 +3914,8 @@ fn the_keep_box_has_its_place_in_tab_order_and_is_described() {
                 ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
             }));
         }
-        // All, 3 items, the keep box, [I understand], Allow, Not now.
-        assert_eq!(ids.len(), 1 + 3 + 1 + usize::from(checked) + 2, "{ids:?}");
+        // All, Hide, 3 items, the keep box, [I understand], Allow, Not now.
+        assert_eq!(ids.len(), 2 + 3 + 1 + usize::from(checked) + 2, "{ids:?}");
         let upd = last.unwrap().platform_output.accesskit_update.unwrap();
         let find = |l: &str| {
             upd.nodes
@@ -3964,7 +3972,7 @@ fn a_refused_keep_box_is_disabled_and_says_why() {
             ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
         }));
     }
-    assert_eq!(ids.len(), 1 + 2 + 2, "no keep box in Tab order: {ids:?}");
+    assert_eq!(ids.len(), 2 + 2 + 2, "no keep box in Tab order: {ids:?}");
     let upd = out.unwrap().platform_output.accesskit_update.unwrap();
     assert!(upd
         .nodes
@@ -4097,6 +4105,7 @@ fn first_run_test_dialog() -> crate::permission_dialog::FirstRun {
         keep: None,
         removed: Vec::new(),
         same_place: false,
+        view: Default::default(),
         error: None,
     };
     FirstRun {
@@ -4328,4 +4337,159 @@ fn the_start_with_windows_dialog_opens_on_not_now() {
         "{clicks:?}"
     );
     assert_eq!(clicks.last().unwrap(), &Some(Click::Cancel), "{clicks:?}");
+}
+
+/// The first-run dialog of the plan (FR2): 4 sensitive asks and 17 everyday ones, as the plan
+/// counts them.
+fn fr2_test_dialog() -> crate::permission_dialog::PermDialog {
+    use crate::permission_dialog::{Group, ListItem, PermDialog, View};
+    let mk = |raw: String, line: &str, group, sensitive: bool| ListItem {
+        raw,
+        line: line.into(),
+        group,
+        allowable: true,
+        sensitive,
+        reason: None,
+        checked: !sensitive,
+        confirmed: false,
+        new: false,
+        before: false,
+    };
+    let mut items = vec![
+        mk(
+            "device.hid:keyboard".into(),
+            "Talk to your keyboard (USB)",
+            Group::Sensitive,
+            true,
+        ),
+        mk(
+            "device.hid:lighting".into(),
+            "Talk to your PC's lighting devices",
+            Group::Sensitive,
+            true,
+        ),
+        mk(
+            "device.hid:vendor".into(),
+            "Talk to other devices from the same maker",
+            Group::Sensitive,
+            true,
+        ),
+        mk("net".into(), "Go online", Group::Sensitive, true),
+    ];
+    for i in 0..17 {
+        items.push(mk(
+            format!("provide:gizmo.m{i:02}"),
+            &format!("Answer question number {i}"),
+            Group::AnswerQuestions,
+            false,
+        ));
+    }
+    PermDialog {
+        id: "gizmo-keys".into(),
+        name: "Gizmo Keys".into(),
+        code: "7f3a91c20b4e55d1".into(),
+        path: r"C:\Users\someone\Programs\Gizmo\gizmo.exe".into(),
+        items,
+        reason: None,
+        keyboard: None,
+        keep: None,
+        removed: Vec::new(),
+        same_place: false,
+        view: View {
+            starts: true,
+            everyday_open: false,
+        },
+        error: None,
+    }
+}
+
+/// On a 720 px window the first-run dialog keeps Allow and Not now on screen, collapsed and
+/// with the everyday items shown; Show lists the 17 items without granting anything, and the
+/// 4 sensitive items stay unticked until the user ticks them. Review images for both.
+#[test]
+fn the_first_run_dialog_collapses_the_everyday_items_on_a_720_px_window() {
+    use crate::permission_dialog_ui::perm_dialog_ids;
+    let t = crate::theme::tokens(true);
+    for open in [false, true] {
+        let mut d = fr2_test_dialog();
+        d.view.everyday_open = open;
+        let ctx = egui::Context::default();
+        let mut ids = Vec::new();
+        for i in 0..6 {
+            let _ = ctx.run(input(900.0, 720.0, vec![]), |c| {
+                ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
+            });
+        }
+        // 4 sensitive boxes, the everyday box, [Hide|Show], [17 items], Allow, Not now.
+        assert_eq!(
+            ids.len(),
+            4 + 1 + 1 + if open { 17 } else { 0 } + 2,
+            "open={open}"
+        );
+        for id in &ids[ids.len() - 2..] {
+            let r = ctx.read_response(*id).expect("drawn").rect;
+            assert!(r.bottom() <= 720.0 && r.top() >= 0.0, "open={open}: {r:?}");
+        }
+        assert_eq!(d.allow_label(), "Allow and start");
+        assert_eq!(
+            d.count(),
+            17,
+            "the sensitive items are not granted until understood"
+        );
+        let tag = if open { "shown" } else { "collapsed" };
+        let Some(rgba) = rasterise(760, 720, |ctx| {
+            set_theme(ctx, ThemeChoice::Dark);
+            ctx.style_mut(|s| s.animation_time = 0.0);
+            let mut d = fr2_test_dialog();
+            d.view.everyday_open = open;
+            crate::permission_dialog_ui::perm_dialog_ui(ctx, &t, &mut d, true);
+        }) else {
+            continue;
+        };
+        save_png(&format!("first-run-fr2-{tag}.png"), 760, 720, rgba);
+    }
+}
+
+/// Show lists the everyday items and Hide closes them again; the box over them still ticks and
+/// clears all 17 at once.
+#[test]
+fn show_and_hide_open_the_everyday_items() {
+    use crate::permission_dialog_ui::perm_dialog_ids;
+    let t = crate::theme::tokens(true);
+    let mut d = fr2_test_dialog();
+    let ctx = egui::Context::default();
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let _ = ctx.run(input(900.0, 900.0, vec![]), |c| {
+            ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
+        });
+    }
+    let show = ids[5];
+    let r = ctx.read_response(show).expect("drawn").rect;
+    let click = |p: egui::Pos2| {
+        vec![
+            Event::PointerMoved(p),
+            Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ]
+    };
+    let _ = ctx.run(input(900.0, 900.0, click(r.center())), |c| {
+        ids = perm_dialog_ids(c, &t, &mut d, false).1;
+    });
+    assert!(d.view.everyday_open, "Show opens the list");
+    assert_eq!(d.count(), 17, "Show grants and changes nothing");
+    d.toggle_all();
+    assert_eq!(d.count(), 0);
+    d.toggle_all();
+    assert_eq!(d.count(), 17);
 }

@@ -9,6 +9,10 @@
 //! "hash" or an id, except the selectable path and the list code.
 
 pub const ALLOW_NONE: &str = "Allow none";
+pub const ALLOW_AND_START: &str = "Allow and start";
+pub const SOURCE_UNSIGNED: &str = "Not signed";
+pub const SHOW: &str = "Show";
+pub const HIDE: &str = "Hide";
 pub const NOT_NOW: &str = "Not now";
 pub const ALL_PREFIX: &str = "All";
 pub const UNDERSTAND: &str = "I understand";
@@ -430,8 +434,19 @@ pub struct PermDialog {
     pub removed: Vec<String>,
     /// The app is at the very path the grant was bound to (so its file changed, not moved).
     pub same_place: bool,
+    /// How the dialog is presented (first-run slice FR2); no effect on what Allow records.
+    pub view: View,
     /// An inline failure under the buttons (busy, not saved).
     pub error: Option<String>,
+}
+
+/// Presentation only: nothing here changes what is allowed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct View {
+    /// Allow also starts the app (the label says so).
+    pub starts: bool,
+    /// The everyday items are listed (they start collapsed, still ticked).
+    pub everyday_open: bool,
 }
 
 /// What Allow sends back.
@@ -576,12 +591,98 @@ impl PermDialog {
         self.items.iter().filter(|i| i.counts()).count()
     }
 
-    /// "Allow 9", or "Allow none" with nothing counted.
+    /// "Allow 9", "Allow and start" when Allow also starts the app, or "Allow none" with
+    /// nothing counted.
     pub fn allow_label(&self) -> String {
         match self.count() {
             0 => ALLOW_NONE.into(),
+            _ if self.view.starts => ALLOW_AND_START.into(),
             n => format!("Allow {n}"),
         }
+    }
+
+    /// How many everyday items there are: can be allowed and not sensitive (what the All box
+    /// covered).
+    pub fn everyday(&self) -> usize {
+        self.others().count()
+    }
+
+    /// Whether the everyday items are listed: the user opened them, or something in them needs
+    /// to be seen (a new item, or one checked from an earlier answer).
+    pub fn everyday_shown(&self) -> bool {
+        self.view.everyday_open || self.items.iter().any(|i| i.new || i.before)
+    }
+
+    /// "17 everyday items".
+    pub fn everyday_label(&self) -> String {
+        everyday_label(self.everyday())
+    }
+
+    /// The sensitive items the user can allow.
+    pub fn sensitive_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| i.allowable && i.sensitive)
+            .count()
+    }
+
+    /// "Foxglove can: use your keyboard and PC lights, read and save its own files, and go
+    /// online." Built from the asks, sensitive ones first, never written per app. `None` when
+    /// nothing in the list says what the app can do, and for a re-ask of new items only.
+    pub fn capability_line(&self) -> Option<String> {
+        if self.reason == Some(Reason::More) {
+            return None;
+        }
+        let mut phrases: Vec<String> = Vec::new();
+        let asks = |raw: &str| self.items.iter().any(|i| i.allowable && i.raw == raw);
+        match (asks("device.hid:keyboard"), asks("device.hid:lighting")) {
+            (true, true) => phrases.push("use your keyboard and PC lights".into()),
+            (true, false) => phrases.push("use your keyboard".into()),
+            (false, true) => phrases.push("use your PC lights".into()),
+            _ => {}
+        }
+        for i in self.items.iter().filter(|i| i.allowable && i.sensitive) {
+            if i.raw == "device.hid:keyboard" || i.raw == "device.hid:lighting" {
+                continue;
+            }
+            let p = can_phrase(&i.raw);
+            if !phrases.iter().any(|x| x == p) {
+                phrases.push(p.into());
+            }
+        }
+        if asks("files") {
+            phrases.push(can_phrase("files").into());
+        }
+        let list = match phrases.len() {
+            0 => return None,
+            1 => phrases[0].clone(),
+            2 => format!("{} and {}", phrases[0], phrases[1]),
+            n => format!("{}, and {}", phrases[..n - 1].join(", "), phrases[n - 1]),
+        };
+        Some(format!("{} can: {list}.", self.name))
+    }
+
+    /// "Not signed · C:\path\app.exe": where the app comes from. Hideout does not check an
+    /// app it adopted from a folder, so it says so. `None` for an app with no path.
+    pub fn source_line(&self) -> Option<String> {
+        (!self.path.is_empty()).then(|| format!("{SOURCE_UNSIGNED} \u{b7} {}", self.path))
+    }
+
+    /// The line under the sensitive group.
+    pub fn sensitive_note(&self) -> String {
+        let asks = |p: &dyn Fn(&str) -> bool| self.items.iter().any(|i| i.allowable && p(&i.raw));
+        let hw = asks(&|r| r.starts_with("device.hid:") || r == "hid.raw");
+        let net = asks(&|r| r == "net" || r.starts_with("net."));
+        let what = match (hw, net) {
+            (true, true) => "your devices and the internet directly",
+            (true, false) => "your devices directly",
+            (false, true) => "the internet directly",
+            (false, false) => "more than Hideout can describe in a line",
+        };
+        format!(
+            "These let {} reach {what}. Hideout can't limit what it does with them.",
+            self.name
+        )
     }
 
     /// The items the All box covers: can be allowed and not sensitive. A sensitive item is
@@ -681,6 +782,34 @@ impl PermDialog {
         }
         s
     }
+}
+
+/// What a permission lets the app do, in the words of "<name> can: ...". Every sensitive ask
+/// has its own phrase; one this table does not know says so rather than hiding it.
+pub fn can_phrase(raw: &str) -> &'static str {
+    match raw {
+        "device.hid:keyboard" => "use your keyboard",
+        "device.hid:lighting" => "use your PC lights",
+        "device.hid:vendor" => "talk to other devices from the same maker",
+        "hid.raw" => "talk to your devices directly",
+        "key.events" => "see every key you press",
+        "files" => "read and save its own files",
+        r if r == "net" || r.starts_with("net.") => "go online",
+        r if r.starts_with("provide:gpu.") => "answer every app's AI requests",
+        r if r.starts_with("ai.ask:") => "send questions to an AI service",
+        r if r.starts_with("secrets.ref:") => "use a secret you stored",
+        _ => "do something Hideout can't describe in a line",
+    }
+}
+
+/// "17 everyday items" (the heading of the collapsed list).
+pub fn everyday_label(n: usize) -> String {
+    format!("{n} everyday item{}", if n == 1 { "" } else { "s" })
+}
+
+/// "These need your OK (4)": the heading of the sensitive group in the dialog.
+pub fn needs_ok_heading(n: usize) -> String {
+    format!("These need your OK ({n})")
 }
 
 /// The keyboard section's words.
@@ -961,6 +1090,7 @@ mod tests {
             keep: None,
             removed: Vec::new(),
             same_place: false,
+            view: Default::default(),
             error: None,
         }
     }
@@ -1429,5 +1559,166 @@ mod tests {
                 assert!(!l.contains(bad), "{bad:?} in {t:?}");
             }
         }
+    }
+
+    fn fr2_dialog(raws: &[(&str, bool)]) -> PermDialog {
+        let mut d = dialog();
+        d.items = raws
+            .iter()
+            .map(|(r, sens)| {
+                let g = if *sens {
+                    Group::Sensitive
+                } else {
+                    Group::MakeChanges
+                };
+                item(r, g, *sens, !*sens)
+            })
+            .collect();
+        d
+    }
+
+    #[test]
+    fn the_capability_line_is_built_from_the_asks_sensitive_first() {
+        let d = fr2_dialog(&[
+            ("files", false),
+            ("net", true),
+            ("device.hid:lighting", true),
+            ("device.hid:keyboard", true),
+        ]);
+        assert_eq!(
+            d.capability_line().unwrap(),
+            "Foxglove can: use your keyboard and PC lights, go online, and read and save its own files."
+        );
+        let one = fr2_dialog(&[("net", true)]);
+        assert_eq!(one.capability_line().unwrap(), "Foxglove can: go online.");
+        let two = fr2_dialog(&[("net", true), ("device.hid:keyboard", true)]);
+        assert_eq!(
+            two.capability_line().unwrap(),
+            "Foxglove can: use your keyboard and go online."
+        );
+        // Nothing to say, and a re-ask of new items only: no line.
+        assert_eq!(fr2_dialog(&[("ui.window", false)]).capability_line(), None);
+        let mut more = d.clone();
+        more.reason = Some(Reason::More);
+        assert_eq!(more.capability_line(), None);
+    }
+
+    /// Every sensitive ask is in the line, whatever it is (no product list behind it).
+    #[test]
+    fn the_capability_line_covers_every_sensitive_ask() {
+        for raw in [
+            "device.hid:keyboard",
+            "device.hid:lighting",
+            "device.hid:vendor",
+            "hid.raw",
+            "key.events",
+            "net",
+            "net.example",
+            "ai.ask:chat",
+            "secrets.ref:token",
+            "provide:gpu.*",
+            "device.hid:something-new",
+        ] {
+            let d = fr2_dialog(&[(raw, true)]);
+            let line = d.capability_line().unwrap_or_default();
+            let want = match raw {
+                "device.hid:keyboard" | "device.hid:lighting" => can_phrase(raw),
+                _ => can_phrase(raw),
+            };
+            assert!(line.contains(want), "{raw}: {line}");
+        }
+        let d = fr2_dialog(&[
+            ("device.hid:keyboard", true),
+            ("device.hid:lighting", true),
+            ("device.hid:vendor", true),
+        ]);
+        let line = d.capability_line().unwrap();
+        assert!(
+            line.contains("keyboard") && line.contains("PC lights") && line.contains("same maker")
+        );
+    }
+
+    #[test]
+    fn the_fr2_words_are_plain_and_name_no_product() {
+        let mut d = fr2_dialog(&[
+            ("device.hid:keyboard", true),
+            ("device.hid:lighting", true),
+            ("device.hid:vendor", true),
+            ("net", true),
+            ("files", false),
+            ("facts.write:keyboard.*", false),
+        ]);
+        d.name = "Gizmo Keys".into();
+        d.path = r"C:\Apps\Gizmo\gizmo.exe".into();
+        let mut all = vec![
+            d.capability_line().unwrap(),
+            d.sensitive_note(),
+            d.source_line().unwrap(),
+            d.everyday_label(),
+            needs_ok_heading(4),
+            ALLOW_AND_START.to_string(),
+            SHOW.to_string(),
+            HIDE.to_string(),
+        ];
+        for r in [
+            "device.hid:keyboard",
+            "device.hid:lighting",
+            "device.hid:vendor",
+            "net",
+            "files",
+        ] {
+            all.push(can_phrase(r).to_string());
+        }
+        for text in &all {
+            let l = text.to_lowercase();
+            for bad in [
+                "module",
+                "manifest",
+                "grant",
+                "hash",
+                "installed separately",
+                "capability",
+                "foxglove",
+                "logitech",
+                "vulpes",
+            ] {
+                assert!(!l.contains(bad), "{bad:?} in {text:?}");
+            }
+        }
+        assert_eq!(
+            d.source_line().unwrap(),
+            "Not signed \u{b7} C:\\Apps\\Gizmo\\gizmo.exe"
+        );
+        assert_eq!(
+            d.sensitive_note(),
+            "These let Gizmo Keys reach your devices and the internet directly. \
+             Hideout can't limit what it does with them."
+        );
+        assert_eq!(needs_ok_heading(4), "These need your OK (4)");
+        assert_eq!(everyday_label(17), "17 everyday items");
+        assert_eq!(everyday_label(1), "1 everyday item");
+    }
+
+    #[test]
+    fn allow_and_start_replaces_the_count_only_when_allow_starts_the_app() {
+        let mut d = dialog();
+        assert!(d.allow_label().starts_with("Allow "));
+        d.view.starts = true;
+        assert_eq!(d.allow_label(), "Allow and start");
+        for i in d.items.iter_mut() {
+            i.checked = false;
+        }
+        assert_eq!(d.allow_label(), "Allow none");
+    }
+
+    #[test]
+    fn the_everyday_items_start_collapsed_unless_something_in_them_must_be_seen() {
+        let mut d = fr2_dialog(&[("ui.window", false), ("hub.notify", false)]);
+        assert_eq!((d.everyday(), d.everyday_shown()), (2, false));
+        d.view.everyday_open = true;
+        assert!(d.everyday_shown());
+        d.view.everyday_open = false;
+        d.items[0].new = true;
+        assert!(d.everyday_shown(), "a new item is never hidden");
     }
 }

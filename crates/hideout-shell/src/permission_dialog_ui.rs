@@ -9,10 +9,10 @@ use crate::egui;
 use crate::keyboard_grant::{DIALOG_FOOTER, DIALOG_ITEMS};
 use crate::keyboard_grant_ui::rgb as c;
 use crate::permission_dialog::{
-    earlier_label, keep_understand_said, keep_warning, keyboard_line, All, FirstRun, Group,
-    ItemWord, Keep, KeepAnswer, KeepConfirm, PermAnswer, PermDialog, PermHeader, Section, CANCEL,
-    CHANGE, FIRST_RUN_INTRO, HISTORY_SHOWN, KEEP_CONFIRM_OK, KEEP_CONFIRM_TITLE, KEEP_LABEL,
-    NOT_NOW, TURN_ALL_OFF, TURN_OFF, UNDERSTAND,
+    earlier_label, keep_understand_said, keep_warning, keyboard_line, needs_ok_heading, All,
+    FirstRun, Group, ItemWord, Keep, KeepAnswer, KeepConfirm, PermAnswer, PermDialog, PermHeader,
+    Section, CANCEL, CHANGE, FIRST_RUN_INTRO, HIDE, HISTORY_SHOWN, KEEP_CONFIRM_OK,
+    KEEP_CONFIRM_TITLE, KEEP_LABEL, NOT_NOW, SHOW, TURN_ALL_OFF, TURN_OFF, UNDERSTAND,
 };
 use crate::theme::Tokens;
 
@@ -94,27 +94,8 @@ pub(crate) fn perm_dialog_ids(
         if d.reason.is_some() || !d.before_lines().is_empty() {
             ui.add_space(6.0);
         }
-        ui.label(d.intro());
+        head_ui(ui, t, d);
         ui.add_space(6.0);
-        // All N: tri-state.
-        if d.has_all() {
-            let state = d.all_state();
-            let mut all_on = state == All::All;
-            let all = outlined(ui, t, |ui| {
-                ui.add(
-                    egui::Checkbox::new(
-                        &mut all_on,
-                        egui::RichText::new(d.all_label()).strong().color(c(t.text)),
-                    )
-                    .indeterminate(state == All::Some),
-                )
-            });
-            if all.changed() {
-                d.toggle_all();
-            }
-            ids.push(all.id);
-            ui.add_space(4.0);
-        }
         // Scrolls inside when the list is taller than the window allows; the buttons stay.
         let scroll = egui::ScrollArea::vertical()
             .max_height((screen_h * 0.8 - fixed).max(140.0))
@@ -235,28 +216,8 @@ pub(crate) fn first_run_dialog_ids(
                             let rt = egui::RichText::new(line).color(c(t.attention));
                             ui.label(if i == 0 { rt.strong() } else { rt });
                         }
-                        ui.label(sec.intro());
+                        head_ui(ui, t, sec);
                         ui.add_space(6.0);
-                        if sec.has_all() {
-                            let state = sec.all_state();
-                            let mut all_on = state == All::All;
-                            let all = outlined(ui, t, |ui| {
-                                ui.add(
-                                    egui::Checkbox::new(
-                                        &mut all_on,
-                                        egui::RichText::new(sec.all_label())
-                                            .strong()
-                                            .color(c(t.text)),
-                                    )
-                                    .indeterminate(state == All::Some),
-                                )
-                            });
-                            if all.changed() {
-                                sec.toggle_all();
-                            }
-                            ids.push(all.id);
-                            ui.add_space(4.0);
-                        }
                         list_ui(ui, t, sec, &mut ids);
                         ui.add_space(8.0);
                         binding_ui(ui, t, sec, &mut ids);
@@ -316,18 +277,91 @@ pub(crate) fn first_run_dialog_ids(
     (answer, ids)
 }
 
+/// The intro, what the app can do (always visible, bold) and where it comes from.
+fn head_ui(ui: &mut egui::Ui, t: &Tokens, d: &PermDialog) {
+    if let Some(line) = d.capability_line() {
+        ui.label(egui::RichText::new(line).strong().color(c(t.text)));
+        ui.add_space(4.0);
+    }
+    if let Some(src) = d.source_line() {
+        ui.add(
+            egui::Label::new(fine(ui, src).monospace().color(c(t.text_muted)))
+                .wrap()
+                .selectable(true),
+        );
+        ui.add_space(4.0);
+    }
+    ui.label(d.intro());
+}
+
+/// "17 everyday items . Show": the everyday items' box (every one at once) and the link that
+/// lists them. The box is the old All box, kept for the items that are not sensitive.
+fn everyday_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui::Id>) {
+    ui.add_space(6.0);
+    let state = d.all_state();
+    let mut all_on = state == All::All;
+    let forced = d.items.iter().any(|i| i.new || i.before);
+    let label = d.everyday_label();
+    let shown = d.everyday_shown();
+    ui.horizontal(|ui| {
+        let all = outlined(ui, t, |ui| {
+            ui.add(
+                egui::Checkbox::new(
+                    &mut all_on,
+                    egui::RichText::new(&label).strong().color(c(t.text)),
+                )
+                .indeterminate(state == All::Some),
+            )
+        });
+        if all.changed() {
+            d.toggle_all();
+        }
+        ids.push(all.id);
+        if !forced {
+            ui.label(fine(ui, "\u{b7}").color(c(t.text_muted)));
+            let word = if shown { HIDE } else { SHOW };
+            let b = ui
+                .add(egui::Button::new(egui::RichText::new(word).color(c(t.accent))).frame(false));
+            let said = format!("{word} the {label}");
+            ui.ctx().accesskit_node_builder(b.id, |n| n.set_label(said));
+            if b.clicked() {
+                d.view.everyday_open = !d.view.everyday_open;
+            }
+            ids.push(b.id);
+        }
+    });
+}
+
 /// The groups of items and the keyboard choice of one dialog, in Tab order.
 fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui::Id>) {
+    let mut everyday_head = false;
     for g in Group::ALL {
         let n = d.group(g).count();
         if n == 0 {
             continue;
         }
-        let said = format!("{}, {n} item{}", g.heading(), if n == 1 { "" } else { "s" });
+        let everyday = matches!(
+            g,
+            Group::MakeChanges | Group::AnswerQuestions | Group::ShareStatus
+        );
+        if everyday && !everyday_head && d.everyday() > 0 {
+            everyday_head = true;
+            everyday_ui(ui, t, d, ids);
+        }
+        if everyday && !d.everyday_shown() {
+            continue;
+        }
+        let heading = if g == Group::Sensitive {
+            needs_ok_heading(n)
+        } else {
+            g.heading().to_string()
+        };
+        let said = format!("{heading}, {n} item{}", if n == 1 { "" } else { "s" });
+        let note = (g == Group::Sensitive).then(|| d.sensitive_note());
         let grp = ui.vertical(|ui| {
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new(g.heading())
+                egui::RichText::new(&heading)
                     .strong()
                     .color(group_colour(t, g)),
             );
@@ -347,7 +381,13 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                 }
                 let r = ui
                     .horizontal(|ui| {
-                        let r = check(ui, t, &mut item.checked, &item.line);
+                        let text = egui::RichText::new(&item.line);
+                        let text = if item.sensitive {
+                            text.color(c(t.danger))
+                        } else {
+                            text
+                        };
+                        let r = check(ui, t, &mut item.checked, text);
                         if item.new {
                             ui.label(fine(ui, "New").strong().color(c(t.attention)));
                         }
@@ -384,6 +424,10 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                         });
                     });
                 }
+            }
+            if let Some(note) = note {
+                ui.add_space(2.0);
+                ui.label(fine(ui, note).color(c(t.text_muted)));
             }
         });
         ui.ctx().accesskit_node_builder(grp.response.id, |n| {
@@ -425,13 +469,6 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
 fn binding_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui::Id>) {
     let [b0, b1, b2] = d.binding_lines();
     ui.label(b0);
-    if !d.path.is_empty() {
-        ui.add(
-            egui::Label::new(egui::RichText::new(&d.path).monospace())
-                .wrap()
-                .selectable(true),
-        );
-    }
     ui.label(fine(ui, b1).color(c(t.text_muted)));
     ui.label(fine(ui, b2).color(c(t.text_muted)));
     if let Some(k) = d.keep.as_mut() {
