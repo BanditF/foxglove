@@ -3011,4 +3011,101 @@ mod rebuild_tests {
         );
         assert_eq!(rebuilt_fact(&c), Some(Value::Null));
     }
+
+    // The stop for a rebuild is only ever sent after the driver verified and pinned the new
+    // build (`rebuild_preflight`); these cover what the policy does once the swap is under way.
+
+    fn exited(p: &mut Policy, t: Instant, inst: u64, code: i64) -> Vec<Cmd> {
+        p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: inst,
+                code,
+            },
+            t,
+        )
+    }
+
+    #[test]
+    fn the_old_copy_crashing_mid_swap_still_starts_the_verified_build_once() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        rebuilt(&mut p, t);
+        // It dies badly instead of exiting cleanly.
+        let c = exited(&mut p, t, 1, 139);
+        assert_eq!(launches(&c), 1, "the new build starts: {c:?}");
+        assert_eq!(p.crashes(ID, t), 0, "the swap's own exit is not a crash");
+        // And nothing else starts later.
+        assert_eq!(launches(&p.tick(t + Duration::from_secs(60))), 0);
+    }
+
+    #[test]
+    fn an_old_copy_that_will_not_exit_is_killed_and_the_new_build_starts_once() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        rebuilt(&mut p, t);
+        let c = p.tick(t + EXIT_AFTER_PIPE);
+        assert!(c.contains(&Cmd::Kill { id: ID.into() }));
+        assert_eq!(launches(&c), 0, "not before it is gone");
+        let c = exited(&mut p, t + EXIT_AFTER_PIPE, 1, 1);
+        assert_eq!(launches(&c), 1);
+        assert_eq!(p.crashes(ID, t + EXIT_AFTER_PIPE), 0);
+    }
+
+    #[test]
+    fn a_build_that_will_not_start_after_the_stop_ends_in_the_row_and_does_not_loop() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        rebuilt(&mut p, t);
+        assert_eq!(launches(&exited(&mut p, t, 1, 0)), 1);
+        // The driver's launch check refused it (file gone, folder changed, trust changed).
+        p.handle(
+            Ev::LaunchFailed {
+                id: ID.into(),
+                reason: "Couldn't start".into(),
+            },
+            t,
+        );
+        assert_ne!(p.state(ID), Some(State::Running));
+        assert_ne!(p.state(ID), Some(State::Restarting));
+        for secs in [1, 5, 60, 600] {
+            assert_eq!(
+                launches(&p.tick(t + Duration::from_secs(secs))),
+                0,
+                "no start loop after {secs} s"
+            );
+        }
+        assert_eq!(p.crashes(ID, t), 0);
+    }
+
+    #[test]
+    fn a_second_trigger_during_the_stop_adds_no_second_stop_or_start() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        let first = rebuilt(&mut p, t);
+        assert!(first.contains(&Cmd::Exit { id: ID.into() }));
+        for _ in 0..3 {
+            assert!(rebuilt(&mut p, t).is_empty());
+        }
+        assert_eq!(launches(&exited(&mut p, t, 1, 0)), 1, "one start in all");
+    }
+
+    #[test]
+    fn the_new_build_crashing_right_after_the_swap_takes_the_crash_ladder_not_a_rebuild() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        rebuilt(&mut p, t);
+        exited(&mut p, t, 1, 0);
+        p.handle(
+            Ev::Started {
+                id: ID.into(),
+                instance: 2,
+            },
+            t,
+        );
+        let c = exited(&mut p, t + Duration::from_secs(1), 2, 1);
+        assert_eq!(p.crashes(ID, t + Duration::from_secs(1)), 1);
+        assert_eq!(p.state(ID), Some(State::Restarting));
+        assert!(!c.contains(&Cmd::Exit { id: ID.into() }));
+    }
 }

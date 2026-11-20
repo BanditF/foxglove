@@ -138,3 +138,95 @@ fn an_unknown_app_refuses() {
     let f = fx("unknown", "dialog");
     assert!(rebuild_gate(&f.reg, "nobody", None, "new").is_err());
 }
+
+// ---- R3 race: the new build is verified and pinned BEFORE anything stops -------------------
+
+use hideout_supervisor::driver::rebuild_preflight;
+use hideout_supervisor::sha256_file;
+
+fn sha(f: &Fx) -> String {
+    sha256_file(&f.exe).unwrap()
+}
+
+#[test]
+fn a_settled_readable_build_passes_and_comes_back_pinned() {
+    let f = fx("pf-pass", "dialog");
+    rebuild(&f, b"build 2");
+    let want = sha(&f);
+    let pin = rebuild_preflight(&f.reg, ID, Some("old"), &want).expect("passes");
+    assert_eq!(pin.sha256, want, "the pin is of the settled bytes");
+}
+
+#[test]
+fn a_build_that_failed_and_left_no_program_stops_nothing() {
+    let f = fx("pf-failed", "dialog");
+    rebuild(&f, b"build 2");
+    let want = sha(&f);
+    std::fs::remove_file(&f.exe).unwrap();
+    // Refused (by the gate, which no longer finds an enrolled program); nothing is pinned.
+    assert!(rebuild_preflight(&f.reg, ID, Some("old"), &want).is_err());
+}
+
+#[test]
+fn a_later_build_that_superseded_the_settled_one_refuses() {
+    let f = fx("pf-superseded", "dialog");
+    rebuild(&f, b"build 2");
+    let settled = sha(&f);
+    // A second build lands before the first one's check.
+    rebuild(&f, b"build 3");
+    let e = rebuild_preflight(&f.reg, ID, Some("old"), &settled).unwrap_err();
+    assert!(e.contains("superseded"), "{e}");
+    // The second build's own settle then passes.
+    let again = sha(&f);
+    assert!(rebuild_preflight(&f.reg, ID, Some("old"), &again).is_ok());
+}
+
+#[test]
+fn a_dev_folder_removed_between_trigger_and_start_refuses() {
+    let mut f = fx("pf-removed", "dialog");
+    rebuild(&f, b"build 2");
+    let want = sha(&f);
+    assert!(rebuild_preflight(&f.reg, ID, Some("old"), &want).is_ok());
+    let out = f.out.display().to_string();
+    f.reg.remove_dev_folder(&out).unwrap();
+    let e = rebuild_preflight(&f.reg, ID, Some("old"), &want).unwrap_err();
+    assert!(e.contains("dev folder"), "{e}");
+}
+
+#[test]
+fn the_program_moved_or_started_differently_between_trigger_and_start_refuses() {
+    let f = fx("pf-changed", "dialog");
+    rebuild(&f, b"build 2");
+    let want = sha(&f);
+    // Another program path in the manifest.
+    let elsewhere = temp("pf-changed-elsewhere");
+    let exe2 = elsewhere.join("foxglove.exe");
+    std::fs::write(&exe2, b"build 2").unwrap();
+    let dir = f.reg.module_dir(ID, "1.0.0");
+    std::fs::write(dir.join("module.toml"), manifest(&exe2, None)).unwrap();
+    let reg = Registry::open(&f.home, true).unwrap();
+    assert!(rebuild_preflight(&reg, ID, Some("old"), &want).is_err());
+    // Different arguments.
+    std::fs::write(dir.join("module.toml"), manifest(&f.exe, Some("--new"))).unwrap();
+    let reg = Registry::open(&f.home, true).unwrap();
+    assert!(rebuild_preflight(&reg, ID, Some("old"), &want).is_err());
+}
+
+#[test]
+fn the_build_already_running_and_developer_mode_off_refuse_before_any_file_is_read() {
+    let f = fx("pf-gate", "dialog");
+    rebuild(&f, b"build 2");
+    let want = sha(&f);
+    assert!(rebuild_preflight(&f.reg, ID, Some(&want), &want).is_err());
+    let shipped = Registry::open(&f.home, false).unwrap();
+    assert!(rebuild_preflight(&shipped, ID, None, &want).is_err());
+}
+
+#[test]
+fn a_refusal_is_total_for_every_unreadable_state() {
+    // Fail closed: an empty settled hash, an unknown app and a missing program all refuse.
+    let f = fx("pf-closed", "dialog");
+    rebuild(&f, b"build 2");
+    assert!(rebuild_preflight(&f.reg, ID, None, "").is_err());
+    assert!(rebuild_preflight(&f.reg, "nobody", None, &sha(&f)).is_err());
+}
