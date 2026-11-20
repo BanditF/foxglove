@@ -767,9 +767,17 @@ impl Outputs {
         t: SceneTime,
     ) {
         let keep = self.temp.take();
+        let (was, was_sent) = (self.keyboard_effect.clone(), self.effect_sent);
         self.set_effect(effect);
         self.temp = keep;
         self.set_temperature(look, reading, game, t);
+        // set_effect rebuilt the keyboard's effect from the look's fallback; it is the
+        // driver's colour that counts. Unchanged colour: nothing to send again.
+        if let Some(d) = &self.temp {
+            self.keyboard_effect =
+                keyboard_effect(&d.target_effect(), &self.room, &self.keyboard_parts);
+            self.effect_sent = was_sent && self.keyboard_effect == was;
+        }
     }
 
     /// Temperature's reading changed (or went): the colour follows, rate-limited. Nothing is
@@ -2681,22 +2689,32 @@ mod tests {
         let mut sent = Sent::default();
         run_frames(&mut o, 0, 30_000, &mut sent);
         let shown = sent.effects[0][0];
-        // An edit of the ends (the Scenes page sends the whole look again).
-        let edited = TempLook {
+        // An edit that leaves the colour as it was (60 is half way in 30-90 too): nothing
+        // goes to the keyboard, and the fallback never shows.
+        let same = TempLook {
             cool_c: 30,
             hot_c: 90,
             ..temp_look()
         };
-        o.set_effect_keeping_temperature(scanline(), edited, Some(60.0), false, SceneTime(40_000));
+        o.set_effect_keeping_temperature(scanline(), same, Some(60.0), false, SceneTime(40_000));
+        let mut quiet = Sent::default();
+        run_frames(&mut o, 40_000, 45_000, &mut quiet);
+        assert!(quiet.effects.is_empty(), "{quiet:?}");
+        // An edit that moves it: one steady colour, never the breathing fallback or dark.
+        let moved = TempLook {
+            cool_c: 40,
+            hot_c: 100,
+            ..temp_look()
+        };
+        o.set_effect_keeping_temperature(scanline(), moved, Some(60.0), false, SceneTime(50_000));
         let mut after = Sent::default();
-        run_frames(&mut o, 40_000, 70_000, &mut after);
-        // Only steady colours, none of them the breathing fallback or dark.
-        assert!(!after.effects.is_empty());
+        run_frames(&mut o, 50_000, 80_000, &mut after);
+        assert_eq!(after.effects.len(), 1, "{after:?}");
         for e in &after.effects {
             assert_eq!(e[0], e[1], "steady");
             assert_ne!(e[0], [0, 0, 0]);
+            assert_ne!(e[0], shown);
         }
-        let _ = shown;
     }
 
     #[test]
