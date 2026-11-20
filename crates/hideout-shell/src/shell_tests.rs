@@ -3181,12 +3181,12 @@ fn renders_the_permission_dialog_for_review() {
     let rows: [(&str, &str, Group); 16] = [
         (
             "facts.write:keyboard.*",
-            "Share your keyboard's status in Hideout",
+            "Share all of your keyboard's status (layer, battery, lights and more)",
             Group::ShareStatus,
         ),
         (
             "facts.read:module.*",
-            "See which modules are installed and running",
+            "See every app Hideout runs and whether it is running",
             Group::ShareStatus,
         ),
         (
@@ -3479,12 +3479,12 @@ fn renders_the_grants_more_header_for_review() {
     let old: [(&str, &str, Group); 13] = [
         (
             "facts.write:keyboard.*",
-            "Share your keyboard's status in Hideout",
+            "Share all of your keyboard's status (layer, battery, lights and more)",
             Group::ShareStatus,
         ),
         (
             "facts.read:module.*",
-            "See which modules are installed and running",
+            "See every app Hideout runs and whether it is running",
             Group::ShareStatus,
         ),
         (
@@ -4725,4 +4725,81 @@ fn a_pages_words_are_announced_once_politely() {
     let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
     assert_eq!(hub.announce.as_ref().map(|a| a.n), n);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review images of the plain-words fact lines (L3 of sec-1332): the sensors app's dialog (a
+/// wide write, one exact read), a wider read beside an exact one, and two keys no table knows.
+/// Light, dark and a narrow window (`HIDEOUT_REVIEW_DIR`, files `built-consent-*.png`).
+#[test]
+fn renders_the_consent_copy_for_review() {
+    use crate::permission_dialog::{Group, ListItem, PermDialog};
+    use crate::permission_dialog_ui::perm_dialog_ui;
+    use hideout_contract::permission::fact_words;
+
+    let up = |s: String| {
+        let mut c = s.chars();
+        c.next().map_or_else(String::new, |f| {
+            f.to_uppercase().chain(c).collect::<String>()
+        })
+    };
+    let item = |raw: &str, line: String| ListItem {
+        raw: raw.into(),
+        line,
+        group: Group::ShareStatus,
+        allowable: true,
+        sensitive: false,
+        reason: None,
+        checked: false,
+        confirmed: false,
+        new: false,
+        before: false,
+    };
+    let dialog = || {
+        let mut items: Vec<ListItem> = [
+            ("facts.write:sensor.*", false, "sensor.*"),
+            ("facts.read:keyboard.game_mode", true, "keyboard.game_mode"),
+            ("facts.read:keyboard.*", true, "keyboard.*"),
+            ("facts.write:weather.temp", false, "weather.temp"),
+            ("facts.read:weather.*", true, "weather.*"),
+        ]
+        .into_iter()
+        .map(|(raw, read, key)| item(raw, up(fact_words(read, key))))
+        .collect();
+        items.sort_by_key(|i| i.raw.clone());
+        PermDialog {
+            id: "sensors".into(),
+            name: "Sensors".into(),
+            code: "7f3a91c20b4e55d1".into(),
+            path: r"C:\Program Files\Foxglove\sensors.exe".into(),
+            items,
+            reason: None,
+            keyboard: None,
+            keep: None,
+            removed: Vec::new(),
+            same_place: false,
+            view: Default::default(),
+            error: None,
+        }
+    };
+    for (dark, name) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        for (size, w, h) in [("wide", 760u32, 760u32), ("narrow", 420, 900)] {
+            let mut d = dialog();
+            d.view.everyday_open = true;
+            let Some(rgba) = rasterise(w, h, |ctx| {
+                set_theme(ctx, choice);
+                ctx.style_mut(|s| s.animation_time = 0.0);
+                perm_dialog_ui(ctx, &t, &mut d, true);
+            }) else {
+                eprintln!("no system font; render test skipped");
+                return;
+            };
+            save_png(&format!("built-consent-{size}-{name}.png"), w, h, rgba);
+        }
+    }
 }

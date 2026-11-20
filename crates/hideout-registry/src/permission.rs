@@ -11,6 +11,7 @@
 //! method does (a test in `hideout-router` keeps it so).
 
 use hideout_contract::capability::{check_grantable, Capability};
+use hideout_contract::permission::{fact_words, Permission};
 use hideout_contract::{Error, ErrorId};
 use serde::Serialize;
 
@@ -113,14 +114,6 @@ pub fn is_gpu_broker(method: &str) -> bool {
 
 /// Other permission strings.
 const OTHER_LINES: &[(&str, &str)] = &[
-    (
-        "facts.write:keyboard.*",
-        "Share your keyboard's status in Hideout",
-    ),
-    (
-        "facts.read:module.*",
-        "See which modules are installed and running",
-    ),
     ("key.events", "See every key you press"),
     ("hid.raw", "Talk to your devices directly"),
     ("net", "Go online"),
@@ -157,6 +150,12 @@ fn is_sensitive(raw: &str) -> bool {
         || raw.starts_with("device.hid:")
 }
 
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
 /// Group, plain line and sensitivity of one permission string. An unknown body falls back to
 /// the raw string in the Sensitive group (§6.2's "Unknown: <raw>").
 pub fn describe(raw: &str) -> (Group, String, bool) {
@@ -186,7 +185,14 @@ pub fn describe(raw: &str) -> (Group, String, bool) {
         return (group, (*l).to_string(), is_sensitive(raw));
     }
     if raw.starts_with("facts.") {
-        return (Group::ShareStatus, raw.to_string(), false);
+        // Plain words for the pattern (display only; the grant is the raw string). A pattern
+        // that does not parse is never grantable and keeps its raw text.
+        let line = match Permission::try_from(raw.to_string()) {
+            Ok(Permission::FactsRead(p)) => capitalized(&fact_words(true, &p)),
+            Ok(Permission::FactsWrite(p)) => capitalized(&fact_words(false, &p)),
+            _ => raw.to_string(),
+        };
+        return (Group::ShareStatus, line, false);
     }
     if is_sensitive(raw) || Capability::parse(raw).is_err() {
         return (Group::Sensitive, format!("Unknown: {raw}"), true);

@@ -84,8 +84,8 @@ impl Permission {
     /// ExampleApp is running", where the stored `exampleapp.exe` alone gives "exampleapp").
     pub fn describe_spelled(&self, names: &[&str]) -> String {
         match self {
-            Permission::FactsRead(p) => format!("read {p}"),
-            Permission::FactsWrite(p) => format!("publish {p}"),
+            Permission::FactsRead(p) => fact_words(true, p),
+            Permission::FactsWrite(p) => fact_words(false, p),
             Permission::DevicesRead => "see your keyboards and their state".into(),
             Permission::LightingWrite => "change your keyboards' and PC's lights".into(),
             Permission::BehaviorsInvoke => "run your keymap's actions (not risky ones)".into(),
@@ -160,6 +160,252 @@ impl Permission {
             _ => None,
         }
     }
+}
+
+/// Plain words for a fact pattern in a consent line: (pattern, what reading it is, what
+/// publishing it is). Display only: a grant is always for the exact pattern string, whatever
+/// these words say, and a lookup is an exact, case-sensitive match of the whole pattern, so a
+/// key's text never widens or narrows anything. A pattern that ends in `*` must read wider than
+/// any exact key under it ("all of ..."); a test keeps that so. No line shows a dotted key.
+pub const FACT_WORDS: &[(&str, &str, &str)] = &[
+    (
+        "keyboard.game_mode",
+        "see whether game mode is on",
+        "share whether game mode is on",
+    ),
+    (
+        "keyboard.connected",
+        "see whether your keyboard is connected",
+        "share whether your keyboard is connected",
+    ),
+    (
+        "keyboard.layer",
+        "see which layer your keyboard is on",
+        "share which layer your keyboard is on",
+    ),
+    (
+        "keyboard.layers",
+        "see which of your keyboard's layers are on",
+        "share which of your keyboard's layers are on",
+    ),
+    (
+        "keyboard.right.battery",
+        "see the battery level of your keyboard's right half",
+        "share the battery level of your keyboard's right half",
+    ),
+    (
+        "keyboard.link",
+        "see whether your keyboard is on USB or Bluetooth",
+        "share whether your keyboard is on USB or Bluetooth",
+    ),
+    (
+        "keyboard.profile",
+        "see which Bluetooth profile your keyboard uses",
+        "share which Bluetooth profile your keyboard uses",
+    ),
+    (
+        "keyboard.profile_connected",
+        "see whether your keyboard's current Bluetooth profile is connected",
+        "share whether your keyboard's current Bluetooth profile is connected",
+    ),
+    (
+        "keyboard.lighting.on",
+        "see whether your keyboard's lights are on",
+        "share whether your keyboard's lights are on",
+    ),
+    (
+        "keyboard.lighting.color",
+        "see your keyboard's light colour",
+        "share your keyboard's light colour",
+    ),
+    (
+        "keyboard.lighting.brightness",
+        "see your keyboard's light brightness",
+        "share your keyboard's light brightness",
+    ),
+    (
+        "keyboard.lighting.effect",
+        "see your keyboard's light effect",
+        "share your keyboard's light effect",
+    ),
+    (
+        "keyboard.lighting.rainbow",
+        "see whether your keyboard's light effect makes its own colours",
+        "share whether your keyboard's light effect makes its own colours",
+    ),
+    (
+        "keyboard.lighting.*",
+        "see all of your keyboard's light settings",
+        "share all of your keyboard's light settings",
+    ),
+    (
+        "keyboard.*",
+        "see all of your keyboard's status (layer, battery, lights and more)",
+        "share all of your keyboard's status (layer, battery, lights and more)",
+    ),
+    (
+        "module.foxglove.state",
+        "see whether Foxglove is running",
+        "share whether Foxglove is running",
+    ),
+    (
+        "module.*",
+        "see every app Hideout runs and whether it is running",
+        "share the state of every app Hideout runs",
+    ),
+    (
+        "sensor.cpu.load_pct",
+        "see how busy your processor is",
+        "share how busy your processor is",
+    ),
+    (
+        "sensor.cpu.state",
+        "see whether your processor's reading is available",
+        "share whether your processor's reading is available",
+    ),
+    (
+        "sensor.cpu.*",
+        "see all of your processor's readings",
+        "share all of your processor's readings",
+    ),
+    (
+        "sensor.gpu.load_pct",
+        "see how busy your graphics card is",
+        "share how busy your graphics card is",
+    ),
+    (
+        "sensor.gpu.temp_c",
+        "see your graphics card's temperature",
+        "share your graphics card's temperature",
+    ),
+    (
+        "sensor.gpu.clock_mhz",
+        "see your graphics card's speed",
+        "share your graphics card's speed",
+    ),
+    (
+        "sensor.gpu.power_w",
+        "see how much power your graphics card uses",
+        "share how much power your graphics card uses",
+    ),
+    (
+        "sensor.gpu.fan_rpm",
+        "see how fast your graphics card's fan spins",
+        "share how fast your graphics card's fan spins",
+    ),
+    (
+        "sensor.gpu.fan_pct",
+        "see how hard your graphics card's fan works",
+        "share how hard your graphics card's fan works",
+    ),
+    (
+        "sensor.gpu.state",
+        "see whether your graphics card's readings are available",
+        "share whether your graphics card's readings are available",
+    ),
+    (
+        "sensor.gpu.*",
+        "see all of your graphics card's readings",
+        "share all of your graphics card's readings",
+    ),
+    (
+        "sensor.ram.used_pct",
+        "see how much of your memory is in use",
+        "share how much of your memory is in use",
+    ),
+    (
+        "sensor.ram.state",
+        "see whether your memory reading is available",
+        "share whether your memory reading is available",
+    ),
+    (
+        "sensor.ram.*",
+        "see all of your memory's readings",
+        "share all of your memory's readings",
+    ),
+    (
+        "sensor.*",
+        "see all of your PC's readings: load, graphics card temperature and fan speed",
+        "share all of your PC's readings: load, graphics card temperature and fan speed",
+    ),
+    (
+        "media.title",
+        "see the title of what is playing",
+        "share the title of what is playing",
+    ),
+    (
+        "media.artist",
+        "see the artist of what is playing",
+        "share the artist of what is playing",
+    ),
+    (
+        "media.playing",
+        "see whether media is playing",
+        "share whether media is playing",
+    ),
+    (
+        "media.*",
+        "see all of what is playing (title, artist and more)",
+        "share all of what is playing (title, artist and more)",
+    ),
+    (
+        "volume.level",
+        "see your volume level",
+        "share your volume level",
+    ),
+    (
+        "volume.muted",
+        "see whether your volume is muted",
+        "share whether your volume is muted",
+    ),
+    (
+        "volume.*",
+        "see all of your volume settings",
+        "share all of your volume settings",
+    ),
+    (
+        "mic.state",
+        "see whether your microphone is muted",
+        "share whether your microphone is muted",
+    ),
+    (
+        "mic.*",
+        "see all of your microphone's state (muted and which one)",
+        "share all of your microphone's state (muted and which one)",
+    ),
+];
+
+/// A fact pattern in plain words, starting with the verb ("see ...", "share ..."). A known
+/// pattern uses [`FACT_WORDS`]. Any other still names the key, in a sentence: an exact key reads
+/// `see the status called “x.y”`, a prefix `see every status whose name starts with “x.”`, and
+/// `*` `see every status any app shares`. A wildcard always says "every" or "all of".
+pub fn fact_words(read: bool, pattern: &str) -> String {
+    if let Some((_, r, w)) = FACT_WORDS.iter().find(|(p, _, _)| *p == pattern) {
+        return (if read { *r } else { *w }).to_string();
+    }
+    let verb = if read { "see" } else { "share" };
+    match pattern.strip_suffix('*') {
+        Some("") => format!("{verb} every status any app shares"),
+        Some(prefix) => {
+            format!("{verb} every status whose name starts with \u{201c}{prefix}\u{201d}")
+        }
+        None => format!("{verb} the status called \u{201c}{pattern}\u{201d}"),
+    }
+}
+
+/// Every line [`fact_words`] says for the table, plus one of each fallback shape, for the copy
+/// tests.
+pub fn fact_lines() -> Vec<String> {
+    let mut v = Vec::new();
+    for p in FACT_WORDS
+        .iter()
+        .map(|(p, _, _)| *p)
+        .chain(["x.y", "x.*", "*"])
+    {
+        v.push(fact_words(true, p));
+        v.push(fact_words(false, p));
+    }
+    v
 }
 
 /// An app watch's app for a permission line: `exe` without `.exe`, spelled as one of `names`
@@ -419,6 +665,116 @@ mod tests {
 
     fn p(s: &str) -> Result<Permission, String> {
         Permission::try_from(s.to_string())
+    }
+
+    fn dotted(line: &str) -> bool {
+        line.split_whitespace().any(|w| {
+            let w = w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '_');
+            w.contains('.') && w.chars().any(|c| c.is_ascii_alphabetic()) && !w.ends_with('.')
+        })
+    }
+
+    #[test]
+    fn every_known_fact_has_plain_words_and_no_raw_key() {
+        let mut seen = std::collections::HashSet::new();
+        for (pat, read, write) in FACT_WORDS {
+            assert!(seen.insert(*pat), "{pat} twice");
+            assert!(p(&format!("facts.read:{pat}")).is_ok(), "{pat}");
+            for (verb, line) in [("see", read), ("share", write)] {
+                assert!(line.starts_with(verb), "{pat}: {line}");
+                assert!(!line.contains(pat), "{pat} shown raw in {line}");
+                assert!(!dotted(line), "{pat}: dotted key in {line}");
+                assert!(!line.contains('_'), "{pat}: {line}");
+                assert!(!line.to_lowercase().contains("module"), "{pat}: {line}");
+            }
+            // The lines are what describe() says.
+            assert_eq!(p(&format!("facts.read:{pat}")).unwrap().describe(), *read);
+            assert_eq!(p(&format!("facts.write:{pat}")).unwrap().describe(), *write);
+        }
+        // The keys the sensors module and Foxglove's link ask for.
+        for pat in ["keyboard.game_mode", "sensor.*", "keyboard.*", "module.*"] {
+            assert!(seen.contains(pat), "{pat} missing");
+        }
+        assert_eq!(
+            p("facts.read:keyboard.game_mode").unwrap().describe(),
+            "see whether game mode is on"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_reads_wider_than_an_exact_key() {
+        for (pat, read, write) in FACT_WORDS {
+            for line in [read, write] {
+                let wide = line.contains("all of") || line.contains("every");
+                assert_eq!(wide, pat.ends_with('*'), "{pat}: {line}");
+            }
+        }
+        // A wildcard line never equals the line of any exact key.
+        let exact: Vec<&str> = FACT_WORDS
+            .iter()
+            .filter(|(p, _, _)| !p.ends_with('*'))
+            .map(|(_, r, _)| *r)
+            .collect();
+        for (pat, read, _) in FACT_WORDS {
+            if pat.ends_with('*') {
+                assert!(!exact.contains(read), "{pat}");
+            }
+        }
+        // The same holds for the fallback.
+        for (exact, wild) in [("x.y", "x.*"), ("x.y", "*"), ("x.*", "*")] {
+            for read in [true, false] {
+                assert_ne!(fact_words(read, exact), fact_words(read, wild));
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_fact_names_its_key_in_a_sentence() {
+        assert_eq!(
+            fact_words(true, "weather.temp"),
+            "see the status called \u{201c}weather.temp\u{201d}"
+        );
+        assert_eq!(
+            fact_words(false, "weather.temp"),
+            "share the status called \u{201c}weather.temp\u{201d}"
+        );
+        assert_eq!(
+            fact_words(true, "weather.*"),
+            "see every status whose name starts with \u{201c}weather.\u{201d}"
+        );
+        assert_eq!(
+            fact_words(false, "weather.*"),
+            "share every status whose name starts with \u{201c}weather.\u{201d}"
+        );
+        assert_eq!(fact_words(true, "*"), "see every status any app shares");
+        assert_eq!(fact_words(false, "*"), "share every status any app shares");
+        // A lookup is the whole pattern: a near miss is not a known key.
+        assert!(fact_words(true, "Keyboard.game_mode").contains("Keyboard.game_mode"));
+        assert!(fact_words(true, "keyboard.game_mode.x").contains("keyboard.game_mode.x"));
+        assert!(fact_words(true, "keyboard.game_mod").contains("keyboard.game_mod"));
+        // Read and write never say the same thing.
+        for (pat, r, w) in FACT_WORDS {
+            assert_ne!(r, w, "{pat}");
+        }
+        assert_ne!(fact_words(true, "a.b"), fact_words(false, "a.b"));
+    }
+
+    #[test]
+    fn the_words_never_change_what_is_granted() {
+        // The raw string is the grant: words are looked up from it and never parsed back.
+        for s in [
+            "facts.read:keyboard.*",
+            "facts.write:sensor.*",
+            "facts.read:x.y",
+        ] {
+            let perm = p(s).unwrap();
+            let _ = perm.describe();
+            assert_eq!(String::from(perm), s);
+        }
+        let narrow = p("facts.read:keyboard.game_mode").unwrap();
+        let wide = p("facts.read:keyboard.*").unwrap();
+        assert_ne!(narrow, wide);
+        assert_ne!(narrow.describe(), wide.describe());
     }
 
     #[test]

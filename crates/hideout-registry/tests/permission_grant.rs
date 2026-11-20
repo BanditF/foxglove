@@ -719,3 +719,53 @@ fn a_gpu_provide_is_listed_as_sensitive_with_the_manager_line() {
     // Other provides stay as they were.
     assert!(!describe("provide:health.read").2);
 }
+
+#[test]
+fn a_fact_permission_is_listed_in_plain_words_not_as_a_raw_key() {
+    // The sensors module's two asks and Foxglove's two.
+    let cases = [
+        (
+            "facts.read:keyboard.game_mode",
+            "See whether game mode is on",
+        ),
+        (
+            "facts.write:sensor.*",
+            "Share all of your PC's readings: load, graphics card temperature and fan speed",
+        ),
+        (
+            "facts.write:keyboard.*",
+            "Share all of your keyboard's status (layer, battery, lights and more)",
+        ),
+        (
+            "facts.read:module.*",
+            "See every app Hideout runs and whether it is running",
+        ),
+    ];
+    for (raw, want) in cases {
+        let (g, line, sensitive) = describe(raw);
+        assert_eq!((g, sensitive), (Group::ShareStatus, false), "{raw}");
+        assert_eq!(line, want, "{raw}");
+        let key = raw.split_once(':').unwrap().1;
+        assert!(!line.contains(key), "{raw}: {line}");
+    }
+    // A wildcard reads wider than the exact key under it, and the key never changes the group.
+    let narrow = describe("facts.read:keyboard.game_mode").1;
+    let wide = describe("facts.read:keyboard.*").1;
+    assert_ne!(narrow, wide);
+    assert!(wide.contains("all of"));
+    // Unknown keys still name the key, in a sentence, and stay non-sensitive status items.
+    let (g, line, sensitive) = describe("facts.write:weather.temp");
+    assert_eq!((g, sensitive), (Group::ShareStatus, false));
+    assert_eq!(line, "Share the status called \u{201c}weather.temp\u{201d}");
+    let (_, line, _) = describe("facts.read:weather.*");
+    assert_eq!(
+        line,
+        "See every status whose name starts with \u{201c}weather.\u{201d}"
+    );
+    assert_eq!(
+        describe("facts.read:*").1,
+        "See every status any app shares"
+    );
+    // A pattern that does not parse is never allowable; it keeps its raw text.
+    assert_eq!(describe("facts.read:a b").1, "facts.read:a b");
+}
