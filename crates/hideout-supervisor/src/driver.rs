@@ -1814,8 +1814,15 @@ impl Supervisor {
         }
         self.check_keyboard(id, &pin.path, &sha256);
         self.launch_hook("pinned");
-        // From here the process starts from the held handle's own canonical path, never from the
-        // name, so a junction or link retargeted after the pin cannot run other bytes (S7).
+        // The process is spawned BY NAME from the pinned handle's own canonical path, so a
+        // junction or link retargeted after the pin cannot run other bytes (S7). A dev-folder
+        // pin allows a rename, so its name is held still by a second strict handle (the same
+        // file id, or the launch is refused) until the process is running: nothing can be put
+        // at the name between the hash and the start. A strict pin needs no lock.
+        let _name_lock = pin.lock_name().map_err(|e| {
+            log::warn!("supervisor: {id}: the program changed before it started ({e})");
+            format!("{}: {e}", pin.path)
+        })?;
         let exe = PathBuf::from(&pin.path);
         let instance = self.0.next_instance.fetch_add(1, Ordering::Relaxed);
         let caps = self.caps_of(Some(&reg), id);
