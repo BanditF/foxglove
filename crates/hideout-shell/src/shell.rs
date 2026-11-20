@@ -1505,6 +1505,11 @@ impl Hub {
         let asked = std::mem::take(&mut *OPEN_REQUESTS.lock().unwrap_or_else(|e| e.into_inner()));
         for module in asked {
             self.shared.hidden.store(false, Ordering::Release);
+            // A hub page (`hub.settings`): the done card's Start with Windows offer.
+            if module.starts_with("hub.") {
+                self.open(TabId::page(module));
+                continue;
+            }
             let page = self
                 .panels
                 .in_slot(Slot::Page)

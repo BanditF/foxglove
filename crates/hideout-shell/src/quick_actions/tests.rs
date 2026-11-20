@@ -358,3 +358,29 @@ fn review_states_of_the_menu() {
     std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
     println!("{}", path.display());
 }
+
+/// FR4: the done card's button comes from the manifest's `identify` action, and only from it.
+#[test]
+fn the_identify_action_is_the_done_cards_button_when_the_manifest_declares_it() {
+    let mut q = QuickActions::default();
+    q.manifest(&module("example.plain", ""));
+    assert_eq!(q.identify("example.plain"), None);
+    q.manifest(&module(
+        "example.lights",
+        "[[actions]]\nid = \"identify\"\nname = \"Show the lights\"\nwhen = \"lab.ready\"\n",
+    ));
+    // Its `when` decides, like any action's.
+    assert_eq!(q.identify("example.lights"), None);
+    q.fact("lab.ready", &json!(true));
+    assert_eq!(
+        q.identify("example.lights").as_deref(),
+        Some("Show the lights")
+    );
+    // An action with another id is not it, and a module that is not known has none.
+    q.manifest(&module(
+        "example.other",
+        "[[actions]]\nid = \"go\"\nname = \"Go\"\n",
+    ));
+    assert_eq!(q.identify("example.other"), None);
+    assert_eq!(q.identify("example.nobody"), None);
+}

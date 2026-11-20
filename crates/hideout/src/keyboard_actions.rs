@@ -225,6 +225,15 @@ impl GrantUi {
         }
     }
 
+    /// Sharing the keyboard with other apps is not on, and the user can turn it on (the Done
+    /// card's offer; a grant that changed asks on its own header instead).
+    pub fn can_offer(&self) -> bool {
+        matches!(
+            self.situation,
+            Situation::NotAsked { .. } | Situation::Declined | Situation::Revoked
+        )
+    }
+
     /// The header line, unless Not now hid it.
     pub fn header(&self) -> Option<hideout_shell::keyboard_grant::Header> {
         hideout_shell::keyboard_grant::header(&self.situation)

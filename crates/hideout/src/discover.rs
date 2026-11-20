@@ -446,6 +446,8 @@ mod ui {
         pub picker: Box<dyn Picker>,
         pub home: PathBuf,
         pub state: AddApp,
+        /// The Done card lists the found apps itself, so the Found card waits.
+        pub quiet: bool,
     }
 
     enum Click {
@@ -467,7 +469,13 @@ mod ui {
                 picker: Box::new(ShellPicker),
                 home,
                 state: AddApp::default(),
+                quiet: false,
             }
+        }
+
+        /// **Set up** on a found app from the Done card: the same step as the Found card's.
+        pub fn set_up(&mut self, id: &str, _installed: &[String]) -> Option<String> {
+            self.act(Click::Add(id.to_string()), _installed)
         }
 
         fn staging(&self) -> PathBuf {
@@ -522,7 +530,7 @@ mod ui {
             {
                 click = Some(Click::Cancel);
             }
-            if !shown.is_empty() {
+            if !shown.is_empty() && !self.quiet {
                 frame(ui, t, |ui| {
                     let head =
                         ui.label(RichText::new(words::FOUND_TITLE).strong().color(c(t.text)));

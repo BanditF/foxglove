@@ -38,6 +38,8 @@ struct Decl {
     panels: Vec<ActionPanel>,
     /// The declared `[[actions]]`: id and `when`.
     actions: Vec<(String, Option<String>)>,
+    /// The declared `[[actions]]`' words, by id (`identify` gives the done card its button).
+    action_names: Vec<(String, String)>,
 }
 
 /// The running module's words for an item, from its registered tree.
@@ -168,6 +170,11 @@ impl QuickActions {
                 .actions
                 .iter()
                 .map(|a| (a.decl.id.clone(), a.when.clone()))
+                .collect(),
+            action_names: m
+                .actions
+                .iter()
+                .map(|a| (a.decl.id.clone(), a.decl.name.clone()))
                 .collect(),
         };
         for p in &decl.panels {
@@ -374,6 +381,21 @@ impl QuickActions {
             .map(|i| (i.module.clone(), i.action.clone()))
     }
 
+    /// The words of the module's declared `identify` action ("Show the lights") when its
+    /// manifest has one and its `when` holds; `None` otherwise.
+    pub fn identify(&self, module: &str) -> Option<String> {
+        let d = self.modules.get(module)?;
+        let (_, when) = d.actions.iter().find(|(a, _)| a == IDENTIFY)?;
+        if !self.when(when.as_deref()) {
+            return None;
+        }
+        d.action_names
+            .iter()
+            .find(|(a, _)| a == IDENTIFY)
+            .map(|(_, n)| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+    }
+
     /// A module's name for people ("AI"), its id when no manifest gave one.
     pub fn name(&self, module: &str) -> String {
         self.modules
@@ -557,6 +579,27 @@ pub(crate) fn press(n: u32) {
             i(&module, &action);
         }
         None => log::warn!("tray: {module}/{action}: no router in this hub"),
+    }
+}
+
+/// The action id a manifest uses for "show me it works" (the done card's button, FR4).
+pub const IDENTIFY: &str = "identify";
+
+/// The words of `module`'s declared `identify` action, if its manifest has one.
+pub fn identify_words(module: &str) -> Option<String> {
+    with(|q| q.identify(module))
+}
+
+/// The user's click on a hub button (the done card's Show the lights): `module`'s `action`
+/// goes to it as `action.invoke {source: "tray"}`, like a tray press. Nothing else calls it.
+pub fn invoke(module: &str, action: &str) {
+    let invoke = INVOKER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    match invoke {
+        Some(i) => {
+            log::info!("hub: {module}/{action} pressed");
+            i(module, action);
+        }
+        None => log::warn!("hub: {module}/{action}: no router in this hub"),
     }
 }
 

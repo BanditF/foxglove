@@ -276,8 +276,10 @@ impl Fx {
                 picker: Box::new(NoPicker),
                 home,
                 state: Default::default(),
+                quiet: false,
             }),
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
         };
@@ -598,4 +600,90 @@ fn leaving_the_keyboard_section_out_of_first_run_records_nothing_for_it() {
         reg.keyboard_state("foxglove"),
         hideout_registry::keyboard::KeyboardState::NotAsked
     ));
+}
+
+/// FR4: after the user's Allow starts the app, the Done card says so from the app's own facts,
+/// the button comes from the manifest or falls back to Open, and every later offer is a button
+/// nobody pressed: showing the card changes no setting and starts nothing at sign-in.
+#[test]
+fn after_allow_the_done_card_is_live_and_no_offer_is_preselected() {
+    use hideout_shell::done_card::{Offer, Press};
+    use serde_json::json;
+    let mut fx = Fx::new("fr4", "gizmo-keys", gizmo_manifest);
+    assert!(fx.page.done_card().is_none(), "no card before an Allow");
+    let _ = run_first_run(&mut fx);
+    let id = fx.id.clone();
+    // Cold: running, no keyboard facts yet.
+    fx.page.facts = Some(Box::new(|k| match k {
+        "module.gizmo-keys.state" => Some(json!("running")),
+        "keyboard.connected" => Some(json!(false)),
+        _ => None,
+    }));
+    let card = fx.page.done_card().expect("the Allow started the app");
+    assert_eq!(card.status.head, "Gizmo Keys is running.");
+    assert!(card.status.rest.starts_with("No keyboard found yet."));
+    assert_eq!(card.show, "Open Gizmo Keys", "no identify action declared");
+    // The keyboard arrives: the same card reads it from the facts.
+    fx.page.facts = Some(Box::new(|k| match k {
+        "module.gizmo-keys.state" => Some(json!("running")),
+        "keyboard.connected" => Some(json!(true)),
+        "keyboard.name" => Some(json!("Test Board")),
+        "keyboard.layer_name" => Some(json!("Base")),
+        "keyboard.left.battery" => Some(json!(82)),
+        _ => None,
+    }));
+    let card = fx.page.done_card().unwrap();
+    assert_eq!(
+        card.status.rest,
+        "Keyboard: Test Board \u{b7} Base layer \u{b7} battery 82 %"
+    );
+    // The offers exist, and none was run, ticked or recorded by being shown.
+    assert!(card
+        .offers
+        .iter()
+        .any(|o| o.offer == Offer::StartWithWindows));
+    assert_eq!(
+        fx.asked.0.borrow().as_slice(),
+        [format!("turn-on {id}")],
+        "the card asks the supervisor for nothing"
+    );
+    fx.assert_no_autostart_files();
+    // Not now on each offer, then Hide: only the card's own state changes.
+    for o in card
+        .offers
+        .iter()
+        .map(|o| o.offer.clone())
+        .collect::<Vec<_>>()
+    {
+        fx.page.on_done(Press::NotNow(o), &[]);
+    }
+    assert!(fx.page.done_card().unwrap().offers.is_empty());
+    fx.page.on_done(Press::Hide, &[]);
+    assert!(fx.page.done_card().is_none());
+    assert_eq!(fx.asked.0.borrow().len(), 1);
+    fx.assert_no_autostart_files();
+}
+
+/// Hideout already starts at sign-in (its fact says so): the offer is not made. Without the
+/// fact it is made, as an unpressed button.
+#[test]
+fn the_start_with_windows_offer_follows_the_hubs_own_fact() {
+    use hideout_shell::done_card::Offer;
+    use serde_json::json;
+    let mut fx = Fx::new("fr4-start", "gizmo-keys", gizmo_manifest);
+    let _ = run_first_run(&mut fx);
+    let has = |fx: &Fx| {
+        fx.page
+            .done_card()
+            .unwrap()
+            .offers
+            .iter()
+            .any(|o| o.offer == Offer::StartWithWindows)
+    };
+    assert!(has(&fx));
+    fx.page.facts = Some(Box::new(|k| match k {
+        "module.gizmo-keys.starts_at_sign_in" => Some(json!(true)),
+        _ => None,
+    }));
+    assert!(!has(&fx));
 }

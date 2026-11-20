@@ -39,6 +39,8 @@ pub mod bisect_bar;
 #[cfg(windows)]
 pub mod capture;
 #[cfg(windows)]
+pub mod done_card;
+#[cfg(windows)]
 pub mod exit_watch;
 #[cfg(windows)]
 pub mod hotkeys;
