@@ -239,7 +239,8 @@ pub fn folder_check(canon: &str) -> Option<FolderProblem> {
 /// Whether the program `exe` inside the dev folder `folder` can be changed by another account:
 /// every directory from the program's own up to `folder`, and the file itself. A project that was
 /// moved in from a shared place keeps the permissions it had there, so the folder's own check
-/// is not enough. Fails closed on anything that can't be read.
+/// is not enough. Also everything else inside the folder (see [`tree_open_to_others`]). Fails
+/// closed on anything that can't be read.
 fn exe_open_to_others(folder: &str, exe: &str) -> bool {
     let Ok(me) = current_sid() else {
         return true;
@@ -258,7 +259,86 @@ fn exe_open_to_others(folder: &str, exe: &str) -> bool {
         }
         dir = d.parent();
     }
-    false
+    tree_open_to_others(folder, &me)
+}
+
+/// Deepest level of the dev folder tree that is read, and the most entries looked at.
+const TREE_DEPTH: usize = 8;
+const TREE_ENTRIES: usize = 5000;
+
+/// Whether anything inside the dev folder `folder` (files and subfolders, down to [`TREE_DEPTH`]
+/// levels, at most [`TREE_ENTRIES`] entries) can be changed by another account, so a swapped
+/// helper or DLL next to the program can't ride on the carry. A reparse point is not followed;
+/// one that leads outside the folder is refused. Hitting a limit, or anything that can't be read,
+/// refuses too.
+fn tree_open_to_others(folder: &str, me: &str) -> bool {
+    let why = tree_open_with(std::path::Path::new(folder), &mut |p| {
+        writable_by_others(p, FOLDER_WRITE, Where::Folder, me)
+    });
+    if let Some(why) = &why {
+        log::warn!("dev folder {folder} not trusted: {why}");
+    }
+    why.is_some()
+}
+
+#[cfg(windows)]
+fn is_reparse(m: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    m.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse(m: &std::fs::Metadata) -> bool {
+    m.file_type().is_symlink()
+}
+
+fn tree_open_with(
+    root: &std::path::Path,
+    open: &mut dyn FnMut(&std::path::Path) -> bool,
+) -> Option<String> {
+    let root_canon = canonical_path(root).unwrap_or_else(|_| root.display().to_string());
+    let mut seen = 0usize;
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            return Some(format!("can't read {}", dir.display()));
+        };
+        for entry in rd {
+            let Ok(entry) = entry else {
+                return Some(format!("can't read inside {}", dir.display()));
+            };
+            seen += 1;
+            if seen > TREE_ENTRIES {
+                return Some(format!("more than {TREE_ENTRIES} files and folders inside"));
+            }
+            let path = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                return Some(format!("can't read {}", path.display()));
+            };
+            if is_reparse(&meta) {
+                // Not followed; where it leads must still be inside the folder.
+                match canonical_path(&path) {
+                    Ok(c) if path_within(&root_canon, &c) => continue,
+                    _ => {
+                        return Some(format!("{} leads outside the folder", path.display()));
+                    }
+                }
+            }
+            if open(&path) {
+                return Some(format!(
+                    "other accounts on this PC can change {}",
+                    path.display()
+                ));
+            }
+            if meta.is_dir() {
+                if depth + 1 >= TREE_DEPTH {
+                    return Some(format!("folders nested deeper than {TREE_DEPTH} levels"));
+                }
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    None
 }
 
 /// Why [`Registry::try_add_dev_folder`] refused.
