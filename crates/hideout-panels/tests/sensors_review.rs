@@ -218,7 +218,7 @@ fn sheet_of(file: &str, states: &[&str], tile: bool) {
     let col = if tile { 250.0f32 } else { 400.0f32 };
     let (w, h) = (
         (col as u32 + 12) * states.len() as u32 + 12,
-        if tile { 200u32 } else { 560u32 },
+        if tile { 200u32 } else { 800u32 },
     );
     let Some(px) = rasterise(w, h, |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -264,6 +264,10 @@ fn renders_the_sensors_page_for_review() {
     sheet(
         "ux-sensors3-more.png",
         &["Fan as percent", "Game mode not visible"],
+    );
+    sheet(
+        "ux-sensors-temp.png",
+        &["Working", "System temperature missing"],
     );
 }
 

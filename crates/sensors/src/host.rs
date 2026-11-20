@@ -196,6 +196,7 @@ impl Host {
         if self.page_visible {
             input.values = self.values.clone();
             input.states = self.states.clone();
+            input.zones = self.engine.zones().to_vec();
         }
         crate::ui::page(&input)
     }
