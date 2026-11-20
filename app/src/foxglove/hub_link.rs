@@ -749,7 +749,7 @@ fn wallpaper_now(holders: &[String]) -> Option<super::hub_panels::Wallpaper> {
         full_screen,
         holders: holders.to_vec(),
         reasons: super::wallpaper_sync::reasons_now(),
-        allow: Some(super::we_panel::inputs_now(running, full_screen)),
+        allow: Some(super::we_panel::inputs_now(running)),
     })
 }
 

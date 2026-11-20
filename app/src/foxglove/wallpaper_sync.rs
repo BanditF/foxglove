@@ -889,6 +889,10 @@ pub fn scene_stopped() {
     changed(Reason::Scene, |s| s.state.scene = None);
 }
 
+/// Whether the first look at the monitors has seeded the allow list.
+#[cfg(not(test))]
+static SEEDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The wallpapers on screen, from Wallpaper Engine's config (`wallpaper.rs`, on each change):
 /// `targets` are the monitors showing a wallpaper that reads Foxglove's properties, empty
 /// without Wallpaper Engine or while it isn't running. `reloads`: its config stops wallpapers
@@ -896,6 +900,16 @@ pub fn scene_stopped() {
 /// the worker.
 pub fn wallpapers(targets: Vec<Target>, reloads: bool) {
     stale_pause();
+    // The first look at the monitors seeds the allow list (a feed that worked keeps its wallpapers).
+    #[cfg(not(test))]
+    if !SEEDED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let keys: Vec<String> = targets
+            .iter()
+            .filter(|t| t.supports.live)
+            .map(|t| super::wallpaper_manifest::key_of_file(&t.file))
+            .collect();
+        super::live_feed::seed_allowed(&keys);
+    }
     let start = with(|s| s.wake.is_none() && !s.quitting && !targets.is_empty());
     if start {
         start_worker();

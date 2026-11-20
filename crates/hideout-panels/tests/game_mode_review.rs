@@ -351,7 +351,7 @@ fn renders_the_game_mode_proposal_for_review() {
 }
 
 /// Review images for the Wallpaper Engine allow list (S5b): the app's own vector states named
-/// "Allow list: ...", the Foxglove page, light, at 720 px and at a narrow 380 px.
+/// "Allow list: ...", the Foxglove page, light and dark, at 720 px and at a narrow 380 px.
 #[test]
 fn renders_the_wallpaper_engine_section_for_review() {
     let vectors: Value = serde_json::from_str(FOX_VECTORS).unwrap();
@@ -373,10 +373,17 @@ fn renders_the_wallpaper_engine_section_for_review() {
         let declared: Vec<String> = serde_json::from_value(vectors["declared"].clone()).unwrap();
         let rej = host.register_with("foxglove", "Foxglove", Some(&declared), Some(&[]), &params);
         assert!(rej.is_empty(), "{rej:?}");
-        for (size, w) in [("wide", 720u32), ("narrow", 380u32)] {
+        for ((size, w), (theme, dark)) in [("wide", 720u32), ("narrow", 380u32)]
+            .into_iter()
+            .flat_map(|s| [(s, ("light", false)), (s, ("dark", true))])
+        {
             let h = 1500u32;
             let Some(px) = rasterise(w, h, |ctx| {
-                ctx.set_visuals(egui::Visuals::light());
+                ctx.set_visuals(if dark {
+                    egui::Visuals::dark()
+                } else {
+                    egui::Visuals::light()
+                });
                 egui::CentralPanel::default().show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let key = PanelKey::new("foxglove", "page");
@@ -390,7 +397,7 @@ fn renders_the_wallpaper_engine_section_for_review() {
             };
             println!(
                 "{}",
-                save_png(&format!("we-s5b-{:02}-{size}-light.png", n + 1), w, h, px).display()
+                save_png(&format!("we-s5b-{:02}-{size}-{theme}.png", n + 1), w, h, px).display()
             );
         }
     }

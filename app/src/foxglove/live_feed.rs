@@ -81,6 +81,9 @@ pub struct LiveSettings {
     /// The wallpapers the user allowed to get the feed (S5a): folder keys
     /// (`wallpaper_manifest::key_of_dir`), not secrets. Empty: none yet.
     pub allowed: Vec<String>,
+    /// The one-time seed ran ([`seed_allowed`]): a feed that worked before the allow list keeps
+    /// the wallpapers on screen then. A fact, not a secret.
+    pub allow_seeded: bool,
 }
 
 impl Default for LiveSettings {
@@ -92,11 +95,29 @@ impl Default for LiveSettings {
             ticket_verified: false,
             notify: true,
             allowed: Vec::new(),
+            allow_seeded: false,
         }
     }
 }
 
 static SETTINGS: Mutex<Option<LiveSettings>> = Mutex::new(None);
+
+/// Why the feed is quiet now (its own reason: paused, away, full screen), for the Hideout panel.
+static QUIET: Mutex<Option<Why>> = Mutex::new(None);
+
+/// The feed's own reason for sending nothing right now, if any.
+#[cfg_attr(test, allow(dead_code))]
+pub fn quiet_now() -> Option<Why> {
+    *QUIET.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Keeps [`QUIET`] and tells the panel when it changed (an event, never a timer).
+fn set_quiet(why: Option<Why>) {
+    let was = std::mem::replace(&mut *QUIET.lock().unwrap_or_else(|e| e.into_inner()), why);
+    if was != why {
+        super::we_panel::changed();
+    }
+}
 
 /// The settings, read from the store once and then kept in step by [`save`]. A read that
 /// fails isn't kept (#741): the next call reads again, so the defaults' empty token never
@@ -376,6 +397,7 @@ impl Hub {
             return Vec::new();
         }
         self.quiet = quiet;
+        set_quiet(quiet);
         self.batch = wire::Batch::default();
         match quiet {
             Some(why) => self.broadcast(out, &Message::Quiet { why }),
@@ -562,6 +584,37 @@ const ALLOW_GATE: bool = true;
 /// What the pairing store is told: the saved list when the gate is on, else no restriction.
 fn gate(s: &LiveSettings) -> Option<std::collections::BTreeSet<String>> {
     ALLOW_GATE.then(|| allowed_set(s))
+}
+
+/// The one-time seed (S5b): a feed that worked before the allow list (it is on and has a token or
+/// has redeemed a ticket) keeps the wallpapers on screen right now, which is no wider than what
+/// it fed before the switches existed. Runs once, on the first look at the monitors; a fresh
+/// install, or a user who already has allowed wallpapers, only gets the marker.
+#[cfg_attr(test, allow(dead_code))]
+pub fn seed_allowed(on_screen: &[String]) {
+    let _ = seed_with(on_screen, update_settings);
+}
+
+fn seed_with(on_screen: &[String], update: impl Updater) -> Result<bool, String> {
+    let mut seeded = false;
+    let s = update(&mut |s| {
+        seeded = false;
+        if s.allow_seeded {
+            return;
+        }
+        s.allow_seeded = true;
+        if s.allowed.is_empty() && s.enabled && (s.ticket_verified || !s.token.is_empty()) {
+            let mut set = allowed_set(s);
+            set.extend(on_screen.iter().take(MAX_ALLOWED).cloned());
+            s.allowed = set.into_iter().collect();
+            seeded = !s.allowed.is_empty();
+        }
+    })?;
+    if seeded {
+        apply_allowed(&s);
+        super::we_panel::changed();
+    }
+    Ok(seeded)
 }
 
 /// Most wallpapers the allow list keeps.
@@ -1078,6 +1131,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
     };
     let mut fullscreen = fullscreen_now();
     hub.quiet = wire::quiet(super::pause::paused(), super::away::away(), fullscreen);
+    set_quiet(hub.quiet);
     let mut art = ArtWatch::default();
     hub.art = art.read().unwrap_or_default();
     // The art published against the keyboard's (#1053): one log line per step into a gap.
@@ -1841,6 +1895,13 @@ fn change(
 }
 
 fn apply(what: Change) -> Result<(), String> {
+    let done = apply_now(what);
+    // The panel's "feed is off" line follows the feed, however it was turned.
+    super::we_panel::changed();
+    done
+}
+
+fn apply_now(what: Change) -> Result<(), String> {
     let (s, why) = change(what, update_settings)?;
     if let Some(why) = why {
         eprintln!("{}", token_line(why));
@@ -3397,6 +3458,60 @@ mod tests {
         })
         .unwrap_err();
         assert!(!e.contains("secret"));
+    }
+
+    /// The one-time seed (S5b): a feed that worked keeps the wallpapers on screen, once.
+    #[test]
+    fn the_seed_keeps_what_worked_once_and_widens_nothing() {
+        use std::cell::RefCell;
+        let on_screen = vec!["d:/w/hud".to_string()];
+        let run = |start: LiveSettings, keys: &[String]| {
+            let saved = RefCell::new(start);
+            let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+                let mut s = saved.borrow_mut();
+                f(&mut s);
+                Ok(s.clone())
+            };
+            let seeded = seed_with(keys, upd).unwrap();
+            let again = seed_with(&["d:/w/other".to_string()], upd).unwrap();
+            assert!(!again, "runs once");
+            (seeded, saved.into_inner())
+        };
+        // A verified feed that is on: the wallpapers on screen stay allowed.
+        let worked = LiveSettings {
+            enabled: true,
+            ticket_verified: true,
+            ..LiveSettings::default()
+        };
+        let (seeded, s) = run(worked.clone(), &on_screen);
+        assert!(seeded && s.allow_seeded);
+        assert_eq!(s.allowed, on_screen);
+        // Nothing on screen: nothing is allowed, and the marker is still set.
+        let (seeded, s) = run(worked, &[]);
+        assert!(!seeded && s.allow_seeded && s.allowed.is_empty());
+        // A fresh install, or a feed that is off: only the marker.
+        for fresh in [
+            LiveSettings::default(),
+            LiveSettings {
+                ticket_verified: true,
+                ..LiveSettings::default()
+            },
+        ] {
+            let (seeded, s) = run(fresh, &on_screen);
+            assert!(!seeded && s.allow_seeded && s.allowed.is_empty());
+        }
+        // A list the user already made is left alone.
+        let (seeded, s) = run(
+            LiveSettings {
+                enabled: true,
+                ticket_verified: true,
+                allowed: vec!["d:/w/mine".into()],
+                ..LiveSettings::default()
+            },
+            &on_screen,
+        );
+        assert!(!seeded);
+        assert_eq!(s.allowed, ["d:/w/mine"]);
     }
 
     /// With the switches in the panel (S5b), an empty saved list allows nothing.

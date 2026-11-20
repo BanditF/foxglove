@@ -622,6 +622,22 @@ fn the_panels_match_the_hub_vectors() {
             "Allow list: nothing asked yet",
             panels(&we_view(allow_case("none"))),
         ),
+        (
+            "Allow list: connecting and reconnecting",
+            panels(&we_view(allow_case("connecting"))),
+        ),
+        (
+            "Allow list: held while Foxglove is paused",
+            panels(&we_view(allow_case("hold"))),
+        ),
+        (
+            "Allow list: needs an update",
+            panels(&we_view(allow_case("update"))),
+        ),
+        (
+            "Allow list: Wallpaper Engine not running, rows kept",
+            panels(&we_view(allow_case("engine-off"))),
+        ),
     ];
     for (name, all) in &states {
         assert_valid(all);
@@ -667,11 +683,24 @@ fn allow_case(case: &str) -> Wallpaper {
         }
         "feed-off" => inputs.feed_on = false,
         "none" => inputs.asks.clear(),
+        "connecting" => {
+            inputs.asks[1].on_screen = true;
+            links.by_dir.insert("d:/we/hud".into(), Link::Connecting);
+            links
+                .by_dir
+                .insert("d:/we/courier".into(), Link::Reconnecting);
+        }
+        "hold" => {
+            links.by_dir.insert("d:/we/hud".into(), Link::Connected);
+            inputs.hold = Some(super::super::we_panel::Hold::Paused);
+        }
+        "update" => inputs.asks[2].needs_update = true,
+        "engine-off" => {}
         other => panic!("{other}"),
     }
     inputs.links = links;
     Wallpaper {
-        running: true,
+        running: case != "engine-off",
         allow: Some(inputs),
         ..Wallpaper::default()
     }
