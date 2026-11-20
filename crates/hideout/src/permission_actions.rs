@@ -165,6 +165,16 @@ pub fn date_words(at: &str) -> String {
     }
 }
 
+/// First-run presentation (FR2): when Allow also starts the app, the button says so and the
+/// keyboard-sharing section stays out of the dialog (it is still offered from the app's
+/// Permissions, and nothing is recorded for it, so it is asked later, not declined now).
+fn present_first_run(d: &mut PermDialog, how: Opener) {
+    if how.then() == Then::TurnOn {
+        d.view.starts = true;
+        d.keyboard = None;
+    }
+}
+
 /// The dialog for `id` as the registry lists it now. Normal-risk items start checked, sensitive
 /// ones and items the user turned off start unchecked. After a void (a re-ask) only the
 /// non-sensitive items the user allowed before, for the same file path on a local drive, start
@@ -228,7 +238,8 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
     });
     let keep = keep_choice(&v);
     // A kept grant whose update asked for more: only what was never answered is New.
-    let more = reason.is_none() && v.void.is_none() && !asked_pending(&v).is_empty();
+    let more =
+        reason.is_none() && v.void.is_none() && v.bound.is_some() && !asked_pending(&v).is_empty();
     let reason = reason
         .or(v.void.map(|_| Reason::Void))
         .or(more.then_some(Reason::More));
@@ -250,6 +261,7 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
         keep,
         removed: Vec::new(),
         same_place: v.same_place,
+        view: Default::default(),
         error: None,
     })
 }
@@ -612,6 +624,7 @@ impl PermUi {
                 if let Some(p) = prev {
                     d.mark_changes(p);
                 }
+                present_first_run(&mut d, how);
                 let asked = d.items.iter().filter(|i| i.allowable).count();
                 log::info!(
                     "permissions: {id}: dialog shown, list {}, {asked} asked, {} can't be allowed",
@@ -732,6 +745,10 @@ impl PermUi {
         let sections: Vec<PermDialog> = ids
             .iter()
             .filter_map(|id| build_dialog(&self.home, id, None).ok())
+            .map(|mut d| {
+                present_first_run(&mut d, Opener::Header);
+                d
+            })
             .collect();
         if sections.is_empty() {
             return;
@@ -1476,7 +1493,7 @@ mod tests {
                 .unwrap()
                 .checked
         );
-        assert_eq!(d.allow_label(), "Allow 1");
+        assert_eq!(d.allow_label(), "Allow and start");
         assert_eq!(d.all_state(), hideout_shell::permission_dialog::All::Some);
         let done = f.ui.answer(PermAnswer::Allow(d.allowed())).unwrap();
         assert_eq!(done.then, Then::TurnOn);
@@ -1753,7 +1770,7 @@ mod tests {
             .intro()
             .starts_with("Vulpes asks for these 3 things. 1 can't be allowed."));
         assert_eq!(d.all_label(), "All 2");
-        assert_eq!(d.allow_label(), "Allow 2");
+        assert_eq!(d.allow_label(), "Allow and start");
         allow_all(&mut f, Opener::TurnOn).unwrap();
         // Allowed: no line about empty tiles.
         let s = section_for(ID, &view(&f)).unwrap();
@@ -2030,6 +2047,7 @@ mod tests {
             keep: None,
             removed: Vec::new(),
             same_place: false,
+            view: Default::default(),
             error: None,
         };
         let mut all = vec![h.title, h.body, d.title()];
