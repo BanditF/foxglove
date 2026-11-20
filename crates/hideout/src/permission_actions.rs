@@ -1545,7 +1545,7 @@ mod tests {
         let net = item(&d, "net");
         assert!(net.sensitive && !net.checked && !net.confirmed && !net.before);
         assert!(d.void_line().contains("file changed since"));
-        assert_eq!(d.allow_label(), "Allow and start");
+        assert_eq!(d.allow_label(), "Allow 2");
         assert!(d.before_lines()[0].contains("Allowed before"));
         // Allow grants the two, never the sensitive one.
         let a = d.allowed();

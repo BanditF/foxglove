@@ -4430,23 +4430,46 @@ fn the_first_run_dialog_collapses_the_everyday_items_on_a_720_px_window() {
             let r = ctx.read_response(*id).expect("drawn").rect;
             assert!(r.bottom() <= 720.0 && r.top() >= 0.0, "open={open}: {r:?}");
         }
+        // Not "and start" while the sensitive items are unticked: the app is not limited.
+        assert_eq!(d.allow_label(), "Allow 17");
+        for i in d.items.iter_mut().filter(|i| i.sensitive) {
+            i.checked = true;
+        }
         assert_eq!(d.allow_label(), "Allow and start");
+        for i in d.items.iter_mut().filter(|i| i.sensitive) {
+            i.checked = false;
+        }
         assert_eq!(
             d.count(),
             17,
             "the sensitive items are not granted until understood"
         );
         let tag = if open { "shown" } else { "collapsed" };
-        let Some(rgba) = rasterise(760, 720, |ctx| {
-            set_theme(ctx, ThemeChoice::Dark);
-            ctx.style_mut(|s| s.animation_time = 0.0);
-            let mut d = fr2_test_dialog();
-            d.view.everyday_open = open;
-            crate::permission_dialog_ui::perm_dialog_ui(ctx, &t, &mut d, true);
-        }) else {
-            continue;
-        };
-        save_png(&format!("first-run-fr2-{tag}.png"), 760, 720, rgba);
+        // Dark 760 px as before, plus light, and a narrow 480 px window where lines wrap.
+        for (suffix, dark, w) in [
+            ("", true, 760),
+            ("-light", false, 760),
+            ("-narrow", true, 480),
+        ] {
+            let tk = crate::theme::tokens(dark);
+            let Some(rgba) = rasterise(w, 720, |ctx| {
+                set_theme(
+                    ctx,
+                    if dark {
+                        ThemeChoice::Dark
+                    } else {
+                        ThemeChoice::Light
+                    },
+                );
+                ctx.style_mut(|s| s.animation_time = 0.0);
+                let mut d = fr2_test_dialog();
+                d.view.everyday_open = open;
+                crate::permission_dialog_ui::perm_dialog_ui(ctx, &tk, &mut d, true);
+            }) else {
+                continue;
+            };
+            save_png(&format!("first-run-fr2-{tag}{suffix}.png"), w, 720, rgba);
+        }
     }
 }
 

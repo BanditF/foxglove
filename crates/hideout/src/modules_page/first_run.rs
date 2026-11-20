@@ -572,7 +572,12 @@ fn the_first_run_dialog_shows_what_the_app_can_do_and_what_needs_ok() {
             d.source_line().unwrap().starts_with("Not signed \u{b7} "),
             "{id}"
         );
-        assert_eq!(d.allow_label(), ALLOW_AND_START);
+        assert_eq!(
+            d.allow_label(),
+            "Allow 17",
+            "{id}: sensitive items unticked"
+        );
+        let _ = ALLOW_AND_START;
         // Collapsed means still ticked: Allow alone records the 17 and no sensitive item.
         assert_eq!(d.count(), EVERYDAY, "{id}");
         assert!(

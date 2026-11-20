@@ -596,9 +596,18 @@ impl PermDialog {
     pub fn allow_label(&self) -> String {
         match self.count() {
             0 => ALLOW_NONE.into(),
-            _ if self.view.starts => ALLOW_AND_START.into(),
+            _ if self.view.starts && self.sensitive_decided() => ALLOW_AND_START.into(),
             n => format!("Allow {n}"),
         }
+    }
+
+    /// Whether every sensitive item the user can allow is ticked. Until then Allow says how
+    /// many it grants: a button that says "and start" would imply the app starts limited.
+    pub fn sensitive_decided(&self) -> bool {
+        self.items
+            .iter()
+            .filter(|i| i.allowable && i.sensitive)
+            .all(|i| i.checked)
     }
 
     /// How many everyday items there are: can be allowed and not sensitive (what the All box
@@ -664,6 +673,8 @@ impl PermDialog {
 
     /// "Not signed · C:\path\app.exe": where the app comes from. Hideout does not check an
     /// app it adopted from a folder, so it says so. `None` for an app with no path.
+    // TODO: branch on the app's identity class once signed or catalog apps exist; every adopted
+    // app is unsigned today.
     pub fn source_line(&self) -> Option<String> {
         (!self.path.is_empty()).then(|| format!("{SOURCE_UNSIGNED} \u{b7} {}", self.path))
     }
@@ -677,7 +688,7 @@ impl PermDialog {
             (true, true) => "your devices and the internet directly",
             (true, false) => "your devices directly",
             (false, true) => "the internet directly",
-            (false, false) => "more than Hideout can describe in a line",
+            (false, false) => "things beyond what Hideout can limit",
         };
         format!(
             "These let {} reach {what}. Hideout can't limit what it does with them.",
@@ -1704,6 +1715,18 @@ mod tests {
         let mut d = dialog();
         assert!(d.allow_label().starts_with("Allow "));
         d.view.starts = true;
+        for i in d.items.iter_mut().filter(|i| i.sensitive) {
+            i.checked = false;
+        }
+        assert!(d.allow_label().starts_with("Allow "));
+        assert_ne!(
+            d.allow_label(),
+            "Allow and start",
+            "a sensitive item is unticked"
+        );
+        for i in d.items.iter_mut().filter(|i| i.sensitive) {
+            i.checked = true;
+        }
         assert_eq!(d.allow_label(), "Allow and start");
         for i in d.items.iter_mut() {
             i.checked = false;

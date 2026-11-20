@@ -83,7 +83,7 @@ pub(crate) fn perm_dialog_ids(
         .unwrap_or(if d.keep.is_some() { 330.0 } else { 250.0 });
     let title = d.title();
     let modal = egui::Modal::new(egui::Id::new("hideout.permission-dialog")).show(ctx, |ui| {
-        ui.set_width(620.0);
+        ui.set_width(620.0_f32.min(ctx.content_rect().width() - 56.0));
         let top = ui.cursor().top();
         ui.label(egui::RichText::new(&title).heading().color(c(t.text)));
         ui.add_space(6.0);
@@ -194,7 +194,7 @@ pub(crate) fn first_run_dialog_ids(
     let screen_h = ctx.content_rect().height();
     let title = d.title();
     let modal = egui::Modal::new(egui::Id::new("hideout.first-run-dialog")).show(ctx, |ui| {
-        ui.set_width(620.0);
+        ui.set_width(620.0_f32.min(ctx.content_rect().width() - 56.0));
         ui.label(egui::RichText::new(&title).heading().color(c(t.text)));
         ui.add_space(6.0);
         ui.label(FIRST_RUN_INTRO);
@@ -291,7 +291,11 @@ fn head_ui(ui: &mut egui::Ui, t: &Tokens, d: &PermDialog) {
         );
         ui.add_space(4.0);
     }
-    ui.label(d.intro());
+    // The capability line says what the app can do; the count intro would contradict the
+    // collapsed list under it.
+    if d.capability_line().is_none() {
+        ui.label(d.intro());
+    }
 }
 
 /// "17 everyday items . Show": the everyday items' box (every one at once) and the link that
@@ -352,7 +356,7 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
             continue;
         }
         let heading = if g == Group::Sensitive {
-            needs_ok_heading(n)
+            needs_ok_heading(d.sensitive_count())
         } else {
             g.heading().to_string()
         };
