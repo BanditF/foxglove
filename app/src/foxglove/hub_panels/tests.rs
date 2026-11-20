@@ -1308,3 +1308,23 @@ fn fallback_words_start_a_sentence_and_real_names_stay_as_given() {
         "obs stopped, so its pause ended."
     );
 }
+
+/// A local caller that gave no name is stored as "An app": it reads "an app" mid-sentence and
+/// "An app" at the start of one (#1142).
+#[test]
+fn a_nameless_local_caller_reads_an_app() {
+    let who = vec!["An app".to_string()];
+    assert_eq!(holder_words(&who), "an app");
+    assert_eq!(
+        resume_name(&holder_words(&who)),
+        "Resume wallpapers, paused by an app"
+    );
+    assert_eq!(
+        after_words(&After::Resumed(who.clone())),
+        "Resumed. An app can pause them again."
+    );
+    assert_eq!(
+        after_words(&After::Stopped(Some("An app".into()))),
+        "An app stopped, so its pause ended."
+    );
+}

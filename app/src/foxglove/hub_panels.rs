@@ -102,10 +102,17 @@ pub fn stopped(who: &str) -> String {
 /// hub page and the standalone tray's tooltip. Real app names show as given; only the "an app"
 /// fallback is capitalised for the start of a sentence.
 pub fn after_words(after: &After) -> String {
+    // Real names show as given; only the "an app" fallback takes a capital at a sentence start.
+    let first = |words: String| {
+        if words == AN_APP {
+            sentence_start(&words)
+        } else {
+            words
+        }
+    };
     match after {
-        After::Resumed(names) if names.is_empty() => resumed(&sentence_start(AN_APP)),
-        After::Resumed(names) => resumed(&holder_words(names)),
-        After::Stopped(Some(n)) => stopped(&cut_to(n, NAME_CUT)),
+        After::Resumed(names) => resumed(&first(holder_words(names))),
+        After::Stopped(Some(n)) => stopped(&first(holder_words(std::slice::from_ref(n)))),
         After::Stopped(None) => stopped(&sentence_start(AN_APP)),
     }
 }
@@ -171,7 +178,14 @@ pub fn is_resume(panel: &str, node: &str) -> bool {
 /// "Arete", "Arete and Render queue", "Arete and 2 more"; "an app" when the hub named nobody
 /// (an older hub, or a caller of the local API).
 pub fn holder_words(names: &[String]) -> String {
-    let cut = |n: &String| cut_to(n, NAME_CUT);
+    // A caller that gave no name is stored as "An app": mid-sentence it is "an app".
+    let cut = |n: &String| {
+        if n.eq_ignore_ascii_case(AN_APP) {
+            AN_APP.to_string()
+        } else {
+            cut_to(n, NAME_CUT)
+        }
+    };
     match names {
         [] => AN_APP.into(),
         [a] => cut(a),

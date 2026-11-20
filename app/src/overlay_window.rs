@@ -238,6 +238,7 @@ impl OverlayApp {
         }
 
         crate::foxglove::overlay_shown::watch(ctx); // Foxglove: an API change wakes the frame
+        crate::foxglove::tray::watch(ctx); // Foxglove (#1142): a lease change wakes the frame
         self.poll_connect_result();
         self.auto_connect(); // Foxglove
         self.follow_focus(); // Foxglove (#801)

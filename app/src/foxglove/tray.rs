@@ -123,12 +123,40 @@ pub struct Controls {
     we_after: super::we_after::Tracker,
     /// Whether something held the wallpapers at the last update (for the stop line).
     we_held: bool,
+    /// The last read of "Wallpaper Engine runs" and when (a process snapshot is not taken
+    /// every frame).
+    we_running: Option<(bool, std::time::Instant)>,
 }
 
 /// The standalone Resume item's id.
 const WE_RESUME: &str = "fox-resume-we";
-/// Where it goes: right after Pause Foxglove.
-const WE_RESUME_AT: usize = 3;
+/// Pause Foxglove's place in [`labels`]; the Resume item goes right after it.
+const PAUSE_AT: usize = 2;
+const WE_RESUME_AT: usize = PAUSE_AT + 1;
+/// How long a read of "Wallpaper Engine runs" is kept while something holds the wallpapers.
+const RUNNING_KEPT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Wakes the overlay's frame (which runs the tray's update) when the lease facts change and
+/// when an after-line ends: the tray draws on demand, so nothing else would.
+static WAKE: std::sync::OnceLock<crate::ui_wake::UiWake> = std::sync::OnceLock::new();
+
+/// The overlay's frame registers itself, once; a change of the `wallpaper_engine.*` facts
+/// (who holds the pause, its reasons, a stale pause) then wakes it. Event-driven, no poll.
+pub fn watch(ctx: &egui::Context) {
+    if WAKE.set(crate::ui_wake::UiWake::from_ctx(ctx)).is_err() {
+        return;
+    }
+    let changes = super::devices::bus()
+        .facts()
+        .subscribe("wallpaper_engine.*");
+    super::services::spawn_named("tray-we-facts", move || {
+        while changes.recv().is_ok() {
+            if let Some(w) = WAKE.get() {
+                w.request_repaint();
+            }
+        }
+    });
+}
 
 /// The standalone tray's Resume text, from who holds the wallpapers paused: `None` when nothing
 /// does (or the pause is stale: Wallpaper Engine restarted and plays). The words are the hub
@@ -140,6 +168,11 @@ pub fn we_resume_label(names: &[String], reasons: &[String], stale: bool) -> Opt
     Some(super::hub_panels::resume_name(
         &super::hub_panels::holder_words(names),
     ))
+}
+
+/// A label as a native menu item's text: `&` marks a mnemonic there, so it is doubled.
+fn menu_text(label: &str) -> String {
+    label.replace('&', "&&")
 }
 
 /// The holders at the moment of a click on Resume, for the "Resumed. ..." line.
@@ -183,7 +216,7 @@ impl Controls {
             let _ = match (i, label) {
                 (_, None) => menu.append(&PredefinedMenuItem::separator()),
                 (0, Some(text)) => menu.append(&MenuItem::with_id("settings", text, true, None)),
-                (2, Some(text)) => {
+                (PAUSE_AT, Some(text)) => {
                     let item = MenuItem::with_id("fox-pause-all", text, true, None);
                     let added = menu.append(&item);
                     pause = Some(item);
@@ -211,6 +244,7 @@ impl Controls {
             we_resume: None,
             we_after: Default::default(),
             we_held: false,
+            we_running: None,
         }
     }
 
@@ -239,7 +273,9 @@ impl Controls {
                 let _ = self.menu.remove(&old);
             }
             if let Some(text) = label {
-                let item = MenuItem::with_id(WE_RESUME, &text, true, None);
+                // `&` marks a mnemonic in a native menu; a name is the caller's word, so it
+                // is shown as given.
+                let item = MenuItem::with_id(WE_RESUME, menu_text(&text), true, None);
                 let _ = self.menu.insert(&item, WE_RESUME_AT);
                 self.we_resume = Some((text, item));
             }
@@ -250,16 +286,38 @@ impl Controls {
         }
         // Only read the process list while the answer can matter.
         let busy = held || self.we_held || self.we_after.showing();
-        let running = !busy || super::wallpaper_engine::running_now();
+        let running = if busy {
+            match self.we_running {
+                Some((r, at)) if now.saturating_duration_since(at) < RUNNING_KEPT => r,
+                _ => {
+                    let r = super::wallpaper_engine::running_now();
+                    self.we_running = Some((r, now));
+                    r
+                }
+            }
+        } else {
+            self.we_running = None;
+            true
+        };
         if self.we_after.shrank(&names, held) {
             super::we_after::clear_stop();
         }
         let stop = !held && super::we_after::take_stop(now);
         let user_paused = busy && super::live_feed::wallpaper_paused();
         self.we_held = held;
-        self.we_after
-            .update(&names, held, running, user_paused, stop, now)
-            .map(|a| super::hub_panels::after_words(&a))
+        let line = self
+            .we_after
+            .update(&names, held, running, user_paused, stop, now);
+        if let Some(end) = self.we_after.take_deadline() {
+            // One wake-up when the line runs out, so the tooltip drops it on time.
+            super::services::spawn_named("tray-we-after-line", move || {
+                std::thread::sleep(end.saturating_duration_since(std::time::Instant::now()));
+                if let Some(w) = WAKE.get() {
+                    w.request_repaint();
+                }
+            });
+        }
+        line.map(|a| super::hub_panels::after_words(&a))
     }
 
     /// The tray icon's tooltip: the status line and each half's battery (#373).
@@ -530,6 +588,32 @@ mod tests {
 
     /// Standalone Resume (#1142): the hub panel's words, the holder in the item's text, none
     /// when nothing holds the wallpapers or the pause is stale.
+    #[test]
+    fn the_resume_item_goes_between_pause_and_profile() {
+        let l = labels(false);
+        assert_eq!(l[PAUSE_AT], Some("Pause Foxglove"));
+        assert_eq!(l[WE_RESUME_AT], Some(PROFILE));
+    }
+
+    /// A name with `&` keeps its words in the label; the menu text doubles it for the mnemonic.
+    #[test]
+    fn an_ampersand_in_a_holder_name_stays_in_the_words() {
+        let who = vec!["R&D tools".to_string()];
+        let label = we_resume_label(&who, &[], false).unwrap();
+        assert_eq!(label, "Resume wallpapers, paused by R&D tools");
+        assert_eq!(menu_text(&label), "Resume wallpapers, paused by R&&D tools");
+    }
+
+    /// A caller that gave no name reads "an app" mid-sentence.
+    #[test]
+    fn a_nameless_caller_reads_an_app() {
+        let who = vec!["An app".to_string()];
+        assert_eq!(
+            we_resume_label(&who, &[], false).as_deref(),
+            Some("Resume wallpapers, paused by an app")
+        );
+    }
+
     #[test]
     fn the_standalone_resume_names_whose_pause_it_ends() {
         let none: Vec<String> = Vec::new();
