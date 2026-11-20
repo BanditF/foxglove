@@ -600,11 +600,23 @@ if os.name == "nt":
                     if end >= 0:
                         line, self._buf = self._buf[:end], self._buf[end:]
                         return line
-                    part = self._read(65536) if self._h is not None else b""
+                    part = self._read_or_eof(65536)
                     if not part:
                         line, self._buf = self._buf, b""
                         return line
                     self._buf += part
+
+        def _read_or_eof(self, n):
+            """One read, or b"" (EOF) once `close` has run, also when it lands between the handle
+            check and the read (the handle is then None or no longer valid)."""
+            if self._h is None:
+                return b""
+            try:
+                return self._read(n)
+            except (OSError, TypeError, ValueError):
+                if self._h is None:
+                    return b""
+                raise
 
         def flush(self):
             pass

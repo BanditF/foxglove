@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -14,7 +15,7 @@ sys.path.insert(0, str(ROOT / "examples" / "hideout-module-python"))
 
 import replay  # noqa: E402
 from sample_module import Counter  # noqa: E402
-from hideout_module.session import INVALID_PARAMS, Session, router_pipe_name  # noqa: E402
+from hideout_module.session import INVALID_PARAMS, Handler, Session, SessionClosed, router_pipe_name  # noqa: E402
 
 
 def _generator():
@@ -117,6 +118,115 @@ class RouterPipe(unittest.TestCase):
         _winapi.WriteFile(server, b'{"jsonrpc":"2.0","method":"x","params":{}}\n')
         reader.join(5)
         self.assertEqual(got, [{"jsonrpc": "2.0", "method": "x", "params": {}}])
+
+
+class _Wire:
+    """An in-memory transport: the module's writes are parsed and queued for the fake hub; the hub
+    feeds lines back through `send`; `readline` blocks until one is there or `close`."""
+
+    def __init__(self):
+        self.cv = threading.Condition()
+        self.inbox, self.sent, self.closed = [], [], False
+        self._partial = b""
+
+    def write(self, data):
+        with self.cv:
+            self._partial += data
+            while b"\n" in self._partial:
+                line, self._partial = self._partial.split(b"\n", 1)
+                self.sent.append(json.loads(line))
+            self.cv.notify_all()
+
+    def send(self, msg):
+        with self.cv:
+            self.inbox.append(json.dumps(msg).encode() + b"\n")
+            self.cv.notify_all()
+
+    def close(self):
+        with self.cv:
+            self.closed = True
+            self.cv.notify_all()
+
+    def readline(self, limit=-1):
+        with self.cv:
+            while not self.inbox:
+                if self.closed:
+                    return b""
+                self.cv.wait()
+            return self.inbox.pop(0)
+
+
+class Threads(unittest.TestCase):
+    def test_many_threads_get_their_own_reply_out_of_order(self):
+        wire = _Wire()
+        s = Session(wire, wire)
+        n = 40
+        results, errors = {}, []
+
+        def worker(k):
+            try:
+                results[k] = s.call("hub.notify", {"k": k}, Handler())
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(k,), daemon=True) for k in range(n)]
+        for t in threads:
+            t.start()
+        # The fake hub: wait for every request, then answer in reverse order of arrival.
+        with wire.cv:
+            self.assertTrue(wire.cv.wait_for(lambda: len(wire.sent) == n, 10))
+            reqs = list(wire.sent)
+        ids = [r["id"] for r in reqs]
+        self.assertEqual(len(set(ids)), n, "ids must be unique")
+        for r in reversed(reqs):
+            wire.send({"jsonrpc": "2.0", "id": r["id"], "result": {"echo": r["params"]["k"]}})
+        for t in threads:
+            t.join(10)
+            self.assertFalse(t.is_alive(), "a caller never got its reply (deadlock)")
+        self.assertEqual(errors, [])
+        self.assertEqual(results, {k: {"echo": k} for k in range(n)})
+        self.assertEqual(s.pending, {})
+
+    def test_request_from_threads_allocates_distinct_ids(self):
+        wire = _Wire()
+        s = Session(wire, wire)
+        ids, lock = [], threading.Lock()
+
+        def worker():
+            for _ in range(50):
+                i = s.request("facts.set", {})
+                with lock:
+                    ids.append(i)
+
+        threads = [threading.Thread(target=worker, daemon=True) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(sorted(ids), list(range(1, 401)))
+        self.assertEqual(len(s.pending), 400)
+        self.assertEqual(len(wire.sent), 400)
+
+    def test_close_wakes_every_waiter(self):
+        wire = _Wire()
+        s = Session(wire, wire)
+        outcomes = []
+
+        def worker():
+            try:
+                s.call("hub.notify", {}, Handler())
+            except SessionClosed:
+                outcomes.append("closed")
+
+        threads = [threading.Thread(target=worker, daemon=True) for _ in range(5)]
+        for t in threads:
+            t.start()
+        with wire.cv:
+            self.assertTrue(wire.cv.wait_for(lambda: len(wire.sent) == 5, 10))
+        wire.close()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(outcomes, ["closed"] * 5)
 
 
 if __name__ == "__main__":

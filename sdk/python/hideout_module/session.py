@@ -14,6 +14,7 @@ Rust SDK (`foxglove_plugin::hideout`):
 import json
 import os
 import re
+import threading
 
 from . import models
 from ._model import Model, ModelError, encode
@@ -163,20 +164,44 @@ class Session:
         self.reader, self.writer = reader, writer
         self.next_id = 1
         self.pending = {}
+        # Thread safety: `_cond` guards next_id, pending, and the call bookkeeping below;
+        # `_wlock` keeps one message's bytes together on the writer; one thread at a time holds
+        # the reader role (`_owner`) and hands every response for a `call` to its waiter.
+        self._cond = threading.Condition()
+        self._wlock = threading.Lock()
+        self._waiters = set()
+        self._done = {}
+        self._owner = None
+        self._closed = False
 
     def _write(self, msg):
         line = json.dumps(msg, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(line) > MAX_MESSAGE:
             raise ValueError(f"a message is at most {MAX_MESSAGE} bytes")
-        self.writer.write(line + b"\n")
-        if hasattr(self.writer, "flush"):
-            self.writer.flush()
+        with self._wlock:
+            self.writer.write(line + b"\n")
+            if hasattr(self.writer, "flush"):
+                self.writer.flush()
 
     def request(self, method, params=None):
-        id_ = self.next_id
-        self.next_id += 1
-        self._write({"jsonrpc": "2.0", "id": id_, "method": method, "params": _dump(params or {})})
-        self.pending[id_] = method
+        return self._request(method, params, False)
+
+    def _request(self, method, params, wait):
+        body = _dump(params or {})
+        with self._cond:
+            id_ = self.next_id
+            self.next_id += 1
+            # Registered before the write: the answer may arrive before write returns.
+            self.pending[id_] = method
+            if wait:
+                self._waiters.add(id_)
+        try:
+            self._write({"jsonrpc": "2.0", "id": id_, "method": method, "params": body})
+        except BaseException:
+            with self._cond:
+                self.pending.pop(id_, None)
+                self._waiters.discard(id_)
+            raise
         return id_
 
     def notify(self, method, params=None):
@@ -221,12 +246,15 @@ class Session:
         method = msg.get("method")
         if method is None:
             id_ = msg.get("id")
-            if id_ not in self.pending:
-                raise ValueError(f"no request {id_} is waiting")
-            sent = self.pending.pop(id_)
-            if "error" in msg:
-                return ("response", id_, sent, RpcError.from_json(msg["error"]))
-            return ("response", id_, sent, msg["result"])
+            with self._cond:
+                if id_ not in self.pending:
+                    raise ValueError(f"no request {id_} is waiting")
+                sent = self.pending.pop(id_)
+                got = RpcError.from_json(msg["error"]) if "error" in msg else msg["result"]
+                if id_ in self._waiters:
+                    self._done[id_] = got
+                    self._cond.notify_all()
+            return ("response", id_, sent, got)
         params = msg.get("params", {})
         if "id" not in msg:
             if method == "module.exit":
@@ -266,21 +294,56 @@ class Session:
             if line.strip():
                 return json.loads(line)
 
+    def _pump(self, handler):
+        """Reads and handles one message as the reader; None once the pipe closed."""
+        msg = self.read()
+        if msg is None:
+            with self._cond:
+                self._closed = True
+                self._cond.notify_all()
+            return None
+        return self.handle(msg, handler)
+
+    def _as_reader(self, handler):
+        """Waits for the reader role (a handler's own nested call already has it), then pumps one
+        message. Returns None if the pipe closed, ("wait",) if another thread read meanwhile."""
+        me = threading.get_ident()
+        with self._cond:
+            if self._owner is not None and self._owner != me:
+                self._cond.wait()
+                return ("wait",)
+            prev, self._owner = self._owner, me
+        try:
+            return self._pump(handler)
+        finally:
+            with self._cond:
+                self._owner = prev
+                self._cond.notify_all()
+
     def call(self, method, params, handler):
-        """Sends a request and waits for its answer, handling hub calls meanwhile."""
-        id_ = self.request(method, params)
-        while True:
-            msg = self.read()
-            if msg is None:
-                raise SessionClosed()
-            got = self.handle(msg, handler)
-            if got[0] == "response" and got[1] == id_:
-                if isinstance(got[3], RpcError):
-                    raise got[3]
-                return got[3]
+        """Sends a request and waits for its answer, handling hub calls meanwhile. Safe from
+        several threads: each gets its own answer, whichever thread reads it."""
+        id_ = self._request(method, params, True)
+        try:
+            while True:
+                with self._cond:
+                    if id_ in self._done:
+                        got = self._done.pop(id_)
+                        break
+                    if self._closed:
+                        raise SessionClosed()
+                self._as_reader(handler)
+        finally:
+            with self._cond:
+                self._waiters.discard(id_)
+                self._done.pop(id_, None)
+        if isinstance(got, RpcError):
+            raise got
+        return got
 
     def run(self, handler):
         """Answers hub calls until the pipe closes or `module.exit` arrives."""
-        while (msg := self.read()) is not None:
-            if self.handle(msg, handler) == ("notified", "module.exit"):
+        while True:
+            got = self._as_reader(handler)
+            if got is None or got == ("notified", "module.exit"):
                 return
