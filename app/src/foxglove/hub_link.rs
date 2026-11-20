@@ -1210,6 +1210,11 @@ impl<W: Write> Link<W> {
                         None
                     }
                 };
+                if outcome.is_ok() && number.is_none() {
+                    // Ok without a number: nothing to hold or to end, not a refusal.
+                    self.sensors.sub.answered_without_number();
+                    return Ok(Step::Nothing);
+                }
                 if let Some(super::temperature_feed::Act::Unsubscribe(n)) =
                     self.sensors.sub.answered(number)
                 {
@@ -1424,6 +1429,29 @@ impl<W: Write> Link<W> {
             None => {}
         }
         Ok(())
+    }
+
+    /// The look follows `group` (`temp_source`, a plain name: anything else is the default).
+    /// Another group ends the subscription to the old one first; true once the link is free to
+    /// subscribe to the new one (an answer still to come for the old one makes it wait for the
+    /// next message, which the runner always sends after it).
+    pub fn follow_source(&mut self, group: &str) -> Result<bool, SessionError> {
+        let group = if super::temperature_feed::valid_source(group) {
+            group
+        } else {
+            super::temperature::DEFAULT_SOURCE
+        };
+        if self.sensors.feed.group() == group {
+            return Ok(true);
+        }
+        if !self.sensors.sub.idle() {
+            self.sync_sensors(false)?;
+        }
+        if self.sensors.sub.idle() {
+            self.sensors.feed.set_group(group);
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Whether the subscription to the sensors is held or being made (tests).
@@ -2078,7 +2106,14 @@ mod runner {
             };
             // Temperature's wish and the reading, after every message: subscribes or ends the
             // subscription on a change of the wish, and publishes the reading when it changed.
-            if let Err(e) = link.sync_sensors(crate::foxglove::temperature_feed::wanted()) {
+            let group = crate::foxglove::temperature_feed::source();
+            let free = match link.follow_source(&group) {
+                Ok(free) => free,
+                Err(e) => return lost(e, live),
+            };
+            if let Err(e) =
+                link.sync_sensors(crate::foxglove::temperature_feed::wanted() && free)
+            {
                 return lost(e, live);
             }
             if let Some(status) = link.take_sensor_status() {

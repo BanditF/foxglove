@@ -2398,6 +2398,99 @@ fn screen_glow_page_renders() {
     );
 }
 
+/// Temperature on the Scenes page, for the UX review (plan slice 3): the six states of the
+/// plan's table in the dark and light themes, and the card alone in a narrow column. Saved as
+/// `ui-scenes-temperature-*.png`.
+#[test]
+fn temperature_page_renders() {
+    use crate::foxglove::scene_looks::{Kind, Look};
+    use crate::foxglove::scenes_ui::{tests, Draft, View};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::temperature::Colours;
+    use crate::foxglove::temperature_card::TempView;
+    use crate::foxglove::temperature_feed::Status;
+    use crate::foxglove::theme::Choice;
+    let base = Look {
+        kind: Kind::Temperature,
+        ..Look::default()
+    };
+    let working = Status::Working {
+        temp_c: 64.0,
+        game: false,
+    };
+    // (name, look, running, status, hosted)
+    let states: Vec<(&str, Look, bool, Status, bool)> = vec![
+        ("working-palette", base.clone(), true, working, true),
+        (
+            "working-cool-to-hot",
+            Look {
+                temp_colours: Colours::CoolToHot,
+                ..base.clone()
+            },
+            true,
+            working,
+            true,
+        ),
+        ("reading-missing", base.clone(), true, Status::Missing, true),
+        ("needs-app", base.clone(), false, Status::AppOff, true),
+        ("not-allowed", base.clone(), false, Status::NotAllowed, true),
+        (
+            "ends-moved",
+            Look {
+                temp_colours: Colours::CoolToHot,
+                cool_c: 50,
+                hot_c: 90,
+                ..base.clone()
+            },
+            true,
+            working,
+            true,
+        ),
+    ];
+    let view = |look: &Look, running: bool, status: Status, hosted: bool| View {
+        look: look.clone(),
+        running: running.then(|| "Temperature".to_string()),
+        t: foxglove_scene::SceneTime(800),
+        temperature: TempView {
+            status,
+            hosted,
+            live: running,
+        },
+        ..tests::sample()
+    };
+    let mut all = Vec::new();
+    for (choice, theme) in [(Choice::Dark, "dark"), (Choice::Light, "light")] {
+        for (name, look, running, status, hosted) in &states {
+            let mut s = Samples::full();
+            s.scenes = (view(look, *running, *status, *hosted), Draft::default());
+            let img = shell_preview_in(Page::Scenes, &s, 1100.0, choice);
+            keep(&format!("ui-scenes-temperature-{name}-{theme}.png"), &img);
+            all.push(img);
+        }
+    }
+    // The card in a narrow column.
+    for (name, look, running, status, hosted) in &states {
+        let ctx = preview_ctx();
+        crate::foxglove::scenes_ui::PREVIEW.set(Some((
+            view(look, *running, *status, *hosted),
+            Draft::default(),
+        )));
+        let img = render_ui(
+            &ctx,
+            egui::vec2(420.0, 1800.0),
+            Color32::from_rgb(0x09, 0x0a, 0x0c),
+            crate::foxglove::scenes_ui::page,
+        );
+        crate::foxglove::scenes_ui::PREVIEW.set(None);
+        keep(&format!("ui-scenes-temperature-{name}-narrow.png"), &img);
+        all.push(img);
+    }
+    assert!(
+        all.windows(2).any(|w| w[0] != w[1]),
+        "the states draw differently"
+    );
+}
+
 /// #496 the tray while Screen glow reads: the fox with its eye on a dark and a light taskbar
 /// (next to the plain fox), the tooltip's status line, and the tray panel's Screen glow row,
 /// reading and held by a full-screen game. Saved as `ui-tray-screen-glow.png`.

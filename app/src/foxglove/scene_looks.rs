@@ -54,13 +54,13 @@ pub enum Kind {
     /// the user's yes (`screen_glow`).
     ScreenGlow,
     /// A colour from a temperature reading ([`super::temperature`]): reads a
-    /// sensor through the hub, so it needs the PC sensors app. Not in [`Kind::ALL`] until the
-    /// Scenes page offers it (slice 3): no pill, no preset, no light output yet.
+    /// sensor through the hub, so it needs the PC sensors app. The Scenes page offers it
+    /// (slice 3); the light output is slice 4, so until then it breathes its fallback colour.
     Temperature,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Scanline,
         Kind::Sweep,
         Kind::Ripple,
@@ -70,6 +70,7 @@ impl Kind {
         Kind::TwoTone,
         Kind::Tide,
         Kind::ScreenGlow,
+        Kind::Temperature,
     ];
 
     pub fn label(self) -> &'static str {
@@ -134,7 +135,6 @@ impl Kind {
     }
 
     /// Reads a temperature from the hub's sensors: Temperature.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn reads_temperature(self) -> bool {
         self == Kind::Temperature
     }
@@ -744,6 +744,15 @@ pub fn effect_presets() -> Vec<Preset> {
                 ..Look::default()
             },
         ),
+        // After it (slice 3): it reads a sensor through the PC sensors app, its colours the
+        // palette's (Bandit orange), 40 to 80 degrees.
+        preset(
+            super::temperature::NAME,
+            Look {
+                kind: Kind::Temperature,
+                ..Look::default()
+            },
+        ),
     ]
 }
 
@@ -1244,6 +1253,8 @@ mod tests {
                 Kind::TwoTone => "Tones".to_string(),
                 Kind::Tide => "Tide".to_string(),
                 Kind::ScreenGlow => "Screen".to_string(),
+                // Until the light output (slice 4) it breathes its fallback colour.
+                Kind::Temperature => "Breathe".to_string(),
                 k => format!("{k:?}"),
             };
             assert!(name.starts_with(&want), "{k:?}: {name}");
@@ -1481,12 +1492,40 @@ mod tests {
         assert!(odd.hot_c >= odd.cool_c + super::super::temperature::MIN_GAP_C);
     }
 
-    /// Temperature is not offered yet: the page's list and the built-in scenes are what they were.
+    /// Temperature is offered (slice 3): the page's list ends with it, one built-in preset, and
+    /// the looks that were there are as they were.
     #[test]
-    fn temperature_is_not_offered_and_no_built_in_scene_uses_it() {
-        assert_eq!(Kind::ALL.len(), 9);
-        assert!(!Kind::ALL.contains(&Kind::Temperature));
-        assert!(built_in().iter().all(|p| p.look.kind != Kind::Temperature));
+    fn temperature_is_offered_with_one_preset_and_the_others_are_unchanged() {
+        assert_eq!(Kind::ALL.len(), 10);
+        assert_eq!(Kind::ALL[9], Kind::Temperature);
+        assert_eq!(
+            &Kind::ALL[..9],
+            &[
+                Kind::Scanline,
+                Kind::Sweep,
+                Kind::Ripple,
+                Kind::Breathe,
+                Kind::Gradient,
+                Kind::Drift,
+                Kind::TwoTone,
+                Kind::Tide,
+                Kind::ScreenGlow,
+            ]
+        );
+        let ours: Vec<_> = built_in()
+            .into_iter()
+            .filter(|p| p.look.kind == Kind::Temperature)
+            .collect();
+        assert_eq!(ours.len(), 1);
+        assert_eq!(ours[0].name, "Temperature");
+        // The orange palette stays the default; the preset changes none of the other keys.
+        assert_eq!(
+            ours[0].look,
+            Look {
+                kind: Kind::Temperature,
+                ..Look::default()
+            }
+        );
         assert!(Kind::Temperature.reads_temperature());
         assert!(!Kind::Scanline.reads_temperature());
         // Until its output lands it draws a calm breathe, never a colour from a missing reading.

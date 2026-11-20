@@ -45,7 +45,7 @@
 //!   wait meanwhile collapse to the newest); colours the user picks meanwhile are what comes back.
 //!
 //! The Scenes page (#487) starts and stops scenes ([`start`], [`stop`]) and changes the look of
-//! a running one ([`set_effect`]). The hidden demo for live checks still works too: launch
+//! a running one ([`set_look`]). The hidden demo for live checks still works too: launch
 //! Foxglove with `FOXGLOVE_SCENE_DEMO=<seconds>` (5-600, any other value 30). A
 //! scanline runs top to bottom through the room (the case's fans 7, 6, 5, then the keys) and
 //! stops by itself after that long, putting the lights back. Quitting stops it too. Copy
@@ -53,7 +53,7 @@
 //!
 //! Screen glow (#496, `screen_glow`): a scene whose look is `Effect::Screen` also owns a
 //! [`super::screen_glow::Reader`], whose capture threads run only while its gates are open. It
-//! never starts without the user's yes: [`start`] and [`set_effect`] refuse it ([`may_run`]),
+//! never starts without the user's yes: [`start`] and [`set_look`] refuse it ([`may_run`]),
 //! whoever asks (the Scenes page, a profile, the last look after a restart, the Lights page).
 //! The gates come from this thread's events: pause, away (lock, display off), the program in
 //! front ([`foreground_changed`]: a full-screen game), the lights owner ([`owner_changed`]), a
@@ -235,8 +235,10 @@ enum Ctl {
     Devices,
     /// Write the Dynamic Lighting devices' colours again in full (no reopen).
     Repaint,
-    /// Another look for the running scene, and its name.
-    Effect(String, Box<Effect>),
+    /// Another look for the running scene, its name, and whether it reads the PC sensors'
+    /// temperature (Temperature): said with the look, so a change between two looks that both
+    /// read never ends and begins the listening.
+    Effect(String, Box<Effect>, bool),
     /// A key was pressed at this row and column (#489): a ring from it.
     KeyRipple(usize, usize),
     /// The top layer changed (#489): a sweep in this colour.
@@ -262,7 +264,6 @@ enum Ctl {
     HandedBack(u64),
     /// The running look reads the PC sensors' temperature (or no longer does): Foxglove listens
     /// to them only meanwhile, and only while nothing holds the scene (the listener rule).
-    #[allow(dead_code)] // told by the Temperature page (slice 3)
     Reads(bool),
     Stop,
 }
@@ -526,8 +527,9 @@ pub fn running_look() -> Option<(String, Effect, Clock)> {
         .map(|r| (r.name.clone(), r.effect.clone(), r.clock))
 }
 
-/// Gives the running scene another look (a no-op when none runs).
-pub fn set_effect(name: &str, effect: Effect) {
+/// Gives the running scene another look; `reads_temperature` says the look is Temperature, so
+/// the scene keeps (or starts) listening to the PC sensors, and any other look stops it.
+pub fn set_look(name: &str, effect: Effect, reads_temperature: bool) {
     if !may_run(&effect, super::screen_glow::allowed()) {
         eprintln!("Foxglove: look {name} not taken: Screen glow needs the user's yes");
         super::screen_glow::set_refused(true);
@@ -537,7 +539,7 @@ pub fn set_effect(name: &str, effect: Effect) {
     if let Some(r) = running.as_mut().filter(|r| !r.thread.is_finished()) {
         r.name = name.to_string();
         r.effect = effect.clone();
-        let _ = r.tx.send(Ctl::Effect(name.to_string(), Box::new(effect)));
+        let _ = r.tx.send(Ctl::Effect(name.to_string(), Box::new(effect), reads_temperature));
         status().name = Some(name.to_string());
     }
 }
@@ -591,10 +593,9 @@ pub fn layer_sweep(colour: Rgb) {
 }
 
 /// The running scene's look reads the temperature of the PC sensors, or no longer does (the
-/// Temperature effect). Changing the look clears it first, so the caller says it again after
-/// [`set_effect`] when the new look reads one. A no-op when no scene runs; the scene's end ends
+/// Temperature effect); told right after a start. A look change says it with the look
+/// ([`set_look`]). A no-op when no scene runs; the scene's end ends
 /// the listening whatever was said.
-#[allow(dead_code)] // the Temperature page calls it (slice 3)
 pub fn set_reads_temperature(on: bool) {
     tell(Ctl::Reads(on));
 }
@@ -916,9 +917,8 @@ fn control(
                     .unwrap_or_else(|e| e.into_inner())
                     .burst(sweep);
             }
-            Ctl::Effect(name, effect) => {
-                // A look change clears what it read; the caller says Temperature again.
-                listener.set_reads(false);
+            Ctl::Effect(name, effect, reads) => {
+                listener.set_reads(reads);
                 super::lights_owner::retry("the scene's look changed");
                 let screen = is_screen(&effect);
                 // The wallpapers draw the new look on the same clock (#493); Screen glow leaves

@@ -18,7 +18,7 @@
 //! are slices 3 and 4, so what waits for them is allowed to be unused outside tests.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -336,9 +336,22 @@ impl Subscription {
         }
     }
 
+    /// The hub said Ok but gave no subscription number (it always does today): nothing to hold
+    /// and nothing to end, so it is a no-op, not a refusal (no refusal line, no retry).
+    pub fn answered_without_number(&mut self) {
+        if matches!(self.phase, Phase::Pending(_) | Phase::Cancelling(_)) {
+            self.phase = Phase::Idle;
+        }
+    }
+
     /// Facts of the group may arrive: asked and not ended.
     pub fn listening(&self) -> bool {
         matches!(self.phase, Phase::Pending(_) | Phase::Held(_))
+    }
+
+    /// Nothing asked, nothing held.
+    pub fn idle(&self) -> bool {
+        self.phase == Phase::Idle
     }
 
     pub fn held(&self) -> bool {
@@ -376,9 +389,12 @@ impl Listener {
         }
     }
 
-    /// The scene's own, telling [`want`].
+    /// The scene's own, telling [`want`] under its own number, so a scene that ends cannot
+    /// take away what a newer scene wants (the old scene's drop only ends its own wish).
     pub fn for_scene() -> Listener {
-        Listener::new(Box::new(want))
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::SeqCst);
+        Listener::new(Box::new(move |on| want(id, on)))
     }
 
     /// The look is Temperature (or is not). A scene's look change clears it first: the page
@@ -417,14 +433,58 @@ impl Drop for Listener {
 
 // ---- the two hand-offs between the scene and the link ----
 
-static WANT: AtomicBool = AtomicBool::new(false);
+/// The scenes that want the sensors now, by their number: one per running scene, so the wish
+/// is "any scene wants it", not one flag two scenes overwrite.
+static WANTS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 type Wake = Arc<dyn Fn() + Send + Sync>;
 static ON_WANT: Mutex<Option<Wake>> = Mutex::new(None);
 static LATEST: Mutex<Status> = Mutex::new(Status::HubLost);
+static SOURCE: Mutex<String> = Mutex::new(String::new());
 
-/// The scene's wish: listen to the sensors, or not. Tells the link on a change.
-pub fn want(on: bool) {
-    if WANT.swap(on, Ordering::SeqCst) != on {
+/// A sensor group as a plain name: letters, digits, `_` and `-`, so it can only ever make
+/// `sensor.<name>.*` and never a pattern that leaves the group (`*`, `a.b`, empty).
+pub fn valid_source(group: &str) -> bool {
+    !group.is_empty()
+        && group.len() <= 32
+        && group
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// The group the running look follows (`temp_source`): a valid name, else the default. The link
+/// reads it after every message.
+pub fn set_source(group: &str) {
+    let group = if valid_source(group) {
+        group
+    } else {
+        super::temperature::DEFAULT_SOURCE
+    };
+    *SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = group.to_string();
+}
+
+/// The group to follow now.
+pub fn source() -> String {
+    let g = SOURCE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if valid_source(&g) {
+        g
+    } else {
+        super::temperature::DEFAULT_SOURCE.to_string()
+    }
+}
+
+/// One scene's wish: listen to the sensors, or not. Tells the link when the wish of all scenes
+/// changes.
+pub fn want(scene: u64, on: bool) {
+    let (before, after) = {
+        let mut w = WANTS.lock().unwrap_or_else(|e| e.into_inner());
+        let before = !w.is_empty();
+        w.retain(|s| *s != scene);
+        if on {
+            w.push(scene);
+        }
+        (before, !w.is_empty())
+    };
+    if before != after {
         let wake = ON_WANT.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(wake) = wake {
             wake();
@@ -432,9 +492,9 @@ pub fn want(on: bool) {
     }
 }
 
-/// Whether the scene wants the sensors now.
+/// Whether any scene wants the sensors now.
 pub fn wanted() -> bool {
-    WANT.load(Ordering::SeqCst)
+    !WANTS.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
 }
 
 /// The link's ear for a change of the wish (it sends itself a message).
@@ -749,6 +809,40 @@ mod tests {
         assert_eq!(s.want(true), Some(Act::Subscribe));
     }
 
+    #[test]
+    fn an_ok_answer_without_a_number_is_a_no_op_not_a_refusal() {
+        let mut s = Subscription::default();
+        s.want(true);
+        s.sent(1);
+        s.answered_without_number();
+        assert!(!s.listening() && !s.held());
+        // Nothing stuck: the next wish asks again, once.
+        assert_eq!(s.want(true), Some(Act::Subscribe));
+        // Ended before the answer, then an unnumbered answer: nothing to end.
+        s.sent(2);
+        assert_eq!(s.want(false), None);
+        s.answered_without_number();
+        assert_eq!(s.want(false), None);
+        // A held one is not touched by a stray unnumbered answer.
+        let mut h = Subscription::default();
+        h.want(true);
+        h.sent(3);
+        h.answered(Some(5));
+        h.answered_without_number();
+        assert!(h.held());
+    }
+
+    #[test]
+    fn a_source_is_a_plain_name() {
+        for ok in ["gpu", "cpu", "gpu_2", "Fan-1", "a", "9"] {
+            assert!(valid_source(ok), "{ok}");
+        }
+        let long = "a".repeat(33);
+        for bad in ["", "*", "a.b", "a.*", "gpu ", "g/u", "gpu\n", "\u{e9}", "a*", &long] {
+            assert!(!valid_source(bad), "{bad:?}");
+        }
+    }
+
     type Log = Arc<Mutex<Vec<bool>>>;
 
     fn listener() -> (Listener, Log) {
@@ -855,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn the_wish_is_a_flag_with_one_wake_per_change() {
+    fn the_wish_is_per_scene_with_one_wake_per_change() {
         // The only test that touches the globals.
         let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let w = woken.clone();
@@ -863,15 +957,27 @@ mod tests {
             w.fetch_add(1, Ordering::SeqCst);
         });
         assert!(!wanted(), "off until the effect runs");
-        want(false);
+        want(1, false);
         assert_eq!(woken.load(Ordering::SeqCst), 0);
-        want(true);
-        want(true);
+        want(1, true);
+        want(1, true);
         assert!(wanted());
         assert_eq!(woken.load(Ordering::SeqCst), 1);
-        want(false);
+        // A new scene wants it before the old one ends: the old one's end takes nothing away.
+        want(2, true);
+        want(1, false);
+        assert!(wanted(), "the new scene still wants the readings");
+        assert_eq!(woken.load(Ordering::SeqCst), 1, "no flap between scenes");
+        want(2, false);
         assert!(!wanted());
         assert_eq!(woken.load(Ordering::SeqCst), 2);
+        // The followed group is a plain name, else the default.
+        set_source("cpu");
+        assert_eq!(source(), "cpu");
+        set_source("*");
+        assert_eq!(source(), "gpu");
+        set_source("a.b");
+        assert_eq!(source(), "gpu");
         publish(Status::Reading);
         assert_eq!(latest(), Status::Reading);
         publish(Status::HubLost);
