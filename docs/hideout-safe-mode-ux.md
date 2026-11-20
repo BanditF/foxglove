@@ -10,7 +10,7 @@ public docs; no code under `app/` was read.
 Mockups (Python + Pillow, [`design/mockups/hideout_bisect_mockups.py`](design/mockups/hideout_bisect_mockups.py),
 the supervisor and tab mockups' helpers and `hideout-shell` DARK tokens; the script fails under 4.5:1):
 - `C:\Users\fuchs\splitkeeb\worktrees\_review\h1033\ux-bisect-proposed-rounds.png`: the banner
-  link, a round in progress (bar, sidebar, Modules page), between rounds, the tray
+  link, a round in progress (bar, sidebar, Apps page), between rounds, the tray
 - `C:\Users\fuchs\splitkeeb\worktrees\_review\h1033\ux-bisect-proposed-results.png`: found it,
   couldn't find one, closed with nothing on, one module only, the "did it close by itself" question
 
@@ -22,9 +22,9 @@ when it can't tell.
 
 - **Reuse:** the safe-mode banner and its link (#1032); the clean-exit marker the trigger writes on
   Quit (#1033), which is also how a round sees "Hideout closed"; the supervisor's amber family
-  (banner, tray dot) and its quiet rules; the Modules page rows and their §7.8 words; **Copy
+  (banner, tray dot) and its quiet rules; the Apps page rows and their §7.8 words; **Copy
   diagnostics** and its redaction (#1032, the space-in-path fix in #1033); **Turn off** as the
-  Modules page already saves it.
+  Apps page already saves it.
 - **Emulate:**
   - **VS Code Extension Bisect:** halves the enabled extensions, keeps a bar saying how many are
     off, three answers ("Good now", "This is bad", "Stop Bisect"), ends with the one extension and
@@ -71,7 +71,7 @@ freezes and slowness, a log viewer, editing the saved on/off list during the sea
 ## A round
 
 Hideout starts only that round's half. The round bar sits at the top of every Hideout page (the
-Modules page and the started modules' pages), in the safe-mode amber:
+Apps page and the started modules' pages), in the safe-mode amber:
 
 > **Finding the module that breaks Hideout · Round 2 of 4**
 > 3 of 6 modules are on: Lights, Art, Chat.
@@ -83,10 +83,10 @@ Modules page and the started modules' pages), in the safe-mode amber:
   the last suspect alone when it was never on by itself in a round that closed). It only ever drops;
   when it finishes early it just shows the result.
 - **Which modules are on:** named up to three, then "Lights, Art, Chat and 2 more"; the full list is
-  the Modules page.
+  the Apps page.
 - **Sidebar:** the started modules as usual; the others muted with the tooltip and accessible name
   "Art, off for this round". Their pages say "Off for this round" with no Turn on.
-- **Modules page rows:** "On in this round" / "Off for this round" / "Off · not part of the search".
+- **Apps page rows:** "On in this round" / "Off for this round" / "Off · not part of the search".
   Turn on/off buttons are locked during the search, with a visible line under the list and an
   accessible description: "Locked while finding the module. Stop finding to change it."
 - **The timer** counts only while Hideout is open and the PC is awake; it pauses for sleep and
@@ -118,7 +118,7 @@ interrupted by modules coming back. The tray says the same (below).
 
 ## The result
 
-Shown in the bar's place on the Modules page, focus on the primary button. The other modules are
+Shown in the bar's place on the Apps page, focus on the primary button. The other modules are
 not started yet; the choice starts them.
 
 **Found it** (a round closed and the suspect was on in it, alone or confirmed):

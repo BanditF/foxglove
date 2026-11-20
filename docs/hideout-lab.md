@@ -62,7 +62,7 @@ the hub serves 1.2) is listed, not dropped: only its head is read (`id`, `name`,
 `hub`; nothing else in the file, so new keys are fine), it joins the lab inventory with no
 grants, and the supervisor reads it as `needs-hub` (contract §7.8) and never starts it.
 `hideout.log` says `lab: <id>: listed from <folder>, needs hub 1.9 (this hub serves 1.2); not
-started`. The Modules page row reads Needs a newer Hideout with Update Hideout, and the tray
+started`. The Apps page row reads Needs a newer Hideout with Update Hideout, and the tray
 menu names it. It has no page or tab: a module's page comes from the panels it registers, and
 it never runs. Installed (sideloaded or catalog) modules read the same at hub start when their
 installed manifest asks for a newer hub (the hub went back a version); installing such a version
@@ -262,7 +262,7 @@ python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --s
   Esc changes nothing; Enter starts it again.
 - #1093 2 (`--only states`, #1096): a lab module whose `module.toml` asks for a newer hub is
   listed (`hideout.log`: `lab: <id>: listed from …, needs hub 1.9 …; not started`), never runs,
-  its Modules row reads Needs a newer Hideout with Update Hideout, and the tray menu names it.
+  its Apps page row reads Needs a newer Hideout with Update Hideout, and the tray menu names it.
   BLOCKED unless one lab module's `module.toml` says `hub = "1.9"` before the hub starts.
 - #1093 3: on the Focus timer, `update-ready` shows Update ready / "Waits until you finish a lab
   check" / Force / Not now; Not now clears it; Update ready again and Force swaps (Updating…,
@@ -282,7 +282,7 @@ python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --s
    follows.
 5. The flyout has no taskbar button.
 6. Update Hideout opens the releases page in the browser (a lab module with `hub = "1.9"` gives
-   the row, #1096). On a catalog module's card and Modules row it opens the release its catalog
+   the row, #1096). On a catalog module's card and Apps page row it opens the release its catalog
    names instead, when its entry has `min_hub_release` on the releases page (#991); a lab
    module and the tray's stay on the releases page.
 7. The stopped toast shows, and its Start again and Open <Module> work.

@@ -14,7 +14,7 @@ the tab mockups' helpers and `hideout-shell` DARK tokens; the script fails under
 
 ## Research
 
-- **Reuse:** the §7.8 state list and its words (one list for panel header, Modules page and tray),
+- **Reuse:** the §7.8 state list and its words (one list for panel header, Apps page and tray),
   the tab strip's marks and stopped card (hideout-tabs-ux.md: orange ring, red warning mark,
   greyed last page), `state_words` from #956 for the plain names, `hub.notify`'s notification path,
   the tray status line (§2, root cause only). Nothing new is invented where §7.8 has a word.
@@ -41,7 +41,7 @@ log viewers beyond Open log, any wording inside a module's own page.
 ## States: where and what
 
 Surfaces: **S** sidebar module list, **T** its tab (#953), **P** the page area (crash bar or card),
-**M** the Modules page row, **Tr** tray (icon, status line, menu), **N** notification.
+**M** the Apps page row, **Tr** tray (icon, status line, menu), **N** notification.
 
 | State (§7.8 id) | S and T | P | M | Tr | N |
 |---|---|---|---|---|---|
@@ -53,7 +53,7 @@ Surfaces: **S** sidebar module list, **T** its tab (#953), **P** the page area (
 | Off (`off`) | muted label, no mark | "Off" + **Turn on** | "Off" + Turn on | nothing | — |
 | Needs a newer Hideout (`needs-hub`) | red warning mark | card "Needs a newer Hideout" + **Update Hideout**, Go back to <previous> | same words + Update Hideout | red dot; menu line "Art needs a newer Hideout" | once, at the update that caused it |
 | Withdrawn (`revoked`, #1026) | red warning mark | withdrawn card, see [hideout-revoked-ux.md](hideout-revoked-ux.md) | "Withdrawn · <version>" + **Check for updates** | red dot; menu line "Art was withdrawn" | once per withdrawn version |
-| Safe mode (§7.10) | only Modules and Settings in the sidebar | banner (below) on the Modules page | each enabled module "On · not started in safe mode" | amber dot; tooltip "Hideout · safe mode"; menu item **Start normally** | once at start |
+| Safe mode (§7.10) | only Apps and Settings in the sidebar | banner (below) on the Apps page | each enabled module "On · not started in safe mode" | amber dot; tooltip "Hideout · safe mode"; menu item **Start normally** | once at start |
 
 Rules shared by all rows:
 - **One mark per entry**, the tabs doc's precedence: stopped mark > ring > nothing. The red mark
@@ -109,7 +109,7 @@ The update shows again in Modules as "Update available" with the line "0.5.0 cra
 
 ### Safe mode and finding the culprit
 
-Banner on the Modules page, the only page that opens:
+Banner on the Apps page, the only page that opens:
 
 > **Safe mode**
 > Hideout closed 3 times in 5 minutes, so no modules were started.
@@ -122,7 +122,7 @@ Banner on the Modules page, the only page that opens:
   [hideout-safe-mode-ux.md](hideout-safe-mode-ux.md) (#1033); it replaces the earlier
   always-on-top "Still broken?" window. The search never edits the saved list; only the last
   choice does.
-- Turning a module off from the safe-mode Modules page is saved as usual.
+- Turning a module off from the safe-mode Apps page is saved as usual.
 
 ### Hub restart and adoption
 

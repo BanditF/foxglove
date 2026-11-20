@@ -244,8 +244,8 @@ The params and results are in the schema. Notes:
 - **Enforcement:** `schema/v1.json` is generated from the Rust types, and a test fails when the
   types change without the file. Reviewers check that a schema diff matches the version bump.
   Regenerate with `UPDATE_SCHEMA=1 cargo test -p foxglove-plugin-api`.
-- **Releases:** Foxglove 0.1.0 served API 1.1; Foxglove 0.2.0 serves API 1.10
-  (`crates/plugin-api`, `API_VERSION`). The app's own version (`initialize`'s `app`) and the API
+- **Releases:** Foxglove 0.1.0 served API 1.1; Foxglove 0.2.0 serves API 1.10;
+  main (0.3, in progress) serves API 1.18 (`crates/plugin-api`, `API_VERSION`). The app's own version (`initialize`'s `app`) and the API
   version move separately.
 - **SDKs:** the Rust types *are* the Rust SDK (MIT). Python/TypeScript clients get generated from
   the schema later.
@@ -516,7 +516,9 @@ this. The app then serves no `foxglove-<user>` pipe; the hub serves that alias a
 - The router checks the caller's permission (the table above) before the app is asked; the app
   answers only the names in `SERVED` (`app/src/foxglove/hub_link.rs`) and treats everything else as
   -32601. The answers are the standalone handlers' answers (a test compares them).
-- Served: `health.read`, `lights.page`, `scenes.page`, `overlay.window|restore|shown|set_shown`,
+- Served: `health.read`, `lights.page`, `scenes.page`, `lights.status`, `scene.status`, `scene.start`
+  (API 1.18, #1377; `scene.repaint` and `scene.stop` stay with the standalone pipe),
+  `overlay.window|restore|shown|set_shown`,
   `tray.panel|set_panel`, `pc_lighting.list|set_zone`, `wallpaper-engine.pause|release|status`
   (#1120). The user grants each as `provide:<method>`.
 - `wallpaper-engine.*` through the hub follows the contract's lease rules (section 8.5): only the

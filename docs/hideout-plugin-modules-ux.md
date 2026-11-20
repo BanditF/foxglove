@@ -87,7 +87,7 @@ Rules shared by all tiles:
 - **Optimistic input** (§5.3): Mute flips to "Muted" at once; a refusal reverts it and the tile
   shows the "refused" state with `data.reason`.
 - **Off modules have no tile.** Turning a module off removes its tile from the tray panel; the
-  Modules page has Turn on. Hidden tiles are listed under Edit tiles.
+  Apps page has Turn on. Hidden tiles are listed under Edit tiles.
 - **Outside problems are tile states, not crashes** (spec S6). OBS closed, iCUE closed, a busy
   port: the module stays running and says what it needs. Only a real crash reaches the supervisor.
 

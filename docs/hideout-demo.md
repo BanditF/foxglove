@@ -37,7 +37,7 @@ Run from the checkout in PowerShell. `$exe` values are your paths.
    registered: ...") and exits 1.
 4. **Start the demo hub (UNVERIFIED).** Same command plus `-Launch` (implies `-Adopt`). Starts
    `hideout.exe` with the demo environment and records its pid in `<demo>\hub.pid`. This is the
-   only switch that starts anything. Expect the hub window with the Modules page.
+   only switch that starts anything. Expect the hub window with the Apps page.
 5. **See the modules (UNVERIFIED).** Expected: a Foxglove page and three tiles (Keyboard, Keyboard
    lights, Keyboard art), and an "AI" page and tile (Vulpes). Vulpes starts when its page is
    opened or a method it provides is called (`activation on = open, call`); a cold tile reads "Not

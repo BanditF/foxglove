@@ -13,7 +13,7 @@ Mockups (Python + Pillow, [`design/mockups/hideout_revoked_mockups.py`](design/m
 the earlier mockups' helpers and `hideout-shell` DARK tokens; the script fails under 4.5:1, lowest
 5.4:1, and checks the note-cleaning rule):
 - `C:\Users\fuchs\splitkeeb\worktrees\_review\h1026\ux-revoked-proposed-states.png`: the page
-  card, sidebar and tab mark, the tile, the Modules rows, tray menu and icon, the notification
+  card, sidebar and tab mark, the tile, the Apps page rows, tray menu and icon, the notification
 - `C:\Users\fuchs\splitkeeb\worktrees\_review\h1026\ux-revoked-proposed-card.png`: the card with
   no note, with a long note cleaned and capped, while checking, after "nothing newer", and with
   no previous version
@@ -52,7 +52,7 @@ editor or anything a publisher sees, uninstalling.
   the supervisor when it stops a module because `Registry::revoked()` lists it, at hub start
   (shallow verify refuses the launch, §12.5) and on catalog acceptance. Cleared when another
   version of the module connects, the same moment `module.<id>.revoked` clears.
-- **UI name:** **Withdrawn** (short, for the Modules row and tooltips). Card title:
+- **UI name:** **Withdrawn** (short, for the Apps page row and tooltips). Card title:
   "<Module> <version> was withdrawn". The version is in the title because only that version is.
 - **What happens to the module:** stopped (drain and stop, §7.6), leases already ended with
   `"revoked"`, panels hidden, files, data, settings, secrets and grants kept (as **disable**,
@@ -72,7 +72,7 @@ editor or anything a publisher sees, uninstalling.
 ## Where it shows
 
 Surfaces as in hideout-supervisor-ux.md: **S** sidebar, **T** tab, **P** page, **Ti** tray tile,
-**M** Modules row, **Tr** tray, **N** notification.
+**M** Apps page row, **Tr** tray, **N** notification.
 
 | Surface | What |
 |---|---|
@@ -128,7 +128,7 @@ The catalog's `reason` is publisher text. Hideout draws it on the card only, as 
    zero-width), every run of whitespace (newlines, tabs) becomes one space, the ends are trimmed.
 3. **Capped at 160 characters** (whole characters, never mid-code point; an ellipsis "…" when cut).
    About two lines on the card. The full text is in Copy diagnostics.
-4. **Only on the card.** Never in the tile, sidebar tooltip, tray menu, notification, Modules row
+4. **Only on the card.** Never in the tile, sidebar tooltip, tray menu, notification, Apps page row
    or a log line's summary. These are outside the window or too small to carry a label.
 5. The fact is the hub's (`module.*` facts can't be written by modules), so a module can't put
    words on its own card.

@@ -402,6 +402,13 @@ scanline can run down the monitors, through the case's fans and on into the keys
   **Smoothing:** Quick, Even or Calm. It pauses during full-screen games (not borderless ones),
   while the PC is locked or the display is off, and with Pause Foxglove. Some streaming services
   show as black to other apps, so the lights stay dim during them.
+- **Temperature** (Effects, needs Hideout): your lights show how warm the PC is, from a cool
+  colour to a hot one. It needs Foxglove running inside Hideout with the **PC sensors** app on
+  and allowed to share its readings with Foxglove; when one of those is missing, the card says
+  which, and **Open Apps page** takes you to where you fix it. **Cool at** and **Hot at** set
+  the two ends (20 to 100 °C in steps of 5, at least 10 apart). The colour changes at most
+  about once a second (once in ten seconds while a game runs). With no reading the lights show
+  a steady calm colour; a missing reading is never shown as 0.
 - **Start** sends the scene to the lights; **Stop** puts back the colours from before (or the
   ones you picked for the keyboard or the case meanwhile). A plugin's notification still shows
   over a scene, and nothing is sent while the PC is locked, the display is off or Foxglove is
