@@ -187,3 +187,31 @@ fn a_registration_while_someone_listens_tells_the_owner_once_after_its_result() 
     let (_, out) = subscribe(&mut r, a, "sensor.*", now);
     assert!(demands(&out, owner2).is_empty());
 }
+
+/// An overlap swap: old and new instance both hold the module id. The new one's register is
+/// told, the old one is not, and the old one leaving changes nothing for the new one.
+#[test]
+fn an_overlap_swap_tells_the_new_instance_and_not_the_old() {
+    let now = Instant::now();
+    let (mut r, old, a, _b) = rig(now);
+    let (n, _) = subscribe(&mut r, a, "sensor.*", now);
+    let new = connect(&mut r, OWNER, now);
+    let out = register(&mut r, new, &["sensor.*"], now);
+    assert_eq!(
+        demands(&out, new),
+        [json!({"pattern":"sensor.*","subscribers":1})]
+    );
+    assert!(demands(&out, old).is_empty(), "{out:?}");
+    // The old instance holds a subscription of its own (game mode): not demand, on either.
+    let (_, out) = subscribe(&mut r, old, "sensor.*", now);
+    assert!(demands(&out, new).is_empty() && demands(&out, old).is_empty());
+    // It exits: the new instance hears nothing wrong.
+    let out = r.disconnect(old);
+    assert!(demands(&out, new).is_empty(), "{out:?}");
+    // The last real subscriber leaves: the new instance is told 0.
+    let out = unsubscribe(&mut r, a, n, now);
+    assert_eq!(
+        demands(&out, new),
+        [json!({"pattern":"sensor.*","subscribers":0})]
+    );
+}

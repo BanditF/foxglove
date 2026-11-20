@@ -138,6 +138,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut host = Host::new(factories, Config::default());
     let start = Instant::now();
     let mut game_mode = None;
+    let mut logged = std::collections::HashSet::new();
     loop {
         let now = start.elapsed();
         let line = match host.next_due() {
@@ -156,7 +157,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(v) if id == game_mode_get => game_mode = Some(is_on(&v["value"])),
                         Ok(_) => {}
                         // Without the game-mode grant the module reads at the normal rate.
-                        Err(e) => eprintln!("{ID}: {method}: {} ({})", e.message, e.code),
+                        Err(e) => {
+                            // Once per method: a revoked grant must not flood the log.
+                            if logged.insert(method.clone()) {
+                                eprintln!("{ID}: {method}: {} ({})", e.message, e.code);
+                            }
+                        }
                     }
                 }
             }

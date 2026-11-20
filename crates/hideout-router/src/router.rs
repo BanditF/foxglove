@@ -382,6 +382,9 @@ pub struct Router {
     subs: BTreeMap<u64, (ConnId, String)>,
     /// What `facts.demand` last told each owner: (module, owned pattern) -> had subscribers (§8.8, v1.20).
     demand_sent: HashMap<(String, String), bool>,
+    /// The connection that registered the module's facts last: `facts.demand` goes there, not to
+    /// whichever instance of an overlap swap the map yields first.
+    demand_conn: HashMap<String, ConnId>,
     next_sub: u64,
     pending: HashMap<(ConnId, i64), Pending>,
     /// Counted calls per (provider, caller key) and per provider: the in-flight caps read these
@@ -518,6 +521,7 @@ impl Router {
             facts: BTreeMap::new(),
             subs: BTreeMap::new(),
             demand_sent: HashMap::new(),
+            demand_conn: HashMap::new(),
             next_sub: 1,
             faults: HashMap::new(),
             leases: HashMap::new(),
@@ -1413,7 +1417,7 @@ impl Router {
         }
         let had_subs = self.subs.len();
         self.subs.retain(|_, (owner, _)| *owner != conn);
-        let lost_subs = self.subs.len() != had_subs;
+        let mut lost_subs = self.subs.len() != had_subs;
         self.identities.remove(&conn);
         // Its app watches end with it (§8.12, v1.13).
         self.app_watches.remove(&conn);
@@ -1450,7 +1454,14 @@ impl Router {
         }
         if let Who::Module { id, .. } = c.who {
             // Another connection may already hold the module (a swap's new instance).
+            if self.demand_conn.get(&id) == Some(&conn) {
+                // The instance that was told leaves: the other one, if any, is told afresh.
+                self.demand_conn.remove(&id);
+                self.demand_sent.retain(|k, _| k.0 != id);
+            }
+            lost_subs = true;
             if self.module_conn(&id).is_none() {
+                self.demand_conn.remove(&id);
                 self.routes.retain(|r| r.module != id);
                 self.fact_owners.retain(|r| r.module != id);
                 self.demand_sent.retain(|k, _| k.0 != id);
@@ -1481,13 +1492,25 @@ impl Router {
             .map(|r| (r.module.clone(), r.pattern.clone()))
             .collect();
         for (module, pattern) in owners {
-            let Some(conn) = self.module_conn(&module) else {
-                continue;
+            let conn = match self.demand_conn.get(&module) {
+                Some(c) if self.conns.contains_key(c) => *c,
+                _ => {
+                    let Some(c) = self.module_conn(&module) else {
+                        continue;
+                    };
+                    self.demand_conn.insert(module.clone(), c);
+                    c
+                }
             };
+            // The module's own subscriptions, on any of its connections, are not demand.
             let count = self
                 .subs
                 .values()
-                .filter(|(c, p)| *c != conn && overlap(p, &pattern))
+                .filter(|(c, p)| {
+                    overlap(p, &pattern)
+                        && !matches!(self.conns.get(c).map(|x| &x.who),
+                            Some(Who::Module { id, .. }) if *id == module)
+                })
                 .count();
             let key = (module, pattern.clone());
             let was = self.demand_sent.get(&key).copied().unwrap_or(false);
@@ -1560,6 +1583,7 @@ impl Router {
         self.routes.retain(|r| r.module != id);
         self.fact_owners.retain(|r| r.module != id);
         self.demand_sent.retain(|k, _| k.0 != id);
+        self.demand_conn.remove(id);
         self.channels.remove(id);
         self.leases.retain(|k, _| k.0 != id);
         self.restart_closes.remove(id);
@@ -1945,6 +1969,7 @@ impl Router {
                 if let Some(m) = &module {
                     // A (re)registration tells the owner once more (§8.8, v1.20).
                     self.demand_sent.retain(|k, _| k.0 != *m);
+                    self.demand_conn.insert(m.clone(), conn);
                     self.demand_sync(out);
                 }
             }
