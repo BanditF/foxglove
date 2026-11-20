@@ -32,8 +32,13 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   with the module's connection. Each name is cleaned like a holder name (hidden characters
   dropped, at most 32 characters; one that is empty after that is "An app"), at most 16 are
   kept, each once. The names are the callers' own words and nobody checked them: they are shown
-  as names, never as an app the hub vouches for. A module lists at most 8 families (names up to
-  64 bytes). No new permission: it only names holds of the module's own. Contract crate:
+  as names, never as an app the hub vouches for; a name may imitate a module's or an app's, so a
+  reader treats every holder name as untrusted text. A module lists at most 8 families (names
+  up to 64 bytes) and only a family it has a route in (else −32602); a call that changes its
+  lists within 100 ms of its last change is refused with error 8 `rate limited` (the
+  provider resends on its next change), and one repeating the current list is a no-op. A
+  connection's lists end with it, so a swap's new instance never inherits the old one's.
+  No new permission: it only names holds of the module's own. Contract crate:
   `lease::LEASE_HOLDERS`, `LeaseHolders`; schema type `lease.LeaseHolders`. `hub` stays 1.5
   (§8.7): an older hub answers `lease.holders` −32601, which a provider takes as "the hub lists
   hub callers only".

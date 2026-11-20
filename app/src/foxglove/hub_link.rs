@@ -1371,7 +1371,11 @@ impl<W: Write> Link<W> {
                 Ok(Step::Nothing)
             }
             ("lease.holders", Err(e)) => {
-                // An older hub (before 1.21) lists only the callers it routes.
+                // An older hub (before 1.21) lists only the callers it routes. Any other
+                // refusal (rate limited, not ready) is retried with the next message.
+                if e.code != code::METHOD_NOT_FOUND {
+                    self.held_sent.clear();
+                }
                 if !self.held_said {
                     self.held_said = true;
                     self.say(format!(

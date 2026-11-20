@@ -367,6 +367,9 @@ struct Lease {
 const HUB_APPS_PAGE: &str = "hub.modules";
 
 /// The least time between two `hub.show` calls that take effect (v1.19), hub-wide.
+pub const HOLDERS_GAP: Duration = Duration::from_millis(100);
+
+/// The least time between two `lease.holders` calls of one module that change its lists (v1.21).
 pub const SHOW_GAP: Duration = Duration::from_secs(2);
 
 pub struct Router {
@@ -416,6 +419,10 @@ pub struct Router {
     /// (`lease.holders`, v1.21): module -> family -> cleaned names. Merged into the
     /// `lease_holders` fact; dropped with the module's connection.
     local_holders: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    /// The connection that set each module's `local_holders` and when it last changed them: a
+    /// closing connection takes its lists with it, and changes come at most one per
+    /// [`HOLDERS_GAP`] (the tray rebuilds its menu on each).
+    local_holders_by: BTreeMap<String, (ConnId, Instant)>,
     /// The supervisor's pid and exe-hash check (§7.5); `None` = tokens only (tests, lab).
     launch_check: Option<LaunchCheck>,
     /// The verified program image of each module connection (#1155-B), set at `initialize`.
@@ -537,6 +544,7 @@ impl Router {
             restart_closes: HashMap::new(),
             holders_shown: Default::default(),
             local_holders: BTreeMap::new(),
+            local_holders_by: BTreeMap::new(),
             launch_check: None,
             identity_lookup: None,
             identities: HashMap::new(),
@@ -1463,6 +1471,12 @@ impl Router {
             }
         }
         if let Who::Module { id, .. } = c.who {
+            // The lists this connection reported go with it, even when a swap's new instance
+            // already holds the module (it names its own).
+            if self.local_holders_by.get(&id).map(|b| b.0) == Some(conn) {
+                self.local_holders_by.remove(&id);
+                self.local_holders.remove(&id);
+            }
             // Another connection may already hold the module (a swap's new instance).
             if self.demand_conn.get(&id) == Some(&conn) {
                 // The instance that was told leaves: the other one, if any, is told afresh.
@@ -1477,6 +1491,7 @@ impl Router {
                 self.demand_sent.retain(|k, _| k.0 != id);
                 self.wanted.remove(&id);
                 self.local_holders.remove(&id);
+                self.local_holders_by.remove(&id);
                 // What this module held may go to one that was refused it as `taken` (#1135).
                 self.restore_wanted();
                 self.channels.remove(&id);
@@ -1807,15 +1822,27 @@ impl Router {
     /// `lease.holders` (v1.21): keeps `names` as the callers `module` holds `family` for outside
     /// the hub. Cleaned, each once, at most [`hideout_contract::lease::HOLDERS_MAX_NAMES`];
     /// empty removes the list. `false` when the family is not one this module may list.
-    fn set_local_holders(&mut self, module: &str, family: &str, names: &[String]) -> bool {
+    fn set_local_holders(
+        &mut self,
+        conn: ConnId,
+        module: &str,
+        family: &str,
+        names: &[String],
+        now: Instant,
+    ) -> Result<(), i64> {
         use hideout_contract::lease::{
             HOLDERS_FAMILY_MAX, HOLDERS_MAX_FAMILIES, HOLDERS_MAX_NAMES,
         };
+        // Only a family the module has a route in: it names holds of its own, never another
+        // app's (the tray would show a pause nobody holds).
         if family.is_empty()
             || family.len() > HOLDERS_FAMILY_MAX
             || family.chars().any(char::is_control)
+            || !self.routes.iter().any(|r| {
+                r.module == module && hideout_contract::lease::family(&r.pattern) == family
+            })
         {
-            return false;
+            return Err(code::INVALID_PARAMS);
         }
         let mut clean: Vec<String> = Vec::new();
         for n in names {
@@ -1827,18 +1854,37 @@ impl Router {
                 break;
             }
         }
+        let by = self.local_holders_by.get(module).copied();
+        // The same list again changes nothing and costs nothing.
+        let same = by.is_some_and(|b| b.0 == conn)
+            && match self.local_holders.get(module).and_then(|f| f.get(family)) {
+                Some(old) => *old == clean,
+                None => clean.is_empty(),
+            };
+        if same {
+            return Ok(());
+        }
+        if by.is_some_and(|(_, at)| now.saturating_duration_since(at) < HOLDERS_GAP) {
+            return Err(code::RATE_LIMITED);
+        }
+        // Another connection's lists (an older instance) are not this one's to keep.
+        if by.is_some_and(|b| b.0 != conn) {
+            self.local_holders.remove(module);
+        }
         let fams = self.local_holders.entry(module.to_string()).or_default();
         if clean.is_empty() {
             fams.remove(family);
         } else if fams.contains_key(family) || fams.len() < HOLDERS_MAX_FAMILIES {
             fams.insert(family.to_string(), clean);
         } else {
-            return false;
+            return Err(code::INVALID_PARAMS);
         }
         if fams.is_empty() {
             self.local_holders.remove(module);
         }
-        true
+        self.local_holders_by
+            .insert(module.to_string(), (conn, now));
+        Ok(())
     }
 
     /// Keeps the hub fact `module.<provider>.lease_holders` (§8.5, v1.17) on the live leases:
@@ -2075,16 +2121,21 @@ impl Router {
                         id,
                         code::INVALID_PARAMS,
                         "invalid params",
-                        Some("family is a method family; names are strings"),
+                        Some("family is a method family the module has a route in; names are strings"),
                     )
                 };
                 match (&module, family, names) {
                     (Some(m), Some(f), Some(n)) if self.ready_conn(m).is_some() => {
                         let m = m.clone();
-                        let reply = if self.set_local_holders(&m, f, &n) {
-                            ok(&id, json!({}))
-                        } else {
-                            bad(&id)
+                        let reply = match self.set_local_holders(conn, &m, f, &n, now) {
+                            Ok(()) => ok(&id, json!({})),
+                            Err(code::RATE_LIMITED) => error(
+                                &id,
+                                code::RATE_LIMITED,
+                                "rate limited",
+                                Some("lease.holders changes come at most every 100 ms"),
+                            ),
+                            Err(_) => bad(&id),
                         };
                         out.push(answer(reply));
                     }

@@ -2755,6 +2755,7 @@ fn local_holders_reach_the_hubs_fact_with_the_routed_ones() {
     assert_eq!(names.len(), 2, "{fact}");
     assert!(names.contains(&json!("Render queue")) && names.contains(&json!("Arete")));
     // None left: the local name goes, the routed one stays.
+    rig.now += std::time::Duration::from_millis(200);
     rig.link.sync_local_holders(&[]).unwrap();
     rig.pump();
     assert_eq!(rig.fact(key), Some(json!({"wallpaper-engine": ["Arete"]})));
@@ -2787,6 +2788,14 @@ fn an_older_hub_refusing_lease_holders_is_logged_once() {
         req["params"],
         json!({"family": "wallpaper-engine", "names": ["A"]})
     );
+    // A rate-limited answer (not "no such method") clears the memory: the next message resends.
+    let limited =
+        json!({"jsonrpc":"2.0","id":req["id"],"error":{"code":8,"message":"rate limited"}});
+    rig.link.line(&limited.to_string()).unwrap();
+    rig.link.sync_local_holders(&["A".to_string()]).unwrap();
+    let sent = String::from_utf8(std::mem::take(rig.link.writer_mut())).unwrap();
+    let req: Value = serde_json::from_str(sent.lines().next().unwrap()).unwrap();
+    assert_eq!(req["method"], "lease.holders");
     let mut last = req;
     for names in [vec!["A".to_string(), "B".to_string()], vec![]] {
         let no =
