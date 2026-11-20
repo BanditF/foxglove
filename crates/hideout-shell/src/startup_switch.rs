@@ -56,6 +56,34 @@ pub const DONE_REMOVED: &str = "Removed the startup shortcut.";
 pub const FAILED: &str =
     "That did not work. You can check Windows Settings under Apps, then Startup.";
 
+// ---- The log lines (sign-in hand-over slice 6; not user-visible) ----------------------------
+
+pub const LOG_TURNED_ON: &str = "Start with Windows turned on by the user (dialog)";
+pub const LOG_TURNED_OFF: &str = "Start with Windows turned off by the user";
+pub const LOG_REMOVED: &str = "Start with Windows shortcut removed by the user";
+
+/// The log line for a click that really changed something; `None` for everything else (no change,
+/// a test run, a failure, which logs its own warning).
+pub fn click_log(c: Click, outcome: &Result<Outcome, String>) -> Option<&'static str> {
+    match (c, outcome) {
+        (Click::Confirm, Ok(Outcome::Changed)) => Some(LOG_TURNED_ON),
+        (Click::TurnOff, Ok(Outcome::Changed)) => Some(LOG_TURNED_OFF),
+        (Click::Remove, Ok(Outcome::Changed)) => Some(LOG_REMOVED),
+        _ => None,
+    }
+}
+
+/// The first line of a `--tray` (sign-in) start: what Start with Windows says now.
+pub fn sign_in_line(state: State, has_link: bool) -> String {
+    let what = match state {
+        State::On => "on (Hideout.lnk starts this exe)",
+        State::Foreign => "another shortcut",
+        State::Off if has_link => "off in Windows",
+        _ => "off",
+    };
+    format!("sign-in start; Start with Windows: {what}")
+}
+
 // ---- Gate ----------------------------------------------------------------------------------
 
 /// Whether the switch may write at all.
@@ -227,6 +255,12 @@ impl<F: StartupFolder, A: Approval> Switch<F, A> {
         autostart::set_enabled(&self.ctx, false, &mut self.folder, &mut self.approval)
     }
 
+    /// The log line for a `--tray` start (reads the shell once; writes nothing).
+    pub fn sign_in_line(&mut self) -> String {
+        let (state, has_link) = self.snapshot();
+        sign_in_line(state, has_link)
+    }
+
     /// The rollback: removes `Hideout.lnk` and its approval value, only when it starts this exe.
     pub fn remove_shortcut(&mut self) -> Result<Outcome, String> {
         autostart::remove(&self.ctx, &mut self.folder, &mut self.approval)
@@ -279,15 +313,24 @@ impl<F: StartupFolder, A: Approval> StartupControl for Switch<F, A> {
             Click::Confirm => {
                 if let Some(d) = self.dialog.take() {
                     let r = self.turn_on(d.turn_on());
+                    if let Some(l) = click_log(c, &r) {
+                        log::info!("{l}");
+                    }
                     self.message = Some(done(r, DONE_ON));
                 }
             }
             Click::TurnOff => {
                 let r = self.turn_off();
+                if let Some(l) = click_log(c, &r) {
+                    log::info!("{l}");
+                }
                 self.message = Some(done(r, DONE_OFF));
             }
             Click::Remove => {
                 let r = self.remove_shortcut();
+                if let Some(l) = click_log(c, &r) {
+                    log::info!("{l}");
+                }
                 self.message = Some(done(r, DONE_REMOVED));
             }
         }
@@ -622,6 +665,55 @@ mod tests {
         // Off states never claim apps start.
         s.click(Click::TurnOff);
         assert_eq!(s.row().status, STATUS_OFF_IN_WINDOWS);
+    }
+
+    #[test]
+    fn the_log_lines_are_exact_and_only_for_real_changes() {
+        assert_eq!(
+            click_log(Click::Confirm, &Ok(Outcome::Changed)),
+            Some("Start with Windows turned on by the user (dialog)")
+        );
+        assert_eq!(
+            click_log(Click::TurnOff, &Ok(Outcome::Changed)),
+            Some("Start with Windows turned off by the user")
+        );
+        assert_eq!(
+            click_log(Click::Remove, &Ok(Outcome::Changed)),
+            Some("Start with Windows shortcut removed by the user")
+        );
+        for o in [
+            Ok(Outcome::Unchanged),
+            Ok(Outcome::SkippedLabRun),
+            Err("x".to_string()),
+        ] {
+            for c in [Click::Confirm, Click::TurnOff, Click::Remove] {
+                assert_eq!(click_log(c, &o), None);
+            }
+        }
+        assert_eq!(click_log(Click::Ask, &Ok(Outcome::Changed)), None);
+        assert_eq!(click_log(Click::Cancel, &Ok(Outcome::Changed)), None);
+    }
+
+    #[test]
+    fn the_sign_in_line_names_the_switch_state() {
+        assert_eq!(
+            sign_in_line(State::On, true),
+            "sign-in start; Start with Windows: on (Hideout.lnk starts this exe)"
+        );
+        assert_eq!(
+            sign_in_line(State::Off, true),
+            "sign-in start; Start with Windows: off in Windows"
+        );
+        assert_eq!(
+            sign_in_line(State::Off, false),
+            "sign-in start; Start with Windows: off"
+        );
+        assert_eq!(
+            sign_in_line(State::Foreign, true),
+            "sign-in start; Start with Windows: another shortcut"
+        );
+        let mut s = sw(true, false);
+        assert_eq!(s.sign_in_line(), "sign-in start; Start with Windows: off");
     }
 
     #[test]

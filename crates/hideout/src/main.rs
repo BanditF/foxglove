@@ -382,7 +382,11 @@ fn main() {
         settings_page::SettingsPage::new(paths.root.clone(), env!("CARGO_PKG_VERSION"));
     // Start with Windows (H5.2): OFF until the user's click in its dialog; nothing here turns it
     // on, and a hub that is not the installed one (or a test run) cannot write it.
-    if let Some(sw) = startup_switch(&paths) {
+    if let Some(mut sw) = startup_switch(&paths) {
+        // A sign-in start says what the switch is, in the log (reads the shell; writes nothing).
+        if start_in_tray {
+            log::info!("{}", sw.sign_in_line());
+        }
         // The router hears whether Hideout starts at sign-in and tells running modules
         // (`module.<id>.starts_at_sign_in`, read-only): only the hub that holds the router.
         let sw: Box<dyn hideout_shell::startup_switch::StartupControl> =
