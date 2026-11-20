@@ -412,6 +412,17 @@ fn prepared_usable(p: &Prepared, exe: &Path, now: Instant) -> bool {
     now.saturating_duration_since(p.at) < PREPARED_TTL && same_path(Path::new(&p.pin.path), exe)
 }
 
+/// Drops every pin older than [`PREPARED_TTL`], which releases its write lock.
+fn prune_expired(map: &mut BTreeMap<String, Prepared>, now: Instant) {
+    map.retain(|_, p| now.saturating_duration_since(p.at) < PREPARED_TTL);
+}
+
+/// When the oldest pin expires: the timer's own deadline for it, so a pin nothing takes is
+/// released on time with no event and no polling.
+fn next_expiry(map: &BTreeMap<String, Prepared>) -> Option<Instant> {
+    map.values().map(|p| p.at + PREPARED_TTL).min()
+}
+
 /// The program file of a launch: `run[0]`, relative to the module's folder unless absolute.
 fn program_of(dir: &Path, run0: &str) -> PathBuf {
     let p = PathBuf::from(run0);
@@ -1173,23 +1184,40 @@ impl Supervisor {
                 );
             }
         }
+        // The timer learns of the pin's expiry.
+        let _ = self.0.nudge.lock().unwrap().send(());
         self.run(cmds);
         self.0.lab.stepped();
     }
 
-    /// The pin taken before the stop for `exe`, if still good; either way it is spent.
-    fn take_prepared(&self, id: &str, exe: &Path) -> Option<Arc<crate::pin::Pin>> {
-        let p = self.0.prepared.lock().unwrap().remove(id)?;
-        prepared_usable(&p, exe, Instant::now()).then_some(p.pin)
+    /// The pin taken before the stop, spent whether or not it is used: it is taken out of the
+    /// map at the start of every launch, so no refusal path can leave the file locked.
+    fn take_prepared(&self, id: &str) -> Option<Prepared> {
+        self.0.prepared.lock().unwrap().remove(id)
+    }
+
+    /// Test seam: pins `exe` as a new build prepared before a stop, as `rebuilt` does.
+    #[doc(hidden)]
+    pub fn hold_prepared(&self, id: &str, exe: &Path) -> std::io::Result<()> {
+        let pin = Arc::new(crate::pin::Pin::open(exe)?);
+        self.0.prepared.lock().unwrap().insert(
+            id.into(),
+            Prepared {
+                pin,
+                at: Instant::now(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Whether a pin taken before a stop is still held for `id` (tests, diagnostics).
+    #[doc(hidden)]
+    pub fn prepared_held(&self, id: &str) -> bool {
+        self.0.prepared.lock().unwrap().contains_key(id)
     }
 
     fn prune_prepared(&self) {
-        let now = Instant::now();
-        self.0
-            .prepared
-            .lock()
-            .unwrap()
-            .retain(|_, p| now.saturating_duration_since(p.at) < PREPARED_TTL);
+        prune_expired(&mut self.0.prepared.lock().unwrap(), Instant::now());
     }
 
     /// "Start with default settings" (§7.8).
@@ -1522,6 +1550,9 @@ impl Supervisor {
         for c in cmds {
             match c {
                 Cmd::Launch { id } => {
+                    // The pin taken before the stop is out of the map before anything can refuse
+                    // this launch, and it is dropped (the file unlocked) on every path out.
+                    let prepared = self.take_prepared(&id);
                     // The shallow verify refuses a revoked version (§12.5): it reads
                     // Withdrawn, not Couldn't start.
                     if let Some((reg, r)) = Registry::open_from_env(&self.0.home)
@@ -1531,7 +1562,7 @@ impl Supervisor {
                         self.withdraw(&reg, &id, r);
                         continue;
                     }
-                    match self.launch(&id) {
+                    match self.launch(&id, prepared) {
                         Ok(()) => {}
                         Err(r) if r == NEEDS_HUB => {
                             log::warn!("supervisor: {id} not started: needs a newer hub");
@@ -1704,7 +1735,7 @@ impl Supervisor {
         }
     }
 
-    fn launch(&self, id: &str) -> Result<(), String> {
+    fn launch(&self, id: &str, prepared: Option<Prepared>) -> Result<(), String> {
         // A new build a follow-folder grant keeps is recorded (history, keyboard record) before
         // the check; any other change is left to the check, which refuses it.
         if let Ok(mut r) = Registry::open_from_env(&self.0.home) {
@@ -1745,9 +1776,9 @@ impl Supervisor {
         // The program is pinned (write-locked) and hashed through that one handle, which stays
         // open until the instance is gone (#1155-B).
         self.launch_hook("before-pin");
-        let pin = match self.take_prepared(id, &exe) {
+        let pin = match prepared.filter(|p| prepared_usable(p, &exe, Instant::now())) {
             // The build checked before the stop (R3); the checks below still run on it.
-            Some(p) => p,
+            Some(p) => p.pin,
             None => Arc::new(
                 crate::pin::Pin::open(&exe).map_err(|e| format!("{}: {e}", exe.display()))?,
             ),
@@ -2288,7 +2319,13 @@ fn keep_grant_across_update(sup: &Supervisor, id: &str, instance: u64) {
 fn timer(me: Weak<Inner>, wake: Receiver<()>) {
     loop {
         let Some(inner) = me.upgrade() else { return };
-        let deadline = inner.policy.lock().unwrap().next_deadline();
+        let deadline = [
+            inner.policy.lock().unwrap().next_deadline(),
+            next_expiry(&inner.prepared.lock().unwrap()),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         drop(inner);
         let got = match deadline {
             None => wake.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -2491,5 +2528,25 @@ mod prepared_tests {
             t + PREPARED_TTL - Duration::from_millis(1)
         ));
         assert!(!prepared_usable(&p, &a, t + PREPARED_TTL));
+    }
+
+    #[test]
+    fn an_expired_pin_is_dropped_and_its_file_is_writable_again() {
+        let a = file("d.exe");
+        let t = Instant::now();
+        let mut map = BTreeMap::new();
+        map.insert("x".to_string(), prepared(&a, t));
+        assert_eq!(next_expiry(&map), Some(t + PREPARED_TTL));
+        prune_expired(&mut map, t + PREPARED_TTL - Duration::from_millis(1));
+        assert_eq!(map.len(), 1, "not yet");
+        #[cfg(windows)]
+        assert!(
+            std::fs::OpenOptions::new().write(true).open(&a).is_err(),
+            "locked while held"
+        );
+        prune_expired(&mut map, t + PREPARED_TTL);
+        assert!(map.is_empty());
+        assert_eq!(next_expiry(&map), None);
+        std::fs::OpenOptions::new().write(true).open(&a).unwrap();
     }
 }
