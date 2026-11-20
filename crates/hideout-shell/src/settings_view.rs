@@ -279,8 +279,11 @@ fn app_line(ui: &mut egui::Ui, t: &Tokens, app: &DevApp) -> Option<DevClick> {
         ui.ctx()
             .accesskit_node_builder(l.id, |n| n.set_label(label));
         if let (Some(act), Some(name)) = (app.state.action(), app.action_name()) {
-            ui.label(RichText::new("\u{b7}").color(c(t.text_muted)));
-            let b = ui.link(RichText::new(act.label()).color(c(t.text)));
+            // The separator is for the eye only: the screen reader gets the line label and the
+            // link, not a spoken "dot".
+            let dot = ui.label(RichText::new("\u{b7}").color(c(t.text_muted)));
+            ui.ctx().accesskit_node_builder(dot.id, |n| n.set_hidden());
+            let b = ui.link(RichText::new(act.label()).color(c(t.accent)).underline());
             ui.ctx().accesskit_node_builder(b.id, |n| {
                 n.set_role(egui::accesskit::Role::Link);
                 n.set_label(name);

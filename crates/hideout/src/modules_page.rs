@@ -718,14 +718,12 @@ impl hideout_shell::Page for ModulesPage {
         // user's own click made the request; Allow is still theirs).
         let asked = crate::review_ask::take();
         if let (Some(p), Some((id, set_up))) = (self.perm.as_mut(), asked.last()) {
-            p.open(
-                id,
-                if *set_up {
-                    crate::permission_actions::Opener::Header
-                } else {
-                    crate::permission_actions::Opener::Change
-                },
-            );
+            let how = if *set_up {
+                crate::permission_actions::Opener::Header
+            } else {
+                p.review_opener(id)
+            };
+            p.open(id, how);
         }
         let state = self
             .facts

@@ -443,13 +443,13 @@ fn main() {
             paths.root.clone(),
             Box::new(hideout_shell::pick_folder),
         )
-        // An app's run state: the supervisor's `module.<id>.state` fact, the tray's source.
         .with_open(Box::new(|id, set_up| {
             // Review... and Set up... leave a request for the Modules page and show that page.
             review_ask::push(id, set_up);
             hideout_shell::open_module(modules_page::ID);
         }));
         if let Some(hub) = router {
+            // An app's run state: the supervisor's `module.<id>.state` fact, the tray's source.
             dev = dev.with_facts(Box::new(move |k| hub.read(|r| r.fact(k).cloned())));
         }
         settings = settings.with_dev(Box::new(dev));

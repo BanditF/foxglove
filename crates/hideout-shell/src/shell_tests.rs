@@ -4960,6 +4960,15 @@ fn dev_view(case: &str) -> crate::dev_settings::DevView {
                 error: true,
             }),
         },
+        "added" => DevView {
+            on: true,
+            restart: true,
+            folders: vec![ok],
+            note: Some(Note {
+                text: crate::dev_settings::added_line(&["Vulpes".into(), "Gizmo Keys".into()]),
+                error: false,
+            }),
+        },
         _ => DevView {
             on: true,
             restart: true,
@@ -5022,6 +5031,9 @@ fn renders_the_developer_settings_for_review() {
         ("off-listed", true, 720, 520, "r5-developer-off-dark.png"),
         ("off-listed", false, 720, 520, "r5-developer-off-light.png"),
         ("ok", false, 720, 760, "df2-apps-light.png"),
+        ("added", false, 720, 760, "df2-added-light.png"),
+        ("added", true, 720, 760, "df2-added-dark.png"),
+        ("added", false, 360, 1200, "df2-added-narrow-light.png"),
         ("ok", true, 720, 760, "df2-apps-dark.png"),
         ("ok", false, 360, 1200, "df2-apps-narrow-light.png"),
         ("problem", false, 720, 1100, "df2-states-light.png"),

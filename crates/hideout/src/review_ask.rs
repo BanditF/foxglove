@@ -7,35 +7,59 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-/// (the app's id, true for Set up... and false for Review...), oldest first.
-static ASKS: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
+/// A request older than this was not made by a click on the page now showing: it is dropped, so
+/// it can never open a dialog on a later, unrelated visit to the Modules page.
+const LIFE: Duration = Duration::from_secs(5);
 
-/// Leaves a request.
+/// (the app's id, true for Set up... and false for Review..., when it was asked).
+static ASKS: Mutex<Vec<(String, bool, Instant)>> = Mutex::new(Vec::new());
+
+/// Leaves a request. Only the newest stands: a click replaces what was waiting.
 pub fn push(id: &str, set_up: bool) {
-    ASKS.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((id.to_string(), set_up));
+    push_at(id, set_up, Instant::now());
 }
 
-/// Takes every request left since the last take.
+fn push_at(id: &str, set_up: bool, at: Instant) {
+    let mut a = ASKS.lock().unwrap_or_else(|e| e.into_inner());
+    a.clear();
+    a.push((id.to_string(), set_up, at));
+}
+
+/// Takes the request left since the last take, if it is still fresh. One use only.
 pub fn take() -> Vec<(String, bool)> {
+    take_at(Instant::now())
+}
+
+fn take_at(now: Instant) -> Vec<(String, bool)> {
     std::mem::take(&mut *ASKS.lock().unwrap_or_else(|e| e.into_inner()))
+        .into_iter()
+        .filter(|(_, _, at)| now.saturating_duration_since(*at) <= LIFE)
+        .map(|(id, up, _)| (id, up))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// One test: the queue is process-wide.
     #[test]
-    fn a_request_is_taken_once_in_order() {
+    fn a_request_is_used_once_and_expires() {
         take();
         push("a", false);
         push("b", true);
-        assert_eq!(
-            take(),
-            vec![("a".to_string(), false), ("b".to_string(), true)]
-        );
+        // The newest stands, once.
+        assert_eq!(take(), vec![("b".to_string(), true)]);
         assert!(take().is_empty());
+        // Older than its life (the page was not shown right away): dropped, never opens later.
+        let t0 = Instant::now();
+        push_at("c", false, t0);
+        assert!(take_at(t0 + LIFE + Duration::from_secs(1)).is_empty());
+        // The stale one is gone for good, even when a later visit asks.
+        assert!(take().is_empty());
+        push_at("d", false, t0);
+        assert_eq!(take_at(t0 + LIFE), vec![("d".to_string(), false)]);
     }
 }
