@@ -349,3 +349,61 @@ fn renders_the_game_mode_proposal_for_review() {
         );
     }
 }
+
+/// Review images for the Wallpaper Engine allow list (S5a): the trees `we_panel` builds, written
+/// by the app's `writes_the_review_scenarios` test to `WE_REVIEW_JSON`, drawn as the Foxglove
+/// page's Wallpaper Engine section, light and dark, 720 px wide. Skipped without that file.
+#[test]
+fn renders_the_wallpaper_engine_section_for_review() {
+    let Some(path) = std::env::var_os("WE_REVIEW_JSON") else {
+        return;
+    };
+    let scenarios: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let vectors: Value = serde_json::from_str(FOX_VECTORS).unwrap();
+    let text = FOX
+        .replace("@VERSION@", "0.2.0")
+        .replace("@EXE@", "C:/x/foxglove.exe");
+    for sc in &scenarios {
+        let name = sc["name"].as_str().unwrap();
+        let mut panels = vectors["states"][0]["panels"].clone();
+        for p in panels.as_array_mut().unwrap() {
+            if p["id"] == "page" {
+                p["tree"] = json!({"id": "page", "type": "column", "children": [{
+                    "id": "wallpaper-engine", "type": "section",
+                    "props": {"title": "Wallpaper Engine"}, "children": sc["nodes"]
+                }]});
+            }
+        }
+        let mut host = PanelHost::default();
+        host.set_manifest(Module::parse(&text, &Context::default()).unwrap());
+        host.set_fact("module.foxglove.state", json!("running"));
+        let params: Register =
+            serde_json::from_value(json!({"instance": "f1", "panels": panels})).unwrap();
+        let declared: Vec<String> = serde_json::from_value(vectors["declared"].clone()).unwrap();
+        let rej = host.register_with("foxglove", "Foxglove", Some(&declared), Some(&[]), &params);
+        assert!(rej.is_empty(), "{name}: {rej:?}");
+        for (theme, dark) in [("light", false), ("dark", true)] {
+            let (w, h) = (720u32, 560u32);
+            let Some(px) = rasterise(w, h, |ctx| {
+                ctx.set_visuals(if dark {
+                    egui::Visuals::dark()
+                } else {
+                    egui::Visuals::light()
+                });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let key = PanelKey::new("foxglove", "page");
+                    panel_ui(&mut host, ui, &key);
+                    page_sections_ui(&mut host, ui, &key);
+                });
+            }) else {
+                eprintln!("no system font; review images skipped");
+                return;
+            };
+            println!(
+                "{}",
+                save_png(&format!("we-{name}-{theme}.png"), w, h, px).display()
+            );
+        }
+    }
+}

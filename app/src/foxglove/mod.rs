@@ -197,6 +197,7 @@ pub mod wallpaper_engine;
 pub mod wallpaper_image;
 pub mod wallpaper_leases;
 pub mod wallpaper_manifest;
+pub mod we_panel;
 pub mod wallpaper_sync;
 pub mod wallpaper_sync_health;
 pub mod windows_theme;
