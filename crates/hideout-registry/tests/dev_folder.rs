@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use hideout_registry::dev_folder::{path_within, DEV_ATTESTED_BY};
+use hideout_registry::dev_folder::{clear_tree_cache, path_within, DEV_ATTESTED_BY};
 use hideout_registry::inventory::IdentityClass;
 use hideout_registry::keyboard::{canonical_path, same_path, VoidReason};
 use hideout_registry::Registry;
@@ -807,6 +807,9 @@ fn a_junction_out_of_the_folder_or_an_alias_into_it_never_matches_by_spelling() 
     // only canonical paths are ever asked, and a raw alias never matches.
     let spelled = link.join("foxglove.exe").display().to_string();
     assert!(f.reg.dev_folder_for(&spelled).is_none());
+    // The escaping junction would now keep the whole folder from counting; drop it first.
+    assert!(f.reg.dev_folder_for(&canon_exe).is_none());
+    std::fs::remove_dir(&link).unwrap();
     // A junction to the folder from elsewhere: its raw spelling is another path and never
     // matches; its canonical form is the folder's own.
     let alias = temp("junction-alias").join("in");
@@ -950,4 +953,119 @@ mod settings {
         // The switch is not a grant: it never lists a folder.
         assert!(reg.dev_folders().is_empty());
     }
+}
+
+#[test]
+fn a_file_deep_in_the_tree_that_other_accounts_can_write_is_not_carried() {
+    let mut f = fx("tree-file-open");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    assert!(f.reg.dev_folder_of(ID).is_some());
+    let deep = f.out.join("a").join("b");
+    std::fs::create_dir_all(&deep).unwrap();
+    let helper = deep.join("helper.dll");
+    std::fs::write(&helper, b"dll").unwrap();
+    assert!(f.reg.dev_folder_of(ID).is_some(), "private tree is fine");
+    grant_everyone(&helper, "M");
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_none());
+    rebuild(&f, b"build 2");
+    assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
+}
+
+#[test]
+fn a_tree_past_the_depth_or_entry_limit_is_not_carried() {
+    let mut f = fx("tree-limits");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    let nest = |n: usize| {
+        let mut p = f.out.join("d");
+        for _ in 1..n {
+            p = p.join("d");
+        }
+        p
+    };
+    std::fs::create_dir_all(nest(8)).unwrap(); // exactly 8 levels: the limit
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_some(), "8 levels is allowed");
+    std::fs::create_dir_all(nest(9)).unwrap();
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_none(), "9 levels is too deep");
+    std::fs::remove_dir_all(f.out.join("d")).unwrap();
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_some());
+    let many = f.out.join("many");
+    std::fs::create_dir_all(&many).unwrap();
+    for i in 0..20_000 {
+        std::fs::write(many.join(format!("{i}.o")), b"").unwrap();
+    }
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_none(), "too many entries");
+}
+
+#[test]
+fn a_junction_in_the_tree_is_refused_outside_and_skipped_inside() {
+    let mut f = fx("tree-junction");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    // Inside the folder: not followed, fine.
+    let target = f.out.join("real");
+    std::fs::create_dir_all(&target).unwrap();
+    junction(&f.out.join("alias"), &target);
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_some());
+    // Outside: refused, even though the target is private.
+    let outside = temp("tree-junction-outside");
+    junction(&f.out.join("escape"), &outside);
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_none());
+}
+
+#[test]
+fn a_writable_link_inside_the_tree_is_refused_even_when_it_leads_inside() {
+    let mut f = fx("tree-link-acl");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    let target = f.out.join("real");
+    std::fs::create_dir_all(&target).unwrap();
+    let link = f.out.join("alias");
+    junction(&link, &target);
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_some(), "private link is fine");
+    // /L: the link's own ACL, not the target's.
+    let st = std::process::Command::new("icacls")
+        .arg(&link)
+        .args(["/grant", "*S-1-1-0:(W)", "/L"])
+        .output()
+        .unwrap();
+    assert!(st.status.success(), "icacls failed");
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_none());
+}
+
+#[test]
+fn a_cleared_tree_answer_is_asked_again() {
+    let mut f = fx("tree-cache");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    let file = f.out.join("helper.dll");
+    std::fs::write(&file, b"x").unwrap();
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_some());
+    grant_everyone(&file, "M");
+    // The remembered answer ages out in seconds (timing, so not asserted); clearing it asks again.
+    clear_tree_cache();
+    assert!(f.reg.dev_folder_of(ID).is_none());
+}
+
+#[test]
+fn a_case_variant_of_a_path_behind_an_escaping_junction_never_matches() {
+    let f = fx("junction-case");
+    let outside = temp("junction-case-outside");
+    std::fs::write(outside.join("foxglove.exe"), b"evil").unwrap();
+    junction(&f.out.join("escape"), &outside);
+    let behind = canonical_path(&f.out.join("escape").join("foxglove.exe")).unwrap();
+    assert!(f.reg.dev_folder_for(&behind.to_uppercase()).is_none());
+    let spelled = f
+        .out
+        .join("ESCAPE")
+        .join("FOXGLOVE.EXE")
+        .display()
+        .to_string();
+    assert!(f.reg.dev_folder_for(&spelled).is_none());
 }
