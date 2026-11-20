@@ -7,27 +7,14 @@ use serde_json::json;
 
 const VULPES: &str = include_str!("../../../hideout-panels/tests/vectors/vulpes.module.toml");
 
-/// The two `action` panels the UX plan gives Arete (#1234 slice A1), after its manifest.
-const ACTION_PANELS: &str = r#"
-[[ui.panels]]
-id = "free-gpu"
-slot = "action"
-title = "Free GPU"
-icon = "sparkle"
-when = "!gpu.reserved"
-
-[[ui.panels]]
-id = "release-gpu-reservation"
-slot = "action"
-title = "Release GPU reservation"
-icon = "sparkle"
-when = "gpu.reserved"
-"#;
-
+/// Arete's own manifest (vendored, `hideout-panels/tests/vectors/SOURCE.md`): it declares the
+/// two `action` panels itself (#1234 slice A1).
 fn vulpes() -> Module {
-    let text = format!("{VULPES}{ACTION_PANELS}");
-    Module::parse(&text, &Context::default()).expect("Arete's manifest with action panels")
+    Module::parse(VULPES, &Context::default()).expect("Arete's manifest")
 }
+
+/// Arete's vector (every state's `ui.register` panels, as the module sends them).
+const VULPES_VECTOR: &str = include_str!("../../../hideout-panels/tests/vectors/vulpes.json");
 
 fn module(id: &str, extra: &str) -> Module {
     let text = format!(
@@ -406,4 +393,30 @@ fn the_identify_hint_and_the_page_come_from_the_manifest() {
     assert_eq!(q.identify_hint("example.bare"), None);
     assert!(!q.has_page("example.bare"));
     assert!(!q.has_page("example.nobody"));
+}
+
+/// Replay every state of Arete's vector into the menu model: the item's words come from the
+/// registered one-button tree, exactly one of the two items shows for each `gpu.reserved`, only
+/// the freeing state greys Free GPU, and every item fits the menu's 40 characters.
+#[test]
+fn aretes_vector_states_drive_the_two_tray_items() {
+    let vector: Value = serde_json::from_str(VULPES_VECTOR).unwrap();
+    let states = vector["states"].as_array().unwrap();
+    assert!(!states.is_empty());
+    for s in states {
+        let name = s["state"].as_str().unwrap();
+        for (reserved, text) in [(false, "Free GPU"), (true, "Release GPU reservation")] {
+            let mut q = QuickActions::default();
+            q.manifest(&vulpes());
+            q.fact("gpu.reserved", &json!(reserved));
+            q.panels("vulpes", &s["panels"]);
+            let items = q.items();
+            assert_eq!(items.len(), 1, "{name} reserved={reserved}");
+            let greyed = name == "freeing" && !reserved;
+            let want = if greyed { "Freeing GPU\u{2026}" } else { text };
+            assert_eq!(items[0].text, want, "{name} reserved={reserved}");
+            assert_eq!(items[0].enabled, !greyed, "{name} reserved={reserved}");
+            assert!(items[0].text.chars().count() <= 40, "{name}");
+        }
+    }
 }
