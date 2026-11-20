@@ -95,6 +95,7 @@ fn half_words(rgb: &RgbState, h: &RgbHalf, dim: u8) -> String {
 
 /// The line under the drawing and the drawing's name for screen readers, from the look's source.
 /// `rgb` is what the keyboard reported, `dim` each half's battery dim, `parts` names the halves.
+#[cfg(test)]
 pub fn words(
     look: &Look,
     rgb: Option<&RgbState>,
