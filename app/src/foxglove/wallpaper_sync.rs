@@ -69,6 +69,8 @@ pub const PAUSED_BY: &str = "wallpaper_engine.paused_by";
 /// The names of the local callers holding a pause, one per line (#1120 slice 1): what
 /// `hub_link` sends the hub as `lease.holders`, which can't see them.
 pub const LOCAL_HOLDERS: &str = "wallpaper_engine.local_holders";
+/// Set while leases are live but Wallpaper Engine quit and came back playing: they hold nothing.
+pub const PAUSE_STALE: &str = "wallpaper_engine.pause_stale";
 
 /// The properties a wallpaper declares in its `project.json` to receive them (each one its
 /// manifest's `supports` names: `layer`, `gamemode`, `clock`, `foxglove_live`).
@@ -1272,9 +1274,14 @@ fn serve(ctl: Ctl, leases: &mut Leases, apply: &mut impl Apply, full: bool) -> b
             );
             false
         }
-        Ctl::Closed(conn) => leases
-            .drop_conn(apply, conn, full)
-            .is_some_and(|ended| ended.played),
+        Ctl::Closed(conn) => {
+            let ended = leases.drop_conn(apply, conn, full);
+            #[cfg(not(test))]
+            if ended.is_some_and(|e| e.last) {
+                super::we_after::holder_stopped(Instant::now());
+            }
+            ended.is_some_and(|ended| ended.played)
+        }
         Ctl::HubClosed { conn, lease } => leases
             .hub_closed(apply, conn, &lease, full)
             .is_some_and(|ended| ended.played),
@@ -1292,6 +1299,11 @@ fn announce(leases: &Leases) {
             facts.remove(PAUSED_BY);
         }
         r => facts.set(PAUSED_BY, foxglove_devices::facts::Value::Text(r)),
+    }
+    if leases.pause_stale() {
+        facts.set(PAUSE_STALE, foxglove_devices::facts::Value::Bool(true));
+    } else {
+        facts.remove(PAUSE_STALE);
     }
     match leases.local_names() {
         n if n.is_empty() => {
@@ -1409,6 +1421,15 @@ pub fn reasons_now() -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// Whether the live leases hold nothing because Wallpaper Engine quit and came back playing.
+#[cfg_attr(test, allow(dead_code))]
+pub fn pause_stale_now() -> bool {
+    matches!(
+        super::devices::bus().facts().get(PAUSE_STALE),
+        Some(foxglove_devices::facts::Value::Bool(true))
+    )
 }
 
 /// The local holders' names as the `wallpaper_engine.local_holders` fact has them.

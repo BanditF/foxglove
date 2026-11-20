@@ -599,6 +599,43 @@ fn the_panels_match_the_hub_vectors() {
             panels(&we_view(Wallpaper::default())),
         ),
         (
+            "Wallpapers: no app is pausing them",
+            panels(&we_view(Wallpaper {
+                running: true,
+                ..Wallpaper::default()
+            })),
+        ),
+        (
+            "Wallpapers: just resumed",
+            panels(&we_view(Wallpaper {
+                running: true,
+                after: Some(After::Resumed(vec!["Arete".into()])),
+                ..Wallpaper::default()
+            })),
+        ),
+        (
+            "Wallpapers: the app that paused them stopped",
+            panels(&we_view(Wallpaper {
+                running: true,
+                after: Some(After::Stopped(Some("Arete".into()))),
+                ..Wallpaper::default()
+            })),
+        ),
+        (
+            "Wallpapers: the wallpaper app quit during a pause",
+            panels(&we_view(Wallpaper {
+                running: false,
+                ..held(&["Arete"])
+            })),
+        ),
+        (
+            "Wallpapers paused by three apps",
+            panels(&we_view(Wallpaper {
+                reasons: vec!["loading a model".into(), "rendering".into(), "x".into()],
+                ..held(&["Arete", "Render queue", "Courier"])
+            })),
+        ),
+        (
             "Allow list: connected, off, not on screen",
             panels(&we_view(allow_case("connected"))),
         ),
@@ -730,8 +767,13 @@ fn allow_case(case: &str) -> Wallpaper {
     }
 }
 
+/// The data the section's wallpaper app name comes from, in these tests.
+const ENGINE: &str = "Wallpaper Engine";
+
 /// The page with a Wallpaper Engine section (#1142).
-fn we_view(w: Wallpaper) -> View {
+fn we_view(mut w: Wallpaper) -> View {
+    // The wallpaper app's name is data: the fixture gives it.
+    w.engine = ENGINE.into();
     view(&connected()).with_wallpaper(Some(w))
 }
 
@@ -756,31 +798,43 @@ fn we_texts(v: &View) -> Option<Vec<String>> {
     Some(texts(section))
 }
 
-/// #1142, plan §3: every state's words, Resume only while a caller holds it (never over the
-/// user's own pause), and no section without Wallpaper Engine.
+/// #1142, UX plan 2: every state's words, Resume only while an app holds it (never over the
+/// user's own pause), and no section without the wallpaper app.
 #[test]
-fn the_wallpaper_engine_section_says_who_holds_it() {
+fn the_wallpaper_section_says_who_holds_it() {
     assert_eq!(
         we_texts(&view(&connected())),
         None,
         "not installed: no section"
     );
-    // The intro names Wallpaper Engine only while its section is there.
+    // The intro names the wallpaper app only while its section is there, and from data.
     let intro = |v: &View| panel(&panels(v), PAGE)["tree"]["children"][0]["props"]["text"].clone();
     assert_eq!(intro(&view(&connected())), INTRO);
-    assert_eq!(intro(&we_view(Wallpaper::default())), INTRO_WE);
+    assert_eq!(
+        intro(&we_view(Wallpaper::default())),
+        intro_we(ENGINE).as_str()
+    );
     let says = |w: Wallpaper| we_texts(&we_view(w)).unwrap();
+    // G5: "Playing" only when a paired wallpaper says so; otherwise the honest line is about apps.
     assert_eq!(
         says(Wallpaper {
             running: true,
             ..Wallpaper::default()
         }),
-        ["Playing"]
+        [NONE_PAUSING]
+    );
+    assert_eq!(
+        says(Wallpaper {
+            running: true,
+            playing: true,
+            ..Wallpaper::default()
+        }),
+        [PLAYING]
     );
     assert_eq!(
         says(held(&["Arete"])),
         [
-            "Paused by Arete",
+            "Wallpapers paused by Arete",
             "\u{201c}loading a model\u{201d}",
             "Resume wallpapers"
         ]
@@ -791,18 +845,27 @@ fn the_wallpaper_engine_section_says_who_holds_it() {
             ..held(&["Arete", "Render queue"])
         })[0..2],
         [
-            "Paused by Arete and Render queue",
+            "Wallpapers paused by Arete and Render queue",
             "\u{201c}loading a model\u{201d} \u{b7} \u{201c}rendering\u{201d}"
         ]
     );
-    assert_eq!(says(held(&["A", "B", "C"]))[0], "Paused by A and 2 more");
+    let three = says(Wallpaper {
+        reasons: vec!["a".into(), "b".into(), "c".into()],
+        ..held(&["A", "B", "C"])
+    });
+    assert_eq!(three[0], "Wallpapers paused by A and 2 more");
+    assert_eq!(
+        three[1], "\u{201c}a\u{201d} \u{b7} \u{201c}b\u{201d} \u{b7} \u{2026}",
+        "the first two reasons, then more"
+    );
     assert_eq!(
         says(Wallpaper {
             full_screen: true,
             ..held(&["Arete"])
-        })[1..],
+        })[..],
         [
-            "Plays when the full-screen app closes.",
+            "Wallpapers paused by Arete",
+            "They play again when the full-screen app closes.",
             "Resume wallpapers"
         ]
     );
@@ -828,15 +891,15 @@ fn the_wallpaper_engine_section_says_who_holds_it() {
         says(Wallpaper::default())[..],
         ["Not running", "Wallpaper Engine isn't running."]
     );
-    // A local API caller the hub can't name.
+    // An app the hub and the local list could not name.
     assert_eq!(
         says(Wallpaper {
             holders: vec![],
             ..held(&[])
         })[0],
-        "Paused by an app"
+        "Wallpapers paused by an app"
     );
-    // A long reason is cut; it stays in quotes after the hub's name for the caller.
+    // A long reason is cut; it stays in quotes after the name for the app.
     let long = says(Wallpaper {
         reasons: vec!["x".repeat(200)],
         ..held(&["Arete"])
@@ -845,8 +908,219 @@ fn the_wallpaper_engine_section_says_who_holds_it() {
         long[1].len() < 60 && long[1].ends_with("\u{2026}\u{201d}"),
         "{long:?}"
     );
+    // A long name is cut at 32 bytes.
+    let name = says(held(&["n".repeat(80).as_str()]));
+    assert_eq!(
+        name[0],
+        format!("Wallpapers paused by {}\u{2026}", "n".repeat(32))
+    );
     assert!(is_resume(PAGE, RESUME_NODE) && !is_resume(TILE_ART, RESUME_NODE));
     assert_valid(&panels(&we_view(held(&["Arete"]))));
+}
+
+/// UX plan 2-4: the after-lines, the quit line and what a screen reader hears.
+#[test]
+fn the_after_lines_and_the_quit_line() {
+    let says = |w: Wallpaper| we_texts(&we_view(w)).unwrap();
+    let after = |a: After| Wallpaper {
+        running: true,
+        after: Some(a),
+        ..Wallpaper::default()
+    };
+    assert_eq!(
+        says(after(After::Resumed(vec![])))[1],
+        "Resumed. An app can pause them again.",
+        "a sentence starts with a capital"
+    );
+    assert_eq!(
+        says(after(After::Resumed(vec!["Arete".into()]))),
+        [NONE_PAUSING, "Resumed. Arete can pause them again."]
+    );
+    assert_eq!(
+        says(after(After::Resumed(vec![
+            "Arete".into(),
+            "Render queue".into()
+        ])))[1],
+        "Resumed. Arete and Render queue can pause them again."
+    );
+    assert_eq!(
+        says(Wallpaper {
+            full_screen: true,
+            ..after(After::Resumed(vec!["Arete".into()]))
+        })[1],
+        "Resumed. They play again when the full-screen app closes."
+    );
+    assert_eq!(
+        says(after(After::Stopped(Some("Arete".into()))))[..],
+        [NONE_PAUSING, "Arete stopped, so its pause ended."]
+    );
+    assert_eq!(
+        says(after(After::Stopped(None)))[1],
+        "An app stopped, so its pause ended."
+    );
+    // The wallpaper app quit during a pause: the section names who it ended for.
+    let quit = |holders: &[&str]| {
+        says(Wallpaper {
+            running: false,
+            ..held(holders)
+        })
+    };
+    assert_eq!(
+        quit(&["Arete"])[..],
+        [
+            "Not running",
+            "Wallpaper Engine isn't running. Arete's pause ended with it."
+        ]
+    );
+    assert_eq!(
+        quit(&[])[1],
+        "Wallpaper Engine isn't running. The pause ended with it."
+    );
+    assert_eq!(
+        quit(&["A", "B"])[1],
+        "Wallpaper Engine isn't running. Their pauses ended with it."
+    );
+}
+
+/// The state line is a polite status that says its words; Resume's name carries whose pause it
+/// ends, and pressing it sends the focus to the state line.
+#[test]
+fn the_state_line_is_a_status_and_resume_names_the_holder() {
+    let all = panels(&we_view(held(&["Arete", "Render queue"])));
+    let page = &panel(&all, PAGE)["tree"];
+    let section = page["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == WALLPAPER)
+        .unwrap();
+    let kids = section["children"].as_array().unwrap();
+    let state = kids.iter().find(|n| n["id"] == STATE_NODE).unwrap();
+    assert_eq!(state["props"]["live"], true);
+    let resume = kids.iter().find(|n| n["id"] == RESUME_NODE).unwrap();
+    assert_eq!(
+        resume["props"]["name"],
+        "Resume wallpapers, paused by Arete and Render queue"
+    );
+    assert_eq!(resume["props"]["label"], RESUME, "the visible words stay");
+    assert_eq!(resume["props"]["focus_after"], STATE_NODE);
+    // The after-line is what the status announces.
+    let all = panels(&we_view(Wallpaper {
+        running: true,
+        after: Some(After::Resumed(vec!["Arete".into()])),
+        ..Wallpaper::default()
+    }));
+    let page = &panel(&all, PAGE)["tree"];
+    let state = page["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == WALLPAPER)
+        .unwrap()["children"][0]
+        .clone();
+    assert_eq!(
+        state["props"]["name"],
+        "Resumed. Arete can pause them again."
+    );
+}
+
+/// Every string the section can draw, over every state, is free of the words a user never sees
+/// (UX plan 7), and the wallpaper app's name appears only where the data puts it.
+#[test]
+fn the_words_have_no_jargon_and_no_hard_coded_engine_name() {
+    let never = [
+        "lease",
+        "holder",
+        "caller",
+        "client",
+        "module",
+        "tool",
+        "token",
+        "pipe",
+        "wallpaper.control",
+        "wallpaper-engine",
+        "paused_by",
+        "mcp",
+        "program",
+        "verified",
+    ];
+    let names = ["Arete", "Render queue", "an app"];
+    let mut all: Vec<Wallpaper> = Vec::new();
+    for running in [false, true] {
+        for user_paused in [false, true] {
+            for full_screen in [false, true] {
+                for holders in [&[][..], &names[..1], &names[..2], &names[..]] {
+                    for after in [
+                        None,
+                        Some(After::Resumed(
+                            names[..2].iter().map(|n| n.to_string()).collect(),
+                        )),
+                        Some(After::Stopped(Some("Arete".into()))),
+                        Some(After::Stopped(None)),
+                    ] {
+                        all.push(Wallpaper {
+                            running,
+                            user_paused,
+                            full_screen,
+                            playing: !user_paused,
+                            holders: holders.iter().map(|n| n.to_string()).collect(),
+                            reasons: if holders.is_empty() {
+                                vec![]
+                            } else {
+                                vec!["loading a model".into()]
+                            },
+                            after,
+                            ..Wallpaper::default()
+                        });
+                    }
+                }
+            }
+        }
+    }
+    for w in all {
+        let v = we_view(w.clone());
+        let texts = we_texts(&v).unwrap();
+        let tree = serde_json::to_string(&panels(&v)).unwrap();
+        for t in &texts {
+            // The names and the reason are the fixture's; the words around them are the code's.
+            let words = t
+                .replace("Arete", "")
+                .replace("Render queue", "")
+                .replace("loading a model", "")
+                .replace("an app", "")
+                .replace(ENGINE, "")
+                .to_lowercase();
+            for bad in never {
+                assert!(!words.contains(bad), "{bad:?} in {t:?} for {w:?}");
+            }
+        }
+        // The accessible names too.
+        for name in tree.split("\"name\":\"").skip(1) {
+            let name = name.split('"').next().unwrap().to_lowercase();
+            for bad in never {
+                assert!(
+                    !name
+                        .replace("arete", "")
+                        .replace("render queue", "")
+                        .contains(bad),
+                    "{bad:?} in the name {name:?}"
+                );
+            }
+        }
+    }
+    // The wallpaper app's name is data: not one literal of it in this file's code, outside
+    // comments (the module constant is the data table).
+    let code: String = include_str!("../hub_panels.rs")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .take_while(|l| !l.starts_with("#[cfg(test)]"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("Wallpaper Engine"),
+        "the name belongs in data"
+    );
+    assert!(!code.contains("wallpaper-engine\"") || code.contains("WALLPAPER: &str"));
 }
 
 /// A user-chosen effect name never takes a tile past its 64-byte text cap, with the brightness.
@@ -999,7 +1273,7 @@ fn the_allow_list_is_part_of_the_wallpaper_engine_section() {
         "we-allow:0",
         "Let Bandit HUD use your keyboard",
         "Bandit HUD can see which key positions you press and when, never the letters.",
-        "Playing",
+        "No app is pausing your wallpapers",
     ] {
         assert!(text.contains(want), "{want}");
     }

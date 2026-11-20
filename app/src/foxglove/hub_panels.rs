@@ -31,9 +31,11 @@ pub const PAGE: &str = "page";
 pub const OPEN: &str = "Open Foxglove settings";
 /// The page's one line of introduction.
 pub const INTRO: &str = "Your keyboard, its lights and its art, as the Foxglove app sees them.";
-/// The intro while the page has the Wallpaper Engine section (#1142).
-pub const INTRO_WE: &str =
-    "Your keyboard, its lights, its art and Wallpaper Engine, as the Foxglove app sees them.";
+/// The intro while the page has the wallpaper section (#1142); the wallpaper app's own name
+/// comes from data ([`Wallpaper::engine`]).
+pub fn intro_we(engine: &str) -> String {
+    format!("Your keyboard, its lights, its art and {engine}, as the Foxglove app sees them.")
+}
 /// The notice while one of Foxglove's own pages is stopped by its guard.
 pub const STOPPED: &str = "Foxglove's page stopped working.";
 /// The page's game mode row (#1234), after the layer: a status, never an action.
@@ -53,6 +55,64 @@ pub const RESUME_NODE: &str = "we-resume";
 pub const RESUME: &str = "Resume wallpapers";
 /// The most bytes of one caller's reason shown (in quotes, after the holder's name).
 const REASON_CUT: usize = 48;
+/// The most bytes of one holder's name shown (UX plan 5: names are cut at 32 with "...").
+const NAME_CUT: usize = 32;
+
+/// The section's words (UX plan `review/ux-plan-we-pause-holder.md` 2), all in one place. The
+/// wallpaper app's name is never in them: it is data.
+pub const NONE_PAUSING: &str = "No app is pausing your wallpapers";
+pub const PLAYING: &str = "Playing";
+pub const PAUSED_BY_YOU: &str = "Paused by you";
+pub const NOT_RUNNING: &str = "Not running";
+pub const FULL_SCREEN_SUB: &str = "They play again when the full-screen app closes.";
+/// What the section calls itself when the data has no name for the wallpaper app.
+pub const SECTION_FALLBACK: &str = "Wallpapers";
+/// A holder the hub and the local list could not name.
+pub const AN_APP: &str = "an app";
+
+/// "Wallpapers paused by Arete".
+pub fn paused_by(who: &str) -> String {
+    format!("Wallpapers paused by {who}")
+}
+/// "Press Play in <wallpaper app>."
+pub fn press_play(engine: &str) -> String {
+    format!("Press Play in {engine}.")
+}
+/// The text with its first letter capitalised, for the start of a sentence ("an app" -> "An app").
+pub fn sentence_start(text: &str) -> String {
+    let mut c = text.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+/// "<wallpaper app> isn't running."
+pub fn isnt_running(engine: &str) -> String {
+    format!("{} isn't running.", sentence_start(engine))
+}
+/// "Resumed. Arete can pause them again."
+pub fn resumed(who: &str) -> String {
+    format!("Resumed. {who} can pause them again.")
+}
+/// "Arete stopped, so its pause ended."
+pub fn stopped(who: &str) -> String {
+    format!("{who} stopped, so its pause ended.")
+}
+/// "Resume wallpapers, paused by Arete": the button's accessible name.
+pub fn resume_name(who: &str) -> String {
+    format!("{RESUME}, paused by {who}")
+}
+/// The state line's node (a status: polite, announced when its words change).
+pub const STATE_NODE: &str = "we-state";
+
+/// What just happened, once nothing holds the wallpapers paused (`we_after`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum After {
+    /// The user pressed Resume while these apps held them.
+    Resumed(Vec<String>),
+    /// The last app holding them stopped (its name, when known).
+    Stopped(Option<String>),
+}
 
 /// Wallpaper Engine as the section shows it (#1142). `None` in [`View`]: not installed, no
 /// section.
@@ -65,6 +125,12 @@ pub struct Wallpaper {
     pub full_screen: bool,
     /// Who holds it paused, by the names the hub knows them by (`module.foxglove.lease_holders`).
     pub holders: Vec<String>,
+    /// The wallpaper app's name, from data (`wallpaper_engine::NAME`).
+    pub engine: String,
+    /// A paired wallpaper reports itself playing (so "Playing" is known, not guessed).
+    pub playing: bool,
+    /// What just happened, for the one line after a Resume or a stop.
+    pub after: Option<After>,
     /// The holders' own reasons (`wallpaper_engine.paused_by`), shown in quotes after the names.
     pub reasons: Vec<String>,
     /// The allow list (S5b); `None` before Foxglove has read it (tests).
@@ -72,7 +138,16 @@ pub struct Wallpaper {
 }
 
 impl Wallpaper {
-    fn held(&self) -> bool {
+    /// The wallpaper app's name for the page; a generic noun while the data gives none.
+    fn engine_name(&self) -> String {
+        if self.engine.is_empty() {
+            "your wallpaper app".into()
+        } else {
+            self.engine.clone()
+        }
+    }
+
+    pub(super) fn held(&self) -> bool {
         !self.holders.is_empty() || !self.reasons.is_empty()
     }
 }
@@ -84,9 +159,10 @@ pub fn is_resume(panel: &str, node: &str) -> bool {
 
 /// "Arete", "Arete and Render queue", "Arete and 2 more"; "an app" when the hub named nobody
 /// (an older hub, or a caller of the local API).
-fn holder_words(names: &[String]) -> String {
+pub fn holder_words(names: &[String]) -> String {
+    let cut = |n: &String| cut_to(n, NAME_CUT);
     match names {
-        [] => "an app".into(),
+        [] => AN_APP.into(),
         [a] => cut(a),
         [a, b] => format!("{} and {}", cut(a), cut(b)),
         [a, rest @ ..] => format!("{} and {} more", cut(a), rest.len()),
@@ -605,81 +681,122 @@ fn section(part: Part, v: &View) -> Value {
     ui::section(part.tile_id(), part.title(), kids)
 }
 
-/// The Wallpaper Engine section (#1142, plan §3): what holds the wallpapers and Resume while a
-/// caller does. A reason is the caller's own words, so it comes after the hub's name for it, in
-/// quotes and cut; Resume is offered only while a caller's pause holds (never over the user's).
+/// The wallpaper section (#1142, UX plan `review/ux-plan-we-pause-holder.md` 2): what holds the
+/// wallpapers and Resume while an app does. A reason is the app's own words, so it comes after
+/// the name for it, in quotes and cut; Resume is offered only while an app's pause holds (never
+/// over the user's). The wallpaper app's name is data; every other word is a constant above.
 fn wallpaper_section(w: &Wallpaper) -> Value {
     let id = |s: &str| format!("we-{s}");
+    let engine = w.engine_name();
+    let who = holder_words(&w.holders);
+    // The words the state node announces, when they are not its value (the after-lines).
+    let mut say: Option<String> = None;
     let (value, tone, sub, resume) = if !w.running {
-        (
-            "Not running".to_string(),
-            "off",
-            Some("Wallpaper Engine isn't running.".to_string()),
-            false,
-        )
+        let sub = if !w.held() {
+            isnt_running(&engine)
+        } else if w.holders.len() == 1 {
+            format!(
+                "{} {}'s pause ended with it.",
+                isnt_running(&engine),
+                cut_to(&w.holders[0], NAME_CUT)
+            )
+        } else if w.holders.is_empty() {
+            format!("{} The pause ended with it.", isnt_running(&engine))
+        } else {
+            format!("{} Their pauses ended with it.", isnt_running(&engine))
+        };
+        (NOT_RUNNING.to_string(), "off", Some(sub), false)
     } else if w.user_paused {
         let sub = if w.held() {
-            let who = w
+            let first = w
                 .holders
                 .first()
-                .map_or_else(|| "An app".into(), |n| cut(n));
-            format!("{who} is waiting too. It won't press Play for you.")
+                .map_or_else(|| "An app".into(), |n| cut_to(n, NAME_CUT));
+            format!("{first} is waiting too. It won't press Play for you.")
         } else {
-            "Press Play in Wallpaper Engine.".into()
+            press_play(&engine)
         };
-        ("Paused by you".into(), "off", Some(sub), false)
+        (PAUSED_BY_YOU.into(), "off", Some(sub), false)
     } else if w.held() {
         let sub = if w.full_screen {
-            Some("Plays when the full-screen app closes.".to_string())
+            Some(FULL_SCREEN_SUB.to_string())
         } else {
             let quoted: Vec<String> = w
                 .reasons
                 .iter()
+                .take(2)
                 .map(|r| format!("\u{201c}{}\u{201d}", cut_to(r, REASON_CUT)))
                 .collect();
-            (!quoted.is_empty()).then(|| quoted.join(" \u{b7} "))
+            let mut line = quoted.join(" \u{b7} ");
+            if w.reasons.len() > 2 {
+                line.push_str(" \u{b7} \u{2026}");
+            }
+            (!quoted.is_empty()).then_some(line)
         };
-        (
-            format!("Paused by {}", holder_words(&w.holders)),
-            "active",
-            sub,
-            true,
-        )
+        (paused_by(&who), "active", sub, true)
+    } else if let Some(after) = &w.after {
+        let sub = match after {
+            After::Resumed(_) if w.full_screen => {
+                format!("Resumed. {FULL_SCREEN_SUB}")
+            }
+            After::Resumed(names) => resumed(&sentence_start(&holder_words(names))),
+            After::Stopped(name) => stopped(&match name {
+                Some(n) => cut_to(n, NAME_CUT),
+                None => "An app".into(),
+            }),
+        };
+        say = Some(sub.clone());
+        (NONE_PAUSING.into(), "ok", Some(sub), false)
+    } else if w.playing {
+        (PLAYING.into(), "ok", None, false)
     } else {
-        ("Playing".into(), "ok", None, false)
+        (NONE_PAUSING.into(), "ok", None, false)
     };
-    let mut kids = vec![ui::value(&id("state"), &value, tone)];
+    let mut state = ui::value(&id("state"), &value, tone);
+    state["props"]["live"] = Value::Bool(true);
+    if let Some(words) = &say {
+        state = ui::named(state, words);
+    }
+    let mut kids = vec![state];
     if let Some(s) = sub {
         kids.push(ui::label(&id("sub"), &s));
     }
     if resume {
-        kids.push(ui::button(
-            "",
-            &Button::new(RESUME, Press::Event(RESUME_NODE)),
-        ));
+        let mut button = ui::button("", &Button::new(RESUME, Press::Event(RESUME_NODE)));
+        button = ui::named(button, &resume_name(&who));
+        // The button goes once pressed: the focus moves to the state line, which then says so.
+        button["props"]["focus_after"] = Value::String(STATE_NODE.into());
+        kids.push(button);
     }
     if let Some(inputs) = &w.allow {
         let mut inputs = inputs.clone();
         inputs.engine_running = w.running;
-        // "Wallpaper Engine isn't running." is already the section's line above.
+        // "<wallpaper app> isn't running." is already the section's line above.
         kids.extend(
             super::we_panel::nodes(&super::we_panel::view(&inputs))
                 .into_iter()
                 .filter(|n| w.running || n["id"] != "we-line"),
         );
     }
-    ui::section(WALLPAPER, "Wallpaper Engine", kids)
+    ui::section(
+        WALLPAPER,
+        if w.engine.is_empty() {
+            SECTION_FALLBACK
+        } else {
+            &w.engine
+        },
+        kids,
+    )
 }
 
 /// The three tiles and the page, for `ui.register`.
 pub fn panels(v: &View) -> Vec<Value> {
     let mut out: Vec<Value> = Part::ALL.into_iter().map(|p| tile(p, v)).collect();
-    let intro = if v.wallpaper.is_some() {
-        INTRO_WE
-    } else {
-        INTRO
+    let intro = match &v.wallpaper {
+        Some(w) => intro_we(&w.engine_name()),
+        None => INTRO.to_string(),
     };
-    let mut page = vec![ui::label("intro", intro)];
+    let mut page = vec![ui::label("intro", &intro)];
     page.extend(Part::ALL.into_iter().map(|p| section(p, v)));
     if let Some(w) = &v.wallpaper {
         page.push(wallpaper_section(w));
