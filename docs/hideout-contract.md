@@ -715,10 +715,11 @@ name = "Next art"
 - **One-label ids** (such as `vulpes`, `digitalis`, `obs`) are allowed for first-party modules
   only: family `hideout`, `foxglove`, `vulpes` or `digitalis`, listed as an exact id in that
   family's root scope (§12.3). Every other id has two or more labels (`manifest.id`).
-- **Reserved first labels:** `hideout`, `hub`, `foxglove`, `vulpes`, `digitalis`, and `arete`
-  (alias of `vulpes`). A module whose id starts with one MUST have the matching `family`. `hub`
-  is the hub's own pages (`hub.modules`, `hub.settings`): `family = "hideout"` only, and a
-  third-party module that uses it is refused with `manifest.id`.
+- **Reserved first labels:** `hideout`, `foxglove`, `vulpes`, `digitalis`, and `arete` (alias of
+  `vulpes`). A module whose id starts with one MUST have the matching `family`.
+- **`hub` as a first label is refused for every family** (`manifest.id`): `hub.*` ids are the
+  hub's own pages (`hub.modules`, `hub.settings`), and `family` is declared in the manifest, so
+  no family can be trusted to claim one.
 - A `third-party` module MUST NOT use a reserved first label, and its id MUST be reverse-DNS
   (two or more labels).
 - The legacy prefix `org.foxglove.` (today's plugins) is family `foxglove`.

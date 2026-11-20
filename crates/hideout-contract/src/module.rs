@@ -48,9 +48,6 @@ pub const FILES: &[&str] = &["module.toml", "plugin.toml", "kit.toml"];
 /// Reserved first labels and the family each one needs (§4.3). `arete` is `vulpes`.
 const RESERVED: &[(&str, Family)] = &[
     ("hideout", Family::Hideout),
-    // `hub.*` ids are the hub's own pages (`hub.modules`, `hub.settings`): no module may be
-    // named like one, or `hub.show` and the shell would take it for a hub page.
-    ("hub", Family::Hideout),
     ("foxglove", Family::Foxglove),
     ("vulpes", Family::Vulpes),
     ("arete", Family::Vulpes),
@@ -902,16 +899,17 @@ impl Module {
         if !id.contains('.') && !family.first_party() {
             return fail(ManifestId, "one-label ids are for first-party modules only");
         }
+        // `hub.*` ids are the hub's own pages (`hub.modules`, `hub.settings`). The family is
+        // declared in the manifest, so no family may take the label: a local manifest must not
+        // pose as a hub page to `hub.show` or the shell.
+        if id.split('.').next() == Some("hub") {
+            return fail(
+                ManifestId,
+                format!("id {id:?} starts with hub, a name the hub keeps for its own pages"),
+            );
+        }
         match reserved_family(&id) {
             Some(f) if f != family => {
-                if id.split('.').next() == Some("hub") {
-                    return fail(
-                        ManifestId,
-                        format!(
-                            "id {id:?} starts with hub, a name the hub keeps for its own pages"
-                        ),
-                    );
-                }
                 return fail(ManifestFamily, format!("id {id:?} needs family {f:?}"));
             }
             None if id.starts_with("org.foxglove.") && family != Family::Foxglove => {
@@ -1596,12 +1594,9 @@ run = [\"pages.exe\"]
     #[test]
     fn a_module_named_like_a_hub_page_is_refused_plainly() {
         for id in ["hub.settings", "hub.modules", "hub.x", "hub"] {
-            for family in ["third-party", "foxglove", "vulpes", "digitalis"] {
+            for family in ["third-party", "hideout", "foxglove", "vulpes", "digitalis"] {
                 let e = Module::parse(&manifest(id, family), &Context::default()).unwrap_err();
-                assert!(
-                    matches!(e.id, ErrorId::ManifestId | ErrorId::ManifestFamily),
-                    "{id} {family}: {e}"
-                );
+                assert_eq!(e.id, ErrorId::ManifestId, "{id} {family}: {e}");
             }
         }
         let e = Module::parse(
@@ -1625,6 +1620,7 @@ run = [\"pages.exe\"]
             ("foxglove.hub", "foxglove"),
             ("org.foxglove.temperature", "foxglove"),
             ("hideout.hub", "hideout"),
+            ("hideout.hub.pages", "hideout"),
         ] {
             let r = Module::parse(&manifest(id, family), &Context::default());
             assert!(r.is_ok(), "{id}: {:?}", r.err());

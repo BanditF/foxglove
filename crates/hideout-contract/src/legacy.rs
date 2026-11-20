@@ -180,7 +180,12 @@ impl Manifest {
                         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             });
         // `hub` is the hub's own first label (its pages are `hub.modules`, `hub.settings`).
-        let id_ok = id_ok && m.id.split('.').next() != Some("hub");
+        let id_ok = id_ok
+            && !m
+                .id
+                .split('.')
+                .next()
+                .is_some_and(|l| l.eq_ignore_ascii_case("hub"));
         if !id_ok {
             return fail(
                 ErrorId::ManifestId,
