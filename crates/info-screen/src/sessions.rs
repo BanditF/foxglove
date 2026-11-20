@@ -528,6 +528,19 @@ impl Heard {
     }
 }
 
+/// The window owners, or none when the enumeration was blind: when every window listed is
+/// this process's own, Windows showed it a desktop other than the user's (a program started by
+/// the hub can be on one), so "this program has no window" would be true of every app. No
+/// owners makes [`has_window`] answer `None` (can't tell), and a wrong skip is worse than one
+/// extra app.
+pub fn sighted(owners: Vec<(u32, Option<String>)>, own_pid: u32) -> Vec<(u32, Option<String>)> {
+    if owners.iter().all(|(p, _)| *p == own_pid) {
+        Vec::new()
+    } else {
+        owners
+    }
+}
+
 /// Whether `pid` or another process of program `exe` is in `owners`.
 fn owns(pid: u32, exe: Option<&str>, owners: &[(u32, Option<String>)]) -> bool {
     let same = |o: &Option<String>| match (exe, o) {
@@ -1609,6 +1622,7 @@ mod imp {
                     let windows = window_owners();
                     let owners: Vec<(u32, Option<String>)> =
                         windows.iter().map(|(p, e, _)| (*p, e.clone())).collect();
+                    let owners = super::sighted(owners, std::process::id());
                     let apps: Vec<(u32, Option<String>)> = windows
                         .iter()
                         .filter(|(_, _, app)| *app)
@@ -2360,6 +2374,29 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn a_blind_window_list_tells_nothing_about_vivaldi_or_the_game() {
+        let own = 10;
+        let blind = vec![(own, Some("foxglove.exe".to_string()))];
+        let owners = sighted(blind, own);
+        assert!(owners.is_empty());
+        assert_eq!(has_window(36052, Some("vivaldi.exe"), &owners), None);
+        assert_eq!(
+            has_window(123616, Some("EscapeFromTarkov.exe"), &owners),
+            None
+        );
+        let seen = vec![
+            (own, Some("foxglove.exe".to_string())),
+            (36052, Some("vivaldi.exe".to_string())),
+        ];
+        let owners = sighted(seen, own);
+        assert_eq!(has_window(36052, Some("vivaldi.exe"), &owners), Some(true));
+        assert_eq!(
+            has_window(123616, Some("EscapeFromTarkov.exe"), &owners),
+            Some(false)
+        );
     }
 
     #[test]
