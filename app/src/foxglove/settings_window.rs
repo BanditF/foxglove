@@ -33,8 +33,10 @@ pub const TITLE: &str = "Foxglove";
 /// the settings window's alone. The window starts hidden, so the rename lands before it shows.
 /// Only Windows renames it (the Win32 lookup); elsewhere it keeps this title.
 pub const LOOKUP_TITLE: &str = "Foxglove Settings";
-/// eframe's app name, which titles the overlay's window (`platform/eframe_host.rs`).
-pub const OVERLAY_TITLE: &str = "Foxglove";
+/// eframe's app name, which titles the overlay's window (`platform/eframe_host.rs`) and so
+/// its accessible name: not [`TITLE`], so a screen reader or UIA script never mistakes the
+/// overlay for the Settings window (#1376). The overlay has no taskbar button or Alt+Tab entry.
+pub const OVERLAY_TITLE: &str = "Foxglove overlay";
 /// The size it first opens at, in points: compact but readable, room for the sidebar and a
 /// page at the normal text size (#385). A remembered size wins over it.
 pub const DEFAULT_SIZE: egui::Vec2 = egui::vec2(880.0, 600.0);
@@ -804,6 +806,11 @@ pub mod tests {
     fn the_settings_window_is_found_by_a_name_of_its_own() {
         assert_eq!(TITLE, "Foxglove");
         assert_ne!(LOOKUP_TITLE, OVERLAY_TITLE);
+        assert_ne!(
+            TITLE, OVERLAY_TITLE,
+            "two windows must not share an accessible name"
+        );
+        assert_eq!(OVERLAY_TITLE, "Foxglove overlay");
         assert_ne!(LOOKUP_TITLE, TITLE);
         assert_eq!(
             builder().title.as_deref(),

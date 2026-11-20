@@ -1004,6 +1004,14 @@ pub fn row_thumb(
     let label = thumb.shape().label();
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let response = ui.interact(rect, id(key), sense);
+    let response = super::theme::named(
+        response,
+        &if identify {
+            format!("Identify {label}")
+        } else {
+            label.to_string()
+        },
+    );
     if ui.is_rect_visible(rect) {
         let front = ui.ctx().input(|i| i.focused);
         let tint = held(ui.ctx(), id(key), front, thumb.tint.clone());

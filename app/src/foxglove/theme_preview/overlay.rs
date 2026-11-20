@@ -166,7 +166,7 @@ fn slider_frame(ctx: &egui::Context, value: &mut u8, events: Vec<egui::Event>, t
             .show(ui.ctx(), |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 ui.spacing_mut().window_margin = egui::Margin::ZERO;
-                overlay_opacity::slider(ui, value, "test", |_| {});
+                overlay_opacity::slider(ui, value, "Opacity", "test", |_| {});
             });
     });
     out.textures_delta.clear();

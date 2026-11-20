@@ -1555,6 +1555,7 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
     let height = (width * aspect).clamp(150.0, 320.0);
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, height), Sense::click_and_drag());
+    let response = theme::named(response, "Room map");
     let map = Map::new(rect.shrink(12.0), b);
     handle_drag(&response, v, &map, draft, out);
     let room = dragged_room(&v.room, draft.drag.as_ref());
@@ -2061,9 +2062,14 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             for (name, rgb) in SWATCHES {
-                if swatch(ui, color(Rgb(rgb)), look.colour == rgb)
-                    .on_hover_text(name)
-                    .clicked()
+                if super::theme::named_choice(
+                    ui.unique_id(),
+                    swatch(ui, color(Rgb(rgb)), look.colour == rgb),
+                    name,
+                    look.colour == rgb,
+                )
+                .on_hover_text(name)
+                .clicked()
                 {
                     set(
                         Look {
@@ -2151,7 +2157,7 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
     if look.kind.uses_speed() {
         let mut speed = look.speed;
         value_row(ui, "Speed", format!("{speed} of 10"));
-        let r = full_slider(ui, egui::Slider::new(&mut speed, looks::SPEEDS));
+        let r = full_slider(ui, "Speed", egui::Slider::new(&mut speed, looks::SPEEDS));
         slid(
             &r,
             Look {
@@ -2183,7 +2189,11 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
     if look.kind.uses_width() {
         let mut width = look.width_mm;
         value_row(ui, look.kind.width_label(), format!("{width} mm"));
-        let r = full_slider(ui, egui::Slider::new(&mut width, looks::WIDTHS));
+        let r = full_slider(
+            ui,
+            look.kind.width_label(),
+            egui::Slider::new(&mut width, looks::WIDTHS),
+        );
         slid(
             &r,
             Look {
@@ -2228,7 +2238,7 @@ fn save_row(ui: &mut egui::Ui, draft: &mut Draft, out: &mut Vec<Intent>) {
                 .hint_text("Name")
                 .char_limit(looks::NAME_MAX)
                 .desired_width(ui.available_width().max(60.0));
-            let r = ui.add(edit);
+            let r = super::theme::named(ui.add(edit), "Look name");
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && problem.is_none()
             {
                 save.set(true);

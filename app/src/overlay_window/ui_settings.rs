@@ -5,10 +5,11 @@ use crate::settings::{LayerMask, LegendMode, Settings, ThemeColor, ThemeSettings
 
 impl OverlayApp {
     /// The color button that ends every theme row, right-aligned in the row.
-    fn theme_color_button(ui: &mut egui::Ui, color: &mut ThemeColor) {
+    fn theme_color_button(ui: &mut egui::Ui, name: &str, color: &mut ThemeColor) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mut display_color = crate::key_paint::to_egui_color(*color);
-            if ui.color_edit_button_srgba(&mut display_color).changed() {
+            let r = ui.color_edit_button_srgba(&mut display_color);
+            if crate::foxglove::theme::named(r, &format!("{name} colour")).changed() {
                 *color = crate::key_paint::from_egui_color(display_color);
             }
         });
@@ -18,7 +19,7 @@ impl OverlayApp {
     fn theme_color_entry(ui: &mut egui::Ui, label: &str, color: &mut ThemeColor) {
         ui.horizontal(|ui| {
             ui.label(label);
-            Self::theme_color_button(ui, color);
+            Self::theme_color_button(ui, label, color);
         });
         ui.add_space(4.0);
     }
@@ -34,27 +35,25 @@ impl OverlayApp {
         layers: u32,
     ) {
         let mut shown = visible_layers.contains_any(layers);
-        if ui
+        let show = ui
             .add(egui::Checkbox::without_text(&mut shown))
-            .on_hover_text("Show the overlay while these layers are active")
-            .changed()
-        {
+            .on_hover_text("Show the overlay while these layers are active");
+        if crate::foxglove::theme::named(show, &format!("Show for {label}")).changed() {
             visible_layers.set(layers, shown);
         }
         let mut held = held_layers.contains_any(layers);
-        if ui
+        let hold = ui
             .add_enabled(shown, egui::Checkbox::without_text(&mut held))
             .on_hover_text(
                 "Keep the overlay up for as long as these layers are active. Untick for \
                  toggled layers (like a game layer): the overlay then shows when they turn on \
                  and fades after the display duration.",
-            )
-            .changed()
-        {
+            );
+        if crate::foxglove::theme::named(hold, &format!("Hold for {label}")).changed() {
             held_layers.set(layers, held);
         }
         crate::foxglove::layer_access::label(ui, label, layers);
-        Self::theme_color_button(ui, color);
+        Self::theme_color_button(ui, label, color);
         ui.end_row();
     }
 

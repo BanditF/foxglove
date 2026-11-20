@@ -471,6 +471,7 @@ pub(crate) fn left_choices(ui: &mut egui::Ui, now: LeftChoice) -> Option<LeftCho
                 egui::Id::new(("left-choice", choice as u8)),
                 egui::Sense::click(),
             );
+            let r = super::theme::named(r, name);
             if r.hovered() {
                 ui.painter().rect_stroke(
                     r.rect.expand(2.0),
@@ -581,7 +582,8 @@ pub fn group(ui: &mut egui::Ui) {
                         if ui.button("Remove").clicked() {
                             remove = Some(exe.clone());
                         }
-                        changed |= ui.add(egui::TextEdit::singleline(hint).desired_width(160.0)).lost_focus();
+                        let r = ui.add(egui::TextEdit::singleline(hint).desired_width(160.0));
+                        changed |= super::theme::named(r, &format!("Hint for {exe}")).lost_focus();
                     });
                 });
             }
@@ -590,8 +592,10 @@ pub fn group(ui: &mut egui::Ui) {
                 changed = true;
             }
             ui.horizontal_wrapped(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut state.new_exe).hint_text("game.exe").desired_width(110.0));
-                ui.add(egui::TextEdit::singleline(&mut state.new_hint).hint_text("hint").desired_width(140.0));
+                let r = ui.add(egui::TextEdit::singleline(&mut state.new_exe).hint_text("game.exe").desired_width(110.0));
+                super::theme::named(r, "Game program name");
+                let r = ui.add(egui::TextEdit::singleline(&mut state.new_hint).hint_text("hint").desired_width(140.0));
+                super::theme::named(r, "Hint for the new game");
                 let exe = state.new_exe.trim().to_lowercase();
                 if ui.add_enabled(!exe.is_empty(), egui::Button::new("Add")).clicked() {
                     settings.games.insert(exe, state.new_hint.trim().to_string());

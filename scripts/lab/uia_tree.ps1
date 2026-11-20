@@ -2,7 +2,7 @@
 # that expected nodes are in it. ATTACH ONLY: this script never starts Foxglove (or any program);
 # it reads the process you name by id. Windows PowerShell 5.1, UIAutomationClient.
 #
-#   uia_tree.ps1 -ProcessId 1234 [-Title Foxglove] [-Expect 'Button:Start','RadioButton:Temperature:on']
+#   uia_tree.ps1 -ProcessId 1234 [-Title Foxglove] [-Page Scenes] [-Expect 'Button:Start','RadioButton:Temperature:on']
 #                [-TimeoutSec 20] [-MaxNodes 4000] [-OutFile tree.json]
 #   uia_tree.ps1 -SelfTest        (pure parts only: JSON shape, expectation matching; no UIA, no process)
 #
@@ -11,18 +11,23 @@
 # Point it at a lab instance (isolated FOXGLOVE_CONFIG_DIR) unless On-call says otherwise.
 #
 # The process must be named exactly `foxglove` (never a wildcard). Window: the top-level window of
-# that process whose name equals -Title (default "Foxglove", the Settings window; the overlay is
-# named "Foxglove overlay").
+# that process whose name equals -Title (default "Foxglove", the Settings window; the overlay's
+# window is named "Foxglove overlay").
 #
 # -Expect items are Role:Name or Role:Name:state. Role is a UIA control type (Button, RadioButton,
 # Group, Text, ...), Name the exact accessible name, state `on` (selected or toggled on) or `off`.
 #
+# -Page <name> (Keyboard, Lights, Scenes, Screens, Plugins, App) opens that page first, through
+# UI Automation only: the sidebar entry of that name is selected or invoked with its UIA pattern
+# (no mouse, no keys, no focus change), then the tree is read after a short settle. It changes the
+# page the Settings window shows, as a click would, so use a lab instance. Nothing else is acted on.
+#
 # The process must belong to you (same user and Windows session). If several windows of it carry
-# the title (the overlay is titled "Foxglove" too) the script refuses and lists them; pick one with
+# the title (an older build titled the overlay "Foxglove" too) the script refuses and lists them; pick one with
 # -Handle (decimal or 0x hex native window handle from that list).
 #
 # Exit codes: 0 all expectations met (or none given), 2 an expectation is missing, 3 refused or
-# window not found or ambiguous, 4 timed out (a hard limit: a hung window cannot block it). Nothing is clicked, typed or focused; the tree is only read.
+# window not found or ambiguous or the -Page entry not found, 4 timed out (a hard limit: a hung window cannot block it). Nothing is clicked, typed or focused; the tree is only read.
 param(
     [int]$ProcessId = 0,
     [string]$Title = 'Foxglove',
@@ -31,9 +36,14 @@ param(
     [int]$MaxNodes = 4000,
     [string]$OutFile = '',
     [string]$Handle = '',
+    [string]$Page = '',
     [switch]$SelfTest
 )
 $ErrorActionPreference = 'Stop'
+# Names carry characters outside ASCII ("Update firmware…", "0.3.0 (dev) · 2d6a7fe"): write them as
+# UTF-8, or a console on a legacy code page shows them as "â€¦" and "Â·".
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 
 # ---- pure parts (tested by -SelfTest) --------------------------------------------------------
 
@@ -58,6 +68,10 @@ function ConvertTo-Expectation([string]$text) {
     }
     [pscustomobject]@{ Role = $parts[0]; Name = $parts[1]; State = $state }
 }
+
+# The pages the sidebar lists, by name (the names the app gives them).
+$PageNames = 'Keyboard', 'Lights', 'Scenes', 'Screens', 'Plugins', 'App'
+function Test-PageName([string]$name) { $PageNames -ccontains $name }
 
 # Every node of a record tree, parents first.
 function Get-AllNodes($node) {
@@ -99,6 +113,11 @@ if ($SelfTest) {
         try { ConvertTo-Expectation $bad | Out-Null } catch { $threw = $true }
         Check $threw "bad expectation '$bad' is refused"
     }
+    Check ((Test-PageName 'Scenes') -and -not (Test-PageName 'scenes') -and -not (Test-PageName 'Settings')) 'page names are exact'
+    $odd = "Update firmware$([char]0x2026) 0.3.0 (dev) $([char]0xB7) 2d6a7fe"
+    $rt = ((New-NodeRecord 'Button' $odd '' $true $null $rect @()) | ConvertTo-Json | ConvertFrom-Json).name
+    Check ($rt -ceq $odd) 'non-ASCII names survive JSON'
+    Check ([Console]::OutputEncoding.CodePage -eq 65001 -or $Host.Name -ne 'ConsoleHost') 'output is UTF-8'
     $json = $tree | ConvertTo-Json -Depth 20
     $back = $json | ConvertFrom-Json
     Check ($back.children[1].name -eq 'Start' -and $back.children[0].children.Count -eq 2) 'JSON keeps the shape'
@@ -118,6 +137,7 @@ if ($env:FOXGLOVE_APP_OK -ne '1') {
     Write-Host 'BLOCKED: this reads a running Foxglove (and turns its AccessKit tree on); On-call runs it with FOXGLOVE_APP_OK=1'
     exit 3
 }
+if ($Page -and -not (Test-PageName $Page)) { Write-Host "bad -Page '$Page' (one of: $($PageNames -join ', '))"; exit 3 }
 if ($ProcessId -le 0) { Write-Host 'give -ProcessId of a running foxglove'; exit 3 }
 
 $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
@@ -143,7 +163,7 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 # The walk runs in its own runspace so a hung window cannot block this script: the wait below is a
 # hard limit, and leaving the process ends the stuck thread.
 $walk = {
-    param($pid_, $title, $handle, $maxNodes, $deadlineTicks, $recordFn)
+    param($pid_, $title, $handle, $maxNodes, $deadlineTicks, $recordFn, $page)
     $ErrorActionPreference = 'Stop'
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     Set-Item -Path function:New-NodeRecord -Value ([scriptblock]::Create($recordFn))
@@ -197,6 +217,24 @@ $walk = {
         }) -join '; '
         return @{ error = "$($hits.Count) windows match (want exactly 1; pick one with -Handle). Windows of the process: $list" }
     }
+    if ($page) {
+        # The sidebar entry of that name: the first element of that name that can be selected or
+        # invoked (the sidebar comes before the page in the tree).
+        $nameCond = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::NameProperty), $page
+        $entry = $null
+        foreach ($e in @($hits[0].FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond))) {
+            $pat = $null
+            if ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pat)) {
+                $pat.Select(); $entry = $e; break
+            }
+            if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pat)) {
+                $pat.Invoke(); $entry = $e; break
+            }
+        }
+        if (-not $entry) { return @{ error = "no sidebar entry named '$page' that can be selected or invoked" } }
+        # One short settle for the page to redraw and the tree to update (a single wait, no loop).
+        Start-Sleep -Milliseconds 700
+    }
     $tree = Read-Node $hits[0] 0
     @{ tree = $tree; timedOut = $script:timedOut; count = $script:count }
 }
@@ -208,7 +246,7 @@ if ($Handle) {
 }
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
 $ps = [powershell]::Create()
-[void]$ps.AddScript($walk.ToString()).AddArgument($ProcessId).AddArgument($Title).AddArgument($handleNum).AddArgument($MaxNodes).AddArgument($deadline.Ticks).AddArgument(${function:New-NodeRecord}.ToString())
+[void]$ps.AddScript($walk.ToString()).AddArgument($ProcessId).AddArgument($Title).AddArgument($handleNum).AddArgument($MaxNodes).AddArgument($deadline.Ticks).AddArgument(${function:New-NodeRecord}.ToString()).AddArgument($Page)
 $async = $ps.BeginInvoke()
 if (-not $async.AsyncWaitHandle.WaitOne(($TimeoutSec + 5) * 1000)) {
     Write-Host "timed out: the window did not answer within $TimeoutSec s (hung?)"

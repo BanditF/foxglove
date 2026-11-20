@@ -11,6 +11,8 @@ use std::collections::HashMap;
 
 use egui::{Color32, Pos2, Rect, TextureId};
 
+#[cfg(test)]
+mod a11y_names;
 mod art_flow;
 mod device_rows;
 mod device_thumbs;
@@ -449,8 +451,10 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                         ui.label("");
                         ui.end_row();
                         for layer in layers {
-                            ui.add(egui::Checkbox::without_text(&mut true));
-                            ui.add(egui::Checkbox::without_text(&mut (layer != 3)));
+                            let r = ui.add(egui::Checkbox::without_text(&mut true));
+                            super::theme::named(r, &format!("Show for layer {layer}"));
+                            let r = ui.add(egui::Checkbox::without_text(&mut (layer != 3)));
+                            super::theme::named(r, &format!("Hold for layer {layer}"));
                             ui.label(if layer == 7 {
                                 "Other layers".to_string()
                             } else {
@@ -460,7 +464,8 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    ui.color_edit_button_srgba(&mut c);
+                                    let r = ui.color_edit_button_srgba(&mut c);
+                                    super::theme::named(r, &format!("Layer {layer} colour"));
                                 },
                             );
                             ui.end_row();

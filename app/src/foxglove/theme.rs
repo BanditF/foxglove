@@ -683,6 +683,155 @@ fn pill_step(pills: &[(egui::Id, bool)], at: usize, key: egui::Key) -> usize {
     }
 }
 
+/// Gives a control its accessible name, for a reader to say instead of just its kind
+/// ("Opacity, slider"). Nothing is drawn; the response is returned for chaining.
+pub fn named(r: egui::Response, name: &str) -> egui::Response {
+    r.ctx.accesskit_node_builder(r.id, |n| n.set_label(name));
+    r
+}
+
+/// Names a custom pick-one tile (a colour swatch) for a reader: a radio button called `name`,
+/// on when `selected`, in a radio group "Colour" shared by the tiles of the Ui whose
+/// `unique_id` is `parent`. Nothing is drawn.
+pub fn named_choice(
+    parent: egui::Id,
+    r: egui::Response,
+    name: &str,
+    selected: bool,
+) -> egui::Response {
+    let ctx = r.ctx.clone();
+    ctx.accesskit_node_builder(parent, |_| ());
+    let group = parent.with("swatch-group");
+    ctx.accesskit_node_builder(group, |n| {
+        n.set_role(egui::accesskit::Role::RadioGroup);
+        n.set_label("Colour");
+    });
+    ctx.accesskit_node_builder(r.id, |n| {
+        n.set_role(egui::accesskit::Role::RadioButton);
+        n.set_label(name);
+        n.set_toggled(if selected {
+            egui::accesskit::Toggled::True
+        } else {
+            egui::accesskit::Toggled::False
+        });
+    });
+    adopt(&ctx, parent, group, r.id);
+    r
+}
+
+// Names for controls that sit beside a label (#1376, slice 2). Settings rows draw their name
+// as one label and the control right after it (`ui.label("Opacity"); ui.add(slider)`, a grid
+// row, a combo box). egui doesn't link the two, so a screen reader would read "slider" with no
+// name. [`name_controls`] links them once, for the whole page: a control with no name of its
+// own that comes straight after a label in the same Ui is labelled by that label. Nothing is
+// drawn; a control that already has a name, or whose label isn't right before it, is left to
+// be named where it is drawn.
+
+/// Names the nameless controls drawn so far this frame after the label drawn right before each one.
+pub fn name_controls(ctx: &egui::Context) {
+    // Widgets hang under the root node, in the order they were drawn, unless an ancestor has a
+    // node of its own (a radio group). With AccessKit off there are no nodes and this returns.
+    name_children(ctx, egui::accesskit_root_id(), None);
+}
+
+/// What the naming pass needs to know of a node.
+struct Seen {
+    children: Vec<egui::accesskit::NodeId>,
+    label_text: bool,
+    nameless_control: bool,
+    role: egui::accesskit::Role,
+}
+
+fn see(ctx: &egui::Context, id: egui::Id) -> Option<Seen> {
+    use egui::accesskit::{Action, Role};
+    ctx.accesskit_node_builder(id, |n| {
+        let named = n.label().is_some_and(|l| !l.trim().is_empty()) || !n.labelled_by().is_empty();
+        Seen {
+            children: n.children().to_vec(),
+            label_text: n.role() == Role::Label && n.value().is_some_and(|v| !v.trim().is_empty()),
+            nameless_control: n.supports_action(Action::Focus)
+                && !named
+                && matches!(
+                    n.role(),
+                    Role::Button
+                        | Role::CheckBox
+                        | Role::ColorWell
+                        | Role::ComboBox
+                        | Role::RadioButton
+                        | Role::Slider
+                        | Role::SpinButton
+                        | Role::TextInput
+                        | Role::Unknown
+                ),
+            role: n.role(),
+        }
+    })
+}
+
+/// A node id back as an egui [`egui::Id`]: ids are what AccessKit's are made from.
+fn egui_id(node: egui::accesskit::NodeId) -> egui::Id {
+    // SAFETY-free in the memory sense: the value came from an `Id`, so it is non-zero and has
+    // the entropy `Id`s have (the documented use of this constructor).
+    #[allow(unsafe_code)]
+    unsafe {
+        egui::Id::from_high_entropy_bits(node.0)
+    }
+}
+
+/// `inherited` is the label right before `parent`, for a Ui that only wraps one control (a
+/// control added at a size gets one).
+fn name_children(
+    ctx: &egui::Context,
+    parent: egui::Id,
+    inherited: Option<egui::accesskit::NodeId>,
+) {
+    use egui::accesskit::Role;
+    let Some(seen) = see(ctx, parent) else {
+        return;
+    };
+    // The label right before the control, and whether a slider just named after it may share it
+    // with its number box.
+    let mut label: Option<egui::accesskit::NodeId> = inherited;
+    let mut shared = false;
+    for child in seen.children {
+        let id = egui_id(child);
+        let Some(c) = see(ctx, id) else {
+            continue;
+        };
+        let before = label;
+        if c.label_text {
+            label = Some(child);
+            shared = false;
+            continue;
+        }
+        if c.nameless_control {
+            if let Some(l) = label {
+                // An unknown (custom) control is named by its own widget, not by a stray label.
+                if c.role != Role::Unknown {
+                    ctx.accesskit_node_builder(id, |n| n.push_labelled_by(l));
+                    shared = c.role == Role::Slider;
+                    if !shared {
+                        label = None;
+                    }
+                } else {
+                    label = None;
+                }
+            }
+        } else if shared && c.role == Role::SpinButton {
+            if let Some(l) = label {
+                ctx.accesskit_node_builder(id, |n| n.push_labelled_by(l));
+            }
+            label = None;
+            shared = false;
+        } else {
+            label = None;
+            shared = false;
+        }
+        let wrapper = c.role == Role::GenericContainer;
+        name_children(ctx, id, if wrapper { before } else { None });
+    }
+}
+
 /// The main action of a card: an orange button.
 pub fn primary_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
     let p = palette(ui);

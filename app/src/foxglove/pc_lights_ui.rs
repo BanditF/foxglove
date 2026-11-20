@@ -1197,9 +1197,14 @@ fn zones(
         }
         for (name, rgb) in super::lights_page::SWATCHES {
             let all = picks.iter().all(|c| *c == Some(rgb));
-            if swatch(ui, super::calibrate::screen_color(&row.key, None, rgb), all)
-                .on_hover_text(name)
-                .clicked()
+            if super::theme::named_choice(
+                ui.unique_id(),
+                swatch(ui, super::calibrate::screen_color(&row.key, None, rgb), all),
+                name,
+                all,
+            )
+            .on_hover_text(name)
+            .clicked()
             {
                 picks.iter_mut().for_each(|c| *c = Some(rgb));
             }
