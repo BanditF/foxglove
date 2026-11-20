@@ -1797,7 +1797,10 @@ fn the_page_names_the_hubs_holders_and_resume_ends_their_leases() {
     rig.link = Link::new(Vec::new(), launch()).with_wallpaper(we_probe);
     let facts = board();
     rig.connect(&facts);
-    assert!(said(&rig.panels, "Playing"), "nobody holds it yet");
+    assert!(
+        said(&rig.panels, "No app is pausing your wallpapers"),
+        "nobody holds it yet"
+    );
     let holders = |v: Value| {
         json!({"jsonrpc":"2.0","method":"facts.changed","params":
             {"subscription":1,"key":"module.foxglove.lease_holders","value":v}})
@@ -1814,9 +1817,9 @@ fn the_page_names_the_hubs_holders_and_resume_ends_their_leases() {
         .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
         .unwrap();
     let shown = rig.link.shown.clone().unwrap();
-    assert!(said(&shown, "Paused by Arete") && said(&shown, "Resume wallpapers"));
+    assert!(said(&shown, "Wallpapers paused by Arete") && said(&shown, "Resume wallpapers"));
     assert!(
-        !said(&shown, "Paused by X"),
+        !said(&shown, "Wallpapers paused by X"),
         "another family's holder isn't named"
     );
     written(&mut rig);
@@ -1838,7 +1841,63 @@ fn the_page_names_the_hubs_holders_and_resume_ends_their_leases() {
     rig.link
         .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
         .unwrap();
-    assert!(said(rig.link.shown.as_ref().unwrap(), "Playing"));
+    let shown = rig.link.shown.as_ref().unwrap();
+    assert!(said(shown, "No app is pausing your wallpapers"));
+    assert!(
+        said(shown, "Resumed. Arete can pause them again."),
+        "Resume says so once"
+    );
+}
+
+/// #1142 UX plan 4: a stopped app is named only when its connection closed (the hub's
+/// `lease.closed {reason: "disconnect"}`) and it held the last pause; a hub reconnect says nothing.
+#[test]
+fn the_page_says_which_app_stopped_and_a_new_connection_says_nothing() {
+    let mut rig = Rig::new(&[GRANT]);
+    rig.link = Link::new(Vec::new(), launch()).with_wallpaper(we_probe);
+    let facts = board();
+    rig.connect(&facts);
+    let holders = |v: Value| {
+        json!({"jsonrpc":"2.0","method":"facts.changed","params":
+            {"subscription":1,"key":"module.foxglove.lease_holders","value":v}})
+        .to_string()
+    };
+    rig.link
+        .line(&holders(json!({"wallpaper-engine": ["Arete"]})))
+        .unwrap();
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    // It released itself: nothing is said.
+    rig.link.line(&holders(Value::Null)).unwrap();
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    assert!(!said(rig.link.shown.as_ref().unwrap(), "stopped"));
+    // It stopped.
+    rig.link
+        .line(&holders(json!({"wallpaper-engine": ["Arete"]})))
+        .unwrap();
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    crate::foxglove::we_after::holder_stopped(Instant::now());
+    rig.link.line(&holders(Value::Null)).unwrap();
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    assert!(said(
+        rig.link.shown.as_ref().unwrap(),
+        "Arete stopped, so its pause ended."
+    ));
+    assert!(rig.link.take_note_deadline().is_some(), "one wake-up");
+    assert!(rig.link.take_note_deadline().is_none());
+    // A new connection never saw who was there.
+    crate::foxglove::we_after::holder_stopped(Instant::now());
+    let mut rig = Rig::new(&[GRANT]);
+    rig.link = Link::new(Vec::new(), launch()).with_wallpaper(we_probe);
+    rig.connect(&facts);
+    assert!(!said(rig.link.shown.as_ref().unwrap(), "stopped"));
 }
 
 /// Sign-in hand-over slice 2: the hub's `module.foxglove.starts_at_sign_in` fact reaches the

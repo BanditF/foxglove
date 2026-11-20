@@ -16,6 +16,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+/// The wallpaper app's name as the section shows it: data, the one place it is spelled.
+#[cfg_attr(test, allow(dead_code))]
+pub const NAME: &str = "Wallpaper Engine";
 /// Wallpaper Engine's Steam app id.
 pub const APP_ID: &str = "431960";
 /// Its programs, for "is it running".

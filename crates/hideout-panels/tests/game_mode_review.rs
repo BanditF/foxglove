@@ -402,3 +402,62 @@ fn renders_the_wallpaper_engine_section_for_review() {
         }
     }
 }
+
+/// Review images for the wallpaper pause section (#1142 slices 2-4): every "Wallpapers ..." vector
+/// state on the Foxglove page, light and dark, at 720 px and at a narrow 360 px.
+#[test]
+fn renders_the_wallpaper_pause_section_for_review() {
+    let vectors: Value = serde_json::from_str(FOX_VECTORS).unwrap();
+    let text = FOX
+        .replace("@VERSION@", "0.2.0")
+        .replace("@EXE@", "C:/x/foxglove.exe");
+    for (n, st) in vectors["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["state"].as_str().unwrap().starts_with("Wallpapers"))
+        .enumerate()
+    {
+        let mut host = PanelHost::default();
+        host.set_manifest(Module::parse(&text, &Context::default()).unwrap());
+        host.set_fact("module.foxglove.state", json!("running"));
+        let params: Register =
+            serde_json::from_value(json!({"instance": "f1", "panels": st["panels"]})).unwrap();
+        let declared: Vec<String> = serde_json::from_value(vectors["declared"].clone()).unwrap();
+        let rej = host.register_with("foxglove", "Foxglove", Some(&declared), Some(&[]), &params);
+        assert!(rej.is_empty(), "{rej:?}");
+        for ((size, w), (theme, dark)) in [("wide", 720u32), ("narrow", 360u32)]
+            .into_iter()
+            .flat_map(|s| [(s, ("light", false)), (s, ("dark", true))])
+        {
+            let h = 700u32;
+            let Some(px) = rasterise(w, h, |ctx| {
+                ctx.set_visuals(if dark {
+                    egui::Visuals::dark()
+                } else {
+                    egui::Visuals::light()
+                });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let key = PanelKey::new("foxglove", "page");
+                        panel_ui(&mut host, ui, &key);
+                        page_sections_ui(&mut host, ui, &key);
+                    });
+                });
+            }) else {
+                eprintln!("no system font; review images skipped");
+                return;
+            };
+            println!(
+                "{}",
+                save_png(
+                    &format!("we-pause-{:02}-{size}-{theme}.png", n + 1),
+                    w,
+                    h,
+                    px
+                )
+                .display()
+            );
+        }
+    }
+}

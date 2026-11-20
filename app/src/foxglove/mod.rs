@@ -205,6 +205,7 @@ pub mod wallpaper_leases;
 pub mod wallpaper_manifest;
 pub mod wallpaper_sync;
 pub mod wallpaper_sync_health;
+pub mod we_after;
 pub mod we_panel;
 pub mod windows_theme;
 pub mod zones_ui;

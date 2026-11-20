@@ -1328,6 +1328,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
             super::art_service::read_kept(crc);
         }
         ANY_PAUSED.store(clients.iter().any(|c| c.paused), Ordering::Relaxed);
+        ANY_PLAYING.store(clients.iter().any(|c| !c.paused), Ordering::Relaxed);
         let n = clients.len();
         if CONNECTED.swap(n, Ordering::Relaxed) != n {
             super::tray_panel::wake();
@@ -1757,6 +1758,14 @@ pub(super) fn wallpaper_paused() -> bool {
 }
 
 static ANY_PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// A connected wallpaper reports itself playing: the only way to know it is (#1142).
+#[cfg_attr(test, allow(dead_code))]
+pub(super) fn wallpaper_playing() -> bool {
+    ANY_PLAYING.load(Ordering::Relaxed)
+}
+
+static ANY_PLAYING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 pub(super) fn fullscreen_now() -> bool {

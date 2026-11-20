@@ -352,6 +352,8 @@ struct Hub {
     holders_changed: bool,
     /// The page's Resume was pressed: the link ends the hub's leases (`lease.end`).
     resume_asked: bool,
+    /// Resume was pressed here or at the hub's tray: the section says "Resumed." once.
+    resumed: bool,
     /// The row keys of the allow list the hub was last shown, by index: a switch's node names
     /// only an index, and it means the wallpaper that row was when the hub drew it.
     we_keys: Vec<String>,
@@ -401,6 +403,10 @@ impl Handler for Hub {
             // queued; the lease table keeps the outcome for it), `disconnect`, `revoked`,
             // `restart`, and reasons a later contract adds. Only ever one lease, and only the
             // hub can send this (a hub-owned name, section 8.3).
+            if params["reason"].as_str() == Some("disconnect") {
+                // The app that held it stopped: if it was the last, the section says so.
+                super::we_after::holder_stopped(std::time::Instant::now());
+            }
             if let (Some(d), Some(lease)) = (self.devices.as_ref(), params["lease"].as_str()) {
                 d.lease_closed(ROUTED_CONN, lease);
             }
@@ -411,6 +417,7 @@ impl Handler for Hub {
             // leases already; the local API's callers end here, so the tray ends the same
             // pauses as the page's Resume. Nothing goes back to the hub.
             if params["family"].as_str() == Some(WE_FAMILY) {
+                self.resumed = true;
                 super::wallpaper_sync::resume_all();
             }
             return;
@@ -463,6 +470,7 @@ impl Handler for Hub {
             // callers' through `lease.end` (sent by the link after this answer).
             super::wallpaper_sync::resume_all();
             self.resume_asked = true;
+            self.resumed = true;
             return Ok(json!({}));
         }
         if event.kind == "click" {
@@ -771,6 +779,8 @@ pub struct Link<W: Write> {
     held_sent: Vec<String>,
     /// An older hub's refusal of `lease.holders` was logged (once).
     held_said: bool,
+    /// The section's after-line for this connection (a new one forgets who was there).
+    after: super::we_after::Tracker,
 }
 
 /// Temperature's side of one connection ([`super::temperature_feed`]): the facts, and the
@@ -824,6 +834,9 @@ fn wallpaper_now(holders: &[String]) -> Option<super::hub_panels::Wallpaper> {
     Some(super::hub_panels::Wallpaper {
         running,
         user_paused: super::live_feed::wallpaper_paused(),
+        playing: super::live_feed::wallpaper_playing(),
+        engine: super::wallpaper_engine::NAME.to_string(),
+        after: None,
         full_screen,
         holders: holders.to_vec(),
         reasons: super::wallpaper_sync::reasons_now(),
@@ -871,6 +884,7 @@ impl<W: Write> Link<W> {
             sensors: Sensors::new(),
             held_sent: Vec::new(),
             held_said: false,
+            after: Default::default(),
         }
     }
 
@@ -885,6 +899,11 @@ impl<W: Write> Link<W> {
     pub fn with_wallpaper(mut self, probe: WallpaperProbe) -> Self {
         self.wallpaper = probe;
         self
+    }
+
+    /// When the after-line that began with the last refresh ends: the loop arms one wake-up.
+    pub fn take_note_deadline(&mut self) -> Option<Instant> {
+        self.after.take_deadline()
     }
 
     /// The hub's holder names changed since the panels last looked (#1142).
@@ -992,7 +1011,14 @@ impl<W: Write> Link<W> {
         if self.phase != Phase::Live {
             return Ok(());
         }
-        let wallpaper = (self.wallpaper)(&self.hub.holders);
+        let mut wallpaper = (self.wallpaper)(&self.hub.holders);
+        if let Some(w) = wallpaper.as_mut() {
+            let now = Instant::now();
+            let stop = !w.held() && super::we_after::take_stop(now);
+            w.after = self
+                .after
+                .update(&w.holders, w.held(), w.running, w.user_paused, stop, now);
+        }
         self.hub.we_keys = wallpaper
             .as_ref()
             .and_then(|w| w.allow.as_ref())
@@ -1174,6 +1200,10 @@ impl<W: Write> Link<W> {
         let got = self.session.handle_line(text, &mut self.hub)?;
         if self.hub.exit {
             return Ok(Step::Exit);
+        }
+        if std::mem::take(&mut self.hub.resumed) {
+            // The names now, before the hub's facts drop them: the after-line says whose.
+            self.after.resume_pressed(&self.hub.holders, Instant::now());
         }
         if std::mem::take(&mut self.hub.resume_asked) {
             self.log
@@ -2166,6 +2196,14 @@ mod runner {
                 link.sync_local_holders(&crate::foxglove::wallpaper_sync::local_holders_now())
             {
                 return lost(e, live);
+            }
+            if let Some(end) = link.take_note_deadline() {
+                // One wake-up when the after-line runs out; it ends with the send.
+                let wtx = tx.clone();
+                crate::foxglove::services::spawn_named("hub-link-after-line", move || {
+                    std::thread::sleep(end.saturating_duration_since(Instant::now()));
+                    let _ = wtx.send(Msg::Guard);
+                });
             }
             if let Some(status) = link.take_sensor_status() {
                 crate::foxglove::temperature_feed::publish(status);

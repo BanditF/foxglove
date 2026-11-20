@@ -1272,9 +1272,14 @@ fn serve(ctl: Ctl, leases: &mut Leases, apply: &mut impl Apply, full: bool) -> b
             );
             false
         }
-        Ctl::Closed(conn) => leases
-            .drop_conn(apply, conn, full)
-            .is_some_and(|ended| ended.played),
+        Ctl::Closed(conn) => {
+            let ended = leases.drop_conn(apply, conn, full);
+            #[cfg(not(test))]
+            if ended.is_some_and(|e| e.last) {
+                super::we_after::holder_stopped(Instant::now());
+            }
+            ended.is_some_and(|ended| ended.played)
+        }
         Ctl::HubClosed { conn, lease } => leases
             .hub_closed(apply, conn, &lease, full)
             .is_some_and(|ended| ended.played),

@@ -458,7 +458,9 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 let text = toned(ui, &p, text.strong().size(18.0));
                 // A named value is reachable by a screen reader (focusable, not clickable);
                 // an unnamed one stays plain text.
-                let r = if s(&p, "name").is_some() {
+                // `live`: a status line, polite, announced when its words change (#1142).
+                let live = p.get("live").and_then(Value::as_bool).unwrap_or(false);
+                let r = if s(&p, "name").is_some() || live {
                     ui.add(egui::Label::new(text).sense(egui::Sense::focusable_noninteractive()))
                 } else {
                     ui.label(text)
@@ -470,6 +472,20 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                     r.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Label, enabled, &name)
                     });
+                }
+                if live {
+                    let words = s(&p, "name")
+                        .map(String::from)
+                        .unwrap_or_else(|| text_of(p.get("value").unwrap_or(&Value::Null)));
+                    ui.ctx().accesskit_node_builder(r.id, |a| {
+                        a.set_role(egui::accesskit::Role::Status);
+                        a.set_live(egui::accesskit::Live::Polite);
+                        a.set_value(words);
+                    });
+                    if d.view.refocus.as_deref() == Some(n.id.as_str()) {
+                        r.request_focus();
+                        d.view.refocus = None;
+                    }
                 }
             });
         }
@@ -527,7 +543,12 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 match (action, opens) {
                     (Some(action), _) => d.go.push(Go::Action { module, action }),
                     (None, Some(target)) => d.go.push(Go::Open { module, target }),
-                    (None, None) => d.emit(&n.id, "click", Value::Null, false),
+                    (None, None) => {
+                        if let Some(to) = s(&p, "focus_after") {
+                            d.view.refocus = Some(to.to_string());
+                        }
+                        d.emit(&n.id, "click", Value::Null, false)
+                    }
                 }
             });
         }
@@ -1122,6 +1143,45 @@ mod tests {
         };
         assert!(named("Graphics card temperature, 64 degrees Celsius"));
         assert!(named("Processor, 23 percent busy"));
+    }
+
+    /// #1142: a `live` value is a polite status node; a button's `focus_after` sends the focus
+    /// to it once pressed.
+    #[test]
+    fn a_live_value_is_a_polite_status_and_takes_the_focus_after_a_press() {
+        let Some(fonts) = crate::render::test_fonts() else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        let mut host = PanelHost::default();
+        let tree = json!({"type": "column", "id": "c", "children": [
+            {"type": "value", "id": "state", "props": {"value": "Wallpapers paused by Arete", "live": true}},
+            {"type": "button", "id": "go", "props": {
+                "label": "Resume wallpapers", "name": "Resume wallpapers, paused by Arete",
+                "focus_after": "state"}}]});
+        let params: Register = serde_json::from_value(json!({"instance": "i1", "panels": [
+            {"id": "p", "slot": "page", "title": "P", "icon": "x", "tree": tree}]}))
+        .unwrap();
+        assert!(host.register("m", "Example", None, &params).is_empty());
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts);
+        ctx.enable_accesskit();
+        let key = PanelKey::new("m", "p");
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                panel_ui(&mut host, ui, &key);
+            });
+        });
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        assert!(nodes
+            .iter()
+            .any(|(_, n)| n.role() == egui::accesskit::Role::Status
+                && n.live() == Some(egui::accesskit::Live::Polite)
+                && n.value() == Some("Wallpapers paused by Arete")));
+        assert!(nodes
+            .iter()
+            .any(|(_, n)| n.role() == egui::accesskit::Role::Button
+                && n.label() == Some("Resume wallpapers, paused by Arete")));
         // The meter draws no words of its own: the name is not printed in the bar.
         let drawn = out
             .shapes
