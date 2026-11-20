@@ -197,6 +197,10 @@ impl<K: Sink> Engine<K> {
             }
             (true, true) => {}
             (false, true) => {
+                // Dropping the sources is the release: `PdhSampler` closes its query and `Nvml`
+                // calls `nvmlShutdown` and frees the DLL (tests: `last_unsubscribe_stops_and_
+                // releases`, `other_patterns_do_not_start_it_and_resubscribe_restarts`). What Windows itself keeps after that (PDH's
+                // loaded perf providers, their handles and pages) is not ours to free.
                 self.sources.clear();
                 self.next_due = None;
                 if self.subs.is_empty() {
