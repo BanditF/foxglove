@@ -2869,3 +2869,29 @@ fn an_older_hub_refusing_lease_holders_is_logged_once() {
     let log = rig.link.take_log();
     assert_eq!(log.len(), 1, "{log:?}");
 }
+
+/// #1377: `scene.status` and `lights.status` are reads; `scene.start` needs `lighting.write`. A
+/// caller holding only `devices.read` can read, is refused the start by the router, and the app
+/// never sees the refused call; with the grant the call arrives with its params.
+#[test]
+fn scene_start_is_behind_lighting_write_and_the_reads_are_not() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    let reader = rig.tool(&["devices.read"]);
+    for m in ["scene.status", "lights.status"] {
+        let r = rig.call(&reader, m, json!({}));
+        assert_eq!(r["result"]["served"], json!(m), "{r}");
+    }
+    let before = counting.seen.lock().unwrap().len();
+    let r = rig.call(&reader, "scene.start", json!({"look": "temperature"}));
+    assert!(r["error"].is_object(), "{r}");
+    assert_eq!(
+        counting.seen.lock().unwrap().len(),
+        before,
+        "never reached the app"
+    );
+    let writer = rig.tool(&["devices.read", "lighting.write"]);
+    let r = rig.call(&writer, "scene.start", json!({"look": "temperature"}));
+    assert_eq!(r["result"]["served"], json!("scene.start"), "{r}");
+}

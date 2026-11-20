@@ -542,6 +542,88 @@ pub struct SceneStopped {
     pub scene: Option<String>,
 }
 
+/// What `lights.status` answers (API 1.18): the running scene's look and the keyboard's lights in
+/// one reply, for agents that check the lamps without a window. No secrets: only states, the look's
+/// name, and (Temperature) the reading and the colour the lights were last told to show.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LightsStatus {
+    /// `none`, `running`, `paused` or `stopping` (as `scene.status`).
+    pub state: String,
+    pub scene: Option<String>,
+    /// The running look's kind (`temperature`, `scanline` ...), none when no scene runs.
+    pub look: Option<String>,
+    /// `lit`, `dark`, `off`, `none` or empty (as `scene.status`).
+    pub keyboard: String,
+    /// Present while the Temperature look runs.
+    pub temperature: Option<TemperatureStatus>,
+}
+
+/// Temperature's side of `lights.status`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TemperatureStatus {
+    /// The sensor group it follows (`gpu`).
+    pub source: String,
+    /// `ok` (a reading), `waiting`, `missing`, `no-report`, `not-allowed`, `app-off`,
+    /// `app-stopped` or `no-hub`.
+    pub reading_state: String,
+    /// The reading in degrees Celsius, only with `ok`; never 0 for a missing one.
+    pub temp_c: Option<f32>,
+    /// The colour the lights were last told to show (`#RRGGBB`), none while the fallback shows
+    /// or before the first target.
+    pub target: Option<String>,
+    /// The lights show the fallback look (no reading).
+    pub fallback: bool,
+}
+
+/// `scene.start` (API 1.18): starts a look as the Scenes page's Start does. `look` is the
+/// kind's name (`scanline`, `sweep`, `ripple`, `breathe`, `gradient`, `drift`, `two-tone`,
+/// `tide`, `temperature`); `screen-glow` is always refused (only the user starts it, in the app). Unknown
+/// names and unknown, out-of-range or inapplicable parameters are refused (code -32602).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SceneStartParams {
+    pub look: String,
+    #[serde(default)]
+    pub params: Option<SceneStartLook>,
+}
+
+/// The look's own parameters; each is optional; one left out keeps what the user saved for that look (Foxglove's default for another look).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SceneStartLook {
+    /// One of Foxglove's own palette names (not a wallpaper's).
+    pub palette: Option<String>,
+    /// 1 to 10.
+    #[schemars(range(min = 1, max = 10))]
+    pub speed: Option<u8>,
+    /// `down`, `up`, `right` or `left`.
+    pub direction: Option<String>,
+    /// 20 to 400.
+    #[schemars(range(min = 20, max = 400))]
+    pub width_mm: Option<u16>,
+    /// `#RRGGBB`, for the one-colour looks.
+    pub colour: Option<String>,
+    /// `night` or `off`.
+    pub background: Option<String>,
+    /// Temperature: the sensor group (`gpu`, lower case letters, digits, `_` or `-`, up to 24).
+    pub source: Option<String>,
+    /// Temperature: `palette` or `cool-to-hot`.
+    pub colours: Option<String>,
+    /// Temperature: the cool end in whole degrees C (20 to 100, multiples of 5).
+    #[schemars(range(min = 20, max = 100))]
+    pub cool_c: Option<u16>,
+    /// Temperature: the hot end in whole degrees C (20 to 100, multiples of 5, at least 10 above `cool_c`).
+    #[schemars(range(min = 20, max = 100))]
+    pub hot_c: Option<u16>,
+}
+
+/// The answer of `scene.start`: the look that was started and the scene's name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SceneStarted {
+    pub look: String,
+    pub scene: Option<String>,
+}
+
 /// Turns "Show layer overlay" on or off (API 1.13), as the Keyboard page's checkbox does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SetOverlayShownParams {
@@ -1163,6 +1245,21 @@ pub const METHODS: &[Method] = &[
         permission: Some("lighting.write"),
         params: schema!(Empty),
         result: Some(schema!(SceneStopped)),
+    },
+    // Window-free readback and start of the lights (API 1.18, #1377).
+    Method {
+        name: "lights.status",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(Empty),
+        result: Some(schema!(LightsStatus)),
+    },
+    Method {
+        name: "scene.start",
+        kind: Kind::Call,
+        permission: Some("lighting.write"),
+        params: schema!(SceneStartParams),
+        result: Some(schema!(SceneStarted)),
     },
     // The hub asks a standalone copy to quit cleanly so it can start the app inside Hideout (API
     // 1.17, first-run FR5). Only a verified hideout.exe on the other end of the pipe is obeyed.

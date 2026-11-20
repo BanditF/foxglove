@@ -132,7 +132,7 @@ pub fn hand_over(s: &dyn Standalone, id: &str) -> bool {
 
 /// The plugin API version this hub speaks to a standalone app, as `major.minor` text (the app's
 /// `initialize` takes a string; the `{}` map belongs to the hub's own router protocol).
-const API: &str = "1.17";
+const API: &str = "1.18";
 
 /// How long the hub waits for the copy to answer and leave: its own hand-back budget is 4 s.
 pub const LIMIT: Duration = Duration::from_secs(8);
@@ -579,7 +579,7 @@ mod tests {
         assert!(!hand_over(&f, "app"));
     }
 
-    const INIT: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"api":"1.17"}}"#;
+    const INIT: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"api":"1.18"}}"#;
     const YES: &str = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
     const NO: &str =
         r#"{"jsonrpc":"2.0","id":1,"error":{"code":5,"message":"only Hideout may ask this"}}"#;

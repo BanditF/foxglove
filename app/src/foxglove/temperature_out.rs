@@ -61,6 +61,61 @@ enum Shows {
     Fallback,
 }
 
+/// What the lights were last told to show: the reading it came from and the colour (`None`
+/// for the fallback). Read by `lights.status` (#1377); a plain copy, nothing here drives the lights.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LastTarget {
+    pub reading: Option<f32>,
+    pub colour: Option<[u8; 3]>,
+}
+
+static LAST: std::sync::Mutex<Option<LastTarget>> = std::sync::Mutex::new(None);
+
+/// The last target change, `None` before the first of a run.
+pub fn last_target() -> Option<LastTarget> {
+    *LAST.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn remember(reading: Option<f32>, to: Shows) {
+    let colour = match (to, reading) {
+        (Shows::Colour(c), Some(_)) => Some(c.0),
+        _ => None,
+    };
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some(LastTarget {
+        reading: reading.filter(|_| colour.is_some()),
+        colour,
+    });
+}
+
+/// The log line for a target change (#1378): `Foxglove: lights: temperature 63 C -> #E8821F
+/// (warm)`. The fallback is `... temperature fallback (no reading)`: a missing reading is never
+/// written as a number, 0 included.
+fn change_line(reading: Option<f32>, to: Shows, look: &TempLook) -> String {
+    match (to, reading) {
+        (Shows::Colour(c), Some(r)) => {
+            let [r8, g8, b8] = c.0;
+            format!(
+                "Foxglove: lights: temperature {:.0} C -> #{r8:02X}{g8:02X}{b8:02X} ({})",
+                r,
+                band(r, look.cool_c, look.hot_c)
+            )
+        }
+        _ => "Foxglove: lights: temperature fallback (no reading)".to_string(),
+    }
+}
+
+/// A word for where a reading sits between the look's ends: cool, mild, warm or hot.
+fn band(reading: f32, cool_c: u16, hot_c: u16) -> &'static str {
+    let span = f32::from(hot_c.saturating_sub(cool_c).max(1));
+    let at = (reading - f32::from(cool_c)) / span;
+    match at {
+        a if a < 0.25 => "cool",
+        a if a < 0.5 => "mild",
+        a if a < 0.75 => "warm",
+        _ => "hot",
+    }
+}
+
 /// One steady colour, as an effect every output already knows: `Breathe` with both colours the
 /// same (the keyboard draws it itself, the room's frames draw it flat).
 pub fn steady(colour: Rgb) -> Effect {
@@ -104,6 +159,11 @@ impl Driver {
         };
         // The first look is shown at once: nothing earlier to rate-limit against.
         d.consider(t);
+        if d.target == Shows::Fallback {
+            // No change from the fallback it starts in, so `take_if_due` said nothing.
+            eprintln!("{}", change_line(None, d.target, &d.look));
+            remember(None, d.target);
+        }
         d
     }
 
@@ -169,6 +229,10 @@ impl Driver {
             self.target = want;
             self.last_change = Some(t);
             self.changed = true;
+            // One line per accepted target change (already rate-limited above), so a check
+            // can read the lamp's target back from foxglove.log (#1378).
+            eprintln!("{}", change_line(self.reading, want, &self.look));
+            remember(self.reading, want);
         }
     }
 
@@ -308,6 +372,22 @@ mod tests {
         assert!(!d.settled(4_000));
         // The keyboard is told the target, not the ease.
         assert_eq!(colour_of(&d.target_effect()), RED);
+    }
+
+    #[test]
+    fn the_log_line_names_the_reading_the_colour_and_a_band_and_never_writes_zero() {
+        let l = look();
+        assert_eq!(
+            change_line(Some(63.2), Shows::Colour(Rgb([0xe8, 0x2d, 0x1f])), &l),
+            "Foxglove: lights: temperature 63 C -> #E82D1F (warm)"
+        );
+        assert!(change_line(Some(30.0), Shows::Colour(BLUE), &l).ends_with("(cool)"));
+        assert!(change_line(Some(95.0), Shows::Colour(RED), &l).ends_with("(hot)"));
+        let none = change_line(None, Shows::Fallback, &l);
+        assert_eq!(none, "Foxglove: lights: temperature fallback (no reading)");
+        assert!(!none.contains(" 0 C"));
+        // A colour with no reading (cannot happen) still never prints a number.
+        assert_eq!(change_line(None, Shows::Colour(BLUE), &l), none);
     }
 
     #[test]

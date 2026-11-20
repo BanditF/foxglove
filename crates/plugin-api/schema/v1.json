@@ -1,5 +1,5 @@
 {
-  "api": "1.17",
+  "api": "1.18",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -1846,6 +1846,99 @@
         "type": "object"
       }
     },
+    "lights.status": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$defs": {
+          "TemperatureStatus": {
+            "description": "Temperature's side of `lights.status`.",
+            "properties": {
+              "fallback": {
+                "description": "The lights show the fallback look (no reading).",
+                "type": "boolean"
+              },
+              "reading_state": {
+                "description": "`ok` (a reading), `waiting`, `missing`, `no-report`, `not-allowed`, `app-off`,\n`app-stopped` or `no-hub`.",
+                "type": "string"
+              },
+              "source": {
+                "description": "The sensor group it follows (`gpu`).",
+                "type": "string"
+              },
+              "target": {
+                "description": "The colour the lights were last told to show (`#RRGGBB`), none while the fallback shows\nor before the first target.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "temp_c": {
+                "description": "The reading in degrees Celsius, only with `ok`; never 0 for a missing one.",
+                "format": "float",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "reading_state",
+              "fallback"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "What `lights.status` answers (API 1.18): the running scene's look and the keyboard's lights in\none reply, for agents that check the lamps without a window. No secrets: only states, the look's\nname, and (Temperature) the reading and the colour the lights were last told to show.",
+        "properties": {
+          "keyboard": {
+            "description": "`lit`, `dark`, `off`, `none` or empty (as `scene.status`).",
+            "type": "string"
+          },
+          "look": {
+            "description": "The running look's kind (`temperature`, `scanline` ...), none when no scene runs.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scene": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`none`, `running`, `paused` or `stopping` (as `scene.status`).",
+            "type": "string"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TemperatureStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present while the Temperature look runs."
+          }
+        },
+        "required": [
+          "state",
+          "keyboard"
+        ],
+        "title": "LightsStatus",
+        "type": "object"
+      }
+    },
     "net.accepted": {
       "kind": "event",
       "params": {
@@ -2526,6 +2619,147 @@
           "lit"
         ],
         "title": "SceneRepainted",
+        "type": "object"
+      }
+    },
+    "scene.start": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "SceneStartLook": {
+            "additionalProperties": false,
+            "description": "The look's own parameters; each is optional; one left out keeps what the user saved for that look (Foxglove's default for another look).",
+            "properties": {
+              "background": {
+                "description": "`night` or `off`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "colour": {
+                "description": "`#RRGGBB`, for the one-colour looks.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "colours": {
+                "description": "Temperature: `palette` or `cool-to-hot`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cool_c": {
+                "description": "Temperature: the cool end in whole degrees C (20 to 100, multiples of 5).",
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 20,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "direction": {
+                "description": "`down`, `up`, `right` or `left`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "hot_c": {
+                "description": "Temperature: the hot end in whole degrees C (20 to 100, multiples of 5, at least 10 above `cool_c`).",
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 20,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "palette": {
+                "description": "One of Foxglove's own palette names (not a wallpaper's).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "description": "Temperature: the sensor group (`gpu`, lower case letters, digits, `_` or `-`, up to 24).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "speed": {
+                "description": "1 to 10.",
+                "format": "uint8",
+                "maximum": 10,
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "width_mm": {
+                "description": "20 to 400.",
+                "format": "uint16",
+                "maximum": 400,
+                "minimum": 20,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`scene.start` (API 1.18): starts a look as the Scenes page's Start does. `look` is the\nkind's name (`scanline`, `sweep`, `ripple`, `breathe`, `gradient`, `drift`, `two-tone`,\n`tide`, `temperature`); `screen-glow` is always refused (only the user starts it, in the app). Unknown\nnames and unknown, out-of-range or inapplicable parameters are refused (code -32602).",
+        "properties": {
+          "look": {
+            "type": "string"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SceneStartLook"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "look"
+        ],
+        "title": "SceneStartParams",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The answer of `scene.start`: the look that was started and the scene's name.",
+        "properties": {
+          "look": {
+            "type": "string"
+          },
+          "scene": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "look"
+        ],
+        "title": "SceneStarted",
         "type": "object"
       }
     },

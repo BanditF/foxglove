@@ -151,6 +151,7 @@ pub mod quit;
 pub mod reassert;
 pub mod reconnect;
 pub mod repaint_trace;
+pub mod scene_api;
 pub mod scene_card;
 pub mod scene_lamps;
 pub mod scene_looks;

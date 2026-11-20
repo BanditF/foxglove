@@ -682,6 +682,23 @@ pub fn start_look(look: Look) {
     }
 }
 
+/// Why `scene.start` (#1377) must not start this look now, in words for the caller; `None` when
+/// the page's own Start would. The page shows the same reasons.
+pub fn refusal(look: &Look) -> Option<String> {
+    if let Some(g) = temperature_gate(look) {
+        return Some(format!("Temperature didn't start: {}", g.words().0));
+    }
+    if !start_allowed(look.kind, glow::allowed()) {
+        return Some("Screen glow needs the user's yes in Foxglove first".into());
+    }
+    None
+}
+
+/// The running scene is the Temperature look.
+pub fn temperature_live() -> bool {
+    TEMP_LIVE.load(Ordering::Relaxed) && super::scene_run::running().is_some()
+}
+
 /// Stops the scene from elsewhere (the Lights page's palette effects, #871), as Stop does.
 pub fn stop_look() {
     stop_by_hand();

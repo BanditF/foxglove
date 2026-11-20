@@ -1010,6 +1010,8 @@ impl Devices for AppDevices {
                 lights_page(&p.device)
             }
             "scene.status" => Ok(json!(scene_status())),
+            "lights.status" => Ok(json!(super::scene_api::lights_status(&scene_status()))),
+            "scene.start" => super::scene_api::start(_params),
             "scene.repaint" => scene_repaint().map(|r| json!(r)).map_err(app_err),
             "scene.stop" => scene_stop().map(|r| json!(r)).map_err(app_err),
             "app.hand_over" => super::hand_over::handle(),
@@ -1914,6 +1916,10 @@ mod parity_tests {
         assert_eq!(need("lights.page"), Some("devices.read"));
         // API 1.10 (#618 batch H): so is what the Scenes page's Presets card lists.
         assert_eq!(need("scenes.page"), Some("devices.read"));
+        // API 1.18 (#1377): reading the lights is a read; starting a look is a lighting write.
+        assert_eq!(need("lights.status"), Some("devices.read"));
+        assert_eq!(need("scene.status"), Some("devices.read"));
+        assert_eq!(need("scene.start"), Some("lighting.write"));
     }
 
     /// #1120 (API 1.15): the Wallpaper Engine lease calls need `wallpaper.control`, which a tool

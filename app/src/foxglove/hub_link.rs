@@ -99,7 +99,7 @@ const GRANT_SENSORS: &str = "facts.read:sensor.*";
 /// The Foxglove API this module serves: the plugin API's own version, so a client built for it
 /// (the CLI, the SDK) is not refused with code 7. A test keeps it, `module.toml` and the crate
 /// constant equal.
-const API: &str = "1.17";
+const API: &str = "1.18";
 /// How long a lost hub is waited for (§7.9).
 const GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -122,6 +122,12 @@ pub const SERVED: &[&str] = &[
     "health.read",
     "lights.page",
     "scenes.page",
+    // #1377: the scene and the lights, readable and startable through the hub. `scene.start`
+    // needs the caller to hold `lighting.write` (the router checks); `scene.repaint` and
+    // `scene.stop` stay with the standalone pipe.
+    "lights.status",
+    "scene.status",
+    "scene.start",
     "overlay.window",
     "overlay.restore",
     "overlay.shown",
