@@ -458,7 +458,14 @@ pub struct Router {
     /// What the user's Allow granted a module this router has no entry for yet (an app adopted
     /// into the running hub whose inventory change the watch hasn't learnt, #1375). Held until
     /// [`Router::add_module`] gives the module its entry, so the Allow is never lost.
-    early_grants: HashMap<String, Vec<String>>,
+    /// Each with the tag of the module build it was given for (version and binding): it applies
+    /// only to an entry the registry shows with the same tag, never to a re-added module.
+    early_grants: HashMap<String, (String, Vec<String>)>,
+    /// How many Allows the router has recorded, and the number of each module's last one.
+    /// The inventory watch notes the count before it reads the file: a read older than a
+    /// module's Allow never narrows that module (the Allow is newer than what the read saw).
+    allow_seq: u64,
+    grant_seq: HashMap<String, u64>,
     /// The `facts:<pattern>` each module's manifest provides (§4.5): what it may register.
     facts_decl: HashMap<String, Vec<String>>,
     /// Method areas the accepted root-signed catalogs assign, with the module id (§6.3, §13.6):
@@ -569,6 +576,8 @@ impl Router {
             methods_decl: HashMap::new(),
             asked_ungranted: HashSet::new(),
             early_grants: HashMap::new(),
+            allow_seq: 0,
+            grant_seq: HashMap::new(),
             facts_decl: HashMap::new(),
             root_areas: Vec::new(),
             secret_store: crate::secrets::default_store(),
@@ -586,14 +595,7 @@ impl Router {
     }
 
     /// Adds or replaces a module the router knows.
-    pub fn add_module(&mut self, mut m: ModuleEntry) {
-        // An Allow that came before the entry: it is the user's, so it joins what the entry
-        // holds (the file's grants as read now).
-        if let Some(early) = self.early_grants.remove(&m.id) {
-            m.granted.extend(early);
-            m.granted.sort();
-            m.granted.dedup();
-        }
+    pub fn add_module(&mut self, m: ModuleEntry) {
         self.modules.insert(m.id.clone(), m);
     }
 
@@ -1021,14 +1023,55 @@ impl Router {
     /// The user's Allow (and the hub's start): sets what module `id` holds. The only way a
     /// module's grants widen while the hub runs (#1178).
     pub fn set_module_grants(&mut self, id: &str, granted: Vec<String>) -> Vec<Out> {
+        self.set_module_grants_for(id, granted, "")
+    }
+
+    /// [`Router::set_module_grants`] for an Allow on the module build `tag` (its version and
+    /// binding in the registry). With no entry yet (adopted into the running hub, #1375) the
+    /// Allow is kept for [`Router::apply_early_grants`]; a second one for the same build joins it.
+    pub fn set_module_grants_for(&mut self, id: &str, granted: Vec<String>, tag: &str) -> Vec<Out> {
+        self.allow_seq += 1;
+        self.grant_seq.insert(id.to_string(), self.allow_seq);
         match self.modules.get_mut(id) {
             Some(e) => e.granted = granted,
-            // Not learnt yet (adopted into the running hub, #1375): kept for its entry.
             None => {
-                self.early_grants.insert(id.to_string(), granted);
+                let mut all = granted;
+                if let Some((t, old)) = self.early_grants.get(id) {
+                    if t == tag {
+                        all.extend(old.iter().cloned());
+                    }
+                }
+                all.sort();
+                all.dedup();
+                self.early_grants
+                    .insert(id.to_string(), (tag.to_string(), all));
             }
         }
         self.revalidate_module_grants()
+    }
+
+    /// The router just learnt module `id` (build `tag`): an Allow kept for it joins what its
+    /// entry holds, if it was given for this very build. Otherwise it is dropped.
+    pub fn apply_early_grants(&mut self, id: &str, tag: &str) -> Vec<Out> {
+        let Some((t, early)) = self.early_grants.remove(id) else {
+            return Vec::new();
+        };
+        if t != tag {
+            log::info!("permissions: {id}: an Allow kept for another build of it was dropped");
+            return Vec::new();
+        }
+        if let Some(e) = self.modules.get_mut(id) {
+            e.granted.extend(early);
+            e.granted.sort();
+            e.granted.dedup();
+        }
+        self.revalidate_module_grants()
+    }
+
+    /// The count of Allows so far: note it before reading `inventory.json`, then narrow with
+    /// [`Router::narrow_module_grants_read_at`].
+    pub fn allow_seq(&self) -> u64 {
+        self.allow_seq
     }
 
     /// Turn off (§6.4): drops `items` (all for `None`) from what `id` holds in memory at once,
@@ -1042,7 +1085,7 @@ impl Router {
                 self.early_grants.remove(id);
             }
             Some(w) => {
-                if let Some(g) = self.early_grants.get_mut(id) {
+                if let Some((_, g)) = self.early_grants.get_mut(id) {
                     g.retain(|x| !w.contains(x));
                 }
             }
@@ -1055,7 +1098,35 @@ impl Router {
     /// hold is ignored (logged) until the user's Allow or the next hub start. A module missing
     /// from `files` lost everything.
     pub fn narrow_module_grants(&mut self, files: &HashMap<String, Vec<String>>) -> Vec<Out> {
+        self.narrow_module_grants_read_at(files, u64::MAX)
+    }
+
+    /// [`Router::narrow_module_grants`] for `files` read when [`Router::allow_seq`] was `seq`:
+    /// a module whose Allow came after that read keeps what it holds (the read is older than
+    /// the Allow; the Allow's own file write brings the next pass). Grants kept for a module
+    /// not learnt yet are narrowed the same way, and go when the file no longer has the module.
+    pub fn narrow_module_grants_read_at(
+        &mut self,
+        files: &HashMap<String, Vec<String>>,
+        seq: u64,
+    ) -> Vec<Out> {
+        let newer = |m: &HashMap<String, u64>, id: &str| m.get(id).is_some_and(|n| *n > seq);
+        self.early_grants.retain(|id, (_, held)| {
+            if newer(&self.grant_seq, id) {
+                return true;
+            }
+            match files.get(id) {
+                Some(file) => {
+                    held.retain(|g| file.contains(g));
+                    !held.is_empty()
+                }
+                None => false,
+            }
+        });
         for (id, e) in self.modules.iter_mut() {
+            if newer(&self.grant_seq, id) {
+                continue;
+            }
             let file = files.get(id).map(Vec::as_slice).unwrap_or(&[]);
             let extra: Vec<&String> = file.iter().filter(|f| !e.granted.contains(f)).collect();
             if !extra.is_empty() && e.registered_version.is_some() {
@@ -1627,6 +1698,7 @@ impl Router {
         }
         self.modules.remove(id);
         self.early_grants.remove(id);
+        self.grant_seq.remove(id);
         self.tokens.remove(id);
         self.faults.remove(id);
         self.actions.remove(id);

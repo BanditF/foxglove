@@ -341,6 +341,9 @@ fn watch_inventory(
             }
             // One read for the supervisor and the page, so the page never lists what the
             // supervisor hasn't seen (#1076). A failed read keeps the page's last list.
+            // Noted before the read: an Allow after this count is newer than what is read below,
+            // so the narrow pass leaves that module alone (#1375).
+            let allow_seq = hub.read(|r| r.allow_seq());
             let mut reg = match hideout_registry::Registry::open_from_env(&at) {
                 Ok(r) => r,
                 Err(e) => {
@@ -376,7 +379,7 @@ fn watch_inventory(
                 .iter()
                 .map(|(k, m)| (k.clone(), m.granted.clone()))
                 .collect();
-            hub.act(|r| r.narrow_module_grants(&files));
+            hub.act(|r| r.narrow_module_grants_read_at(&files, allow_seq));
             // Joined after the start (#1076): the router and the supervisor learn it, so an
             // enabled module starts now; the panel host gets its manifest. Taken from this read,
             // not from the watch's ids: those came from a read a moment earlier, which a write

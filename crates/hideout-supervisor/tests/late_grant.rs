@@ -172,3 +172,45 @@ fn an_allow_that_beats_the_watchs_older_read_is_not_lost() {
     drop(sup);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
+
+#[test]
+fn an_allow_between_the_watchs_read_and_its_narrow_pass_is_kept() {
+    let (home, folder, hub, sup) = running_hub("between");
+    let id = "example.lab.sensors-between";
+    adopt(&home, &folder, id);
+    assert!(sup.learn(id).is_some());
+    // The watch notes the count and reads the file (no grant yet) ...
+    let seq = hub.read(|r| r.allow_seq());
+    let stale = file_grants(&home);
+    // ... the user's Allow lands ... then the watch narrows with what it read.
+    allow(&sup, &home, id);
+    hub.act(|r| r.narrow_module_grants_read_at(&stale, seq));
+    assert!(
+        may_read_sensors(&hub, id, "1.0.0"),
+        "the older read dropped the Allow"
+    );
+    check_survives_the_file(&hub, &home, id);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+#[test]
+fn an_allow_kept_for_a_removed_app_does_not_come_back_with_a_new_one() {
+    let (home, folder, hub, sup) = running_hub("readd");
+    let id = "example.lab.sensors-readd";
+    adopt(&home, &folder, id);
+    let stale = Registry::open_from_env(&home).unwrap();
+    allow(&sup, &home, id);
+    // The app is gone from the file before the router learnt it: the watch's pass drops the
+    // kept Allow.
+    let mut gone = file_grants(&home);
+    gone.remove(id);
+    hub.act(|r| r.narrow_module_grants(&gone));
+    assert!(sup.learn_from(&stale, id).is_some());
+    assert!(
+        hub.read(|r| r.module_grants(id)).is_empty(),
+        "a removed app's Allow came back"
+    );
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
