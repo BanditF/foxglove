@@ -22,6 +22,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// A page in the sidebar. The hub binary supplies them; the shell names none (contract §2.2).
+/// The command palette's empty line.
+pub const EMPTY_PALETTE: &str = "No commands yet. Apps add their actions and pages here.";
+
 pub trait Page {
     /// A stable id, used by the palette and by pop-outs later.
     fn id(&self) -> &str;
@@ -2831,7 +2834,7 @@ impl Hub {
             let matches = self.palette.matches(&entries);
             if matches.is_empty() {
                 let msg = if entries.is_empty() {
-                    "No commands yet. Apps add their actions and pages here."
+                    EMPTY_PALETTE
                 } else {
                     "Nothing matches."
                 };

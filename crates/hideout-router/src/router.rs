@@ -3566,7 +3566,7 @@ impl Router {
             Some(Who::Module { id, .. }) => {
                 self.modules.get(id).map_or(id.clone(), |m| m.name.clone())
             }
-            _ => "The module".into(),
+            _ => "This app".into(),
         }
     }
 

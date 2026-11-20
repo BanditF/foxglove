@@ -24,7 +24,7 @@ You can quit the app at any time and the keyboard keeps typing.
    updates**.
 
 **Hideout (planned, not available yet).** Hideout is a separate app that will run Foxglove and
-other modules. It will install on its own, into `%LOCALAPPDATA%\Programs\Hideout`, next to
+other apps. It will install on its own, into `%LOCALAPPDATA%\Programs\Hideout`, next to
 Foxglove and in either order. Foxglove is not renamed and nothing of yours is moved: its folder,
 settings and Start with Windows shortcut stay as they are, and removing Hideout leaves Foxglove
 working. Until Hideout ships, this section is all you need. Details:
@@ -667,7 +667,7 @@ Windows' **Settings > System > Sound > Volume mixer > Reset** puts every app bac
 | the Hideout hub's settings, bound keys and tile layout | `%LOCALAPPDATA%\Hideout\hideout.toml` |
 | the apps the Hideout hub has seen run | `%LOCALAPPDATA%\Hideout\apps-seen.txt` |
 
-**Hideout and privacy:** Hideout notices when the apps it works with (like OBS or
+**Hideout and privacy:** Hideout notices when other apps that your apps work with (like OBS or
 iCUE) start or quit, so their tiles show up. It keeps a list of those apps on this PC only.
 **Settings → Forget seen apps** clears that list.
 

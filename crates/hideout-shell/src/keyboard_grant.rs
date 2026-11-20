@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn no_state_says_a_forbidden_word() {
         let bad = [
-            "module mode",
+            "module",
             "method",
             "area",
             "router",

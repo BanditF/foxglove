@@ -18,7 +18,7 @@ pub const ICON: &str = "gear";
 pub const PRIVACY: &str = "Privacy";
 pub const ABOUT: &str = "About";
 /// The privacy line (the #1040 review, without examples: the hub names no app, #1087).
-pub const PRIVACY_LINE: &str = "Hideout notices when the apps it works with start or \
+pub const PRIVACY_LINE: &str = "Hideout notices when other apps that your apps work with start or \
 quit, so their tiles show up. It keeps a list of those apps on this PC only.";
 pub const OPEN_LOGS: &str = "Open log folder";
 pub const FORGET: &str = "Forget seen apps";
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(version_line("0.3.0"), "Hideout 0.3.0");
         assert_eq!(
             PRIVACY_LINE,
-            "Hideout notices when the apps it works with start or quit, so their \
+            "Hideout notices when other apps that your apps work with start or quit, so their \
              tiles show up. It keeps a list of those apps on this PC only."
         );
     }

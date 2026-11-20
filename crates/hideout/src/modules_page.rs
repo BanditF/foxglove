@@ -10,7 +10,7 @@
 
 /// The page's id and title, kept apart from egui so they test window-free.
 pub const ID: &str = "hub.modules";
-pub const TITLE: &str = "Apps";
+pub const TITLE: &str = hideout_shell::modules_list::TITLE;
 
 /// Where the page reads facts from (the router's cache); `None` on a hub without a router.
 #[cfg(windows)]

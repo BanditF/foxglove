@@ -1065,6 +1065,9 @@ mod tests {
         ] {
             all.push(not_carried(w, "D:\\out"));
         }
+        for s in crate::bisect::words::every_string() {
+            assert!(!s.to_lowercase().contains("module"), "module in {s:?}");
+        }
         for line in &all {
             // The Apps page's rows and the permission dialog's copy has the same guard in
             // hideout-shell (modules_list.rs, permission_dialog.rs): this crate can't see them.

@@ -84,7 +84,7 @@ pub const REMOVE_ADOPTED: &str =
     "Hideout forgets its permissions and stops it. Its own settings and files stay. You can add it again later.";
 /// What Remove does to a module Hideout installed itself: its copy in Hideout's own
 /// `modules` folder goes too; its settings stay.
-pub const REMOVE_OWN: &str = "Hideout forgets its permissions, stops it and deletes its copy in Hideout's own folder. Its settings stay. You can add it again later.";
+pub const REMOVE_OWN: &str = "Hideout forgets its permissions, stops it and deletes the copy Hideout installed. Its settings stay. You can add it again later.";
 /// The confirm's buttons.
 pub const REMOVE: &str = "Remove";
 pub const CANCEL: &str = "Cancel";
@@ -533,6 +533,8 @@ pub fn order(rows: &mut [Row]) {
 }
 
 /// The page's empty state.
+/// The page's name: the heading, the sidebar label, the window title and the palette entry.
+pub const TITLE: &str = "Apps";
 pub const EMPTY_HEADING: &str = "No apps yet";
 pub const EMPTY_BODY: &str = "Apps add pages, tray tiles, status items and commands to \
 Hideout. Installed apps will be listed here, with their state and version.";
@@ -673,7 +675,7 @@ pub fn page_ui_with_head(
 ) -> Option<Click> {
     use egui::RichText;
     let lock_line = hideout_supervisor::bisect::words::LOCKED;
-    ui.label(RichText::new("Apps").size(24.0).strong().color(c(t.text)));
+    ui.label(RichText::new(TITLE).size(24.0).strong().color(c(t.text)));
     ui.add_space(20.0);
     head(ui);
     let mut click = None;
@@ -1679,6 +1681,7 @@ mod tests {
             EMPTY_BODY.to_string(),
             MORE.to_string(),
             crate::settings_view::PRIVACY_LINE.to_string(),
+            TITLE.to_string(),
         ];
         for line in &all {
             assert!(

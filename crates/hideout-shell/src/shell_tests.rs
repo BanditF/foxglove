@@ -5598,3 +5598,14 @@ fn renders_the_remove_confirm_for_review() {
         save_png(file, width, h, rgba);
     }
 }
+
+#[test]
+fn the_empty_lines_say_app_never_module() {
+    for line in [EMPTY_PALETTE, hideout_panels::tray::EMPTY_TILES_LINE] {
+        assert!(!line.to_lowercase().contains("module"), "{line:?}");
+    }
+    assert_eq!(
+        EMPTY_PALETTE,
+        "No commands yet. Apps add their actions and pages here."
+    );
+}

@@ -812,7 +812,10 @@ mod tests {
         );
         assert_eq!(c, NEEDS_OK, "{t}");
         assert!(
-            t.contains("Queued") && t.contains("Nothing is allowed yet"),
+            t.contains("Queued")
+                && t.contains("Nothing is allowed yet")
+                && t.contains("on the Apps page")
+                && !t.to_lowercase().contains("module"),
             "{t}"
         );
         // Nothing was written and the router did not widen.
