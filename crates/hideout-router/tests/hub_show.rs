@@ -107,6 +107,18 @@ fn a_verified_same_user_peer_brings_a_modules_page_forward() {
 }
 
 #[test]
+fn the_hubs_apps_page_can_be_shown_and_no_other_hub_name() {
+    let mut r = router();
+    let c = tool(&mut r, Some(4242), None, &[]);
+    let out = call(&mut r, c, 1, "hub.show", json!({"id": "hub.modules"}));
+    assert_eq!(sends(&out, c)[0]["result"], json!({}));
+    assert_eq!(shows(&out), ["hub.modules"]);
+    let out = call(&mut r, c, 2, "hub.show", json!({"id": "hub.settings"}));
+    assert_eq!(error_code(&out, c), -32602, "{out:?}");
+    assert!(shows(&out).is_empty());
+}
+
+#[test]
 fn a_peer_whose_process_is_unknown_is_refused() {
     let mut r = router();
     let c = tool(&mut r, None, None, &[]);

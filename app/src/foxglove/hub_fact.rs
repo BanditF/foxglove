@@ -150,14 +150,18 @@ pub fn hosting<C: Connect>(c: Arc<C>, limit: Duration) -> Hosting {
     }
 }
 
+/// The hub's own Apps page (its page id is `hub.modules`; `hub.show` takes it as well as a
+/// module id).
+pub const APPS_PAGE: &str = "hub.modules";
+
 /// Asks the hub to show Foxglove's page. True when it said yes; an older hub (-32601) or any
 /// failure is false, and the caller exits quietly anyway.
 pub fn show<C: Connect>(c: Arc<C>, limit: Duration) -> bool {
     within(c, Ask::Show(MODULE), limit).is_some()
 }
 
-/// Asks the hub to show another module's page (the PC sensors app's, from Temperature's "Open
-/// Apps page"). Same answer rule as [`show`].
+/// Asks the hub to show another page: a module's, or [`APPS_PAGE`] (Temperature's "Open Apps
+/// page"). Same answer rule as [`show`].
 pub fn show_module<C: Connect>(c: Arc<C>, id: &'static str, limit: Duration) -> bool {
     within(c, Ask::Show(id), limit).is_some()
 }
@@ -270,6 +274,15 @@ mod tests {
         assert_eq!(lines[0]["params"]["permissions"], json!([]));
         assert_eq!(lines[1]["method"], "hub.show");
         assert_eq!(lines[1]["params"], json!({"id": "foxglove"}));
+    }
+
+    #[test]
+    fn open_apps_page_asks_the_hub_for_its_apps_page() {
+        let (m, wrote) = mock(Ok(&replies(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#)));
+        assert!(show_module(m, APPS_PAGE, T));
+        let lines = sent(&wrote);
+        assert_eq!(lines[1]["method"], "hub.show");
+        assert_eq!(lines[1]["params"], json!({"id": "hub.modules"}));
     }
 
     #[test]

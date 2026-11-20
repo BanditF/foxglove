@@ -13,6 +13,7 @@
 use egui::{Align2, Color32, RichText, Sense, Stroke};
 use foxglove_scene::Rgb;
 
+use super::announce;
 use super::scene_looks::Look;
 use super::scenes_ui::{strip, Tone};
 use super::temperature::{self as temp, Colours};
@@ -23,7 +24,7 @@ use super::theme;
 pub const NOT_RUNNING: &str = "Not running. The scale shows the last reading once it starts.";
 /// Start refused: the PC sensors app is off or not installed.
 pub const NEEDS_APP: &str =
-    "Temperature needs the PC sensors app. Turn it on on Hideout's Apps page.";
+    "Temperature needs the PC sensors app. Turn it on in Hideout's Apps page.";
 /// Start refused: Foxglove has no permission to read the PC's readings.
 pub const NOT_ALLOWED: &str =
     "Foxglove isn't allowed to see your PC's readings. Allow it on Hideout's Apps page.";
@@ -248,6 +249,99 @@ pub fn back_label() -> String {
     )
 }
 
+/// What a screen reader hears after a stepper moved `end`: its name and new value, in words.
+pub fn step_announcement(end: End, cool: u16, hot: u16) -> String {
+    match end {
+        End::Cool => format!("Cool at {cool} degrees Celsius"),
+        End::Hot => format!("Hot at {hot} degrees Celsius"),
+    }
+}
+
+/// What a screen reader hears after Back to the defaults: both ends.
+pub fn back_announcement(cool: u16, hot: u16) -> String {
+    format!("Back to usual: cool at {cool}, hot at {hot} degrees Celsius")
+}
+
+/// What the card remembers between frames to say a lost or returned reading once.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Heard {
+    /// The last status seen while running.
+    seen: Option<Status>,
+    /// A reading was lost (missing or the sensors app stopped) and has not come back yet.
+    lost: bool,
+}
+
+/// The least time between two status announcements, in seconds (the plan, section 7).
+pub const SAY_GAP_S: f64 = 5.0;
+/// "Temperature reading missing".
+pub const SAID_MISSING: &str = "Temperature reading missing";
+/// "Temperature reading back".
+pub const SAID_BACK: &str = "Temperature reading back";
+/// "PC sensors app stopped".
+pub const SAID_STOPPED: &str = "PC sensors app stopped";
+
+impl Heard {
+    /// What to say now that the status is `now`: only a change of state, never a number.
+    /// Returns the new memory and the words (if any).
+    pub fn next(self, now: Status) -> (Heard, Option<&'static str>) {
+        let was = |f: fn(&Status) -> bool| self.seen.as_ref().is_some_and(f);
+        let mut h = Heard {
+            seen: Some(now),
+            ..self
+        };
+        let said = match now {
+            Status::Missing if !was(|s| matches!(s, Status::Missing)) => {
+                h.lost = true;
+                Some(SAID_MISSING)
+            }
+            Status::AppStopped if !was(|s| matches!(s, Status::AppStopped)) => {
+                h.lost = true;
+                Some(SAID_STOPPED)
+            }
+            Status::Working { .. } if self.lost => {
+                h.lost = false;
+                Some(SAID_BACK)
+            }
+            _ => None,
+        };
+        (h, said)
+    }
+}
+
+/// Says a reading lost or back through the live region, at most once per [`SAY_GAP_S`]. A change
+/// held back by the limit is said when the time is up. Not running: forgets.
+fn announce_status(ui: &egui::Ui, live: bool, status: Status) {
+    let ctx = ui.ctx();
+    let key = region_id().with("heard");
+    if !live {
+        ctx.data_mut(|d| d.remove::<(Heard, f64)>(key));
+        return;
+    }
+    let (mem, at): (Heard, f64) = ctx
+        .data(|d| d.get_temp::<(Heard, f64)>(key))
+        .unwrap_or((Heard::default(), f64::NEG_INFINITY));
+    let (next, said) = mem.next(status);
+    let now = ctx.input(|i| i.time);
+    match said {
+        Some(_) if now - at < SAY_GAP_S => {
+            // Too soon: keep the old memory so a later frame says it, and wake then.
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(SAY_GAP_S - (now - at)));
+        }
+        Some(words) => {
+            announce::say(ctx, region_id(), words);
+            ctx.data_mut(|d| d.insert_temp(key, (next, now)));
+        }
+        None => {
+            ctx.data_mut(|d| d.insert_temp(key, (next, at)));
+        }
+    }
+}
+
+/// The live region of this card (see [`announce`]).
+fn region_id() -> egui::Id {
+    egui::Id::new("temperature-card-announce")
+}
+
 /// Whether the ends were moved from the defaults.
 pub fn moved(look: &Look) -> bool {
     (look.cool_c, look.hot_c) != (temp::DEFAULT_COOL_C, temp::DEFAULT_HOT_C)
@@ -284,10 +378,34 @@ pub fn head(ui: &mut egui::Ui, look: &Look, set: &mut impl FnMut(Look, bool)) {
 }
 
 /// One end's stepper: its name, a minus, the value, a plus. -1, 1 or 0 for what was pressed.
-fn stepper(ui: &mut egui::Ui, name: &str, value: u16, (down, up): (bool, bool)) -> i8 {
+///
+/// `gap` is this end when the ends are as close as they may be: the button that moves toward the
+/// other end then says why it stopped (hover and screen reader).
+fn stepper(
+    ui: &mut egui::Ui,
+    name: &str,
+    value: u16,
+    (down, up): (bool, bool),
+    gap: Option<End>,
+) -> i8 {
     let mut pressed = 0;
     ui.label(name);
+    let end = if name == "Cool at" {
+        End::Cool
+    } else {
+        End::Hot
+    };
+    let why = |ui: &egui::Ui, r: egui::Response, stopped: bool| {
+        if stopped {
+            ui.ctx()
+                .accesskit_node_builder(r.id, |n| n.set_description(GAP_HINT));
+            r.on_disabled_hover_text(GAP_HINT)
+        } else {
+            r
+        }
+    };
     let minus = ui.add_enabled(down, egui::Button::new("−"));
+    let minus = why(ui, minus, !down && gap == Some(end) && end == End::Hot);
     minus.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
@@ -298,7 +416,8 @@ fn stepper(ui: &mut egui::Ui, name: &str, value: u16, (down, up): (bool, bool)) 
     if minus.clicked() {
         pressed = -1;
     }
-    let v = ui.label(RichText::new(value.to_string()).font(theme::mono(14.0)));
+    // The unit is part of the value's own text, so a screen reader finds no stray "°C" item.
+    let v = ui.label(RichText::new(format!("{value}\u{a0}°C")).font(theme::mono(14.0)));
     v.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Label,
@@ -306,8 +425,8 @@ fn stepper(ui: &mut egui::Ui, name: &str, value: u16, (down, up): (bool, bool)) 
             format!("{name}, {value} degrees Celsius"),
         )
     });
-    ui.label("°C");
     let plus = ui.add_enabled(up, egui::Button::new("+"));
+    let plus = why(ui, plus, !up && gap == Some(end) && end == End::Cool);
     plus.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
@@ -359,14 +478,18 @@ pub fn tail(
     let p = theme::palette(ui);
     let (cool, hot) = (look.cool_c, look.hot_c);
     let mut asked = Asked::default();
+    announce_status(ui, running && t.live, t.status);
+    announce::region(ui, region_id());
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         for (end, name) in [(End::Cool, "Cool at"), (End::Hot, "Hot at")] {
             let value = if end == End::Cool { cool } else { hot };
-            let d = stepper(ui, name, value, can_step(end, cool, hot));
+            let gap = at_gap(cool, hot).then_some(end);
+            let d = stepper(ui, name, value, can_step(end, cool, hot), gap);
             if d != 0 {
                 let (c, h) = step(end, d > 0, cool, hot);
+                announce::say(ui.ctx(), region_id(), step_announcement(end, c, h));
                 set(
                     Look {
                         cool_c: c,
@@ -388,6 +511,11 @@ pub fn tail(
             .on_hover_text("Cool at and Hot at go back to their usual ends")
             .clicked()
     {
+        announce::say(
+            ui.ctx(),
+            region_id(),
+            back_announcement(temp::DEFAULT_COOL_C, temp::DEFAULT_HOT_C),
+        );
         set(
             Look {
                 cool_c: temp::DEFAULT_COOL_C,
@@ -416,7 +544,10 @@ pub fn tail(
         Tone::Plain => p.text,
         Tone::Muted => p.muted,
     };
-    ui.add(egui::Label::new(RichText::new(line).color(colour)).wrap());
+    // With a reading the status line and the scale already say it: the line is for the rest.
+    if !(live && reading.is_some()) {
+        ui.add(egui::Label::new(RichText::new(line).color(colour)).wrap());
+    }
     let opens = if live {
         matches!(t.status, Status::AppOff | Status::NotAllowed)
     } else {
@@ -426,6 +557,21 @@ pub fn tail(
         asked.open_apps = true;
     }
     asked
+}
+
+/// The scale's name for a screen reader: its ends and what the marker says now, in words.
+pub fn scale_name(look: &Look, marker: &str) -> String {
+    let now = marker.replace("\u{a0}°C", " degrees Celsius");
+    format!(
+        "Colour scale from {} to {} degrees Celsius; now {}",
+        look.cool_c,
+        look.hot_c,
+        if now == NO_READING {
+            "no reading".to_string()
+        } else {
+            now
+        }
+    )
 }
 
 /// The still ramp of the chosen colours with its ends written under it and a marker at the
@@ -440,14 +586,7 @@ fn scale(ui: &mut egui::Ui, look: &Look, reading: Option<f32>, marker: &str) {
         Sense::hover(),
     );
     resp.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Label,
-            true,
-            format!(
-                "Colour scale from {} to {} degrees Celsius",
-                look.cool_c, look.hot_c
-            ),
-        )
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, scale_name(look, marker))
     });
     let painter = ui.painter();
     let bar_rect = egui::Rect::from_min_size(
@@ -653,7 +792,7 @@ mod tests {
         assert_eq!(
             idle(hosted(Status::AppOff)),
             (
-                "Temperature needs the PC sensors app. Turn it on on Hideout's Apps page.".into(),
+                "Temperature needs the PC sensors app. Turn it on in Hideout's Apps page.".into(),
                 Tone::Warn
             )
         );
@@ -788,5 +927,186 @@ mod tests {
             cool_c: 45,
             ..look()
         }));
+    }
+
+    #[test]
+    fn a_step_is_said_with_its_value_and_unit_in_a_live_region() {
+        super::super::store::test_config_dir();
+        assert_eq!(
+            step_announcement(End::Cool, 45, 80),
+            "Cool at 45 degrees Celsius"
+        );
+        assert_eq!(
+            step_announcement(End::Hot, 40, 75),
+            "Hot at 75 degrees Celsius"
+        );
+        assert_eq!(
+            back_announcement(40, 80),
+            "Back to usual: cool at 40, hot at 80 degrees Celsius"
+        );
+        // Drawn: the region is a polite node named by the last thing said; with nothing said
+        // yet it has no words (and never a number).
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let frame = |ctx: &egui::Context| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                announce::region(ui, region_id());
+            });
+            out.textures_delta.clear();
+            out.platform_output.accesskit_update.expect("a tree")
+        };
+        let live = |u: &egui::accesskit::TreeUpdate| -> Vec<String> {
+            u.nodes
+                .iter()
+                .map(|(_, n)| n)
+                .filter(|n| n.live() == Some(egui::accesskit::Live::Polite))
+                .map(|n| n.label().unwrap_or_default().to_string())
+                .collect()
+        };
+        assert_eq!(live(&frame(&ctx)), vec![String::new()]);
+        announce::say(&ctx, region_id(), step_announcement(End::Hot, 40, 75));
+        assert_eq!(
+            live(&frame(&ctx)),
+            vec!["Hot at 75 degrees Celsius".to_string()]
+        );
+        // The words are plain: no reading, so nothing that could say 0.
+        for t in [
+            step_announcement(End::Cool, 20, 80),
+            back_announcement(40, 80),
+        ] {
+            assert!(t.ends_with("degrees Celsius") && !t.contains('°'), "{t}");
+        }
+    }
+
+    fn tree_of(
+        ctx: &egui::Context,
+        mut add: impl FnMut(&mut egui::Ui),
+    ) -> Vec<egui::accesskit::Node> {
+        let mut fonts = egui::FontDefinitions::default();
+        theme::add_fonts(&mut fonts);
+        ctx.set_fonts(fonts);
+        let mut out = ctx.run_ui(egui::RawInput::default(), &mut add);
+        out.textures_delta.clear();
+        out.platform_output
+            .accesskit_update
+            .expect("a tree")
+            .nodes
+            .into_iter()
+            .map(|(_, n)| n)
+            .collect()
+    }
+
+    #[test]
+    fn a_lost_reading_and_its_return_are_said_once_and_never_as_a_number() {
+        let work = Status::Working {
+            temp_c: 64.0,
+            game: false,
+        };
+        let mut h = Heard::default();
+        let mut said = Vec::new();
+        for s in [
+            Status::Reading,
+            work,
+            work,
+            Status::Missing,
+            Status::Missing,
+            Status::Reading,
+            work,
+            work,
+            Status::AppStopped,
+            Status::AppStopped,
+            work,
+        ] {
+            let (n, w) = h.next(s);
+            h = n;
+            said.extend(w);
+        }
+        assert_eq!(said, [SAID_MISSING, SAID_BACK, SAID_STOPPED, SAID_BACK]);
+        for w in said {
+            assert!(!w.chars().any(|c| c.is_ascii_digit()), "{w}");
+        }
+        // A start that never had a reading has nothing to say.
+        assert_eq!(Heard::default().next(Status::NoReport).1, None);
+        assert_eq!(Heard::default().next(work).1, None);
+    }
+
+    #[test]
+    fn status_changes_reach_the_live_region_at_most_once_per_five_seconds() {
+        super::super::store::test_config_dir();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let at = |t: f64| egui::RawInput {
+            time: Some(t),
+            ..Default::default()
+        };
+        let work = Status::Working {
+            temp_c: 64.0,
+            game: false,
+        };
+        let frame = |t: f64, st: Status| {
+            let mut out = ctx.run_ui(at(t), |ui| announce_status(ui, true, st));
+            out.textures_delta.clear();
+            announce::said(&ctx, region_id())
+        };
+        assert_eq!(frame(0.0, work), None);
+        assert_eq!(frame(1.0, Status::Missing).as_deref(), Some(SAID_MISSING));
+        // Back at 2 s is held until 6 s.
+        assert_eq!(frame(2.0, work).as_deref(), Some(SAID_MISSING));
+        assert_eq!(frame(4.0, work).as_deref(), Some(SAID_MISSING));
+        assert_eq!(frame(6.5, work).as_deref(), Some(SAID_BACK));
+    }
+
+    #[test]
+    fn the_scale_is_named_with_what_the_marker_says() {
+        let l = look();
+        assert_eq!(
+            scale_name(&l, "64\u{a0}°C, warm"),
+            "Colour scale from 40 to 80 degrees Celsius; now 64 degrees Celsius, warm"
+        );
+        assert_eq!(
+            scale_name(&l, NO_READING),
+            "Colour scale from 40 to 80 degrees Celsius; now no reading"
+        );
+        assert!(!scale_name(&l, NO_READING).contains(" 0 "));
+    }
+
+    #[test]
+    fn a_stepper_has_no_stray_unit_item_and_the_gap_is_said_on_the_stopped_button() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        // Cool 70, hot 80: Cool's plus and Hot's minus are stopped by the gap.
+        let nodes = tree_of(&ctx, |ui| {
+            ui.horizontal(|ui| {
+                stepper(
+                    ui,
+                    "Cool at",
+                    70,
+                    can_step(End::Cool, 70, 80),
+                    Some(End::Cool),
+                );
+                stepper(ui, "Hot at", 80, can_step(End::Hot, 70, 80), Some(End::Hot));
+            });
+        });
+        let labels: Vec<&str> = nodes
+            .iter()
+            .flat_map(|n| [n.label(), n.value()])
+            .flatten()
+            .collect();
+        assert!(!labels.contains(&"°C"), "{labels:?}");
+        assert!(
+            labels.contains(&"Cool at, 70 degrees Celsius"),
+            "{labels:?}"
+        );
+        let stopped: Vec<&egui::accesskit::Node> = nodes
+            .iter()
+            .filter(|n| n.description() == Some(GAP_HINT))
+            .collect();
+        assert_eq!(stopped.len(), 2);
+        assert!(stopped.iter().all(|n| n.is_disabled()));
+        // Away from the gap nothing carries the hint.
+        let nodes = tree_of(&ctx, |ui| {
+            stepper(ui, "Cool at", 40, can_step(End::Cool, 40, 80), None);
+        });
+        assert!(nodes.iter().all(|n| n.description().is_none()));
     }
 }

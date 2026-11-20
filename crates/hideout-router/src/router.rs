@@ -361,6 +361,10 @@ struct Lease {
     method: String,
 }
 
+/// The hub's own Apps page: `hub.show` takes it as well as a module id (it is the page that
+/// turns apps on and holds their grants; the shell opens it like a module page).
+const HUB_APPS_PAGE: &str = "hub.modules";
+
 /// The least time between two `hub.show` calls that take effect (v1.19), hub-wide.
 pub const SHOW_GAP: Duration = Duration::from_secs(2);
 
@@ -2110,7 +2114,7 @@ impl Router {
                 Some("id is a module id"),
             );
         };
-        if !self.modules.contains_key(&module) {
+        if !self.modules.contains_key(&module) && module != HUB_APPS_PAGE {
             return error(
                 id,
                 code::INVALID_PARAMS,

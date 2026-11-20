@@ -37,7 +37,6 @@ pub const DEFAULT_COOL_C: u16 = 40;
 pub const DEFAULT_HOT_C: u16 = 80;
 /// What the two ends may be set to, in steps of [`STEP_C`], with [`MIN_GAP_C`] between them.
 pub const RANGE_C: RangeInclusive<u16> = 20..=100;
-#[allow(dead_code)] // the settings page (slice 3)
 pub const STEP_C: u16 = 5;
 pub const MIN_GAP_C: u16 = 10;
 /// The colour eases to a new reading over this long, so a one-second reading step never
@@ -78,7 +77,7 @@ pub const COOL_TO_HOT: [[u8; 3]; 4] = [
 
 /// The fallback's colour with Cool to hot: a neutral warm white, so it is neither "cold" nor
 /// "hot".
-const FALLBACK_NEUTRAL: [u8; 3] = [0xff, 0xd6, 0xaa];
+pub const FALLBACK_NEUTRAL: [u8; 3] = [0xff, 0xd6, 0xaa];
 
 /// The ends within their ranges and [`MIN_GAP_C`] apart (a hand-edited file may hold anything).
 /// Cool moves first, then hot clears it.

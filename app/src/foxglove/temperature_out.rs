@@ -179,10 +179,11 @@ impl Driver {
         }
     }
 
-    /// The fallback's colour: steady at half brightness with animations off.
+    /// The fallback's colour: with animations off a steady neutral warm white, a colour that is
+    /// on no ramp, so it never looks like a real "warm" reading.
     fn fallback_colour(&self) -> Rgb {
         if self.look.calm {
-            self.look.fallback.mix(Rgb([0, 0, 0]), 0.5)
+            Rgb(super::temperature::FALLBACK_NEUTRAL)
         } else {
             self.look.fallback
         }
@@ -354,7 +355,12 @@ mod tests {
         };
         let mut d = Driver::new(calm.clone(), None, false, 0);
         let f = colour_of(&d.effect_at(0));
-        assert_eq!(f, calm.fallback.mix(Rgb([0, 0, 0]), 0.5));
+        assert_eq!(f, Rgb(super::super::temperature::FALLBACK_NEUTRAL));
+        assert_ne!(
+            f,
+            calm.fallback.mix(Rgb([0, 0, 0]), 0.5),
+            "not a colour on the ramp"
+        );
         assert!(d.settled(0), "a steady fallback is still");
         d.set_reading(Some(80.0), false, 1_000);
         assert_eq!(colour_of(&d.effect_at(1_000)), RED, "one step");
