@@ -20,6 +20,51 @@ pub trait Sink {
     fn withdraw(&mut self, key: &str);
 }
 
+/// A sink that refuses any key outside [`NAMESPACE`]: whatever sits behind it can't publish
+/// anything else, whatever the caller asks.
+pub struct GuardedSink<K: Sink> {
+    inner: K,
+    refused: u32,
+}
+
+impl<K: Sink> GuardedSink<K> {
+    pub fn new(inner: K) -> Self {
+        GuardedSink { inner, refused: 0 }
+    }
+
+    /// How many writes or withdrawals were refused.
+    pub fn refused(&self) -> u32 {
+        self.refused
+    }
+
+    pub fn inner(&self) -> &K {
+        &self.inner
+    }
+
+    fn allowed(&mut self, key: &str) -> bool {
+        let ok = key
+            .strip_prefix(NAMESPACE)
+            .is_some_and(|rest| rest.starts_with('.'));
+        if !ok {
+            self.refused += 1;
+        }
+        ok
+    }
+}
+
+impl<K: Sink> Sink for GuardedSink<K> {
+    fn set(&mut self, key: &str, value: ValueOut) {
+        if self.allowed(key) {
+            self.inner.set(key, value);
+        }
+    }
+    fn withdraw(&mut self, key: &str) {
+        if self.allowed(key) {
+            self.inner.withdraw(key);
+        }
+    }
+}
+
 /// Makes a source when sampling starts; the source is dropped when it stops.
 pub type SourceFactory = Box<dyn FnMut() -> Box<dyn Source>>;
 
@@ -27,8 +72,8 @@ pub type SourceFactory = Box<dyn FnMut() -> Box<dyn Source>>;
 pub struct Config {
     /// Time between reads (1 s).
     pub interval: Duration,
-    /// While game mode is on: `Some(d)` reads every `d`; `None` stops sampling and withdraws
-    /// every value (the default: a game gets none of this module's work).
+    /// While game mode is on: `Some(d)` reads every `d` and the last values stay published (the
+    /// default, 10 s); `None` stops sampling and withdraws every value.
     pub game_interval: Option<Duration>,
 }
 
@@ -36,7 +81,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             interval: Duration::from_secs(1),
-            game_interval: None,
+            game_interval: Some(Duration::from_secs(10)),
         }
     }
 }

@@ -323,10 +323,10 @@ description = "Puts the temperature on the left screen."
   - **Scene:** its name goes on the panel under the symbol, up to 15 characters.
   - **Facts:** `broadcast.connected`, `broadcast.streaming`, `broadcast.recording`, `broadcast.paused`, `broadcast.scene`.
 - **Sensors (`crates/sensors`, read-only; the plugin and host wiring come next):**
-  - **Facts:** `sensor.cpu.load_pct`, `sensor.gpu.load_pct`, `sensor.ram.used_pct` (whole percent, 0-100), `sensor.gpu.temp_c` (degrees C), `sensor.gpu.clock_mhz` (graphics clock, MHz), `sensor.gpu.power_w` (watts), `sensor.gpu.fan_rpm` (RPM), and `sensor.cpu.state`, `sensor.gpu.state`, `sensor.ram.state` (`ok`, `unavailable` or `unknown`). There is no CPU temperature.
+  - **Facts:** `sensor.cpu.load_pct`, `sensor.gpu.load_pct`, `sensor.ram.used_pct` (whole percent, 0-100), `sensor.gpu.temp_c` (degrees C), `sensor.gpu.clock_mhz` (graphics clock, MHz), `sensor.gpu.power_w` (watts), `sensor.gpu.fan_rpm` (RPM), `sensor.gpu.fan_pct` (the fan's duty, whole percent; a percent is never published as RPM), and `sensor.cpu.state`, `sensor.gpu.state`, `sensor.ram.state` (`ok`, `unavailable` or `unknown`). There is no CPU temperature.
   - **Sources:** load and memory from Windows' PDH counters (the info screen's own sampler, now shared); GPU temperature, clock, power and fan from NVML, loaded at run time from System32 (`nvml.dll`).
   - **Unavailable:** a value that can't be read (no NVIDIA driver, no GPU, the load denied in the sandbox, no RPM call in the driver) is absent and its group's `state` is `unavailable`. It is never 0.
-  - **Idle:** nothing is sampled, no timer exists and no fact is published until something subscribes to `sensor.*`. Sampling is 1 Hz and stops when the last subscriber leaves, and stops while game mode is on (`state` goes `unknown`, values are withdrawn).
+  - **Idle:** nothing is sampled, no timer exists and no fact is published until something subscribes to `sensor.*`. Sampling is 1 Hz and stops when the last subscriber leaves, and slows to one read every 10 s while game mode is on (it does not stop: the last values stay published). A group's `state` is `ok` while any of its values is present.
   - **Permission:** `facts.write:sensor.*` only. No devices, no key events, no control.
 - **Pomodoro (`crates/plugin-focus-timer`, #209):**
   - **Cycle:** focus 25 min, rest 5 min, and a long rest of 15 min every 4 rounds.

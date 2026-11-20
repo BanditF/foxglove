@@ -14,3 +14,6 @@ windows = { version = "0.62", features = [
     # nvml.dll is loaded at run time, never linked.
     "Win32_System_LibraryLoader",
 ] }
+
+[dev-dependencies]
+hideout-contract = { path = "../hideout-contract" }
