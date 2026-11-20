@@ -6,13 +6,17 @@ use std::path::Path;
 use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-    GetNamedSecurityInfoW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
+    GetNamedSecurityInfoW, GetSecurityInfo, SetNamedSecurityInfoW, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
     GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
     TokenUser, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
     PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED, TOKEN_QUERY,
     TOKEN_USER,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -388,22 +392,73 @@ pub struct Dacl {
     pub aces: Vec<Ace>,
 }
 
+/// Opens `path` itself for reading its security (a link or placeholder is not followed).
+fn open_no_follow(path: &Path) -> io::Result<HANDLE> {
+    let p = wide_path(path);
+    // READ_CONTROL = 0x20000.
+    let h = unsafe {
+        CreateFileW(
+            p.as_ptr(),
+            0x2_0000,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if h as isize == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(h)
+}
+
+/// [`dacl`] of the entry itself: a junction, symlink or placeholder is read, not followed.
+pub fn dacl_no_follow(path: &Path) -> io::Result<Dacl> {
+    dacl_with(path, true)
+}
+
+/// [`owner`] of the entry itself (not followed).
+pub fn owner_no_follow(path: &Path) -> io::Result<String> {
+    owner_with(path, true)
+}
+
 /// Reads the DACL of a file or folder. A missing (null) DACL, which grants everyone, is an error.
 pub fn dacl(path: &Path) -> io::Result<Dacl> {
+    dacl_with(path, false)
+}
+
+fn dacl_with(path: &Path, no_follow: bool) -> io::Result<Dacl> {
     let p = wide_path(path);
     unsafe {
         let mut acl: *mut ACL = std::ptr::null_mut();
         let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        let rc = GetNamedSecurityInfoW(
-            p.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut acl,
-            std::ptr::null_mut(),
-            &mut sd,
-        );
+        let rc = if no_follow {
+            let h = open_no_follow(path)?;
+            let rc = GetSecurityInfo(
+                h,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut acl,
+                std::ptr::null_mut(),
+                &mut sd,
+            );
+            CloseHandle(h);
+            rc
+        } else {
+            GetNamedSecurityInfoW(
+                p.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut acl,
+                std::ptr::null_mut(),
+                &mut sd,
+            )
+        };
         if rc != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(rc as i32));
         }
@@ -451,20 +506,40 @@ pub fn dacl(path: &Path) -> io::Result<Dacl> {
 
 /// The owner of a file or folder, as a SID string.
 pub fn owner(path: &Path) -> io::Result<String> {
+    owner_with(path, false)
+}
+
+fn owner_with(path: &Path, no_follow: bool) -> io::Result<String> {
     let p = wide_path(path);
     unsafe {
         let mut owner: *mut core::ffi::c_void = std::ptr::null_mut();
         let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        let rc = GetNamedSecurityInfoW(
-            p.as_ptr(),
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION,
-            &mut owner,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut sd,
-        );
+        let rc = if no_follow {
+            let h = open_no_follow(path)?;
+            let rc = GetSecurityInfo(
+                h,
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut sd,
+            );
+            CloseHandle(h);
+            rc
+        } else {
+            GetNamedSecurityInfoW(
+                p.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut sd,
+            )
+        };
         if rc != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(rc as i32));
         }

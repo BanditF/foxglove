@@ -71,10 +71,25 @@ enum Where {
     Root,
 }
 
-#[cfg(windows)]
 fn writable_by_others(path: &std::path::Path, mask: u32, at: Where, me: &str) -> bool {
+    writable_by_others_with(path, mask, at, me, false)
+}
+
+/// With `no_follow` the entry's own security is read: a link or placeholder is not followed.
+#[cfg(windows)]
+fn writable_by_others_with(
+    path: &std::path::Path,
+    mask: u32,
+    at: Where,
+    me: &str,
+    no_follow: bool,
+) -> bool {
     // A DACL or owner that can't be read is not known to be safe.
-    let Ok(d) = hideout_acl::dacl(path) else {
+    let Ok(d) = (if no_follow {
+        hideout_acl::dacl_no_follow(path)
+    } else {
+        hideout_acl::dacl(path)
+    }) else {
         return true;
     };
     let acl_open = d.aces.iter().any(|a| {
@@ -93,11 +108,16 @@ fn writable_by_others(path: &std::path::Path, mask: u32, at: Where, me: &str) ->
         return true;
     }
     // The owner can rewrite the DACL whatever it says.
-    at == Where::Folder && !hideout_acl::owner(path).is_ok_and(|o| trusted_writer(&o, me))
+    let owner = if no_follow {
+        hideout_acl::owner_no_follow(path)
+    } else {
+        hideout_acl::owner(path)
+    };
+    at == Where::Folder && !owner.is_ok_and(|o| trusted_writer(&o, me))
 }
 
 #[cfg(not(windows))]
-fn writable_by_others(_: &std::path::Path, _: u32, _: Where, _: &str) -> bool {
+fn writable_by_others_with(_: &std::path::Path, _: u32, _: Where, _: &str, _: bool) -> bool {
     true
 }
 
@@ -262,34 +282,55 @@ fn exe_open_to_others(folder: &str, exe: &str) -> bool {
     tree_open_to_others(folder, &me)
 }
 
-/// Deepest level of the dev folder tree that is read, and the most entries looked at.
+/// Deepest level of folders read inside the dev folder (the folder's own children are level 1)
+/// and the most entries looked at.
 const TREE_DEPTH: usize = 8;
-const TREE_ENTRIES: usize = 5000;
+const TREE_ENTRIES: usize = 20_000;
+/// How long a walk's answer is reused (the Modules page asks once per row).
+const TREE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+type TreeCache =
+    std::collections::HashMap<String, (std::time::Instant, Option<std::time::SystemTime>, bool)>;
+
+fn tree_cache() -> &'static std::sync::Mutex<TreeCache> {
+    static C: std::sync::OnceLock<std::sync::Mutex<TreeCache>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Forgets every remembered walk (tests that change permissions and ask again at once).
+#[doc(hidden)]
+pub fn clear_tree_cache() {
+    if let Ok(mut c) = tree_cache().lock() {
+        c.clear();
+    }
+}
 
 /// Whether anything inside the dev folder `folder` (files and subfolders, down to [`TREE_DEPTH`]
 /// levels, at most [`TREE_ENTRIES`] entries) can be changed by another account, so a swapped
-/// helper or DLL next to the program can't ride on the carry. A reparse point is not followed;
-/// one that leads outside the folder is refused. Hitting a limit, or anything that can't be read,
-/// refuses too.
+/// helper or DLL next to the program can't ride on the carry. Every entry's own permissions are
+/// read, links included (not followed). A junction or symlink is not followed and must lead inside
+/// the folder. Hitting a limit, or anything that can't be read, refuses too. The answer is kept
+/// for [`TREE_TTL`] while the folder's own modified time is unchanged.
 fn tree_open_to_others(folder: &str, me: &str) -> bool {
+    let mtime = std::fs::metadata(folder).and_then(|m| m.modified()).ok();
+    if let Ok(c) = tree_cache().lock() {
+        if let Some((at, m, open)) = c.get(&norm(folder)) {
+            if at.elapsed() < TREE_TTL && *m == mtime && mtime.is_some() {
+                return *open;
+            }
+        }
+    }
     let why = tree_open_with(std::path::Path::new(folder), &mut |p| {
-        writable_by_others(p, FOLDER_WRITE, Where::Folder, me)
+        writable_by_others_with(p, FOLDER_WRITE, Where::Folder, me, true)
     });
     if let Some(why) = &why {
         log::warn!("dev folder {folder} not trusted: {why}");
     }
-    why.is_some()
-}
-
-#[cfg(windows)]
-fn is_reparse(m: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    m.file_attributes() & 0x400 != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse(m: &std::fs::Metadata) -> bool {
-    m.file_type().is_symlink()
+    let open = why.is_some();
+    if let Ok(mut c) = tree_cache().lock() {
+        c.insert(norm(folder), (std::time::Instant::now(), mtime, open));
+    }
+    open
 }
 
 fn tree_open_with(
@@ -298,8 +339,9 @@ fn tree_open_with(
 ) -> Option<String> {
     let root_canon = canonical_path(root).unwrap_or_else(|_| root.display().to_string());
     let mut seen = 0usize;
+    // (folder, its level: the root is 0)
     let mut stack = vec![(root.to_path_buf(), 0usize)];
-    while let Some((dir, depth)) = stack.pop() {
+    while let Some((dir, level)) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&dir) else {
             return Some(format!("can't read {}", dir.display()));
         };
@@ -315,8 +357,16 @@ fn tree_open_with(
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
                 return Some(format!("can't read {}", path.display()));
             };
-            if is_reparse(&meta) {
-                // Not followed; where it leads must still be inside the folder.
+            // Every entry, a link or placeholder too, is checked for who can change it.
+            if open(&path) {
+                return Some(format!(
+                    "other accounts on this PC can change {}",
+                    path.display()
+                ));
+            }
+            // A junction or symlink (not a cloud placeholder or other reparse file) is not
+            // followed; where it leads must still be inside the folder.
+            if meta.file_type().is_symlink() {
                 match canonical_path(&path) {
                     Ok(c) if path_within(&root_canon, &c) => continue,
                     _ => {
@@ -324,17 +374,11 @@ fn tree_open_with(
                     }
                 }
             }
-            if open(&path) {
-                return Some(format!(
-                    "other accounts on this PC can change {}",
-                    path.display()
-                ));
-            }
             if meta.is_dir() {
-                if depth + 1 >= TREE_DEPTH {
+                if level + 1 > TREE_DEPTH {
                     return Some(format!("folders nested deeper than {TREE_DEPTH} levels"));
                 }
-                stack.push((path, depth + 1));
+                stack.push((path, level + 1));
             }
         }
     }
