@@ -65,6 +65,8 @@ pub mod strip;
 mod tray;
 #[cfg(windows)]
 mod wake;
+#[cfg(windows)]
+pub use wake::wake_for_background;
 
 #[cfg(windows)]
 pub use eframe::egui;

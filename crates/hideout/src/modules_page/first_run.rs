@@ -191,7 +191,11 @@ impl Picker for NoPicker {
 
 /// What the page asked of the supervisor. Shared so the test reads it while the page owns it.
 #[derive(Clone, Default)]
-struct Asked(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+struct Asked(
+    std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    /// The hand-over holds only: `begin <id>` and `end <id> <went>`.
+    std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+);
 
 impl Actions for Asked {
     fn start_normally(&self) {}
@@ -204,6 +208,13 @@ impl Actions for Asked {
     fn turn_on(&self, id: &str) -> Result<(), String> {
         self.0.borrow_mut().push(format!("turn-on {id}"));
         Ok(())
+    }
+    fn begin_hand_over(&self, id: &str) -> Result<(), String> {
+        self.1.borrow_mut().push(format!("begin {id}"));
+        Ok(())
+    }
+    fn end_hand_over(&self, id: &str, went: bool) {
+        self.1.borrow_mut().push(format!("end {id} {went}"));
     }
     fn check_for_updates(&self, _id: &str) {}
     fn force_update(&self, _id: &str) {}
@@ -932,4 +943,70 @@ fn the_wait_never_blocks_the_page() {
     );
     fx.page.settle_hand_over(true);
     assert_eq!(fx.asked.0.borrow().as_slice(), ["turn-on gizmo-keys"]);
+}
+
+/// Allow with a promised hand-over, then only the hub's per-frame `background` (the Apps page
+/// is never drawn): the hold ends and the app starts once, and a second frame does nothing.
+#[test]
+fn a_hand_over_settles_with_no_page_draw() {
+    use hideout_shell::Page;
+    let mut fx = Fx::new("fr5-bg-ok", "gizmo-keys", gizmo_manifest);
+    let c = Copy::new(true, true);
+    with_copy(&mut fx, &c);
+    let mut clicks = Clicks::default();
+    fx.look();
+    fx.add(&mut clicks);
+    fx.tick_sensitive(&mut clicks);
+    let perm = fx.page.perm.as_mut().unwrap();
+    let a = perm.dialog.as_ref().unwrap().allowed();
+    let done = perm.answer(PermAnswer::Allow(a)).unwrap();
+    fx.page.after_allow(done);
+    assert_eq!(fx.asked.1.borrow().as_slice(), ["begin gizmo-keys"]);
+    // The worker is done once the oldest handle answers; then only `background` runs.
+    let t = std::time::Instant::now();
+    while fx.asked.1.borrow().len() < 2 && t.elapsed() < std::time::Duration::from_secs(10) {
+        fx.page.background();
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        fx.asked.1.borrow().as_slice(),
+        ["begin gizmo-keys", "end gizmo-keys true"]
+    );
+    assert_eq!(fx.asked.0.borrow().as_slice(), ["turn-on gizmo-keys"]);
+    fx.page.background();
+    fx.page.background();
+    assert_eq!(fx.asked.0.borrow().len(), 1, "no double start");
+    assert_eq!(fx.asked.1.borrow().len(), 2, "the hold ends once");
+}
+
+/// The copy stays: with no page draw the hold still ends as failed (the row is saved back as
+/// off by `end_hand_over`), nothing starts, and the note is waiting for the page.
+#[test]
+fn a_failed_hand_over_ends_the_hold_with_no_page_draw() {
+    use hideout_shell::Page;
+    let mut fx = Fx::new("fr5-bg-fail", "gizmo-keys", gizmo_manifest);
+    let c = Copy::new(true, false);
+    with_copy(&mut fx, &c);
+    let mut clicks = Clicks::default();
+    fx.look();
+    fx.add(&mut clicks);
+    fx.tick_sensitive(&mut clicks);
+    let perm = fx.page.perm.as_mut().unwrap();
+    let a = perm.dialog.as_ref().unwrap().allowed();
+    let done = perm.answer(PermAnswer::Allow(a)).unwrap();
+    fx.page.after_allow(done);
+    let t = std::time::Instant::now();
+    while fx.asked.1.borrow().len() < 2 && t.elapsed() < std::time::Duration::from_secs(10) {
+        fx.page.background();
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        fx.asked.1.borrow().as_slice(),
+        ["begin gizmo-keys", "end gizmo-keys false"]
+    );
+    assert!(fx.asked.0.borrow().is_empty(), "nothing started");
+    assert!(!fx.page.installed.iter().any(|m| m.enabled));
+    assert_eq!(fx.page.perm.as_ref().unwrap().handover_notes.len(), 1);
+    fx.page.background();
+    assert_eq!(fx.asked.1.borrow().len(), 2, "the hold ends once");
 }

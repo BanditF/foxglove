@@ -775,6 +775,13 @@ impl hideout_shell::Page for ModulesPage {
         std::mem::take(&mut self.told.said)
     }
 
+    /// A finished hand-over settles on every hub frame, not only while this page is drawn: the
+    /// hold ends and a failed one is saved back as off even if the user left the page or closed
+    /// the window to the tray meanwhile.
+    fn background(&mut self) {
+        self.settle_hand_over(false);
+    }
+
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
         use hideout_shell::modules_list::{page_ui_with_head, Banner, Click, Find, Top};
         let (rows, counting) = self.rows();
