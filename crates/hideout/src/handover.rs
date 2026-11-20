@@ -55,6 +55,34 @@ pub trait Standalone: Send + Sync {
     /// clients (CLI and SDK tools on `foxglove-<user>`), as it does when it starts with the name
     /// free. Nothing for a fake.
     fn freed(&self, _id: &str) {}
+    /// How long a copy that did not answer in time may still be on its way out. Once a copy has
+    /// said yes its quit cannot be taken back, so a slow answer is looked at again for this long
+    /// before the app is called stuck. Zero (a fake) looks no more.
+    fn grace(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
+/// How long the copy's own quit may take after the hub stopped waiting (its budget is 5 s).
+pub const GRACE: Duration = Duration::from_secs(5);
+
+/// Looks for the copy to leave, for at most `s.grace()`. Not a loop on the pipe: a few cheap
+/// looks, only after an answer that did not come in time.
+fn left_in_time(s: &dyn Standalone, id: &str) -> bool {
+    let end = std::time::Instant::now() + s.grace();
+    if s.grace().is_zero() {
+        return false;
+    }
+    loop {
+        if s.seen(id) == Seen::No {
+            return true;
+        }
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(250)));
+    }
 }
 
 /// Closes the standalone copy of `id` if there is one. True: the app may be started now. False:
@@ -65,7 +93,9 @@ pub fn hand_over(s: &dyn Standalone, id: &str) -> bool {
         Seen::No => true,
         Seen::Unsure => false,
         Seen::Standalone => {
-            let gone = s.ask_to_quit(id) && s.seen(id) == Seen::No;
+            // A copy that said yes after the wait ran out still quits: look again before saying
+            // it stays (so the note never says the copy stays open when it is on its way out).
+            let gone = (s.ask_to_quit(id) && s.seen(id) == Seen::No) || left_in_time(s, id);
             if gone {
                 s.freed(id);
             }
@@ -227,6 +257,8 @@ pub struct Wire<O: Open> {
     pub id: String,
     pub open: Arc<O>,
     pub limit: Duration,
+    /// See [`Standalone::grace`].
+    pub grace: Duration,
 }
 
 impl<O: Open> Standalone for Wire<O> {
@@ -246,6 +278,10 @@ impl<O: Open> Standalone for Wire<O> {
         if id == self.id {
             self.open.freed();
         }
+    }
+
+    fn grace(&self) -> Duration {
+        self.grace
     }
 }
 
@@ -350,6 +386,7 @@ pub fn foxglove(
             hub,
         }),
         limit: LIMIT,
+        grace: GRACE,
     })
 }
 
@@ -394,6 +431,32 @@ mod tests {
         fn freed(&self, _: &str) {
             *self.freed.lock().unwrap() += 1;
         }
+    }
+
+    /// A copy that said yes just after the wait ran out leaves within the grace: the app starts
+    /// and no "stays open" note is shown. One that never leaves still stays.
+    #[test]
+    fn a_copy_that_leaves_just_after_the_wait_is_not_called_stuck() {
+        struct Slow(Mutex<u32>, bool);
+        impl Standalone for Slow {
+            fn seen(&self, _: &str) -> Seen {
+                let mut n = self.0.lock().unwrap();
+                *n += 1;
+                if self.1 && *n > 3 {
+                    Seen::No
+                } else {
+                    Seen::Standalone
+                }
+            }
+            fn ask_to_quit(&self, _: &str) -> bool {
+                false
+            }
+            fn grace(&self) -> Duration {
+                Duration::from_millis(900)
+            }
+        }
+        assert!(hand_over(&Slow(Mutex::new(0), true), "app"));
+        assert!(!hand_over(&Slow(Mutex::new(0), false), "app"));
     }
 
     /// The alias is claimed only after a copy was closed and is gone: not when nothing was open,
@@ -537,6 +600,7 @@ mod tests {
             id: "app".into(),
             open: Arc::new(Stays),
             limit: Duration::from_millis(200),
+            grace: Duration::ZERO,
         };
         let t = std::time::Instant::now();
         assert!(!hand_over(&w, "app"));
@@ -549,6 +613,7 @@ mod tests {
             id: "app".into(),
             open: Arc::new(Stays),
             limit: Duration::from_millis(50),
+            grace: Duration::ZERO,
         };
         assert_eq!(w.seen("other"), Seen::No);
         assert!(!w.ask_to_quit("other"));
@@ -717,6 +782,7 @@ mod tests {
                 ended: Mutex::new(ended),
             }),
             limit: Duration::from_millis(200),
+            grace: Duration::ZERO,
         };
         assert!(!hand_over(&w, "app"));
         // The worker's read returned because of the cancel: its end is the event waited for.
