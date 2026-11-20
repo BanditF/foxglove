@@ -11,7 +11,7 @@ use hideout_router::Out;
 use serde_json::Value;
 
 /// The module the waiting copy is.
-const MODULE: &str = hideout_registry::keyboard::LEGACY_MODULE;
+const MODULE: &str = crate::keyboard_actions::MODULE;
 
 /// What the hub decided about Foxglove's row.
 #[derive(Debug, Clone, PartialEq, Eq)]
