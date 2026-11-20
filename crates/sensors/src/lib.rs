@@ -17,6 +17,7 @@ mod engine;
 pub mod host;
 pub mod nvml;
 pub mod pdh;
+pub mod thermal;
 pub mod ui;
 
 pub use engine::{Config, Engine, GuardedSink, Sink, SourceFactory, SubId, ValueOut};
@@ -36,16 +37,19 @@ pub enum Group {
     Cpu,
     Gpu,
     Ram,
+    /// The board and case (Windows' thermal zones), never the processor package.
+    System,
 }
 
 impl Group {
-    pub const ALL: [Group; 3] = [Group::Cpu, Group::Gpu, Group::Ram];
+    pub const ALL: [Group; 4] = [Group::Cpu, Group::Gpu, Group::Ram, Group::System];
 
     pub fn id(self) -> &'static str {
         match self {
             Group::Cpu => "cpu",
             Group::Gpu => "gpu",
             Group::Ram => "ram",
+            Group::System => "system",
         }
     }
 
@@ -67,10 +71,12 @@ pub enum Metric {
     GpuFan,
     /// The fan's duty in percent: its own fact, never published as RPM.
     GpuFanPct,
+    /// The hottest board or case thermal zone, in degrees Celsius.
+    SysTemp,
 }
 
 impl Metric {
-    pub const ALL: [Metric; 8] = [
+    pub const ALL: [Metric; 9] = [
         Metric::CpuLoad,
         Metric::GpuLoad,
         Metric::RamUsed,
@@ -79,6 +85,7 @@ impl Metric {
         Metric::GpuPower,
         Metric::GpuFan,
         Metric::GpuFanPct,
+        Metric::SysTemp,
     ];
 
     pub fn group(self) -> Group {
@@ -91,6 +98,7 @@ impl Metric {
             | Metric::GpuFan
             | Metric::GpuFanPct => Group::Gpu,
             Metric::RamUsed => Group::Ram,
+            Metric::SysTemp => Group::System,
         }
     }
 
@@ -98,7 +106,7 @@ impl Metric {
         match self {
             Metric::CpuLoad | Metric::GpuLoad => "load_pct",
             Metric::RamUsed => "used_pct",
-            Metric::GpuTemp => "temp_c",
+            Metric::GpuTemp | Metric::SysTemp => "temp_c",
             Metric::GpuClock => "clock_mhz",
             Metric::GpuPower => "power_w",
             Metric::GpuFan => "fan_rpm",
@@ -110,7 +118,7 @@ impl Metric {
     pub fn unit(self) -> &'static str {
         match self {
             Metric::CpuLoad | Metric::GpuLoad | Metric::RamUsed | Metric::GpuFanPct => "%",
-            Metric::GpuTemp => "C",
+            Metric::GpuTemp | Metric::SysTemp => "C",
             Metric::GpuClock => "MHz",
             Metric::GpuPower => "W",
             Metric::GpuFan => "RPM",
@@ -125,7 +133,15 @@ impl Metric {
 
 /// The values a source could read this time. A metric it couldn't read is absent.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Reading(Vec<(Metric, i64)>);
+pub struct Reading(Vec<(Metric, i64)>, Vec<Zone>);
+
+/// One thermal zone, for the page's details (not a fact).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Zone {
+    /// The zone's short name ("TZ00").
+    pub name: String,
+    pub celsius: i64,
+}
 
 impl Reading {
     pub fn new() -> Self {
@@ -144,6 +160,16 @@ impl Reading {
 
     pub fn get(&self, metric: Metric) -> Option<i64> {
         self.0.iter().find(|(m, _)| *m == metric).map(|(_, v)| *v)
+    }
+
+    /// Adds the thermal zones behind [`Metric::SysTemp`].
+    pub fn with_zones(mut self, zones: Vec<Zone>) -> Self {
+        self.1 = zones;
+        self
+    }
+
+    pub fn zones(&self) -> &[Zone] {
+        &self.1
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Metric, i64)> + '_ {

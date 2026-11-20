@@ -262,9 +262,48 @@
               {
                 "children": [
                   {
+                    "children": [
+                      {
+                        "id": "sys-temp-name",
+                        "props": {
+                          "text": "Hottest zone"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-temp-value",
+                        "props": {
+                          "name": "System temperature, reading",
+                          "tone": "off",
+                          "value": "Reading…"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-temp",
+                    "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "system",
+                "props": {
+                  "title": "System temperature"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -538,9 +577,92 @@
               {
                 "children": [
                   {
+                    "children": [
+                      {
+                        "id": "sys-temp-name",
+                        "props": {
+                          "text": "Hottest zone"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-temp-value",
+                        "props": {
+                          "name": "System temperature, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-0-name",
+                        "props": {
+                          "text": "Zone 1"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-0-value",
+                        "props": {
+                          "name": "Zone 1, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-0",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-1-name",
+                        "props": {
+                          "text": "Zone 2"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-1-value",
+                        "props": {
+                          "name": "Zone 2, 28 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "28 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-1",
+                    "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "system",
+                "props": {
+                  "title": "System temperature"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -814,9 +936,92 @@
               {
                 "children": [
                   {
+                    "children": [
+                      {
+                        "id": "sys-temp-name",
+                        "props": {
+                          "text": "Hottest zone"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-temp-value",
+                        "props": {
+                          "name": "System temperature, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-0-name",
+                        "props": {
+                          "text": "Zone 1"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-0-value",
+                        "props": {
+                          "name": "Zone 1, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-0",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-1-name",
+                        "props": {
+                          "text": "Zone 2"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-1-value",
+                        "props": {
+                          "name": "Zone 2, 28 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "28 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-1",
+                    "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "system",
+                "props": {
+                  "title": "System temperature"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -1090,9 +1295,92 @@
               {
                 "children": [
                   {
+                    "children": [
+                      {
+                        "id": "sys-temp-name",
+                        "props": {
+                          "text": "Hottest zone"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-temp-value",
+                        "props": {
+                          "name": "System temperature, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-0-name",
+                        "props": {
+                          "text": "Zone 1"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-0-value",
+                        "props": {
+                          "name": "Zone 1, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-0",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-1-name",
+                        "props": {
+                          "text": "Zone 2"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-1-value",
+                        "props": {
+                          "name": "Zone 2, 28 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "28 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-1",
+                    "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "system",
+                "props": {
+                  "title": "System temperature"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -1374,9 +1662,92 @@
               {
                 "children": [
                   {
+                    "children": [
+                      {
+                        "id": "sys-temp-name",
+                        "props": {
+                          "text": "Hottest zone"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-temp-value",
+                        "props": {
+                          "name": "System temperature, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-0-name",
+                        "props": {
+                          "text": "Zone 1"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-0-value",
+                        "props": {
+                          "name": "Zone 1, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-0",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-1-name",
+                        "props": {
+                          "text": "Zone 2"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-1-value",
+                        "props": {
+                          "name": "Zone 2, 28 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "28 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-1",
+                    "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "system",
+                "props": {
+                  "title": "System temperature"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -1658,9 +2029,92 @@
               {
                 "children": [
                   {
+                    "children": [
+                      {
+                        "id": "sys-temp-name",
+                        "props": {
+                          "text": "Hottest zone"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-temp-value",
+                        "props": {
+                          "name": "System temperature, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-0-name",
+                        "props": {
+                          "text": "Zone 1"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-0-value",
+                        "props": {
+                          "name": "Zone 1, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-0",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-1-name",
+                        "props": {
+                          "text": "Zone 2"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-1-value",
+                        "props": {
+                          "name": "Zone 2, 28 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "28 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-1",
+                    "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "system",
+                "props": {
+                  "title": "System temperature"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -1678,6 +2132,321 @@
         }
       ],
       "state": "Some details missing"
+    },
+    {
+      "panels": [
+        {
+          "icon": "chart",
+          "id": "tile",
+          "slot": "tile",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Graphics card 87%"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Processor 23% · Memory 62%"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 100,
+                  "name": "Graphics card, 87 percent busy",
+                  "value": 87.0
+                },
+                "type": "meter"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "chart",
+          "id": "page",
+          "slot": "page",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "now-cpu-name",
+                        "props": {
+                          "text": "Processor"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-cpu-value",
+                        "props": {
+                          "name": "Processor, 23 percent busy",
+                          "tone": "neutral",
+                          "value": "23%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-cpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Processor, 23 percent busy",
+                          "value": 23.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-cpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-gpu-name",
+                        "props": {
+                          "text": "Graphics card"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-gpu-value",
+                        "props": {
+                          "name": "Graphics card, 87 percent busy",
+                          "tone": "neutral",
+                          "value": "87%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-gpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Graphics card, 87 percent busy",
+                          "value": 87.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-gpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-ram-name",
+                        "props": {
+                          "text": "Memory"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-ram-value",
+                        "props": {
+                          "name": "Memory, 62 percent used",
+                          "tone": "neutral",
+                          "value": "62% used"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-ram-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Memory, 62 percent used",
+                          "value": 62.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-ram",
+                    "type": "row"
+                  },
+                  {
+                    "id": "now-rate",
+                    "props": {
+                      "text": "Updates once a second while this page is open.",
+                      "tone": "neutral"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-temp-name",
+                        "props": {
+                          "text": "Temperature"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-temp-value",
+                        "props": {
+                          "name": "Graphics card temperature, 64 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "64 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-clock-name",
+                        "props": {
+                          "text": "Speed"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-clock-value",
+                        "props": {
+                          "name": "Graphics card speed, 1845 megahertz",
+                          "tone": "neutral",
+                          "value": "1845 MHz"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-clock",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-power-name",
+                        "props": {
+                          "text": "Power"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-power-value",
+                        "props": {
+                          "name": "Graphics card power, 185 watts",
+                          "tone": "neutral",
+                          "value": "185 W"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-power",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-fan-name",
+                        "props": {
+                          "text": "Fan"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-fan-value",
+                        "props": {
+                          "name": "Graphics card fan, 1450 revolutions per minute",
+                          "tone": "neutral",
+                          "value": "1450 RPM"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-fan",
+                    "type": "row"
+                  }
+                ],
+                "id": "gpu",
+                "props": {
+                  "title": "Graphics card"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "sys-temp-name",
+                        "props": {
+                          "text": "Hottest zone"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-temp-value",
+                        "props": {
+                          "name": "System temperature, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-temp",
+                    "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "This PC doesn't report it to Windows.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "system",
+                "props": {
+                  "title": "System temperature"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "System temperature missing"
     },
     {
       "panels": [
@@ -1848,9 +2617,48 @@
               {
                 "children": [
                   {
+                    "children": [
+                      {
+                        "id": "sys-temp-name",
+                        "props": {
+                          "text": "Hottest zone"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-temp-value",
+                        "props": {
+                          "name": "System temperature, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-temp",
+                    "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "This PC doesn't report it to Windows.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "system",
+                "props": {
+                  "title": "System temperature"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -2124,9 +2932,92 @@
               {
                 "children": [
                   {
+                    "children": [
+                      {
+                        "id": "sys-temp-name",
+                        "props": {
+                          "text": "Hottest zone"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-temp-value",
+                        "props": {
+                          "name": "System temperature, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-0-name",
+                        "props": {
+                          "text": "Zone 1"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-0-value",
+                        "props": {
+                          "name": "Zone 1, 38 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "38 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-0",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "sys-zone-1-name",
+                        "props": {
+                          "text": "Zone 2"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "sys-zone-1-value",
+                        "props": {
+                          "name": "Zone 2, 28 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "28 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "sys-zone-1",
+                    "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "system",
+                "props": {
+                  "title": "System temperature"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver.\n\nPC sensors can't see when you're gaming, so it keeps updating once a second. To slow it down during games, allow \"see whether game mode is on\" on the Apps page."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports.\n\nPC sensors can't see when you're gaming, so it keeps updating once a second. To slow it down during games, allow \"see whether game mode is on\" on the Apps page."
                     },
                     "type": "markdown"
                   }

@@ -17,7 +17,7 @@ use foxglove_plugin::hideout::{
 };
 use foxglove_sensors::host::{registered_pattern, Host, Write, GAME_MODE_FACT};
 use foxglove_sensors::ui::{self, PageInput, PanelsOut, PanelsView};
-use foxglove_sensors::{nvml, pdh, Config, Source, SourceFactory};
+use foxglove_sensors::{nvml, pdh, thermal, Config, Source, SourceFactory};
 use serde_json::{json, Value};
 
 /// A write as the `facts.set` params; a withdrawal is a `null` value.
@@ -174,6 +174,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let factories: Vec<SourceFactory> = vec![
         Box::new(|| Box::new(pdh::PdhSource::new()) as Box<dyn Source>),
         Box::new(|| nvml::source_or_unavailable("nvml.dll")),
+        Box::new(|| Box::new(thermal::ThermalSource::new()) as Box<dyn Source>),
     ];
     let mut host = Host::new(factories, Config::default());
     host.on_release(foxglove_sensors::trim_memory);

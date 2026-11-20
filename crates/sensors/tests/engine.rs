@@ -214,12 +214,13 @@ fn key_names_and_units_are_exact() {
         "sensor.gpu.temp_c",
         "sensor.ram.state",
         "sensor.ram.used_pct",
+        "sensor.system.state",
     ];
     assert_eq!(r.facts.keys(), expected);
     assert_eq!(r.facts.get("sensor.gpu.temp_c"), Some(ValueOut::Int(61)));
     assert_eq!(r.facts.state(Group::Gpu), Some("ok"));
     let units: Vec<_> = Metric::ALL.iter().map(|m| m.unit()).collect();
-    assert_eq!(units, ["%", "%", "%", "C", "MHz", "W", "RPM", "%"]);
+    assert_eq!(units, ["%", "%", "%", "C", "MHz", "W", "RPM", "%", "C"]);
     assert!(
         !r.facts.keys().iter().any(|k| k.contains("cpu.temp")),
         "no CPU temperature without a source for it"

@@ -8,7 +8,7 @@ use foxglove_sensors::ui::{
     page, tile, tile_panel, GroupState, PageInput, PageOut, PageView, PanelsOut, PanelsView, PANEL,
     TILE,
 };
-use foxglove_sensors::{Config, Group, Metric, Reading, Source, SourceError, SourceFactory};
+use foxglove_sensors::{Config, Group, Metric, Reading, Source, SourceError, SourceFactory, Zone};
 use hideout_contract::module::{Context, Module};
 use serde_json::{json, Value};
 
@@ -30,9 +30,29 @@ fn working() -> PageInput {
         (Metric::GpuClock, 1845),
         (Metric::GpuPower, 185),
         (Metric::GpuFan, 1450),
+        (Metric::SysTemp, 38),
     ] {
         i.values.insert(m, v);
     }
+    i.zones = vec![
+        Zone {
+            name: "HPTZ".into(),
+            celsius: 38,
+        },
+        Zone {
+            name: "TZ00".into(),
+            celsius: 28,
+        },
+    ];
+    i
+}
+
+/// Windows has no thermal zone counter on this PC: only that row is missing.
+fn no_system() -> PageInput {
+    let mut i = working();
+    i.states.insert(Group::System, GroupState::Unavailable);
+    i.values.remove(&Metric::SysTemp);
+    i.zones.clear();
     i
 }
 
@@ -104,6 +124,7 @@ fn every_state() -> Vec<(&'static str, PageInput)> {
         ("Fan as percent", fan_percent()),
         ("Graphics card details missing", missing()),
         ("Some details missing", partial()),
+        ("System temperature missing", no_system()),
         ("No sensors", none()),
         ("Game mode not visible", blind()),
     ]
@@ -685,4 +706,70 @@ fn a_shape_change_registers_both_panels_again() {
         matches!(&out[..], [PanelsOut::Register(p)] if p.len() == 2),
         "{out:?}"
     );
+}
+
+// System temperature (thermal zones).
+
+#[test]
+fn the_system_temperature_is_the_hottest_zone_with_the_zones_listed() {
+    let t = page(&working());
+    assert_eq!(value_of(&t, "sys-temp-value"), "38 °C");
+    assert_eq!(value_of(&t, "sys-zone-0-value"), "38 °C");
+    assert_eq!(value_of(&t, "sys-zone-1-value"), "28 °C");
+    let text = shown(node(&t, "system").unwrap());
+    assert!(
+        text.contains("System temperature") && text.contains("Zone 1") && text.contains("Zone 2")
+    );
+    // Firmware names are never drawn.
+    for raw in ["HPTZ", "TZ00"] {
+        assert!(!text.contains(raw), "{raw} shows");
+    }
+    // A board or case zone, never the processor.
+    let low = text.to_lowercase();
+    assert!(!low.contains("cpu") && !low.contains("processor"));
+}
+
+#[test]
+fn a_missing_zone_counter_is_not_reported_and_never_zero() {
+    let t = page(&no_system());
+    assert_eq!(value_of(&t, "sys-temp-value"), "Not reported");
+    assert!(node(&t, "sys-zone-0-value").is_none());
+    assert_eq!(
+        node(&t, "sys-note").unwrap()["props"]["text"],
+        "This PC doesn't report it to Windows."
+    );
+    assert!(!digits(node(&t, "system").unwrap()));
+    // Not read yet: Reading…
+    assert_eq!(value_of(&page(&reading()), "sys-temp-value"), "Reading…");
+}
+
+/// A source with two zones, as the thermal counter reports them.
+struct Zones;
+impl Source for Zones {
+    fn read(&mut self) -> Result<Reading, SourceError> {
+        Ok(foxglove_sensors::thermal::reading_of(
+            foxglove_sensors::thermal::zones_from(&[
+                ("\\_TZ.TZ00".to_string(), 301.0),
+                ("\\_TZ.HPTZ".to_string(), 311.0),
+            ]),
+        ))
+    }
+}
+
+#[test]
+fn the_host_shows_zones_only_while_the_page_is_on_screen() {
+    let f: SourceFactory = Box::new(|| Box::new(Zones) as Box<dyn Source>);
+    let mut h = Host::new(vec![f], Config::default());
+    visible(&mut h, "visible", s(0));
+    h.tick(s(0));
+    h.take_writes();
+    let t = h.page_tree();
+    assert_eq!(value_of(&t, "sys-temp-value"), "38 °C");
+    assert_eq!(value_of(&t, "sys-zone-0-value"), "38 °C");
+    assert_eq!(value_of(&t, "sys-zone-1-value"), "28 °C");
+    visible(&mut h, "hidden", s(2));
+    h.take_writes();
+    let t = h.page_tree();
+    assert_eq!(value_of(&t, "sys-temp-value"), "Reading…");
+    assert!(node(&t, "sys-zone-0-value").is_none());
 }

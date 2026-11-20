@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use crate::{pattern_wants, Group, Metric, Reading, Source, NAMESPACE};
+use crate::{pattern_wants, Group, Metric, Reading, Source, Zone, NAMESPACE};
 
 /// A value on its way to the facts store.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +101,8 @@ pub struct Engine<K: Sink> {
     sources: Vec<Box<dyn Source>>,
     next_due: Option<Duration>,
     published: BTreeSet<String>,
+    /// The thermal zones of the last read (page details); empty unless sampling.
+    zones: Vec<Zone>,
 }
 
 impl<K: Sink> Engine<K> {
@@ -115,11 +117,17 @@ impl<K: Sink> Engine<K> {
             sources: Vec::new(),
             next_due: None,
             published: BTreeSet::new(),
+            zones: Vec::new(),
         }
     }
 
     pub fn sink(&self) -> &K {
         &self.sink
+    }
+
+    /// The thermal zones of the last read; empty while not sampling.
+    pub fn zones(&self) -> &[Zone] {
+        &self.zones
     }
 
     /// Whether any source exists (a sampler is open).
@@ -230,6 +238,10 @@ impl<K: Sink> Engine<K> {
     }
 
     fn publish(&mut self, readings: &[Reading]) {
+        self.zones = readings
+            .iter()
+            .flat_map(|r| r.zones().iter().cloned())
+            .collect();
         for metric in Metric::ALL {
             let value = readings.iter().find_map(|r| r.get(metric));
             match value {
@@ -260,6 +272,7 @@ impl<K: Sink> Engine<K> {
     }
 
     fn withdraw_all(&mut self) {
+        self.zones.clear();
         for key in std::mem::take(&mut self.published) {
             self.sink.withdraw(&key);
         }
