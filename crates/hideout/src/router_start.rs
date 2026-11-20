@@ -317,6 +317,11 @@ fn watch_inventory(
     // Ids learnt that way: asked again at each change, so an install that enables the module
     // in a second write (`hideout.toml` after `inventory.json`) still starts it.
     let mut late = std::collections::BTreeSet::<String>::new();
+    // R3: the rebuild watches follow the enrolled apps; synced at start and at each change.
+    let mut rebuilds = crate::rebuild_start::Watches::default();
+    if let Ok(reg) = hideout_registry::Registry::open_from_env(&at) {
+        rebuilds.sync(&reg, &sup);
+    }
     let watched = crate::inventory_watch::start(
         home,
         Box::new(move |change| {
@@ -398,6 +403,7 @@ fn watch_inventory(
                 }
             }
             note_needs_hub_names(&reg);
+            rebuilds.sync(&reg, &sup);
             // Added but not in the registry yet (a lab folder whose manifest isn't written):
             // kept, so a change of only files inside it is read again.
             waiting.retain(|id| !reg.inventory.modules.contains_key(id));

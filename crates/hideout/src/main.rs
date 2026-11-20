@@ -35,8 +35,10 @@ mod modules_page;
 mod panel_feed;
 #[cfg(windows)]
 mod permission_actions;
-// R2 of the 0-click rebuild plan: not started by the hub yet (R3 wires it).
-#[allow(dead_code)]
+#[cfg(windows)]
+mod rebuild_start;
+// Off Windows only the state machine exists, and only its tests use it.
+#[cfg_attr(not(windows), allow(dead_code))]
 mod rebuild_watch;
 #[cfg(windows)]
 mod router_start;
