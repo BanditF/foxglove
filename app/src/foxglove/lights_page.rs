@@ -202,9 +202,10 @@ impl Draft {
         }
         let read = super::keyboard_settings::last_read();
         let now = std::time::Instant::now();
-        if super::lights_draft::settle(self, read, now, state)
-            == super::lights_draft::Outcome::Refused
-        {
+        let refused = super::lights_draft::settle(self, read, now, state)
+            == super::lights_draft::Outcome::Refused;
+        // Not while the keyboard is away: that is its own line.
+        if refused && super::devices::keyboard_key().is_some() {
             self.refused_at = Some(now);
         }
     }
@@ -626,17 +627,15 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
                 .flatten();
             let name = super::lights_draft::held_name(&mut held, &shown.name, dragging);
             ui.ctx().data_mut(|d| d.insert_temp(name_id, held));
+            // The note is part of the name while it shows: screen readers hear it with the drawing.
+            let noted = note_active(draft);
+            let name = if noted {
+                format!("{name}, the keyboard didn't take the last change")
+            } else {
+                name
+            };
             super::lights_live_ui::show_named(ui, shown, Some(&name));
-            // Why the drawing went back to what the keyboard says.
-            if let Some(at) = draft.refused_at {
-                let left = super::lights_draft::NOT_TAKEN_FOR.saturating_sub(at.elapsed());
-                if left.is_zero() {
-                    draft.refused_at = None;
-                } else {
-                    ui.weak(super::lights_draft::NOT_TAKEN);
-                    ui.ctx().request_repaint_after(left);
-                }
-            }
+            not_taken_note(ui, draft);
         }
         ui.add_space(8.0);
         let gap = 24.0;
@@ -1474,6 +1473,24 @@ fn preview_chip(ui: &mut egui::Ui, h: &RgbHalf, colour_effects: Option<u8>) {
             })
     };
     paint_preview(ui.painter(), rect, preview, shown_color);
+}
+
+fn note_active(draft: &Draft) -> bool {
+    draft
+        .refused_at
+        .is_some_and(|at| at.elapsed() < super::lights_draft::NOT_TAKEN_FOR)
+}
+
+/// Why the drawing went back to what the keyboard says, for a few seconds.
+pub(crate) fn not_taken_note(ui: &mut egui::Ui, draft: &mut Draft) {
+    let Some(at) = draft.refused_at else { return };
+    let left = super::lights_draft::NOT_TAKEN_FOR.saturating_sub(at.elapsed());
+    if left.is_zero() {
+        draft.refused_at = None;
+    } else {
+        ui.weak(super::lights_draft::NOT_TAKEN);
+        ui.ctx().request_repaint_after(left);
+    }
 }
 
 /// A slider was dragged since this was last asked (the drawing is above the sliders, so this is

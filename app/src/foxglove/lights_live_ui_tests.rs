@@ -276,6 +276,13 @@ fn a_keyboard_driven_through_windows_draws_its_row_tint_and_one_not_read_draws_o
     assert_eq!(all.first(), Some(&&Some(orange)));
     assert_eq!(all.last(), Some(&&Some(Color32::BLACK)));
     assert!(!lamp.blocks);
+    // Off is said in words, not only by dark keys.
+    let off = live_not_read(Some(Tint::Off), layout());
+    assert_eq!(off.look.state, State::LampOff);
+    assert_eq!(off.line, LAMP_OFF_LINE);
+    assert!(off.name.starts_with("Keyboard lights off"));
+    assert_eq!(about(&off.look), LAMP_ABOUT);
+    assert_eq!(about(&lamp.look), LAMP_ABOUT);
     // Colours unknown, or a keyboard Foxglove doesn't read: outlines and the existing line.
     for t in [None, Some(Tint::Unknown)] {
         let l = live_not_read(t, layout());

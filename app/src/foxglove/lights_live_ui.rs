@@ -29,6 +29,10 @@ const PLATE: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x20);
 const FLOOR: u8 = 96;
 
 pub const LAMP_LINE: &str = "The colours Foxglove last set through Windows Dynamic Lighting";
+pub const LAMP_OFF_LINE: &str = "Lights off · set through Windows Dynamic Lighting";
+pub const LAMP_ABOUT: &str = "What Foxglove last sent to this keyboard through Windows. The keyboard doesn't report its lights, so another app's changes don't show here.";
+pub const NOT_READ_ABOUT: &str =
+    "Foxglove doesn't read this keyboard's lights, so only its keys are drawn.";
 pub const NO_LAYOUT: &str = "Foxglove has no drawing of this keyboard's keys.";
 pub const LIGHTS_OFF: &str = "Lights off";
 pub const NOT_CONNECTED: &str = "Keyboard not connected. Its lights show here when it's back.";
@@ -155,6 +159,10 @@ pub fn words_with(
             LAMP_LINE.into(),
             "Keyboard lights: the colours last set through Windows".into(),
         ),
+        State::LampOff => (
+            LAMP_OFF_LINE.into(),
+            "Keyboard lights off, set through Windows".into(),
+        ),
         State::NotRead => (
             super::lights_page::NOT_READ.into(),
             "Keyboard lights: not read".into(),
@@ -234,6 +242,14 @@ fn own_words(rgb: &RgbState, dim: [u8; 2], parts: &Parts, right_apart: bool) -> 
     )
 }
 
+/// A block standing for a half's keys gets a corner radius to match its size.
+fn rounded(mut shape: egui::Shape, block: bool) -> egui::Shape {
+    if let (true, egui::Shape::Rect(r)) = (block, &mut shape) {
+        r.corner_radius = egui::CornerRadius::same((r.rect.height() * 0.2).clamp(3.0, 40.0) as u8);
+    }
+    shape
+}
+
 /// A layout with no keys becomes one rounded block per part, so the drawing still has colour.
 fn with_blocks(mut layout: KeyLayout) -> (KeyLayout, bool) {
     if layout.parts.iter().any(|p| !p.is_empty()) {
@@ -283,6 +299,11 @@ pub fn not_applied(line: String, name: String) -> (String, String) {
 
 /// The hover on the ⓘ.
 pub fn about(look: &Look) -> String {
+    match look.state {
+        State::Lamp | State::LampOff => return LAMP_ABOUT.into(),
+        State::NotRead => return NOT_READ_ABOUT.into(),
+        _ => {}
+    }
     if look.next_frame().is_some() {
         format!("{ABOUT}\n{ABOUT_MOVING}")
     } else {
@@ -526,7 +547,7 @@ pub fn show_named(ui: &mut egui::Ui, live: &Live, name: Option<&str>) {
             // on the dark plate, so white and yellow have something to show on.
             let outline = Stroke::new(1.0, p.muted);
             if !p.dark {
-                painter.add(g.key_shape(a, k, PLATE, outline));
+                painter.add(rounded(g.key_shape(a, k, PLATE, outline), live.blocks));
             }
             let shape = match colour {
                 None if p.dark => g.key_shape(a, k, Color32::TRANSPARENT, outline),
@@ -534,13 +555,17 @@ pub fn show_named(ui: &mut egui::Ui, live: &Live, name: Option<&str>) {
                 Some(c) if c == Color32::BLACK => g.key_shape(a, k, PLATE, outline),
                 Some(c) => g.key_shape(a, k, lit(c), Stroke::new(1.0, p.line)),
             };
-            painter.add(shape);
+            painter.add(rounded(shape, live.blocks));
         }
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.add(egui::Label::new(RichText::new(&live.line).color(p.muted).size(12.5)).wrap());
-        theme::info_dot(ui, &about(&live.look));
+        let mut about = about(&live.look);
+        if live.blocks {
+            about = format!("{about}\n{NO_LAYOUT}");
+        }
+        theme::info_dot(ui, &about);
     });
     let away = super::away::away();
     if let Some(after) = frame_request(&live.look, front, minimised, away, live.animations) {

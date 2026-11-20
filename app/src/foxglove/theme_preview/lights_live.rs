@@ -22,6 +22,9 @@ fn report(state: Option<RgbState>, connected: bool) -> Report {
     }
 }
 
+/// The row that also shows the snap-back note under its drawing.
+const REFUSED: &str = "Change not taken: the drawing went back to the report";
+
 /// One row per state: its caption and the drawing the page would build.
 fn states() -> Vec<(&'static str, Live)> {
     let swirl = rgb(half(true, 3, 26, 60), None);
@@ -175,6 +178,7 @@ fn states() -> Vec<(&'static str, Live)> {
         "No layout for this keyboard: one block per half (hover says why)",
         lights_live_ui::live_not_read(Some(Tint::Lit(vec![orange, blue])), bare),
     ));
+    v.push((REFUSED, own(solid)));
     let l = look(&report(None, true), None, None, None, None);
     v.push(("Reading the keyboard", live_of(l, None, true)));
     let l = look(&report(None, false), None, None, None, None);
@@ -210,7 +214,16 @@ fn sheet(choice: Choice, width: f32, tag: &str) -> image::RgbaImage {
                     ui.set_min_width(ui.available_width());
                     for (caption, live) in &rows {
                         ui.label(egui::RichText::new(*caption).color(p.muted).size(11.5));
-                        ui.push_id(*caption, |ui| lights_live_ui::show(ui, live));
+                        ui.push_id(*caption, |ui| {
+                            lights_live_ui::show(ui, live);
+                            if *caption == REFUSED {
+                                let mut draft = crate::foxglove::lights_page::Draft {
+                                    refused_at: Some(std::time::Instant::now()),
+                                    ..Default::default()
+                                };
+                                crate::foxglove::lights_page::not_taken_note(ui, &mut draft);
+                            }
+                        });
                         ui.add_space(10.0);
                     }
                 });

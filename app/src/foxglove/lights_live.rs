@@ -80,6 +80,8 @@ pub enum State {
     CannotDraw(u8),
     /// A keyboard Foxglove drives through Windows only: the colours it last set (L4).
     Lamp,
+    /// The same, with every light off.
+    LampOff,
     /// A keyboard whose colour Foxglove doesn't read: outlines only (L4).
     NotRead,
 }
@@ -158,7 +160,11 @@ pub fn look(
 pub fn look_not_read(tint: Option<Tint>) -> Look {
     match tint {
         Some(t) if t != Tint::Unknown => Look {
-            state: State::Lamp,
+            state: if t == Tint::Off || t == Tint::Lit(Vec::new()) {
+                State::LampOff
+            } else {
+                State::Lamp
+            },
             sending: false,
             paint: Paint::Tint(t),
         },

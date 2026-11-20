@@ -76,6 +76,10 @@ pub fn settled(sent: &Sent, last_read: Option<Instant>, now: Instant) -> bool {
     last_read.is_some_and(|r| r > sent.at) || now.saturating_duration_since(sent.at) >= GIVE_UP
 }
 
+/// A report read this long after a change is the keyboard's answer to it: one that came sooner
+/// may have been on its way with the old state already.
+pub const ONE_TRIP: Duration = Duration::from_millis(400);
+
 /// The card says why a drawing went back to the report.
 pub const NOT_TAKEN: &str = "The keyboard didn't take that change.";
 /// How long [`NOT_TAKEN`] stays on the card.
@@ -100,7 +104,7 @@ fn shows(change: Change, h: &RgbHalf) -> bool {
             sat,
             brightness,
         } => {
-            h.hue.abs_diff(hue) <= 2
+            h.hue.abs_diff(hue).min(360 - h.hue.abs_diff(hue).min(360)) <= 2
                 && h.sat.abs_diff(sat) <= 1
                 && h.brightness.abs_diff(brightness) <= 1
         }
@@ -126,8 +130,12 @@ pub fn settle(
     if matches!(sent.change, Change::Speed(_)) {
         draft.speed = None;
     }
+    // Only an answer that had time to carry the change, or none at all for the whole wait, says
+    // the keyboard didn't take it.
+    let answered = last_read.is_some_and(|r| r.saturating_duration_since(sent.at) >= ONE_TRIP)
+        || now.saturating_duration_since(sent.at) >= GIVE_UP;
     match rgb {
-        Some(r) if !shows(sent.change, &r.left) => Outcome::Refused,
+        Some(r) if answered && !shows(sent.change, &r.left) => Outcome::Refused,
         _ => Outcome::Took,
     }
 }
@@ -322,7 +330,7 @@ mod tests {
             Outcome::Waiting
         );
         assert_eq!(d.speed, Some(5));
-        let later = t0 + Duration::from_millis(50);
+        let later = t0 + Duration::from_millis(500);
         assert_eq!(
             settle(&mut d, Some(later), later, Some(&rgb)),
             Outcome::Refused
@@ -353,6 +361,26 @@ mod tests {
             Outcome::Refused
         );
         assert_eq!(refused.sent, None);
+        // A read that was already on its way when the change went out proves nothing: silent.
+        let mut early = Draft {
+            sent: Some(sent(Change::Effect(3), t0)),
+            ..Draft::default()
+        };
+        assert_eq!(
+            settle(&mut early, Some(later), later, Some(&state())),
+            Outcome::Took
+        );
+        // Hues wrap: 359 comes back as 1.
+        let h = RgbHalf {
+            hue: 1,
+            ..state().left
+        };
+        let c = Change::Colour {
+            hue: 359,
+            sat: 100,
+            brightness: 60,
+        };
+        assert!(shows(c, &h));
         // A colour the keyboard rounds by a degree was taken.
         let c = Change::Colour {
             hue: 31,
