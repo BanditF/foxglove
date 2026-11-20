@@ -463,3 +463,69 @@ fn a_retained_registration_never_takes_a_route_still_owned() {
     assert_eq!(call_through(&mut r, caller, cx, "zonex.set", 1, now).0, 0);
     assert_eq!(call_through(&mut r, caller, y, "zonex.set", 2, now).0, 1);
 }
+
+fn s(v: &[&str]) -> Vec<String> {
+    v.iter().map(|x| x.to_string()).collect()
+}
+
+/// An Allow for a module the router hasn't learnt yet (#1375): a second one joins the first,
+/// the file narrows it, and it applies only to the build it was given for.
+#[test]
+fn an_allow_kept_for_an_unlearnt_module_merges_narrows_and_matches_its_build() {
+    let late = |r: &mut Router| r.add_module(entry("late.app", &[]));
+    // Two Allows while pending join.
+    let mut r = router();
+    r.set_module_grants_for("late.app", s(&["net"]), "list-a");
+    r.set_module_grants_for("late.app", s(&["wallpaper.control"]), "list-a");
+    late(&mut r);
+    r.apply_early_grants("late.app", "list-a");
+    assert_eq!(
+        r.module_grants("late.app"),
+        s(&["net", "wallpaper.control"])
+    );
+
+    // The file can only narrow it, while it waits.
+    let mut r = router();
+    r.set_module_grants_for("late.app", s(&["net", "wallpaper.control"]), "list-a");
+    let mut f = files(&["x"]);
+    f.insert("late.app".into(), s(&["net", "provide:forged.x"]));
+    r.narrow_module_grants(&f);
+    late(&mut r);
+    r.apply_early_grants("late.app", "list-a");
+    assert_eq!(r.module_grants("late.app"), s(&["net"]));
+
+    // Gone from the file (removed): it does not come back with a re-add of the same id.
+    let mut r = router();
+    r.set_module_grants_for("late.app", s(&["net"]), "list-a");
+    r.narrow_module_grants(&files(&["x"]));
+    late(&mut r);
+    r.apply_early_grants("late.app", "list-a");
+    assert!(r.module_grants("late.app").is_empty());
+
+    // Another build (list) of the same id never inherits it.
+    let mut r = router();
+    r.set_module_grants_for("late.app", s(&["net"]), "list-a");
+    late(&mut r);
+    r.apply_early_grants("late.app", "list-b");
+    assert!(r.module_grants("late.app").is_empty());
+}
+
+/// A read older than the module's Allow never narrows it (the Allow beat the watch's read).
+#[test]
+fn a_file_read_older_than_the_allow_does_not_drop_it() {
+    let mut r = router();
+    r.add_module(entry("late.app", &[]));
+    let seq = r.allow_seq();
+    let stale = {
+        let mut f = files(&["x"]);
+        f.insert("late.app".into(), Vec::new());
+        f
+    };
+    r.set_module_grants_for("late.app", s(&["net"]), "list-a");
+    r.narrow_module_grants_read_at(&stale, seq);
+    assert_eq!(r.module_grants("late.app"), s(&["net"]));
+    // A read made after the Allow narrows as ever.
+    let seq = r.allow_seq();
+    r.narrow_module_grants_read_at(&stale, seq);
+    assert!(r.module_grants("late.app").is_empty());
+}

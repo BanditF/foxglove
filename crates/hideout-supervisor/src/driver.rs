@@ -968,14 +968,20 @@ impl Supervisor {
         }
         let depends = depends_event(id, manifest.as_ref());
         let m = manifest.clone();
+        let tag = grant_tag(reg, id);
         self.0.hub.act(|r| {
-            if let Some(e) = entry {
+            // Only when the router still has none: an entry made meanwhile holds the user's
+            // Allow, which this (possibly older) read must not replace (#1375).
+            let mut out = Vec::new();
+            if let Some(e) = entry.filter(|e| !r.knows_module(&e.id)) {
                 r.add_module(e);
+                // An Allow that came before this entry, if it was for this very build.
+                out.extend(r.apply_early_grants(id, &tag));
             }
             if let Some(m) = &m {
                 r.apply_manifest(m);
             }
-            Vec::new()
+            out
         });
         match ev {
             Some(ev) => {
@@ -2471,6 +2477,14 @@ pub fn stop_keeping_in(home: &Path, id: &str) -> Result<bool, String> {
     Ok(was)
 }
 
+/// Which permission list module `id` shows in the registry (its code, as the dialog gives it):
+/// an Allow kept for a module the router hasn't learnt applies only to that list, so a module
+/// removed and added again under the same id (another manifest or program) never inherits it.
+fn grant_tag(reg: &Registry, id: &str) -> String {
+    reg.permission_list(id)
+        .map_or_else(|_| String::new(), |l| l.code().to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn grant_listed_inner(
     home: &Path,
@@ -2509,12 +2523,14 @@ fn grant_listed_inner(
     // never the whole list read back from `inventory.json` (a file anyone running as the user
     // can write). Narrowing to the file happens elsewhere (`narrow_module_grants`).
     let new = out.granted.clone();
+    // The list the user answered: what the router matches the module's entry against later.
+    let tag = list_code.to_string();
     hub.act(|r| {
         let mut now = r.module_grants(id);
         now.extend(new);
         now.sort();
         now.dedup();
-        r.set_module_grants(id, now)
+        r.set_module_grants_for(id, now, &tag)
     });
     Ok(out)
 }
