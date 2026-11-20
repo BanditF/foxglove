@@ -82,6 +82,10 @@ pub enum State {
     UpdateWaiting,
 }
 
+fn s_idle_now(p: &Policy, id: &str) -> bool {
+    p.slots.get(id).is_some_and(|s| s.state == State::Idle)
+}
+
 impl State {
     pub fn id(self) -> Option<&'static str> {
         Some(match self {
@@ -755,6 +759,10 @@ impl Policy {
                     self.set_state(&id, State::Off, None, &mut out);
                 } else if enabled && idle && at_enable && !self.held(&id) {
                     self.launch(&id, &mut out);
+                } else if enabled && s_idle_now(self, &id) {
+                    // Enabled but resting (not starting at enable, or held): say so once, so a
+                    // waiter on this row (the sign-in copy) is not left to time out.
+                    self.set_state(&id, State::Idle, None, &mut out);
                 }
             }
             Ev::Started { id, instance } => {
@@ -1996,6 +2004,20 @@ mod safe_mode_tests {
         assert!(p.safe_mode && p.round.is_none());
         let cmds = p.handle(Ev::StartNormally, t);
         assert_eq!(launches(&cmds), ["m.a", "m.b", "m.c"]);
+    }
+
+    /// An enabled row that is not started at enable rests idle and says so with a null state
+    /// fact, so a waiter on the row (the sign-in copy) is answered at once.
+    #[test]
+    fn an_enabled_idle_row_publishes_its_state() {
+        let mut p = Policy::new();
+        let cmds = p.handle(known("m.rest", true, false), Instant::now());
+        assert_eq!(p.state("m.rest"), Some(State::Idle));
+        assert!(cmds.iter().any(|c| matches!(
+            c,
+            Cmd::Publish { key, value } if key == "module.m.rest.state" && value.is_null()
+        )));
+        assert!(launches(&cmds).is_empty());
     }
 
     /// Turn on in safe mode (#1033): saved on, not started, no state id (the row reads "On ·

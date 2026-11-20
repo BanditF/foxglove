@@ -31,6 +31,10 @@ pub fn decide(key: &str, value: &Value) -> Option<Decision> {
     if key != format!("module.{MODULE}.state") {
         return None;
     }
+    // An enabled row that is resting (idle) publishes a null state: nothing will start it now.
+    if value == &Value::Null {
+        return Some(Decision::NotRunning("idle"));
+    }
     Some(match value.as_str()? {
         // `waiting` (running, a dependency is down) and `update-waiting` (the old version keeps
         // running while an update waits) both have Foxglove running as an app.
@@ -183,9 +187,10 @@ mod tests {
         for v in ["starting", "restarting", "updating", "update-busy"] {
             assert_eq!(state(v), None, "{v}");
         }
+        // A null state is the idle row: nothing is starting it, so the copy is told at once.
         assert_eq!(
             decide(&format!("module.{MODULE}.state"), &Value::Null),
-            None
+            Some(Decision::NotRunning("idle"))
         );
         assert_eq!(decide("module.other.state", &json!("running")), None);
     }

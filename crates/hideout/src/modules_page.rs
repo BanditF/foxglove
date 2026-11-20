@@ -26,6 +26,13 @@ pub trait Actions {
     fn go_back(&self, id: &str);
     fn turn_off(&self, id: &str);
     fn turn_on(&self, id: &str) -> Result<(), String>;
+    /// A hand-over begins: the row is saved as on without starting it and held, so a hub that
+    /// restarts before the app started brings it up. Fakes may do nothing.
+    fn begin_hand_over(&self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// The hand-over ended; `went` false saves the row back as off.
+    fn end_hand_over(&self, _id: &str, _went: bool) {}
     /// Turn on as a handle any thread can call, so a hand-over's worker can start the app itself
     /// when its copy has gone (the page may not be on screen then). `None`: the page starts it.
     fn starter(&self) -> Option<crate::permission_actions::Starter> {
@@ -69,6 +76,12 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     }
     fn turn_on(&self, id: &str) -> Result<(), String> {
         hideout_supervisor::driver::Supervisor::turn_on(self, id)
+    }
+    fn begin_hand_over(&self, id: &str) -> Result<(), String> {
+        hideout_supervisor::driver::Supervisor::begin_hand_over(self, id)
+    }
+    fn end_hand_over(&self, id: &str, went: bool) {
+        hideout_supervisor::driver::Supervisor::end_hand_over(self, id, went)
     }
     fn starter(&self) -> Option<crate::permission_actions::Starter> {
         let me = self.clone();
@@ -384,12 +397,7 @@ impl ModulesPage {
             // worker; the app starts when that finishes well (`settle_hand_over`). If the copy
             // does not go (or anything is in doubt) the app is not started, a note with Start
             // again shows, and the Startup entry is never touched.
-            Then::TurnOn
-                if done.handover
-                    && self
-                        .perm
-                        .as_mut()
-                        .is_some_and(|p| p.start_hand_over(&done.id, starter.clone())) => {}
+            Then::TurnOn if done.handover && self.begin_hand_over(&done.id, starter.clone()) => {}
             // A standalone copy opened after the dialog, which did not tell the user it would be
             // closed: nothing is started beside it and nothing is closed unasked. The note with
             // Start again shows, and Start again is the user's go-ahead to close it.
@@ -411,6 +419,31 @@ impl ModulesPage {
         if let Some(p) = self.perm.as_mut() {
             p.refresh();
         }
+    }
+
+    /// The row is saved as on and held before the copy is asked to quit: its quit cannot be taken
+    /// back, so a hub that exits before the app started still starts it at the next start. True:
+    /// the worker runs and `settle_hand_over` ends the hold. False: nothing runs (it could not be
+    /// saved, or there is no standalone support) and the plain start follows, which shows why.
+    fn begin_hand_over(
+        &mut self,
+        id: &str,
+        starter: Option<crate::permission_actions::Starter>,
+    ) -> bool {
+        if let Some(Err(why)) = self.actions.as_deref().map(|a| a.begin_hand_over(id)) {
+            log::warn!("Modules page: {id} not saved as on before the hand-over ({why})");
+            return false;
+        }
+        let running = self
+            .perm
+            .as_mut()
+            .is_some_and(|p| p.start_hand_over(id, starter));
+        if !running {
+            if let Some(a) = self.actions.as_deref() {
+                a.end_hand_over(id, true);
+            }
+        }
+        running
     }
 
     /// Starts the app now and shows the row and the Done card as on.
@@ -459,6 +492,11 @@ impl ModulesPage {
         // that could start its app has done so already (whether or not this page was on screen);
         // only the row and the card are left to do here.
         while let Some((id, h)) = self.perm.as_mut().and_then(|p| p.finished_hand_over(wait)) {
+            // A late check holds nothing (its end is a no-op); a hand-over that failed is saved
+            // back as off before the note, so nothing starts beside the copy that stayed.
+            if let Some(a) = self.actions.as_deref() {
+                a.end_hand_over(&id, h.went);
+            }
             if h.went {
                 match h.started {
                     Some(r) => self.after_turn_on(&id, r),
@@ -1047,6 +1085,13 @@ mod tests {
             self.0.borrow_mut().push(format!("turn-on {id}"));
             Ok(())
         }
+        fn begin_hand_over(&self, id: &str) -> Result<(), String> {
+            self.0.borrow_mut().push(format!("begin {id}"));
+            Ok(())
+        }
+        fn end_hand_over(&self, id: &str, went: bool) {
+            self.0.borrow_mut().push(format!("end {id} {went}"));
+        }
         fn check_for_updates(&self, id: &str) {
             self.0.borrow_mut().push(format!("check {id}"));
         }
@@ -1114,6 +1159,50 @@ mod tests {
         page.after_allow(done(Then::TurnOn));
         assert_eq!(*log.0.borrow(), ["turn-on m.a"]);
         assert!(page.installed[0].enabled);
+    }
+
+    /// A promised hand-over saves the row as on before anything else, so a hub that exits while
+    /// the copy leaves still starts the app at its next start.
+    #[test]
+    fn a_hand_over_saves_the_row_as_on_first() {
+        use crate::permission_actions::{Done, Then};
+        let inst = Installed {
+            adopted: true,
+            id: "m.a".into(),
+            name: "Art".into(),
+            version: "1.0.0".into(),
+            enabled: false,
+            dev: false,
+            dev_folder: None,
+        };
+        let log = Log::default();
+        let mut page = ModulesPage {
+            installed: vec![inst],
+            facts: None,
+            actions: Some(Box::new(log.clone())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+            done: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: None,
+            ask: Default::default(),
+            told: Default::default(),
+            discover: None,
+        };
+        page.after_allow(Done {
+            id: "m.a".into(),
+            code: String::new(),
+            chosen: Vec::new(),
+            declined: Vec::new(),
+            then: Then::TurnOn,
+            handover: true,
+        });
+        assert_eq!(
+            *log.0.borrow(),
+            ["begin m.a", "end m.a true", "turn-on m.a"]
+        );
     }
 
     const TAG: &str = "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0";

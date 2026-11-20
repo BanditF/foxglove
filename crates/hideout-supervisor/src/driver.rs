@@ -277,6 +277,9 @@ struct Inner {
     /// Modules asked to be removed (Remove from Hideout) while they run: stopped first, removed
     /// from the registry when their instance ends ([`Supervisor::remove`]).
     removing: Mutex<BTreeSet<String>>,
+    /// Apps whose standalone copy is being handed over: saved as on already, but not started by
+    /// what the inventory watch reads from `hideout.toml` until the hand-over ends.
+    handing: Mutex<BTreeSet<String>>,
     remove_done: Mutex<Option<RemoveDone>>,
     /// Notifications made before the shell's notifier was set (a withdrawal found at hub start):
     /// delivered by [`Supervisor::set_notifier`]. At most [`EARLY_NOTES`].
@@ -424,7 +427,7 @@ fn next_expiry(map: &BTreeMap<String, Prepared>) -> Option<Instant> {
 }
 
 /// The program file of a launch: `run[0]`, relative to the module's folder unless absolute.
-fn program_of(dir: &Path, run0: &str) -> PathBuf {
+pub fn program_of(dir: &Path, run0: &str) -> PathBuf {
     let p = PathBuf::from(run0);
     if p.is_absolute() {
         p
@@ -554,6 +557,7 @@ impl Supervisor {
             refresh: Mutex::new(None),
             withdrawals: Mutex::new(BTreeMap::new()),
             removing: Mutex::new(BTreeSet::new()),
+            handing: Mutex::new(BTreeSet::new()),
             remove_done: Mutex::new(None),
             early: Mutex::new(Vec::new()),
             calls: Mutex::new(BTreeMap::new()),
@@ -929,7 +933,7 @@ impl Supervisor {
             return None;
         }
         if self.0.hub.read(|r| r.knows_module(id)) {
-            let on = reg.hub.enabled(id);
+            let on = reg.hub.enabled(id) && !self.hand_over_held(id);
             let held = self.0.policy.lock().unwrap().enabled(id);
             if held.is_some_and(|h| h != on) {
                 if let (_, Some(ev)) = known_event(reg, id, reg.manifest(id).as_ref()) {
@@ -954,7 +958,14 @@ impl Supervisor {
             }
             Read::Module(m) => m,
         };
-        let (entry, ev) = known_event(reg, id, manifest.as_ref());
+        let (entry, mut ev) = known_event(reg, id, manifest.as_ref());
+        // Saved as on for a hand-over that has not finished: learnt as off, so nothing starts
+        // beside the copy; the hand-over's own start (or its failure) settles it.
+        if self.hand_over_held(id) {
+            if let Some(Ev::Known { enabled, .. }) = ev.as_mut() {
+                *enabled = false;
+            }
+        }
         let depends = depends_event(id, manifest.as_ref());
         let m = manifest.clone();
         self.0.hub.act(|r| {
@@ -1371,6 +1382,63 @@ impl Supervisor {
     /// on here: that dialog isn't built, so it answers why and the caller opens the module. In
     /// safe mode it is saved as on and not started ("On · not started in safe mode").
     pub fn turn_on(&self, id: &str) -> Result<(), String> {
+        self.save_on(id)?;
+        if self.safe_mode() {
+            log::info!("supervisor: {id}: turned on; not started in safe mode");
+        }
+        // Turned on again while its Remove waited for it to stop: the Remove is dropped.
+        if self.0.removing.lock().unwrap().remove(id) {
+            self.remove_done(id, Err("turned on again".into()));
+        }
+        self.feed(Ev::Enable { id: id.into() });
+        // A fact it waits for that was set while it was off starts it now (§4.6, v1.10).
+        self.0.hub.act(|r| r.activation_due(Some(id)));
+        Ok(())
+    }
+
+    /// Whether `id` is held for a hand-over that has not ended.
+    pub fn hand_over_held(&self, id: &str) -> bool {
+        self.0.handing.lock().unwrap().contains(id)
+    }
+
+    /// A hand-over begins: `id` is held (nothing the inventory watch reads starts it) and saved
+    /// as on, so a hub that exits mid hand-over starts it at the next start. A save that fails
+    /// holds nothing.
+    pub fn begin_hand_over(&self, id: &str) -> Result<(), String> {
+        self.0.handing.lock().unwrap().insert(id.to_string());
+        let saved = self.save_on(id);
+        if saved.is_err() {
+            self.0.handing.lock().unwrap().remove(id);
+        }
+        saved
+    }
+
+    /// A hand-over ended. `went`: the copy has gone, the hold is dropped and the caller starts
+    /// the app. Otherwise the copy stays: the row is saved back as off (nothing is stopped), so
+    /// the app is not started beside it at the next start or by the inventory watch.
+    pub fn end_hand_over(&self, id: &str, went: bool) {
+        // Only a hand-over that began holds the id: a late check or a plain start has nothing
+        // to end, and a row saved on by anything else is never turned off here.
+        if !self.0.handing.lock().unwrap().contains(id) {
+            return;
+        }
+        if went {
+            self.0.handing.lock().unwrap().remove(id);
+            return;
+        }
+        let off = Registry::open_from_env(&self.0.home)
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|mut r| r.set_enabled(id, false).map_err(|e| format!("{e:?}")));
+        if let Err(e) = off {
+            log::warn!("supervisor: {id}: not saved back as off after a failed hand-over: {e}");
+        }
+        self.0.handing.lock().unwrap().remove(id);
+    }
+
+    /// Only the saving half of [`Supervisor::turn_on`]: the row is saved as on (the same checks)
+    /// and nothing is started. A hand-over saves first, so a hub that restarts before the app
+    /// has started brings it up at its own start.
+    pub fn save_on(&self, id: &str) -> Result<(), String> {
         // A withdrawn version is never turned on, however the ask came (#1026).
         let withdrawn = Registry::open_from_env(&self.0.home)
             .ok()
@@ -1401,16 +1469,6 @@ impl Supervisor {
             log::warn!("supervisor: {id}: not turned on: {e}");
             return Err(e);
         }
-        if self.safe_mode() {
-            log::info!("supervisor: {id}: turned on; not started in safe mode");
-        }
-        // Turned on again while its Remove waited for it to stop: the Remove is dropped.
-        if self.0.removing.lock().unwrap().remove(id) {
-            self.remove_done(id, Err("turned on again".into()));
-        }
-        self.feed(Ev::Enable { id: id.into() });
-        // A fact it waits for that was set while it was off starts it now (§4.6, v1.10).
-        self.0.hub.act(|r| r.activation_due(Some(id)));
         Ok(())
     }
 

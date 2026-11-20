@@ -602,11 +602,12 @@ impl PermUi {
 
     /// Allow without a promised hand-over: looks once more, on a worker, for a copy that opened
     /// after the dialog. Same contract as [`PermUi::start_hand_over`]: the page starts the app
-    /// only when [`PermUi::finished_hand_over`] says yes (no copy now); a copy gives the note.
+    /// only when [`PermUi::finished_hand_over`] says yes (no copy now); a copy, or one that cannot be
+    /// verified (`Unsure`, as `hand_over` reads it), gives the note.
     /// Nothing is ever closed by this.
     pub fn start_late_check(&mut self, id: &str, starter: Option<Starter>) -> bool {
         self.start_worker(id, starter, |s, app| {
-            s.seen(app) != crate::handover::Seen::Standalone
+            s.seen(app) == crate::handover::Seen::No
         })
     }
 
@@ -3041,5 +3042,31 @@ mod tests {
             log.lock().unwrap().is_empty(),
             "nothing started beside a copy"
         );
+    }
+
+    /// A holder that cannot be verified (`Unsure`) is read as `hand_over` reads it: the late
+    /// check starts nothing beside it and the note shows.
+    #[test]
+    fn the_late_check_refuses_an_unverified_holder() {
+        struct Unverified;
+        impl crate::handover::Standalone for Unverified {
+            fn seen(&self, _: &str) -> crate::handover::Seen {
+                crate::handover::Seen::Unsure
+            }
+            fn ask_to_quit(&self, _: &str) -> bool {
+                false
+            }
+        }
+        let mut f = fx("late-unsure", &[]);
+        f.ui =
+            PermUi::new(&f.home, f.ui.hub.clone()).with_standalone(std::sync::Arc::new(Unverified));
+        let (st, log) = starter_log();
+        f.ui.start_late_check("app-a", Some(st));
+        while f.ui.finished_hand_over(true).is_some() {}
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "started beside an unsure holder"
+        );
+        assert_eq!(f.ui.handover_notes.len(), 1);
     }
 }
