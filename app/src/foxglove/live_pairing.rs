@@ -44,6 +44,8 @@ struct Slot {
     due: bool,
     /// A refusal found the budget spent: the user's Reconnect is next.
     capped: bool,
+    /// A refusal came while its socket was open: another app may be using the connection.
+    contested: bool,
 }
 
 /// How one wallpaper's connection stands (the worst-to-best order is the variant order, so
@@ -58,6 +60,8 @@ pub enum Link {
     Connecting,
     /// A ticket went out again after a refusal.
     Reconnecting,
+    /// A socket is open, but a refusal came while it was: another app may be using it.
+    Shared,
     /// A socket is open.
     Connected,
 }
@@ -232,6 +236,7 @@ impl Pairing {
         if let Some(s) = monitor.and_then(|m| self.slots.get_mut(m)) {
             s.conn = Some(conn);
             s.capped = false;
+            s.contested = false;
         }
         true
     }
@@ -241,6 +246,7 @@ impl Pairing {
         self.old_clients.remove(&conn);
         for s in self.slots.values_mut().filter(|s| s.conn == Some(conn)) {
             s.conn = None;
+            s.contested = false;
         }
     }
 
@@ -252,6 +258,10 @@ impl Pairing {
         }
         let mut n = 0;
         for (monitor, s) in &mut self.slots {
+            // A socket already open and a refusal: another app is knocking (sec-1298 L3).
+            if s.conn.is_some() && allowed_in(self.allow.as_ref(), &s.file) {
+                s.contested = true;
+            }
             // A wallpaper the user hasn't allowed is never re-pushed, and never counts as stuck.
             if !allowed_in(self.allow.as_ref(), &s.file)
                 || s.conn.is_some()
@@ -302,6 +312,10 @@ impl Pairing {
         for (m, s) in &mut self.slots {
             s.repushes.clear();
             s.capped = false;
+            if std::mem::take(&mut s.contested) {
+                self.tickets.cancel(m);
+                s.due = true;
+            }
             if s.conn.is_none() {
                 self.tickets.cancel(m);
                 s.due = true;
@@ -345,7 +359,11 @@ impl Pairing {
         let mut by_dir: BTreeMap<String, Link> = BTreeMap::new();
         for (monitor, s) in &self.slots {
             let link = if s.conn.is_some() {
-                Link::Connected
+                if s.contested {
+                    Link::Shared
+                } else {
+                    Link::Connected
+                }
             } else if s.capped {
                 Link::Capped
             } else if self.tickets.has_open(monitor, now) || s.due {
@@ -462,6 +480,41 @@ mod tests {
         assert!(!p.stuck());
         p.set_allowed(only(&["hud"]));
         assert!(p.mint(A, "hud/index.html", now).is_some(), "on mints again");
+    }
+
+    #[test]
+    fn a_refusal_while_a_socket_is_open_marks_the_row_shared_until_reconnect() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        let t = ticket(&mut p, A, now);
+        assert_eq!(p.admit(None, Some(&t), "", now), Ok(Some(A.into())));
+        assert!(p.joined(7, Some(A)));
+        let link = |p: &Pairing| p.links(now).by_dir.values().copied().next();
+        assert_eq!(link(&p), Some(Link::Connected));
+        assert_eq!(p.refused(now), 0, "a connected monitor is not re-pushed");
+        assert_eq!(link(&p), Some(Link::Shared));
+        assert!(!p.stuck(), "shared is not stuck");
+        p.reconnect();
+        assert_eq!(link(&p), Some(Link::Connected));
+        assert_eq!(p.take_due(), [A.to_string()], "it gets a fresh ticket");
+        // A closed socket forgets it.
+        p.refused(now);
+        p.left(7);
+        assert_ne!(link(&p), Some(Link::Shared));
+    }
+
+    #[test]
+    fn a_disallowed_connected_file_is_never_shared() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        p.set_allowed(only(&["hud"]));
+        let t = ticket(&mut p, A, now);
+        assert_eq!(p.admit(None, Some(&t), "", now), Ok(Some(A.into())));
+        p.joined(7, Some(A));
+        p.set_allowed(only(&["other"]));
+        p.refused(now);
+        assert_ne!(
+            p.links(now).by_dir.values().copied().next(),
+            Some(Link::Shared)
+        );
     }
 
     #[test]
