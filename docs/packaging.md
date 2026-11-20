@@ -149,6 +149,8 @@ What it contains (Hideout only, MIT; no Foxglove file, firmware or art):
   MIT needs none) and a finish page "Hideout is installed" with "Open Hideout now" ticked and the
   line that apps already on the PC stay as they are. The ticked box starts `hideout.exe` as the
   user with no arguments (WixShellExec, needs `-ext WixUtilExtension`); never `--tray`.
+  Opening the MSI again shows the finish page without the box, and there is no Repair or Remove
+  there (remove it in Settings > Apps).
 - **No Startup entry.** The installer never creates `Hideout.lnk` in Startup; Start with Windows
   stays off until the user turns it on in the app (H5.2).
 - Uninstall (not an upgrade) runs `hideout.exe --autostart-remove` as the user, which removes a

@@ -166,6 +166,10 @@ class InstallerDialogs(unittest.TestCase):
         c = self.controls('ExitDialog')
         self.assertEqual(c['OptionalCheckBox'].get('Text'), 'Open Hideout now')
         self.assertEqual(c['OptionalCheckBox'].get('Property'), 'WIXUI_EXITDIALOGOPTIONALCHECKBOX')
+        cond = c['OptionalCheckBox'].find('w:Condition', NS)
+        self.assertEqual((cond.get('Action'), cond.text.strip()), ('hide', 'Installed'))  # re-run: no dead box
+        # the launch condition and the box's visibility agree
+        self.assertIn('NOT Installed', self.publishes(c['Finish'])[0][2])
         txt = self.all_text('ExitDialog')
         self.assertIn('Hideout is installed', txt)
         self.assertIn('Apps you already have stay as they are.', txt)

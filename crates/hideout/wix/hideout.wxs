@@ -128,7 +128,10 @@
         <Control Id="Description" Type="Text" X="20" Y="50" Width="330" Height="45" Transparent="yes" NoPrefix="yes"
                  Text="Apps you already have stay as they are. Hideout does not start when you sign in unless you turn that on." />
         <Control Id="OptionalCheckBox" Type="CheckBox" X="20" Y="120" Width="330" Height="18" CheckBoxValue="1"
-                 Property="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Text="Open Hideout now" />
+                 Property="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Text="Open Hideout now">
+          <!-- A re-run of the MSI (Installed) launches nothing, so the box is not shown then. -->
+          <Condition Action="hide">Installed</Condition>
+        </Control>
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="Finish">
           <Publish Event="DoAction" Value="LaunchHideout">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed</Publish>
