@@ -491,6 +491,13 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, false, &name)
                     });
                 }
+                // A declared accessible name beats the visible words ("Reconnect Bandit HUD").
+                if let (Some(name), true) = (s(&p, "name"), bound.is_none() && !off) {
+                    let (enabled, name) = (ui.is_enabled(), name.to_string());
+                    button.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name)
+                    });
+                }
                 let pressed = d.press && !off && ui.is_enabled();
                 d.press = false;
                 let clicked = button.clicked() || pressed;
@@ -511,7 +518,14 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
         }
         "toggle" => {
             let mut on = p.get("value").and_then(Value::as_bool).unwrap_or(false);
-            if ui.checkbox(&mut on, &label).changed() {
+            let r = ui.checkbox(&mut on, &label);
+            if let Some(name) = s(&p, "name") {
+                let (enabled, name) = (ui.is_enabled(), name.to_string());
+                r.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, on, &name)
+                });
+            }
+            if r.changed() {
                 d.emit(&n.id, "change", Value::Bool(on), true);
             }
         }

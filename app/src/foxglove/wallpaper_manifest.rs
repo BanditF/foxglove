@@ -449,6 +449,18 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     norm(&a.to_string_lossy()) == norm(&b.to_string_lossy())
 }
 
+/// The key the allow list (`[live_wallpaper] allowed`) and the pairing store know a wallpaper by:
+/// its folder, lower case, forward slashes. A folder, not a file, so a manifest read from disk and
+/// the file Wallpaper Engine reports for a monitor give the same key.
+pub fn key_of_dir(dir: &Path) -> String {
+    norm(&dir.to_string_lossy())
+}
+
+/// [`key_of_dir`] for a wallpaper file (`.../<project>/index.html`); a bare name is its own key.
+pub fn key_of_file(file: &str) -> String {
+    folder_of(file).map_or_else(|| norm(file), |d| key_of_dir(&d))
+}
+
 /// The folder of a wallpaper file as Wallpaper Engine records it (`.../<project>/index.html`).
 pub fn folder_of(file: &str) -> Option<PathBuf> {
     let f = file.trim().replace('\\', "/");

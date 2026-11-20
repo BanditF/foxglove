@@ -78,6 +78,9 @@ pub struct LiveSettings {
     pub ticket_verified: bool,
     /// Foxglove's notifications go to a wallpaper that can show them, else to Windows.
     pub notify: bool,
+    /// The wallpapers the user allowed to get the feed (S5a): folder keys
+    /// (`wallpaper_manifest::key_of_dir`), not secrets. Empty: none yet.
+    pub allowed: Vec<String>,
 }
 
 impl Default for LiveSettings {
@@ -88,6 +91,7 @@ impl Default for LiveSettings {
             token: String::new(),
             ticket_verified: false,
             notify: true,
+            allowed: Vec::new(),
         }
     }
 }
@@ -525,17 +529,94 @@ fn send(msg: Msg) {
     }
 }
 
-/// Disconnect all wallpapers (the Hideout panel's button, S5; no UI yet): every ticket is
-/// cancelled, every socket is closed, and no ticket is handed out until [`reconnect`]. The
-/// allowances stay.
-#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
+/// Disconnect all wallpapers (the Hideout panel's button, S5b): every ticket is cancelled,
+/// every socket is closed (the ones the old pasted token admitted too), the saved token is
+/// blanked the way the first redeemed ticket blanks it, and no ticket is handed out until
+/// [`reconnect`]. The allowances stay.
+#[allow(dead_code)] // Entry point for the Hideout panel (S5b); no UI calls it yet.
 pub fn disconnect_all() {
-    let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
-    let store = running.as_ref().map_or_else(pairing::store, |r| r.store);
-    pairing::disconnect_all(store);
-    if let Some(r) = running.as_ref() {
-        let _ = r.tx.send(Msg::DisconnectAll);
+    {
+        let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        let store = running.as_ref().map_or_else(pairing::store, |r| r.store);
+        pairing::disconnect_all(store);
+        if let Some(r) = running.as_ref() {
+            let _ = r.tx.send(Msg::DisconnectAll);
+        }
     }
+    // Without this the button would lie while the pasted token still admits (sec-1298 L4).
+    let _one = MIGRATING.lock().unwrap_or_else(|e| e.into_inner());
+    if migrate(update_settings).is_err() {
+        eprintln!("Foxglove: live feed: couldn't clear the old pairing token from the settings");
+    }
+}
+
+/// The wallpapers the saved settings allow, as the pairing store takes them.
+fn allowed_set(s: &LiveSettings) -> std::collections::BTreeSet<String> {
+    s.allowed.iter().cloned().collect()
+}
+
+/// Whether the allow list gates the feed. Off until S5b ships the switch: with it on and no way
+/// to flip a wallpaper on, a wallpaper that works today would silently lose its ticket (UX review
+/// of #1316). While off, every wallpaper that asks is allowed, as before; the list is still
+/// saved so S5b starts from the user's choices. S5b turns this on.
+const ALLOW_GATE: bool = false;
+
+/// What the pairing store is told: the saved list when the gate is on, else no restriction.
+fn gate(s: &LiveSettings) -> Option<std::collections::BTreeSet<String>> {
+    ALLOW_GATE.then(|| allowed_set(s))
+}
+
+/// Most wallpapers the allow list keeps.
+const MAX_ALLOWED: usize = 256;
+
+/// The Hideout panel's switch (S5a): allows or disallows the wallpaper in folder `key`. It is
+/// saved, handed to the pairing store, and the pusher is woken: switching on gets the wallpaper
+/// a ticket at the next sync, switching off cancels its ticket and closes its socket now.
+/// The error is fixed words; the store's own text can quote the settings file.
+#[allow(dead_code)] // Entry point for the Hideout panel (S5b); no UI calls it yet.
+pub fn allow_wallpaper(key: &str, on: bool) -> Result<(), String> {
+    allow_with(key, on, update_settings)
+}
+
+fn allow_with(key: &str, on: bool, update: impl Updater) -> Result<(), String> {
+    const FAILED: &str = "Couldn't change this. Try again.";
+    if key.is_empty() || key.len() > 1024 {
+        return Err(FAILED.into());
+    }
+    let mut full = false;
+    let s = update(&mut |s| {
+        full = false;
+        let mut set = allowed_set(s);
+        if on {
+            full = !set.contains(key) && set.len() >= MAX_ALLOWED;
+            if !full {
+                set.insert(key.to_string());
+            }
+        } else {
+            set.remove(key);
+        }
+        s.allowed = set.into_iter().collect();
+    })
+    .map_err(|_| FAILED.to_string())?;
+    if full {
+        return Err(FAILED.into());
+    }
+    apply_allowed(&s);
+    Ok(())
+}
+
+/// Hands the saved allow list to the pairing store and wakes the pusher (an event, no timer).
+fn apply_allowed(s: &LiveSettings) {
+    let store = RUNNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map_or_else(pairing::store, |r| r.store);
+    let close = pairing::allow(store, gate(s));
+    if !close.is_empty() {
+        send(Msg::Close(close));
+    }
+    super::wallpaper_sync::repush();
 }
 
 /// The user's Reconnect: wallpapers that lost their ticket or their socket get a fresh ticket
@@ -705,6 +786,7 @@ fn listen_in(s: &LiveSettings, store: Store) -> Result<(), String> {
         s.token.clone()
     };
     locked(store).set_old_token_off(s.ticket_verified);
+    pairing::allow(store, gate(s));
     let (accept_tx, accept_stop) = (tx.clone(), stop.clone());
     // Both supervised (#587). The hub's queue outlives a panicking attempt, so the accept
     // thread, the clients and `send` keep a good sender.
@@ -3041,6 +3123,7 @@ mod tests {
                 enabled: true,
                 port,
                 token: token.clone(),
+                allowed: vec!["hud".into()],
                 ..LiveSettings::default()
             },
             store,
@@ -3281,6 +3364,46 @@ mod tests {
             .find(|l| l.contains("couldn't retire the pairing token yet"))
             .unwrap();
         assert!(!line.contains("{e}") && !line.contains("{err"), "{line}");
+    }
+
+    #[test]
+    fn allow_adds_removes_caps_and_never_quotes_the_store() {
+        use std::cell::RefCell;
+        let saved = RefCell::new(LiveSettings::default());
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        allow_with("d:/w/hud", true, upd).unwrap();
+        allow_with("d:/w/hud", true, upd).unwrap();
+        assert_eq!(saved.borrow().allowed, vec!["d:/w/hud".to_string()]);
+        allow_with("d:/w/hud", false, upd).unwrap();
+        assert!(saved.borrow().allowed.is_empty());
+        for n in 0..MAX_ALLOWED {
+            allow_with(&format!("k{n}"), true, upd).unwrap();
+        }
+        let e = allow_with("one-too-many", true, upd).unwrap_err();
+        assert_eq!(e, "Couldn't change this. Try again.");
+        assert_eq!(saved.borrow().allowed.len(), MAX_ALLOWED);
+        let e = allow_with("x", true, |_: &mut dyn FnMut(&mut LiveSettings)| {
+            Err("[live_wallpaper] token = \"secret\"".to_string())
+        })
+        .unwrap_err();
+        assert!(!e.contains("secret"));
+    }
+
+    /// Until S5b ships the switch, an empty saved list must not cut a working wallpaper off.
+    #[test]
+    fn an_empty_allow_list_gates_nothing_until_s5b() {
+        let s = LiveSettings::default();
+        assert!(s.allowed.is_empty());
+        assert_eq!(gate(&s), None);
+        let mut p = pairing::Pairing::new();
+        p.set_allowed(gate(&s));
+        assert!(p
+            .mint("//?/DISPLAY#A", "hud/index.html", Instant::now())
+            .is_some());
     }
 
     #[test]

@@ -119,6 +119,31 @@ pub fn button(id: &str, b: &Button) -> Value {
     json!({"type": "button", "id": id, "props": props})
 }
 
+/// A `toggle` node: `label` is drawn beside the switch and is its name; `on` is its value. The
+/// hub changes it at once and sends a `ui.event` (`change`, with the new bool); if the module
+/// refuses, the hub puts it back and shows the reason (contract §2.4).
+pub fn toggle(id: &str, label: &str, on: bool) -> Value {
+    json!({"type": "toggle", "id": id, "props": {"label": label, "value": on}})
+}
+
+/// A `button` node whose id is its own (a dynamic id, one per row) and that sends a `ui.event`
+/// click, with no action and nothing to open.
+pub fn event_button(id: &str, label: &str) -> Value {
+    json!({"type": "button", "id": id, "props": {"label": label}})
+}
+
+/// Gives a node an accessible name apart from its visible text ("Let Bandit HUD use your
+/// keyboard" for a switch that reads "Allow"). The hub draws `label` and announces `name`.
+pub fn named(mut node: Value, name: &str) -> Value {
+    node["props"]["name"] = Value::String(name.to_string());
+    node
+}
+
+/// A `row` node.
+pub fn row(id: &str, children: Vec<Value>) -> Value {
+    json!({"type": "row", "id": id, "children": children})
+}
+
 /// A `section` node with a title.
 pub fn section(id: &str, title: &str, children: Vec<Value>) -> Value {
     json!({"type": "section", "id": id, "props": {"title": title}, "children": children})
@@ -346,6 +371,19 @@ mod tests {
             diff(&a.tree(), &b.tree()).is_none(),
             "a shape change registers again"
         );
+    }
+
+    #[test]
+    fn a_toggle_carries_its_label_and_value_and_patches_the_value() {
+        let on = toggle("t", "Allow", true);
+        assert_eq!(on["type"], "toggle");
+        assert_eq!(on["props"]["label"], "Allow");
+        assert_eq!(on["props"]["value"], true);
+        let ops = diff(&on, &toggle("t", "Allow", false)).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0]["props"]["value"], false);
+        let b = event_button("b:1", "Reconnect");
+        assert_eq!(b["props"], json!({"label": "Reconnect"}));
     }
 
     #[test]
