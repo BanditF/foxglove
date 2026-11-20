@@ -246,10 +246,20 @@ impl Registry {
     pub fn open(home: &Path, dev_mode: bool) -> Result<Registry, Failure> {
         let mut reg = Registry::open_bare(home, dev_mode)?;
         // Dev mode off ends every dev-folder enrolment (trust model §4: leaving dev mode is a
-        // full re-ask), so turning it back on carries nothing until a new Allow. Fail closed:
-        // the identity is gone in memory even if the write fails.
-        if !reg.dev_folders_on() {
-            let _ = reg.end_dev_enrolments(|_| true);
+        // full re-ask), and so does a folder that is no longer listed (a hand edit of
+        // hideout.toml is the only way to remove one today). Turning it back on or re-listing
+        // the folder then carries nothing until a new Allow. Fail closed: the identity is gone
+        // in memory even if the write fails (logged), and an unreadable list ends them all.
+        let ended = if !reg.dev_folders_on() {
+            reg.end_dev_enrolments(|_| true)
+        } else {
+            let listed = reg.dev_folders();
+            reg.end_dev_enrolments(|enrolled| {
+                !listed.iter().any(|f| keyboard::same_path(f, enrolled))
+            })
+        };
+        if let Err(e) = ended {
+            log::warn!("could not save the end of a dev-folder enrolment: {e:?}");
         }
         reg.load_catalogs(&foxglove_plugin_trust::now_utc());
         Ok(reg)

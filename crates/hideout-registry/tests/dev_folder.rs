@@ -708,3 +708,18 @@ fn turning_dev_mode_off_and_on_needs_an_allow_again() {
     allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
     assert!(f.reg.inventory.modules[ID].identity.is_some());
 }
+
+#[test]
+fn a_hand_edited_removal_ends_the_enrolment_and_re_listing_needs_an_allow() {
+    let mut f = fx("handremove");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    let out = canonical_path(&f.out).unwrap();
+    hand_edit(&f, &[]);
+    let gone = Registry::open(&f.home, true).unwrap();
+    assert!(gone.inventory.modules[ID].identity.is_none());
+    hand_edit(&f, &[&out]);
+    let back = Registry::open(&f.home, true).unwrap();
+    assert!(back.dev_folder_of(ID).is_none());
+    rebuild(&f, b"build 2");
+    assert_eq!(back.binding_void(ID), Some(VoidReason::Changed));
+}
