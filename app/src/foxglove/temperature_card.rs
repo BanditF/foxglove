@@ -27,7 +27,7 @@ pub const NEEDS_APP: &str =
     "Temperature needs the PC sensors app. Turn it on in Hideout's Apps page.";
 /// Start refused: Foxglove has no permission to read the PC's readings.
 pub const NOT_ALLOWED: &str =
-    "Foxglove isn't allowed to see your PC's readings. Allow it on Hideout's Apps page.";
+    "Foxglove isn't allowed to see your PC's readings. Allow it in Hideout's Apps page.";
 /// Start refused: Foxglove runs on its own.
 pub const STANDALONE: &str = "Temperature needs Hideout and its PC sensors app.";
 /// The button that takes the user to the page that fixes [`NEEDS_APP`] and [`NOT_ALLOWED`].
@@ -314,7 +314,15 @@ fn announce_status(ui: &egui::Ui, live: bool, status: Status) {
     let ctx = ui.ctx();
     let key = region_id().with("heard");
     if !live {
+        // Stopped (or the card is drawn again later): forget, and clear a status line left in
+        // the region, so a screen reader reading the page finds no stale "reading missing".
+        // Stepper words are not status words and stay.
         ctx.data_mut(|d| d.remove::<(Heard, f64)>(key));
+        if announce::said(ctx, region_id())
+            .is_some_and(|w| [SAID_MISSING, SAID_BACK, SAID_STOPPED].contains(&w.as_str()))
+        {
+            announce::say(ctx, region_id(), "");
+        }
         return;
     }
     let (mem, at): (Heard, f64) = ctx
@@ -377,24 +385,28 @@ pub fn head(ui: &mut egui::Ui, look: &Look, set: &mut impl FnMut(Look, bool)) {
     });
 }
 
+/// The label of one end's stepper.
+fn end_name(end: End) -> &'static str {
+    match end {
+        End::Cool => "Cool at",
+        End::Hot => "Hot at",
+    }
+}
+
 /// One end's stepper: its name, a minus, the value, a plus. -1, 1 or 0 for what was pressed.
 ///
 /// `gap` is this end when the ends are as close as they may be: the button that moves toward the
 /// other end then says why it stopped (hover and screen reader).
 fn stepper(
     ui: &mut egui::Ui,
-    name: &str,
+    end: End,
     value: u16,
     (down, up): (bool, bool),
     gap: Option<End>,
 ) -> i8 {
     let mut pressed = 0;
+    let name = end_name(end);
     ui.label(name);
-    let end = if name == "Cool at" {
-        End::Cool
-    } else {
-        End::Hot
-    };
     let why = |ui: &egui::Ui, r: egui::Response, stopped: bool| {
         if stopped {
             ui.ctx()
@@ -483,10 +495,10 @@ pub fn tail(
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        for (end, name) in [(End::Cool, "Cool at"), (End::Hot, "Hot at")] {
+        for end in [End::Cool, End::Hot] {
             let value = if end == End::Cool { cool } else { hot };
             let gap = at_gap(cool, hot).then_some(end);
-            let d = stepper(ui, name, value, can_step(end, cool, hot), gap);
+            let d = stepper(ui, end, value, can_step(end, cool, hot), gap);
             if d != 0 {
                 let (c, h) = step(end, d > 0, cool, hot);
                 announce::say(ui.ctx(), region_id(), step_announcement(end, c, h));
@@ -799,7 +811,7 @@ mod tests {
         assert_eq!(
             idle(hosted(Status::NotAllowed)),
             (
-                "Foxglove isn't allowed to see your PC's readings. Allow it on Hideout's Apps page."
+                "Foxglove isn't allowed to see your PC's readings. Allow it in Hideout's Apps page."
                     .into(),
                 Tone::Warn
             )
@@ -1071,6 +1083,30 @@ mod tests {
     }
 
     #[test]
+    fn stopping_clears_a_status_line_but_keeps_stepper_words() {
+        let ctx = egui::Context::default();
+        let draw = |live: bool, status: Status| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                announce_status(ui, live, status);
+            });
+            out.textures_delta.clear();
+        };
+        draw(true, Status::Missing);
+        assert_eq!(
+            announce::said(&ctx, region_id()).as_deref(),
+            Some(SAID_MISSING)
+        );
+        draw(false, Status::Missing);
+        assert_eq!(announce::said(&ctx, region_id()).as_deref(), Some(""));
+        announce::say(&ctx, region_id(), "Cool at 45 degrees Celsius");
+        draw(false, Status::Missing);
+        assert_eq!(
+            announce::said(&ctx, region_id()).as_deref(),
+            Some("Cool at 45 degrees Celsius")
+        );
+    }
+
+    #[test]
     fn a_stepper_has_no_stray_unit_item_and_the_gap_is_said_on_the_stopped_button() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
@@ -1079,12 +1115,12 @@ mod tests {
             ui.horizontal(|ui| {
                 stepper(
                     ui,
-                    "Cool at",
+                    End::Cool,
                     70,
                     can_step(End::Cool, 70, 80),
                     Some(End::Cool),
                 );
-                stepper(ui, "Hot at", 80, can_step(End::Hot, 70, 80), Some(End::Hot));
+                stepper(ui, End::Hot, 80, can_step(End::Hot, 70, 80), Some(End::Hot));
             });
         });
         let labels: Vec<&str> = nodes
@@ -1105,7 +1141,7 @@ mod tests {
         assert!(stopped.iter().all(|n| n.is_disabled()));
         // Away from the gap nothing carries the hint.
         let nodes = tree_of(&ctx, |ui| {
-            stepper(ui, "Cool at", 40, can_step(End::Cool, 40, 80), None);
+            stepper(ui, End::Cool, 40, can_step(End::Cool, 40, 80), None);
         });
         assert!(nodes.iter().all(|n| n.description().is_none()));
     }
