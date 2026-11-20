@@ -1286,3 +1286,25 @@ fn the_allow_list_is_part_of_the_wallpaper_engine_section() {
     let text = serde_json::to_string(&panel(&all, PAGE)["tree"]).unwrap();
     assert_eq!(text.matches("Wallpaper Engine isn't running.").count(), 1);
 }
+
+/// Words with no engine name still start their sentence with a capital, and a real holder name
+/// is shown as given (#1142).
+#[test]
+fn fallback_words_start_a_sentence_and_real_names_stay_as_given() {
+    assert_eq!(
+        isnt_running("your wallpaper app"),
+        "Your wallpaper app isn't running."
+    );
+    assert_eq!(
+        after_words(&After::Resumed(vec![])),
+        "Resumed. An app can pause them again."
+    );
+    assert_eq!(
+        after_words(&After::Resumed(vec!["obs".into()])),
+        "Resumed. obs can pause them again."
+    );
+    assert_eq!(
+        after_words(&After::Stopped(Some("obs".into()))),
+        "obs stopped, so its pause ended."
+    );
+}
