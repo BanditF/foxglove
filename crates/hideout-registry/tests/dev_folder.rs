@@ -240,6 +240,12 @@ fn a_path_is_inside_a_folder_by_whole_components() {
     assert!(!path_within("", r"C:\x.exe"));
 }
 
+#[test]
+fn a_case_variant_is_inside_and_a_shared_prefix_is_not() {
+    assert!(path_within(r"C:\Dev\Out", r"c:\dev\OUT\x.exe"));
+    assert!(!path_within(r"C:\Dev\Out", r"C:\Dev\Outside\x.exe"));
+}
+
 // ---- review round: folder guards (M1), keyboard record (M2), lows ----
 
 /// Gives Everyone (S-1-1-0) `rights` on `dir` through icacls (`"(OI)(CI)M"` or `"(W)"`).

@@ -51,7 +51,7 @@ pub mod words {
     }
     /// The program the app's file names is not there.
     pub fn program_missing(name: &str) -> String {
-        format!("The program for {name} is missing. Reinstall it, then try again.")
+        format!("The app file for {name} is missing. Reinstall it, then try again.")
     }
     /// Anything else that went wrong while adding (the raw reason goes to the log).
     pub fn not_saved(name: &str) -> String {
@@ -1205,6 +1205,7 @@ mod tests {
                 assert!(!l.contains(&p.name.to_lowercase()), "{w}");
             }
             assert!(!l.contains("arete") && !l.contains("module.toml"), "{w}");
+            assert!(!l.contains("program"), "{w}");
         }
     }
 }

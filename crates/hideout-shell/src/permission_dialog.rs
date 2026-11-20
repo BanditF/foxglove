@@ -1059,7 +1059,7 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
     let (title, body, dismiss) = match kind {
         HeaderKind::Ask => (
             format!("{name} needs your OK to run in Hideout"),
-            format!("Until you allow it, {name} stays off. Allow, and it starts."),
+            format!("Until you allow it, {name} stays off. Allow turns it on."),
             NOT_NOW,
         ),
         HeaderKind::Changed => (
@@ -1360,7 +1360,7 @@ mod tests {
         let h = header(HeaderKind::Ask, "foxglove", "Foxglove", None);
         assert_eq!(
             h.body,
-            "Until you allow it, Foxglove stays off. Allow, and it starts."
+            "Until you allow it, Foxglove stays off. Allow turns it on."
         );
         let h = header(
             HeaderKind::Cli,
