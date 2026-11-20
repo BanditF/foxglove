@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Finding the module that breaks Hideout (contract §7.10, #1033, docs/hideout-safe-mode-ux.md),
+//! Finding the app that breaks Hideout (contract §7.10, #1033, docs/hideout-safe-mode-ux.md),
 //! with no I/O but the progress file: from safe mode the hub starts half of the modules
 //! **Start normally** would start, and halves again by what happened.
 //!
@@ -163,7 +163,7 @@ pub enum Phase {
     Found { entry: usize },
     /// The result: Hideout stayed open in every round.
     NotFound,
-    /// The result: Hideout closed with no modules on.
+    /// The result: Hideout closed with no apps on.
     HubItself,
 }
 
@@ -697,7 +697,7 @@ pub mod words {
     pub use crate::words::{COPY_DIAGNOSTICS as COPY, FIND_CULPRIT as FIND, START_NORMALLY};
 
     /// The bar's landmark name.
-    pub const REGION: &str = "Finding the module that breaks Hideout";
+    pub const REGION: &str = "Finding the app that breaks Hideout";
     pub const USE_AS_USUAL: &str = "Use Hideout as usual. If it closes, it'll pick up here.";
     pub const ITS_FINE: &str = "It's fine";
     pub const IT_CLOSED: &str = "It closed";
@@ -708,24 +708,23 @@ pub mod words {
     pub const OFF_FOR_ROUND: &str = "Off for this round";
     pub const NOT_IN_SEARCH: &str = "Off \u{b7} not part of the search";
     /// Under the list, and the locked buttons' description.
-    pub const LOCKED: &str = "Locked while finding the module. Stop finding to change it.";
+    pub const LOCKED: &str = "Locked while finding the app. Stop finding to change it.";
     pub const START_ANYWAY: &str = "Start normally anyway";
     pub const TRY_AGAIN: &str = "Try again";
     pub const NOT_FOUND: &str = "Hideout stayed open in every round.";
-    pub const NOT_FOUND_LINE: &str =
-        "It may need two modules on together, or the problem has passed.";
-    pub const HUB_ITSELF: &str = "Hideout closed with no modules on.";
-    pub const HUB_ITSELF_LINE: &str = "The problem is in Hideout itself, not a module.";
+    pub const NOT_FOUND_LINE: &str = "It may need two apps on together, or the problem has passed.";
+    pub const HUB_ITSELF: &str = "Hideout closed with no apps on.";
+    pub const HUB_ITSELF_LINE: &str = "The problem is in Hideout itself, not an app.";
     /// The safe-mode banner's line after Stop finding.
     pub const STOPPED: &str = "Stopped finding. Nothing was changed.";
     /// The banner's line when no module would start (no link then).
-    pub const NONE_ON: &str = "No modules are on, so the problem is in Hideout itself.";
-    pub const TRAY_FOUND: &str = "Hideout \u{b7} found the module";
-    pub const NOTIFY_FOUND: &str = "Found the module";
+    pub const NONE_ON: &str = "No apps are on, so the problem is in Hideout itself.";
+    pub const TRAY_FOUND: &str = "Hideout \u{b7} found the app";
+    pub const NOTIFY_FOUND: &str = "Found the app";
     pub const OPEN_HIDEOUT: &str = "Open Hideout";
 
     pub fn title(k: u32, n: u32) -> String {
-        format!("Finding the module that breaks Hideout \u{b7} Round {k} of {n}")
+        format!("Finding the app that breaks Hideout \u{b7} Round {k} of {n}")
     }
 
     /// "Lights, Art, Chat", then "… and 2 more".
@@ -758,7 +757,7 @@ pub mod words {
     }
 
     pub fn on_line(a: usize, b: usize, names: &[String]) -> String {
-        format!("{a} of {b} modules are on: {}.", comma_list(names))
+        format!("{a} of {b} apps are on: {}.", comma_list(names))
     }
 
     /// The one-entry search's line.
@@ -838,7 +837,7 @@ pub mod words {
     }
 
     pub fn tray_round(k: u32, n: u32) -> String {
-        format!("Hideout \u{b7} finding the module (round {k} of {n})")
+        format!("Hideout \u{b7} finding the app (round {k} of {n})")
     }
 
     /// Nothing is on while paused or asked, so the tray doesn't say "finding" (designer, #1050).
@@ -1084,13 +1083,13 @@ mod tests {
         let v = view(&s, Some(Duration::from_secs(239)), None);
         assert_eq!(
             v.title,
-            "Finding the module that breaks Hideout \u{b7} Round 2 of 4"
+            "Finding the app that breaks Hideout \u{b7} Round 2 of 4"
         );
         assert_eq!(
             v.lines,
             [
                 "Round 1 was fine.",
-                "2 of 6 modules are on: Dock, Echo.",
+                "2 of 6 apps are on: Dock, Echo.",
                 "Use Hideout as usual. If it closes, it'll pick up here.",
                 "This round ends in 4 min if Hideout stays open.",
             ]
@@ -1110,7 +1109,7 @@ mod tests {
                 6,
                 &["Lights", "Art", "Chat", "Dock", "Echo"].map(String::from)
             ),
-            "5 of 6 modules are on: Lights, Art, Chat and 2 more."
+            "5 of 6 apps are on: Lights, Art, Chat and 2 more."
         );
         s.closed();
         let v = view(&s, None, None);
@@ -1129,7 +1128,7 @@ mod tests {
         s.start_next();
         assert_eq!(
             tray(&s).unwrap().line,
-            "Hideout \u{b7} finding the module (round 3 of 4)"
+            "Hideout \u{b7} finding the app (round 3 of 4)"
         );
         s.after_exit(Exit::Unclean);
         let v = view(&s, None, Some("0.4.2"));
@@ -1156,11 +1155,11 @@ mod tests {
                 "Go back to Dock 0.4.2"
             ]
         );
-        assert_eq!(tray(&s).unwrap().line, "Hideout \u{b7} found the module");
+        assert_eq!(tray(&s).unwrap().line, "Hideout \u{b7} found the app");
         assert_eq!(
             notification(&s).unwrap(),
             (
-                "Found the module".to_string(),
+                "Found the app".to_string(),
                 "Dock seems to make Hideout close.".to_string()
             )
         );
@@ -1184,7 +1183,7 @@ mod tests {
             (v.title.as_str(), v.lines[0].as_str()),
             (
                 "Hideout stayed open in every round.",
-                "It may need two modules on together, or the problem has passed."
+                "It may need two apps on together, or the problem has passed."
             )
         );
         let b: Vec<&str> = v.buttons.iter().map(|b| b.1.as_str()).collect();

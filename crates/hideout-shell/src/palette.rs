@@ -122,7 +122,7 @@ mod tests {
         let mut stopped = Entry::new("art", "Art: Open");
         stopped.unavailable = Some("stopped after 5 crashes".into());
         vec![
-            Entry::new("modules", "Modules"),
+            Entry::new("modules", "Apps"),
             Entry::new("gpu", "AI: Free GPU"),
             stopped,
             Entry::new("mic", "Mic: Mute"),
@@ -134,10 +134,7 @@ mod tests {
         let p = Palette::default();
         let es = entries();
         let labels: Vec<_> = p.matches(&es).iter().map(|e| e.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            ["Modules", "AI: Free GPU", "Mic: Mute", "Art: Open"]
-        );
+        assert_eq!(labels, ["Apps", "AI: Free GPU", "Mic: Mute", "Art: Open"]);
     }
 
     #[test]

@@ -71,15 +71,15 @@ pub const WITHDRAWN_TAB: &str = "Withdrawn by its publisher";
 /// The longest publisher's note drawn on the card, in characters (decision 1, 11/10).
 pub const NOTE_MAX: usize = 160;
 
-/// The safe-mode banner on the Modules page (§7.10, UX plan "Safe mode and finding the
+/// The safe-mode banner on the Apps page (§7.10, UX plan "Safe mode and finding the
 /// culprit"): title, line, main button, second action.
 pub const SAFE_MODE: &str = "Safe mode";
-pub const SAFE_MODE_LINE: &str = "Hideout closed 3 times in 5 minutes, so no modules were started.";
+pub const SAFE_MODE_LINE: &str = "Hideout closed 3 times in 5 minutes, so no apps were started.";
 /// The line when the flag was set by hand (`safe_mode = true` in hideout.toml), not by the
 /// closes: it doesn't claim a cause (#1033).
-pub const SAFE_MODE_LINE_SET: &str = "Safe mode is on, so no modules were started.";
+pub const SAFE_MODE_LINE_SET: &str = "Safe mode is on, so no apps were started.";
 pub const START_NORMALLY: &str = "Start normally";
-pub const FIND_CULPRIT: &str = "Find the module that breaks Hideout";
+pub const FIND_CULPRIT: &str = "Find the app that breaks Hideout";
 /// The tooltip of a step that isn't built yet (bisect).
 pub const COMES_LATER: &str = "Comes in a later Hideout.";
 /// The banner's line: the closes' cause only when they turned safe mode on.
@@ -401,7 +401,7 @@ pub fn waiting_reason(root: &str) -> String {
 }
 
 /// `module.<id>.reason` when sandboxing is on and the module can't run in one (§7.7).
-pub const NO_SANDBOX: &str = "It can't run in a sandbox, and Hideout is set to sandbox modules.";
+pub const NO_SANDBOX: &str = "It can't run in a sandbox, and Hideout is set to sandbox apps.";
 
 /// `needs-hub` (§7.8).
 pub const NEEDS_HUB: &str = "Needs a newer Hideout";
@@ -813,9 +813,9 @@ mod tests {
             (SAFE_MODE, SAFE_MODE_LINE, START_NORMALLY, FIND_CULPRIT),
             (
                 "Safe mode",
-                "Hideout closed 3 times in 5 minutes, so no modules were started.",
+                "Hideout closed 3 times in 5 minutes, so no apps were started.",
                 "Start normally",
-                "Find the module that breaks Hideout"
+                "Find the app that breaks Hideout"
             )
         );
     }
@@ -1041,6 +1041,10 @@ mod tests {
             build_needs_ok("Foxglove"),
             build_asks_for_more("Foxglove", 3),
             RUNS_WITH_WHAT_YOU_ALLOWED.into(),
+            SAFE_MODE_LINE.into(),
+            SAFE_MODE_LINE_SET.into(),
+            FIND_CULPRIT.into(),
+            NO_SANDBOX.into(),
         ];
         for w in [
             NewBuild::Kept,
@@ -1061,7 +1065,12 @@ mod tests {
         ] {
             all.push(not_carried(w, "D:\\out"));
         }
+        for s in crate::bisect::words::every_string() {
+            assert!(!s.to_lowercase().contains("module"), "module in {s:?}");
+        }
         for line in &all {
+            // The Apps page's rows and the permission dialog's copy has the same guard in
+            // hideout-shell (modules_list.rs, permission_dialog.rs): this crate can't see them.
             for bad in ["module", "hash", "enrol", "grant", "sha", "bound"] {
                 assert!(!line.to_lowercase().contains(bad), "{bad:?} in {line:?}");
             }

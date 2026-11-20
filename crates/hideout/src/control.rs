@@ -291,7 +291,7 @@ fn queue_grant(
     (
         NEEDS_OK,
         format!(
-            "Queued: {n} item(s) for {}. Nothing is allowed yet: confirm in Hideout, on the Modules page.",
+            "Queued: {n} item(s) for {}. Nothing is allowed yet: confirm in Hideout, on the Apps page.",
             list.name
         ),
     )
@@ -812,7 +812,10 @@ mod tests {
         );
         assert_eq!(c, NEEDS_OK, "{t}");
         assert!(
-            t.contains("Queued") && t.contains("Nothing is allowed yet"),
+            t.contains("Queued")
+                && t.contains("Nothing is allowed yet")
+                && t.contains("on the Apps page")
+                && !t.to_lowercase().contains("module"),
             "{t}"
         );
         // Nothing was written and the router did not widen.

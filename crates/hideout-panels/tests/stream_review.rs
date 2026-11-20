@@ -311,7 +311,7 @@ fn renders_the_stream_states_for_review() {
         ("paused", "Paused by you"),
         ("stale", "No new frames"),
         ("stopped", "Stopped updating"),
-        ("restarting", "Module restarting"),
+        ("restarting", "App restarting"),
         ("refused", "Couldn't be shown"),
     ];
     let mut hosts: Vec<(PanelHost, &str)> =

@@ -320,7 +320,7 @@ impl Marks {
             return (State::NeedsYou, line, tip);
         }
         if let Some(s) = &self.search {
-            // "Hideout · finding the module (round 2 of 4)": the line and the tooltip.
+            // "Hideout · finding the app (round 2 of 4)": the line and the tooltip.
             return (State::SafeMode, s.line.clone(), s.line.clone());
         }
         if self.safe_mode {
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(m.take_safe_change(), Some(true));
         let _ = m.take_search_change();
         let round = Tray {
-            line: "Hideout \u{b7} finding the module (round 2 of 4)".into(),
+            line: "Hideout \u{b7} finding the app (round 2 of 4)".into(),
             start_next: None,
             stop: true,
         };
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(m.take_search_change(), Some(Some(round)));
         assert_eq!(m.take_search_change(), None);
         m.set_search(Some(Tray {
-            line: "Hideout \u{b7} found the module".into(),
+            line: "Hideout \u{b7} found the app".into(),
             start_next: None,
             stop: false,
         }));

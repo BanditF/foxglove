@@ -74,7 +74,7 @@ pub struct Item {
 }
 
 /// The reason lines under "Can't be allowed".
-pub const REASON_NEVER: &str = "Hideout never allows this for this module.";
+pub const REASON_NEVER: &str = "Hideout never allows this for this app.";
 pub const REASON_OVERLAP: &str = "Another app already answers these.";
 
 /// The plain line for `provide:<method>`.

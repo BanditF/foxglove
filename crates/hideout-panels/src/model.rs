@@ -71,7 +71,7 @@ pub fn state_words(state: &str) -> &'static str {
         "updating" => "Updating",
         "restarting" => "Restarting",
         "crash-stopped" | "crash-looped" => "Stopped after 5 crashes",
-        "waiting" => "Waiting for another module",
+        "waiting" => "Waiting for another app",
         "needs-hub" => "Needs a newer Hideout",
         "install-failed" => "Couldn't install or update",
         "revoked" => "Withdrawn",

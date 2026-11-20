@@ -110,7 +110,7 @@ pub const DIALOG_ITEMS: [&str; 4] = [
 ];
 pub const DIALOG_FOOTER: [&str; 2] = [
     "Each app still needs its own permission. Nothing leaves this PC.",
-    "You can turn this off any time in Modules, Foxglove.",
+    "You can turn this off any time in Apps, Foxglove.",
 ];
 pub const DIALOG_BINDING: [&str; 2] = [
     "Only for this copy of Foxglove:",
@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn no_state_says_a_forbidden_word() {
         let bad = [
-            "module mode",
+            "module",
             "method",
             "area",
             "router",

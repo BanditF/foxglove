@@ -831,7 +831,7 @@ pub fn tray_panel_ui(
     let shown: Vec<TileEntry> = tiles.iter().filter(|t| t.shown).cloned().collect();
     if shown.is_empty() {
         ui.label(RichText::new("No tiles to show").strong());
-        ui.label(RichText::new("Edit tiles to choose which modules show here.").weak());
+        ui.label(RichText::new(EMPTY_TILES_LINE).weak());
     }
     let keys = tile_keys(ui, &shown);
     let mut picks = Vec::new();
@@ -929,3 +929,6 @@ pub fn tray_panel_ui(
     }
     report
 }
+
+/// The empty tray's second line.
+pub const EMPTY_TILES_LINE: &str = "Edit tiles to choose which apps show here.";

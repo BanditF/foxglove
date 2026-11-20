@@ -639,7 +639,7 @@ fn the_modules_rows_say_each_state() {
     let facts = state_facts();
     let fact = |k: &str| facts.get(k).cloned();
     let r = crate::modules_list::row(&installed()[0], &fact, None);
-    assert_eq!(r.state, "Waiting for another module");
+    assert_eq!(r.state, "Waiting for another app");
     assert!(r.primary.is_none());
 }
 

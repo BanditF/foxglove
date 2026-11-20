@@ -384,7 +384,7 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                         }
                     });
                     if let Some(r) = &item.reason {
-                        ui.label(fine(ui, r.replace("this module", &name)).color(c(t.text_muted)));
+                        ui.label(fine(ui, r.replace("this app", &name)).color(c(t.text_muted)));
                     }
                     continue;
                 }
