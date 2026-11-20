@@ -7,12 +7,17 @@
 //! the list, and nothing on the page can hand this a path to add.
 #![cfg_attr(not(windows), allow(dead_code))]
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use hideout_registry::dev_folder::{DevFolderRefusal, FolderProblem, RowProblem};
+use hideout_registry::dev_folder::{path_within, DevFolderRefusal, FolderProblem, RowProblem};
+use hideout_registry::inventory::{IdentityClass, ADOPTED};
+use hideout_registry::keyboard::same_path;
 use hideout_registry::Registry;
-use hideout_shell::dev_settings::{self as words, DevClick, DevControl, DevRow, DevView, Note};
+use hideout_shell::dev_settings::{
+    self as words, AppAction, AppState, DevApp, DevClick, DevControl, DevRow, DevView, Note,
+};
 use words::Problem;
 
 /// Picks a folder; `None` when the user cancelled.
@@ -33,6 +38,12 @@ pub struct RegistryDev {
     /// The line after the last click, and when it was said.
     note: Option<(Note, Instant)>,
     shown: Option<(DevView, Instant)>,
+    /// The apps kept over rebuilds in `shown`, each with whether it is turned on.
+    kept: BTreeMap<String, bool>,
+    /// Hub facts (the run state); none without a hub.
+    facts: Option<Facts>,
+    /// Review... and Set up...: asks for an app's permission dialog.
+    opener: Option<Open>,
 }
 
 impl RegistryDev {
@@ -43,7 +54,22 @@ impl RegistryDev {
             mode: None,
             note: None,
             shown: None,
+            kept: BTreeMap::new(),
+            facts: None,
+            opener: None,
         }
+    }
+
+    /// Where the apps' run state comes from.
+    pub fn with_facts(mut self, f: Facts) -> Self {
+        self.facts = Some(f);
+        self
+    }
+
+    /// What Review... and Set up... do.
+    pub fn with_open(mut self, o: Open) -> Self {
+        self.opener = Some(o);
+        self
     }
 
     #[cfg(test)]
@@ -66,15 +92,31 @@ impl RegistryDev {
         }
     }
 
-    fn read(&self) -> DevView {
+    /// The listed folders with their apps; `kept` is filled with the apps kept over rebuilds.
+    fn rows(reg: &Registry, kept: &mut BTreeMap<String, bool>) -> Vec<DevRow> {
+        reg.dev_folder_rows()
+            .into_iter()
+            .map(|r| {
+                let apps = apps_in(reg, &r.path, r.problem.is_none(), kept);
+                DevRow {
+                    path: r.path,
+                    apps,
+                    problem: r.problem.map(row_problem),
+                }
+            })
+            .collect()
+    }
+
+    fn read(&self) -> (DevView, BTreeMap<String, bool>) {
+        let mut kept = BTreeMap::new();
         // An unreadable registry shows dev mode off: nothing here can be changed.
         let Some(reg) = self.open() else {
-            return DevView::default();
+            return (DevView::default(), kept);
         };
         if !reg.dev_folders_on() {
             // Off: the page shows nothing unless folders are still listed, and then only their
             // paths.
-            return DevView {
+            let v = DevView {
                 folders: reg
                     .dev_folders()
                     .into_iter()
@@ -86,21 +128,15 @@ impl RegistryDev {
                     .collect(),
                 ..DevView::default()
             };
+            return (v, kept);
         }
-        DevView {
+        let v = DevView {
             on: true,
-            folders: reg
-                .dev_folder_rows()
-                .into_iter()
-                .map(|r| DevRow {
-                    path: r.path,
-                    apps: r.apps,
-                    problem: r.problem.map(row_problem),
-                })
-                .collect(),
+            folders: Self::rows(&reg, &mut kept),
             restart: reg.restart_after_rebuild(),
             note: None,
-        }
+        };
+        (v, kept)
     }
 
     fn add(&mut self) {
@@ -120,7 +156,16 @@ impl RegistryDev {
             Ok(a) if a.was_listed => self.say(words::ALREADY, false),
             Ok(a) => {
                 log::info!("dev folder added by the user: {}", a.path);
-                self.say(words::ADDED, false);
+                // Apps already in it that still need the user's Review: named, never allowed here.
+                let mut kept = BTreeMap::new();
+                let names: Vec<String> = Self::rows(&reg, &mut kept)
+                    .into_iter()
+                    .filter(|r| same_path(&r.path, &a.path))
+                    .flat_map(|r| r.apps)
+                    .filter(|x| matches!(x.state, AppState::NotKept | AppState::NeedsOk))
+                    .map(|x| x.name)
+                    .collect();
+                self.say(&words::added_line(&names), false);
             }
             Err(e) => self.refused(e),
         }
@@ -145,11 +190,11 @@ impl RegistryDev {
             return;
         };
         // Only a listed folder can be taken off, by the spelling the list shows.
-        let apps = reg
-            .dev_folder_rows()
+        let mut kept = BTreeMap::new();
+        let apps = Self::rows(&reg, &mut kept)
             .into_iter()
             .find(|r| r.path == path)
-            .map(|r| r.apps);
+            .map(|r| words::kept_names(&r.apps));
         let Some(apps) = apps else {
             // Not on the list: nothing was removed, so nothing is claimed.
             self.note = None;
@@ -191,6 +236,23 @@ impl RegistryDev {
         }
     }
 
+    /// Review... / Set up... on an app line: only for an app the page shows with that link.
+    fn ask(&self, id: &str, what: AppAction) {
+        let shown = self.shown.as_ref().is_some_and(|(v, _)| {
+            v.folders
+                .iter()
+                .flat_map(|r| &r.apps)
+                .any(|a| a.id == id && a.state.action() == Some(what))
+        });
+        if !shown {
+            log::warn!("dev folders: {what:?} for an app the page does not show that way: ignored");
+            return;
+        }
+        if let Some(open) = &self.opener {
+            open(id, what == AppAction::SetUp);
+        }
+    }
+
     fn say(&mut self, text: &str, error: bool) {
         self.note = Some((
             Note {
@@ -199,6 +261,104 @@ impl RegistryDev {
             },
             Instant::now(),
         ));
+    }
+}
+
+/// Reads a fact of the hub (`module.<id>.state`); none when there is no hub or no such fact.
+pub type Facts = Box<dyn Fn(&str) -> Option<serde_json::Value>>;
+
+/// Shows an app's permission dialog: (the hub's id, true for Set up... and false for Review...).
+pub type Open = Box<dyn Fn(&str, bool)>;
+
+/// How an app that is kept over rebuilds is doing, from whether it is on and its `state` fact.
+/// A missing or unknown fact is never "running".
+fn run_state(enabled: bool, fact: Option<&serde_json::Value>) -> AppState {
+    if !enabled {
+        return AppState::Off;
+    }
+    match fact.and_then(|v| v.as_str()) {
+        Some("running") => AppState::Running,
+        Some("starting" | "restarting" | "update-busy") => AppState::Restarting,
+        Some("crash-stopped" | "crash-looped" | "install-failed" | "quarantined" | "revoked") => {
+            AppState::Stopped
+        }
+        _ => AppState::Off,
+    }
+}
+
+/// The apps in one listed folder, and which of them are kept (id to whether it is turned on).
+///
+/// A row that qualifies lists every adopted app whose program is inside the folder. A row with a
+/// problem lists only what was stored for it, as ignored. Read only.
+fn apps_in(
+    reg: &Registry,
+    folder: &str,
+    qualifies: bool,
+    kept: &mut BTreeMap<String, bool>,
+) -> Vec<DevApp> {
+    let mut out: Vec<DevApp> = Vec::new();
+    for (id, m) in &reg.inventory.modules {
+        if m.source != ADOPTED {
+            continue;
+        }
+        let name = |v: Option<&hideout_registry::permission::View>| {
+            v.map(|v| v.listing.name.clone())
+                .filter(|n| !n.is_empty())
+                .or_else(|| reg.manifest(id).map(|m| m.name))
+                .unwrap_or_else(|| id.clone())
+        };
+        let view = reg.permission_view(id).ok();
+        let state = if !qualifies {
+            // Only what was stored for this folder.
+            let stored = matches!(
+                m.identity.as_ref().map(|i| &i.class),
+                Some(IdentityClass::DevFolder { folder: Some(f) }) if same_path(f, folder)
+            );
+            if !stored {
+                continue;
+            }
+            AppState::Ignored
+        } else {
+            let Some(v) = view.as_ref() else { continue };
+            if !path_within(folder, &v.listing.exe_path) {
+                continue;
+            }
+            if v.bound.is_none() && v.granted.is_empty() {
+                AppState::NotAllowed
+            } else if v.void.is_some() || (v.bound.is_some() && !v.pending.is_empty()) {
+                AppState::NeedsOk
+            } else if !reg.dev_folder_of(id).is_some_and(|f| same_path(&f, folder)) {
+                AppState::NotKept
+            } else {
+                // The run state is read from the facts on every frame; this is its placeholder.
+                AppState::Off
+            }
+        };
+        if state.kept() {
+            kept.insert(id.clone(), reg.hub.enabled(id));
+        }
+        out.push(DevApp {
+            id: id.clone(),
+            name: name(view.as_ref()),
+            state,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+    out
+}
+
+/// Gives each kept app its run state from the facts as they are now.
+fn restate(v: &mut DevView, kept: &BTreeMap<String, bool>, facts: Option<&Facts>) {
+    for row in &mut v.folders {
+        for app in &mut row.apps {
+            if matches!(app.state, AppState::Ignored) {
+                continue;
+            }
+            if let Some(&enabled) = kept.get(&app.id) {
+                let f = facts.and_then(|f| f(&format!("module.{}.state", app.id)));
+                app.state = run_state(enabled, f.as_ref());
+            }
+        }
     }
 }
 
@@ -245,10 +405,15 @@ impl DevControl for RegistryDev {
                 {
                     self.note = None;
                 }
-                self.read()
+                let (v, kept) = self.read();
+                self.kept = kept;
+                v
             }
         };
         self.shown = Some((v.clone(), Instant::now()));
+        // The run state is read from the facts on every frame, so a change shows without a
+        // fresh registry read and without a timer.
+        restate(&mut v, &self.kept, self.facts.as_ref());
         v.note = self.note.as_ref().map(|(n, _)| n.clone());
         v
     }
@@ -258,6 +423,8 @@ impl DevControl for RegistryDev {
             DevClick::Add => self.add(),
             DevClick::Remove(p) => self.remove(&p),
             DevClick::Restart(on) => self.restart(on),
+            DevClick::Review(id) => self.ask(&id, AppAction::Review),
+            DevClick::SetUp(id) => self.ask(&id, AppAction::SetUp),
         }
         // The next frame reads the list again.
         self.shown = None;
@@ -425,6 +592,120 @@ mod tests {
         // A fresh click sets a fresh note.
         c.click(DevClick::Add);
         assert!(c.view().note.is_some());
+    }
+
+    #[test]
+    fn a_missing_or_unknown_state_is_never_running() {
+        use serde_json::json;
+        assert_eq!(run_state(true, Some(&json!("running"))), AppState::Running);
+        assert_eq!(run_state(true, None), AppState::Off);
+        assert_eq!(run_state(true, Some(&json!("whatever"))), AppState::Off);
+        assert_eq!(run_state(true, Some(&json!(7))), AppState::Off);
+        assert_eq!(run_state(false, Some(&json!("running"))), AppState::Off);
+        for s in ["starting", "restarting", "update-busy"] {
+            assert_eq!(run_state(true, Some(&json!(s))), AppState::Restarting);
+        }
+        for s in [
+            "crash-stopped",
+            "crash-looped",
+            "install-failed",
+            "quarantined",
+            "revoked",
+        ] {
+            assert_eq!(run_state(true, Some(&json!(s))), AppState::Stopped);
+        }
+        for s in ["waiting", "update-waiting", "off"] {
+            assert_eq!(run_state(true, Some(&json!(s))), AppState::Off);
+        }
+    }
+
+    fn app(id: &str, state: AppState) -> DevApp {
+        DevApp {
+            id: id.into(),
+            name: id.to_uppercase(),
+            state,
+        }
+    }
+
+    #[test]
+    fn the_run_state_follows_the_facts_every_frame() {
+        use serde_json::json;
+        let fact = Rc::new(RefCell::new(None::<serde_json::Value>));
+        let f2 = fact.clone();
+        let (mut c, _n, _h) = ctl("restate", true);
+        c = c.with_facts(Box::new(move |k| {
+            (k == "module.vulpes.state")
+                .then(|| f2.borrow().clone())
+                .flatten()
+        }));
+        c.kept.insert("vulpes".into(), true);
+        c.kept.insert("idle".into(), false);
+        let v = DevView {
+            on: true,
+            folders: vec![DevRow {
+                path: "C:\\d".into(),
+                apps: vec![app("vulpes", AppState::Off), app("idle", AppState::Off)],
+                problem: None,
+            }],
+            ..DevView::default()
+        };
+        c.shown = Some((v, Instant::now()));
+        let state = |c: &mut RegistryDev| c.view().folders[0].apps[0].state;
+        assert_eq!(state(&mut c), AppState::Off);
+        *fact.borrow_mut() = Some(json!("running"));
+        assert_eq!(state(&mut c), AppState::Running);
+        *fact.borrow_mut() = Some(json!("restarting"));
+        assert_eq!(state(&mut c), AppState::Restarting);
+        *fact.borrow_mut() = None;
+        assert_eq!(state(&mut c), AppState::Off, "no fact is never running");
+        // The app that is turned off stays off whatever the fact says.
+        *fact.borrow_mut() = Some(json!("running"));
+        assert_eq!(c.view().folders[0].apps[1].state, AppState::Off);
+    }
+
+    #[test]
+    fn review_and_set_up_open_only_what_the_page_shows_that_way() {
+        let asked = Rc::new(RefCell::new(Vec::<(String, bool)>::new()));
+        let a2 = asked.clone();
+        let (mut c, _n, _h) = ctl("ask", true);
+        c = c.with_open(Box::new(move |id, up| {
+            a2.borrow_mut().push((id.into(), up))
+        }));
+        let view = || DevView {
+            on: true,
+            folders: vec![DevRow {
+                path: "C:\\d".into(),
+                apps: vec![
+                    app("ok", AppState::NeedsOk),
+                    app("new", AppState::NotAllowed),
+                    app("run", AppState::Running),
+                ],
+                problem: None,
+            }],
+            ..DevView::default()
+        };
+        // Cached and shown as such: acts.
+        c.shown = Some((view(), Instant::now()));
+        c.click(DevClick::Review("ok".into()));
+        c.shown = Some((view(), Instant::now()));
+        c.click(DevClick::SetUp("new".into()));
+        assert_eq!(
+            *asked.borrow(),
+            vec![("ok".to_string(), false), ("new".to_string(), true)]
+        );
+        // Wrong link for the app, an app that is running, an unknown id: nothing opens.
+        for click in [
+            DevClick::SetUp("ok".into()),
+            DevClick::Review("new".into()),
+            DevClick::Review("run".into()),
+            DevClick::Review("nope".into()),
+        ] {
+            c.shown = Some((view(), Instant::now()));
+            c.click(click);
+        }
+        // Nothing was shown yet: nothing opens.
+        c.click(DevClick::Review("ok".into()));
+        assert_eq!(asked.borrow().len(), 2);
     }
 
     #[test]

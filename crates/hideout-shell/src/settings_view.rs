@@ -5,7 +5,7 @@
 //! (H5.2, only when the hub gives it a row), then **Developer** (R5, only when the hub gives it
 //! a control), then **About** (the version). The hub binary owns the page and its action; this draws it.
 
-use crate::dev_settings::{self, DevClick, DevView};
+use crate::dev_settings::{self, DevApp, DevClick, DevView};
 use crate::startup_switch::{self, Click, Row};
 use crate::theme::{Rgb, Tokens};
 use eframe::egui::{self, RichText};
@@ -262,6 +262,40 @@ pub(crate) fn open_remove_confirm(ctx: &egui::Context, path: &str) {
     });
 }
 
+/// One app line: "{name} \u{b7} {state}", and **Review...** or **Set up...** after it when the
+/// state has one. The line is one label for a screen reader; the link names the app.
+fn app_line(ui: &mut egui::Ui, t: &Tokens, app: &DevApp) -> Option<DevClick> {
+    let mut click = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        // Needs-attention states read at full strength; the rest are quiet.
+        let colour = if app.state.action().is_some() {
+            c(t.text)
+        } else {
+            c(t.text_muted)
+        };
+        let l = ui.add(egui::Label::new(RichText::new(app.line()).color(colour)).wrap());
+        let label = app.label();
+        ui.ctx()
+            .accesskit_node_builder(l.id, |n| n.set_label(label));
+        if let (Some(act), Some(name)) = (app.state.action(), app.action_name()) {
+            ui.label(RichText::new("\u{b7}").color(c(t.text_muted)));
+            let b = ui.link(RichText::new(act.label()).color(c(t.text)));
+            ui.ctx().accesskit_node_builder(b.id, |n| {
+                n.set_role(egui::accesskit::Role::Link);
+                n.set_label(name);
+            });
+            if b.clicked() {
+                click = Some(match act {
+                    dev_settings::AppAction::Review => DevClick::Review(app.id.clone()),
+                    dev_settings::AppAction::SetUp => DevClick::SetUp(app.id.clone()),
+                });
+            }
+        }
+    });
+    click
+}
+
 /// The Developer section (R5). Dev mode off: one line and nothing to click.
 fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
     let mut click = None;
@@ -311,20 +345,21 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.add(egui::Label::new(RichText::new(&row.path).strong().color(c(t.text))).wrap());
-                match row.problem {
-                    Some(p) => {
-                        ui.add(
-                            egui::Label::new(RichText::new(p.row_line()).color(c(t.danger))).wrap(),
-                        );
-                    }
-                    None => {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(dev_settings::apps_line(&row.apps))
-                                    .color(c(t.text_muted)),
-                            )
-                            .wrap(),
-                        );
+                // A problem row says so, and still lists its apps (from what was stored), so
+                // the user sees who is affected before choosing Remove.
+                if let Some(p) = row.problem {
+                    ui.add(egui::Label::new(RichText::new(p.row_line()).color(c(t.danger))).wrap());
+                } else if row.apps.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(dev_settings::NO_APPS).color(c(t.text_muted)),
+                        )
+                        .wrap(),
+                    );
+                }
+                for app in &row.apps {
+                    if let Some(k) = app_line(ui, t, app) {
+                        click = Some(k);
                     }
                 }
                 ui.add_space(4.0);
@@ -382,7 +417,7 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
             .folders
             .iter()
             .find(|r| r.path == path)
-            .map(|r| r.apps.clone())
+            .map(|r| dev_settings::kept_names(&r.apps))
             .unwrap_or_default();
         let fresh = std::mem::take(&mut st.fresh);
         match remove_confirm(ui.ctx(), t, &path, &apps, fresh) {

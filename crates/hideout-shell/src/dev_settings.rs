@@ -43,12 +43,146 @@ pub fn remove_name(path: &str) -> String {
     format!("Remove dev folder {path}")
 }
 
-/// The sub-line under a folder: "Foxglove, Vulpes" or [`NO_APPS`].
-pub fn apps_line(apps: &[String]) -> String {
-    if apps.is_empty() {
-        NO_APPS.to_string()
-    } else {
-        apps.join(", ")
+// App lines (DF2): one line per app in a folder, "{name} \u{b7} {state}", the state in words.
+pub const REVIEW: &str = "Review\u{2026}";
+pub const SET_UP: &str = "Set up\u{2026}";
+
+/// What one app in a dev folder is doing, as a person would say it. Never colour alone: each
+/// state is its own words. A state Hideout could not read is never [`AppState::Running`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppState {
+    /// Kept over rebuilds and running.
+    Running,
+    /// Kept over rebuilds, off or idle (and any state that is not known).
+    Off,
+    /// Kept, starting or restarting.
+    Restarting,
+    /// Kept, stopped after crashes or could not start.
+    Stopped,
+    /// Its OK is void or it asks for more.
+    NeedsOk,
+    /// Inside the folder and allowed, but its rebuilds are not kept yet.
+    NotKept,
+    /// Inside the folder and never allowed.
+    NotAllowed,
+    /// On a row Hideout ignores: shown from what was stored.
+    Ignored,
+}
+
+/// What the link beside an app line does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppAction {
+    Review,
+    SetUp,
+}
+
+impl AppState {
+    pub fn words(self) -> &'static str {
+        match self {
+            AppState::Running => "Running",
+            AppState::Off => "Off",
+            AppState::Restarting => "Restarting\u{2026}",
+            AppState::Stopped => "Stopped",
+            AppState::NeedsOk => "Needs your OK",
+            AppState::NotKept => "Not kept over rebuilds yet",
+            AppState::NotAllowed => "Not allowed yet",
+            AppState::Ignored => "Not kept while Hideout ignores this folder",
+        }
+    }
+
+    pub fn action(self) -> Option<AppAction> {
+        match self {
+            AppState::NeedsOk | AppState::NotKept => Some(AppAction::Review),
+            AppState::NotAllowed => Some(AppAction::SetUp),
+            _ => None,
+        }
+    }
+
+    /// Its rebuilds are kept (so Remove makes it ask again).
+    pub fn kept(self) -> bool {
+        matches!(
+            self,
+            AppState::Running
+                | AppState::Off
+                | AppState::Restarting
+                | AppState::Stopped
+                | AppState::Ignored
+        )
+    }
+}
+
+impl AppAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            AppAction::Review => REVIEW,
+            AppAction::SetUp => SET_UP,
+        }
+    }
+}
+
+/// One app inside a dev folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevApp {
+    /// The hub's id for it (what a click hands back; never shown).
+    pub id: String,
+    pub name: String,
+    pub state: AppState,
+}
+
+impl DevApp {
+    /// The visible line: "Vulpes \u{b7} Needs your OK".
+    pub fn line(&self) -> String {
+        format!("{} \u{b7} {}", self.name, self.state.words())
+    }
+
+    /// The screen reader's one label: "Vulpes, needs your OK".
+    pub fn label(&self) -> String {
+        let w = self.state.words().trim_end_matches('\u{2026}');
+        let mut ch = w.chars();
+        let low: String = ch
+            .next()
+            .map(|f| f.to_lowercase().chain(ch).collect())
+            .unwrap_or_default();
+        format!("{}, {low}", self.name)
+    }
+
+    /// The link's accessible name: "Review Vulpes" / "Set up Vulpes".
+    pub fn action_name(&self) -> Option<String> {
+        self.state.action().map(|a| match a {
+            AppAction::Review => format!("Review {}", self.name),
+            AppAction::SetUp => format!("Set up {}", self.name),
+        })
+    }
+}
+
+/// The names of the apps whose rebuilds are kept: who asks again when the folder is removed.
+pub fn kept_names(apps: &[DevApp]) -> Vec<String> {
+    apps.iter()
+        .filter(|a| a.state.kept())
+        .map(|a| a.name.clone())
+        .collect()
+}
+
+fn join_and(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// The note after adding a folder that has apps already allowed in it: points to Review... and
+/// grants nothing.
+pub fn added_line(names: &[String]) -> String {
+    match names {
+        [] => ADDED.to_string(),
+        [one] => format!(
+            "Added. {one} is in this folder. Review it once so its rebuilds keep what you allowed."
+        ),
+        many => format!(
+            "Added. {} are in this folder. Review each once so their rebuilds keep what you allowed.",
+            join_and(many)
+        ),
     }
 }
 
@@ -159,8 +293,8 @@ impl Problem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DevRow {
     pub path: String,
-    /// Names of the apps allowed from it.
-    pub apps: Vec<String>,
+    /// The apps inside it.
+    pub apps: Vec<DevApp>,
     /// Set when the folder no longer qualifies (its apps are not carried).
     pub problem: Option<Problem>,
 }
@@ -191,6 +325,10 @@ pub enum DevClick {
     Remove(String),
     /// The restart switch, to this state.
     Restart(bool),
+    /// An app's **Review...**: the hub opens its permission dialog (by the hub's id).
+    Review(String),
+    /// An app's **Set up...**: the same dialog for an app never allowed.
+    SetUp(String),
 }
 
 /// What the Settings page holds for this section (object safe, like `StartupControl`).
@@ -211,11 +349,7 @@ mod tests {
         );
         assert_eq!(ADD, "Add a folder\u{2026}");
         assert_eq!(remove_name(r"C:\Dev\app"), r"Remove dev folder C:\Dev\app");
-        assert_eq!(apps_line(&[]), "No apps from here yet");
-        assert_eq!(
-            apps_line(&["Foxglove".into(), "Vulpes".into()]),
-            "Foxglove, Vulpes"
-        );
+        assert_eq!(NO_APPS, "No apps from here yet");
         assert_eq!(removed_line(&[]), "Removed.");
         assert_eq!(
             removed_line(&["Foxglove".into()]),
@@ -279,9 +413,118 @@ mod tests {
             let apps: Vec<String> = (0..n).map(|i| format!("App{i}")).collect();
             all.push(confirm_body(&apps));
             all.push(removed_line(&apps));
+            all.push(added_line(&apps));
         }
         for l in all {
             let l = l.to_lowercase();
+            for bad in ["module", "hash", "enrol", "grant", "program"] {
+                assert!(!l.contains(bad), "{l}");
+            }
+        }
+    }
+
+    fn app(name: &str, state: AppState) -> DevApp {
+        DevApp {
+            id: name.to_lowercase(),
+            name: name.into(),
+            state,
+        }
+    }
+
+    #[test]
+    fn each_app_state_has_its_own_words_and_the_right_link() {
+        let all = [
+            (AppState::Running, "Running", None),
+            (AppState::Off, "Off", None),
+            (AppState::Restarting, "Restarting\u{2026}", None),
+            (AppState::Stopped, "Stopped", None),
+            (AppState::NeedsOk, "Needs your OK", Some(AppAction::Review)),
+            (
+                AppState::NotKept,
+                "Not kept over rebuilds yet",
+                Some(AppAction::Review),
+            ),
+            (
+                AppState::NotAllowed,
+                "Not allowed yet",
+                Some(AppAction::SetUp),
+            ),
+            (
+                AppState::Ignored,
+                "Not kept while Hideout ignores this folder",
+                None,
+            ),
+        ];
+        for (s, words, act) in all {
+            assert_eq!(s.words(), words);
+            assert_eq!(s.action(), act);
+            let l = app("Vulpes", s).line();
+            assert_eq!(l, format!("Vulpes \u{b7} {words}"));
+            // Internal words never reach the user.
+            for bad in ["module", "hash", "enrol", "grant", "program", "identity"] {
+                assert!(!l.to_lowercase().contains(bad), "{l}");
+            }
+        }
+        assert_eq!((REVIEW, SET_UP), ("Review\u{2026}", "Set up\u{2026}"));
+    }
+
+    #[test]
+    fn an_app_reads_as_one_label_and_its_link_names_it() {
+        assert_eq!(
+            app("Foxglove", AppState::Running).label(),
+            "Foxglove, running"
+        );
+        assert_eq!(
+            app("Vulpes", AppState::NeedsOk).label(),
+            "Vulpes, needs your OK"
+        );
+        assert_eq!(
+            app("Gizmo Keys", AppState::NotKept).label(),
+            "Gizmo Keys, not kept over rebuilds yet"
+        );
+        assert_eq!(app("A", AppState::Restarting).label(), "A, restarting");
+        assert_eq!(
+            app("Vulpes", AppState::NeedsOk).action_name().as_deref(),
+            Some("Review Vulpes")
+        );
+        assert_eq!(
+            app("Gizmo", AppState::NotAllowed).action_name().as_deref(),
+            Some("Set up Gizmo")
+        );
+        assert_eq!(app("Foxglove", AppState::Running).action_name(), None);
+    }
+
+    #[test]
+    fn only_kept_apps_ask_again_on_remove() {
+        let apps = [
+            app("A", AppState::Running),
+            app("B", AppState::NeedsOk),
+            app("C", AppState::NotKept),
+            app("D", AppState::NotAllowed),
+            app("E", AppState::Ignored),
+            app("F", AppState::Off),
+        ];
+        assert_eq!(kept_names(&apps), vec!["A", "E", "F"]);
+    }
+
+    #[test]
+    fn the_added_line_points_to_review_and_grants_nothing() {
+        assert_eq!(added_line(&[]), ADDED);
+        assert_eq!(
+            added_line(&["Vulpes".into()]),
+            "Added. Vulpes is in this folder. Review it once so its rebuilds keep what you allowed."
+        );
+        assert_eq!(
+            added_line(&["A".into(), "B".into()]),
+            "Added. A and B are in this folder. Review each once so their rebuilds keep what you allowed."
+        );
+        assert_eq!(
+            added_line(&["A".into(), "B".into(), "C".into()]),
+            "Added. A, B and C are in this folder. Review each once so their rebuilds keep what you allowed."
+        );
+        for n in 0..4 {
+            let names: Vec<String> = (0..n).map(|i| format!("App{i}")).collect();
+            let l = added_line(&names).to_lowercase();
             for bad in ["module", "hash", "enrol", "grant", "program"] {
                 assert!(!l.contains(bad), "{l}");
             }

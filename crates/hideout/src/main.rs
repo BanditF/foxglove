@@ -40,6 +40,8 @@ mod panel_feed;
 mod permission_actions;
 #[cfg(windows)]
 mod rebuild_start;
+#[cfg(windows)]
+mod review_ask;
 // Off Windows only the state machine exists, and only its tests use it.
 #[cfg_attr(not(windows), allow(dead_code))]
 mod rebuild_watch;
@@ -436,10 +438,21 @@ fn main() {
     // Developer (R5): dev folders, Add a folder..., the restart switch; the hub that holds the
     // router only, like Add an app....
     if started._router.is_some() {
-        settings = settings.with_dev(Box::new(dev_settings::RegistryDev::new(
+        let router = started._router.clone();
+        let mut dev = dev_settings::RegistryDev::new(
             paths.root.clone(),
             Box::new(hideout_shell::pick_folder),
-        )));
+        )
+        // An app's run state: the supervisor's `module.<id>.state` fact, the tray's source.
+        .with_open(Box::new(|id, set_up| {
+            // Review... and Set up... leave a request for the Modules page and show that page.
+            review_ask::push(id, set_up);
+            hideout_shell::open_module(modules_page::ID);
+        }));
+        if let Some(hub) = router {
+            dev = dev.with_facts(Box::new(move |k| hub.read(|r| r.fact(k).cloned())));
+        }
+        settings = settings.with_dev(Box::new(dev));
     }
     pages.push(Box::new(settings));
     let opts = hideout_shell::ShellOptions {
