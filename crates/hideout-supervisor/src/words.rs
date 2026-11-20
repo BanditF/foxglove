@@ -600,6 +600,8 @@ pub fn every_string() -> Vec<String> {
         build_needs_ok("Art"),
         build_asks_for_more("Art", 1),
         build_asks_for_more("Art", 3),
+        waiting_for_ok("Art", 1),
+        waiting_for_ok("Art", 3),
         RUNS_WITH_WHAT_YOU_ALLOWED.into(),
         not_carried(NotCarried::DevModeOff, ""),
         not_carried(NotCarried::AllowedFromCommandLine, ""),
@@ -609,6 +611,8 @@ pub fn every_string() -> Vec<String> {
         NewBuild::Kept,
         NewBuild::AsksMore(1),
         NewBuild::AsksMore(2),
+        NewBuild::KeptWaiting(1),
+        NewBuild::KeptWaiting(2),
         NewBuild::Unfinished,
         NewBuild::Unreadable,
         NewBuild::HeldForOk,
@@ -684,6 +688,16 @@ fn more_things(n: usize) -> String {
 pub fn build_asks_for_more(name: &str, n: usize) -> String {
     format!("{name}'s new build asks for {}", more_things(n))
 }
+/// The header while the new items' origin is not known (before S2's diff): true whether the
+/// build grew or items were left unanswered earlier.
+pub fn waiting_for_ok(name: &str, n: usize) -> String {
+    let things = if n == 1 {
+        "1 thing".to_string()
+    } else {
+        format!("{n} things")
+    };
+    format!("{name} has {things} waiting for your OK")
+}
 /// Its second line.
 pub const RUNS_WITH_WHAT_YOU_ALLOWED: &str = "It runs with what you allowed until then.";
 
@@ -694,6 +708,8 @@ pub enum NewBuild {
     Kept,
     /// Carried; `n` new items wait for the user.
     AsksMore(usize),
+    /// Carried; `n` items (new or left over) still wait for the user.
+    KeptWaiting(usize),
     Unfinished,
     Unreadable,
     HeldForOk,
@@ -708,6 +724,14 @@ pub fn new_build_line(when: &str, what: NewBuild) -> String {
         NewBuild::AsksMore(n) => {
             let wait = if n == 1 { "that waits" } else { "those wait" };
             format!("{head}. It asks for {}; {wait} for you.", more_things(n))
+        }
+        NewBuild::KeptWaiting(n) => {
+            let (things, wait) = if n == 1 {
+                ("1 thing".to_string(), "waits")
+            } else {
+                (format!("{n} things"), "wait")
+            };
+            format!("{head}. What you allowed stayed; {things} still {wait} for you.")
         }
         NewBuild::Unfinished => format!("{head}, not used: it looked unfinished."),
         NewBuild::Unreadable => format!("{head}, not used: Hideout couldn't read it."),
