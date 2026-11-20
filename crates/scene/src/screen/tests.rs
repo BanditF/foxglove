@@ -480,6 +480,56 @@ fn after_a_hold_the_lights_ease_back_to_the_screen() {
     }
 }
 
+/// Reduced motion (#1085): the hold stays, the fade becomes a cut to the lights' own colours.
+#[test]
+fn with_animations_off_a_hand_back_cuts_instead_of_fading() {
+    let (room, mut glow) = settled_on_red(Smoothing::Even, 3000);
+    let t0 = 3050;
+    let own = BTreeMap::from([(key("keyboard:left", "all"), Rgb(BLUE))]);
+    glow.hand_back_with(HandBack::Game, own, BTreeMap::new(), SceneTime(t0), false);
+    let f = glow.render(&room, &[], SceneTime(t0 + 40));
+    assert_eq!(
+        light(&f, "keyboard:left", "all"),
+        Rgb(BLUE),
+        "no in-between"
+    );
+    assert!(glow.handed_back(SceneTime(t0 + 40)));
+
+    let (room, mut glow) = settled_on_red(Smoothing::Even, 3000);
+    let own = BTreeMap::from([(key("keyboard:left", "all"), Rgb(BLUE))]);
+    glow.hand_back_with(HandBack::Failed, own, BTreeMap::new(), SceneTime(t0), false);
+    let f = glow.render(&room, &[], SceneTime(t0 + FAIL_HOLD_MS - 1));
+    assert!(close(light(&f, "keyboard:left", "all"), RED), "still held");
+    let f = glow.render(&room, &[], SceneTime(t0 + FAIL_HOLD_MS + 40));
+    assert_eq!(light(&f, "keyboard:left", "all"), Rgb(BLUE), "then cut");
+}
+
+/// The hold ends mid-fade: the lights ease back to the screen from where the fade had got to,
+/// with no jump (to the own colour, to black or to the screen).
+#[test]
+fn a_hold_that_ends_mid_fade_retargets_from_the_current_colour() {
+    let (room, mut glow) = settled_on_red(Smoothing::Even, 3000);
+    let t0 = 3050;
+    let own = BTreeMap::from([(key("keyboard:left", "all"), Rgb(BLUE))]);
+    glow.hand_back(HandBack::Game, own, BTreeMap::new(), SceneTime(t0));
+    let mid = light(
+        &glow.render(&room, &[], SceneTime(t0 + 500)),
+        "keyboard:left",
+        "all",
+    );
+    glow.resume();
+    let next = light(
+        &glow.render(&room, &filled(GREEN), SceneTime(t0 + 540)),
+        "keyboard:left",
+        "all",
+    );
+    assert!(
+        apart(next, mid) < apart(mid, Rgb(GREEN)) * 0.97 && apart(next, mid) < 0.5,
+        "from {mid:?} to {next:?}"
+    );
+    assert!(apart(next, Rgb(BLUE)) > 0.1 && apart(next, Rgb([0, 0, 0])) > 0.1);
+}
+
 /// The flash limit holds during a fade too: a fade right after a strobe waits for it.
 #[test]
 fn a_fade_keeps_the_flash_limit() {

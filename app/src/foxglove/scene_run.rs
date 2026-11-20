@@ -1031,11 +1031,10 @@ fn control(
             if now_held && gates.scene && !gates.away && !gates.paused {
                 let why = hand_back_for(reader.gates());
                 let own = super::pc_lights::scene_own_colours();
-                fading = outputs.lock().unwrap_or_else(|e| e.into_inner()).hand_back(
-                    why,
-                    &own,
-                    clock.now(),
-                );
+                let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+                o.set_animations(super::screen_glow::animations_on());
+                fading = o.hand_back(why, &own, clock.now());
+                drop(o);
                 eprintln!(
                     "Foxglove: screen glow hands the lights back ({why:?}: {} ms, then {} ms)",
                     why.hold_ms(),

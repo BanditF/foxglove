@@ -612,6 +612,8 @@ pub struct Outputs {
     /// Screen glow's hand-backs so far (each a generation), when the current one reached its
     /// own colours, and whether that was reported.
     hand_backs: u64,
+    /// False under reduced motion: a hand-back cuts instead of fading.
+    animate_fades: bool,
     handed_at: Option<i64>,
     hand_back_reported: bool,
     /// Each area light's colour as the last frame showed it (after its easing): a hand-back
@@ -665,6 +667,7 @@ impl Outputs {
             held_seen: false,
             busy_until: 0,
             hand_backs: 0,
+            animate_fades: true,
             handed_at: None,
             hand_back_reported: false,
             areas_shown: BTreeMap::new(),
@@ -836,12 +839,17 @@ impl Outputs {
                 own.extend(halves.into_iter().map(|(k, _)| (k, mix)));
             }
         }
-        g.hand_back(why, own, self.areas_shown.clone(), t);
+        g.hand_back_with(why, own, self.areas_shown.clone(), t, self.animate_fades);
         self.hand_backs += 1;
         self.handed_at = None;
         self.hand_back_reported = false;
         self.kick = true;
         Some(self.hand_backs)
+    }
+
+    /// Reduced motion (Windows' animation effects off): the next hand-back cuts instead of fading.
+    pub fn set_animations(&mut self, on: bool) {
+        self.animate_fades = on;
     }
 
     /// The hold ended: Screen glow eases back to the screen from where the fade left the lights.
@@ -1455,6 +1463,27 @@ mod tests {
             "no jump: {area:?} -> {:?}",
             first[1].1
         );
+    }
+
+    /// #1085, reduced motion: with animations off the game's hand-back cuts to the own colours
+    /// at its first frame and reports itself done.
+    #[test]
+    fn with_animations_off_a_game_hand_back_cuts() {
+        use foxglove_scene::screen::HandBack;
+        let (mut o, _feed, t0) = glowing_red(foxglove_scene::Smoothing::Even);
+        o.set_animations(false);
+        let blue = [20, 40, 230];
+        let own = BTreeMap::from([("103c:84fd".to_string(), (0..5).map(|i| (i, blue)).collect())]);
+        let generation = o.hand_back(HandBack::Game, &own, SceneTime(t0)).unwrap();
+        let mut t = t0;
+        let mut done = None;
+        while done.is_none() {
+            o.frame(SceneTime(t));
+            done = o.take_handed_back(SceneTime(t));
+            t += 1000 / 30;
+            assert!(t < t0 + 500, "a cut is done well inside the fade's time");
+        }
+        assert_eq!(done, Some(generation));
     }
 
     /// #1085: capture failing holds the last colours for 2 s with no frame meanwhile (the
