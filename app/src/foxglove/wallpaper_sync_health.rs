@@ -64,7 +64,7 @@ impl Reason {
             Reason::Reload => "after a full-screen program (Wallpaper Engine's reload)",
             Reason::Reinstalled => "a wallpaper on screen was reinstalled or updated",
             Reason::Reconnect => "a wallpaper connected to the live feed",
-            Reason::Pairing => "a wallpaper's pairing ticket was handed over again",
+            Reason::Pairing => "a wallpaper was given its link to the live feed again",
         }
     }
 }

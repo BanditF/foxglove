@@ -327,7 +327,7 @@ mod tests {
     fn a_rows_own_notice_text_wins() {
         let own = row(
             "live_feed",
-            "Live wallpaper pairing",
+            "Live wallpaper",
             Level::Warn,
             "a wallpaper couldn't connect",
         )
@@ -338,14 +338,14 @@ mod tests {
         );
         let plain = row(
             "live_feed",
-            "Live wallpaper pairing",
+            "Live wallpaper",
             Level::Warn,
             "a wallpaper couldn't connect",
         );
         assert_eq!(
             text(&plain),
             (
-                "Live wallpaper pairing: warning".to_string(),
+                "Live wallpaper: warning".to_string(),
                 "a wallpaper couldn't connect. See Keyboard health on the App page.".to_string()
             )
         );
