@@ -386,6 +386,9 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                 }
                 let r = ui
                     .horizontal(|ui| {
+                        // A plain-words line can be long (a whole family of readings): it wraps
+                        // inside the dialog instead of widening it past a narrow window.
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                         let text = egui::RichText::new(&item.line);
                         let text = if item.sensitive {
                             text.color(c(t.danger))

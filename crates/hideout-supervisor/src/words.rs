@@ -517,6 +517,12 @@ pub fn every_string() -> Vec<String> {
         update_asks(Some("see every key you press"), true),
         update_asks(None, false),
     ]);
+    // The consent lines for fact permissions reach this surface through `update_asks`.
+    v.extend(
+        hideout_contract::permission::fact_lines()
+            .iter()
+            .map(|l| update_asks(Some(l), false)),
+    );
     for s in [
         NEEDS_HUB,
         NO_SANDBOX,
