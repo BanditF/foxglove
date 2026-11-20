@@ -245,6 +245,12 @@ impl Registry {
     /// and loads each source's stored catalog ([`Registry::load_catalogs`], #1049).
     pub fn open(home: &Path, dev_mode: bool) -> Result<Registry, Failure> {
         let mut reg = Registry::open_bare(home, dev_mode)?;
+        // Dev mode off ends every dev-folder enrolment (trust model §4: leaving dev mode is a
+        // full re-ask), so turning it back on carries nothing until a new Allow. Fail closed:
+        // the identity is gone in memory even if the write fails.
+        if !reg.dev_folders_on() {
+            let _ = reg.end_dev_enrolments(|_| true);
+        }
         reg.load_catalogs(&foxglove_plugin_trust::now_utc());
         Ok(reg)
     }

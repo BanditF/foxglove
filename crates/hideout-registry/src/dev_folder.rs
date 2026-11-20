@@ -226,7 +226,7 @@ impl Registry {
 
     /// Developer mode is on, and not only through the legacy Foxglove plugin variable: a plugin
     /// developer who set `FOXGLOVE_DEV_UNSIGNED_PLUGINS` did not ask for dev-folder trust.
-    fn dev_folders_on(&self) -> bool {
+    pub(crate) fn dev_folders_on(&self) -> bool {
         let var = |n: &str| std::env::var(n).is_ok_and(|s| s == "1");
         self.dev_mode && !(var("FOXGLOVE_DEV_UNSIGNED_PLUGINS") && !var("HIDEOUT_DEV_UNSIGNED"))
     }
@@ -277,7 +277,40 @@ impl Registry {
             return Ok(false);
         }
         self.change_hub(|h| h.set_dev_folders(&list))?;
+        // The enrolment ends with the folder: re-adding it later must ask again (an Allow).
+        let gone: Vec<String> = all.into_iter().filter(|f| !list.contains(f)).collect();
+        self.end_dev_enrolments(|enrolled| gone.iter().any(|g| same_path(g, enrolled)))?;
         Ok(true)
+    }
+
+    /// Drops the `dev-folder` identity of every module whose enrolled folder `ends` says so (a
+    /// DevFolder identity with no folder always counts as ended: fail closed), on disk and in
+    /// memory. The grants stay as they are; only the carry is gone, so the next rebuild voids
+    /// as for any app and a later re-add of the folder enrols nothing until a new Allow.
+    pub(crate) fn end_dev_enrolments(
+        &mut self,
+        ends: impl Fn(&str) -> bool,
+    ) -> Result<(), Failure> {
+        let ended = |m: &Installed| {
+            matches!(
+                m.identity.as_ref().map(|i| &i.class),
+                Some(IdentityClass::DevFolder { folder }) if folder.as_deref().is_none_or(&ends)
+            )
+        };
+        if !self.inventory.modules.values().any(ended) {
+            return Ok(());
+        }
+        // In memory first, so a failed write still leaves this process without the carry.
+        for m in self.inventory.modules.values_mut().filter(|m| ended(m)) {
+            m.identity = None;
+        }
+        let path = self.home.join("inventory.json");
+        crate::inventory::Inventory::update(&path, |inv| {
+            for m in inv.modules.values_mut().filter(|m| ended(m)) {
+                m.identity = None;
+            }
+        })?;
+        Ok(())
     }
 
     /// The dev folder a canonical program path sits in, now: developer mode on, the path on a
