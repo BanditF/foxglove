@@ -67,7 +67,87 @@
     <InstallExecuteSequence>
       <Custom Action="RemoveAutostart" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
-    <UIRef Id="WixUI_Minimal" />
+
+    <!-- FR6 (review/ux-plan-first-run.md, Q1): a one-page install and a finish page. No accept box
+         (Hub/user choice, overriding the Q1 recommendation): an "I accept" box gates Install, next to a
+         "Read the license" button that opens the license on its own page. The finish page has "Open Hideout now" ticked, which starts the hub as the user
+         with no arguments (never the tray flag, nothing at sign-in), and the line that apps already
+         on the PC stay as they are. -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open Hideout now" />
+    <Property Id="WixShellExecTarget" Value="[#HideoutExe]" />
+    <CustomAction Id="LaunchHideout" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" Return="ignore" />
+
+    <UI Id="HideoutUI">
+      <UIRef Id="WixUI_Common" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <DialogRef Id="CancelDlg" />
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Dialog Id="HideoutInstallDlg" Width="370" Height="270" Title="Install Hideout">
+        <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes">
+          <Text>{\WixUI_Font_Title}Install Hideout</Text>
+        </Control>
+        <Control Id="Body" Type="Text" X="20" Y="50" Width="330" Height="45" Transparent="yes" NoPrefix="yes"
+                 Text="Hideout runs your apps for keyboards, lights and more in one place. It installs for you only, in your user folder." />
+        <Control Id="LicenseLine" Type="Text" X="20" Y="110" Width="200" Height="17" Transparent="yes" NoPrefix="yes"
+                 Text="Free under the MIT license." />
+        <Control Id="ReadLicense" Type="PushButton" X="20" Y="130" Width="100" Height="17" Text="Read the license">
+          <Publish Event="NewDialog" Value="HideoutLicenseDlg">1</Publish>
+        </Control>
+        <Control Id="LicenseAccepted" Type="CheckBox" X="20" Y="160" Width="330" Height="18" CheckBoxValue="1"
+                 Property="LicenseAccepted" Text="I accept the terms of the license" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Install" Type="PushButton" ElevationShield="no" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Install">
+          <Publish Event="EndDialog" Value="Return">LicenseAccepted = "1"</Publish>
+          <Condition Action="disable">NOT LicenseAccepted</Condition>
+          <Condition Action="enable">LicenseAccepted</Condition>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Dialog Id="HideoutLicenseDlg" Width="370" Height="270" Title="Hideout license">
+        <Control Id="License" Type="ScrollableText" X="20" Y="20" Width="330" Height="195" Sunken="yes" TabSkip="no">
+          <Text SourceFile="$(sys.SOURCEFILEDIR)license.rtf" />
+        </Control>
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="304" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="Back">
+          <Publish Event="NewDialog" Value="HideoutInstallDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Dialog Id="ExitDialog" Width="370" Height="270" Title="Hideout is installed">
+        <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes">
+          <Text>{\WixUI_Font_Title}Hideout is installed</Text>
+        </Control>
+        <Control Id="Description" Type="Text" X="20" Y="50" Width="330" Height="45" Transparent="yes" NoPrefix="yes"
+                 Text="Apps you already have stay as they are. Hideout does not start when you sign in unless you turn that on." />
+        <Control Id="OptionalCheckBox" Type="CheckBox" X="20" Y="120" Width="330" Height="18" CheckBoxValue="1"
+                 Property="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Text="Open Hideout now">
+          <!-- A re-run of the MSI (Installed) launches nothing, so the box is not shown then. -->
+          <Condition Action="hide">Installed</Condition>
+        </Control>
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="Finish">
+          <Publish Event="DoAction" Value="LaunchHideout">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed</Publish>
+          <Publish Event="EndDialog" Value="Return">1</Publish>
+        </Control>
+      </Dialog>
+
+      <InstallUISequence>
+        <Show Dialog="HideoutInstallDlg" Before="ProgressDlg">Installed="" AND NOT RESUME AND NOT Preselected</Show>
+        <Show Dialog="ExitDialog" OnExit="success" />
+      </InstallUISequence>
+    </UI>
     <WixVariable Id="WixUILicenseRtf" Value="$(sys.SOURCEFILEDIR)license.rtf" />
   </Product>
 </Wix>

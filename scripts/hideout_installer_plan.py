@@ -47,7 +47,7 @@ def plan(wxs=WXS):
     walk(product, '')
     out = {'product': product.get('Name'), 'upgrade_code': product.get('UpgradeCode'),
            'version': product.get('Version'), 'files': [], 'registry': [], 'shortcuts': [],
-           'uninstall_actions': [], 'removes': []}
+           'uninstall_actions': [], 'finish_actions': [], 'removes': []}
     for comp in product.iter(NS + 'Component'):
         folder = paths.get(owner.get(id(comp)), '?')
         for f in comp.findall(NS + 'File'):
@@ -60,7 +60,10 @@ def plan(wxs=WXS):
         for rf in comp.findall(NS + 'RemoveFolder'):
             out['removes'].append(paths.get(rf.get('Directory') or owner.get(id(comp)), '?'))
     for ca in product.findall(NS + 'CustomAction'):
-        out['uninstall_actions'].append(ca.get('FileKey') + ' ' + ca.get('ExeCommand'))
+        if ca.get('FileKey'):
+            out['uninstall_actions'].append(ca.get('FileKey') + ' ' + ca.get('ExeCommand'))
+        else:
+            out['finish_actions'].append(ca.get('Id') + ' (only if "Open Hideout now" is ticked, as the user, no arguments)')
     return out
 
 
@@ -72,6 +75,8 @@ def render(p):
     lines += [f"  {r['key']} {r['name']} ({r['type']}) = {r['value']}" for r in p['registry']]
     lines.append('Shortcuts:')
     lines += [f"  {s['path']} -> {s['target']}" for s in p['shortcuts']]
+    lines.append('On the finish page, as the user:')
+    lines += ['  ' + a for a in p['finish_actions']]
     lines.append('On uninstall (not an upgrade), as the user, before the files go:')
     lines += ['  ' + a for a in p['uninstall_actions']]
     lines.append('Uninstall removes all of the above, and these folders if empty: ' + ', '.join(p['removes']))

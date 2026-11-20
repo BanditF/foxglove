@@ -37,7 +37,7 @@ try {
     candle.exe -nologo -arch x64 "-dVersion=$Version" "-dHideoutExe=$exe" -out "$obj\" (Join-Path $wix 'hideout.wxs')
     if ($LASTEXITCODE -ne 0) { throw 'candle failed' }
     # ICE61 (same-version upgrades) is expected, as for Foxglove's MSI.
-    light.exe -nologo -ext WixUIExtension -sice:ICE61 -out $msi (Join-Path $obj 'hideout.wixobj')
+    light.exe -nologo -ext WixUIExtension -ext WixUtilExtension -sice:ICE61 -out $msi (Join-Path $obj 'hideout.wixobj')
     if ($LASTEXITCODE -ne 0) { throw 'light failed' }
     if (-not (Test-Path $msi)) { throw 'No MSI was built' }
     Write-Host "Built (unsigned, not installed): $msi"
