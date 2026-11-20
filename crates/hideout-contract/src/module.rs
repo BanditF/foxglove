@@ -264,6 +264,10 @@ pub struct ModuleAction {
     pub decl: ActionDecl,
     #[serde(default)]
     pub when: Option<String>,
+    /// One plain line shown with the action's button after the first run ("Press a layer key
+    /// to see the layer overlay."). Optional: apps that declare none show none.
+    #[serde(default)]
+    pub hint: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -421,7 +425,7 @@ const SCHEMA: &[(&str, &[&str])] = &[
             "name", "label", "kind", "default", "min", "max", "filter", "when",
         ],
     ),
-    ("actions", &["id", "name", "when"]),
+    ("actions", &["id", "name", "when", "hint"]),
     ("secrets", &["name", "label"]),
     ("mcp", &["tools"]),
     (
@@ -1295,7 +1299,11 @@ impl Module {
             actions: m
                 .actions
                 .into_iter()
-                .map(|decl| ModuleAction { decl, when: None })
+                .map(|decl| ModuleAction {
+                    decl,
+                    when: None,
+                    hint: None,
+                })
                 .collect(),
             secrets: m.secrets,
             mcp_tools: vec![],

@@ -38,6 +38,12 @@ struct Decl {
     panels: Vec<ActionPanel>,
     /// The declared `[[actions]]`: id and `when`.
     actions: Vec<(String, Option<String>)>,
+    /// The declared `[[actions]]`' words, by id (`identify` gives the done card its button).
+    action_names: Vec<(String, String)>,
+    /// The declared `hint` lines, by action id.
+    action_hints: Vec<(String, String)>,
+    /// The module registers a page.
+    has_page: bool,
 }
 
 /// The running module's words for an item, from its registered tree.
@@ -169,6 +175,20 @@ impl QuickActions {
                 .iter()
                 .map(|a| (a.decl.id.clone(), a.when.clone()))
                 .collect(),
+            action_names: m
+                .actions
+                .iter()
+                .map(|a| (a.decl.id.clone(), a.decl.name.clone()))
+                .collect(),
+            action_hints: m
+                .actions
+                .iter()
+                .filter_map(|a| {
+                    let h = a.hint.as_deref()?.trim();
+                    (!h.is_empty()).then(|| (a.decl.id.clone(), h.to_string()))
+                })
+                .collect(),
+            has_page: m.panels.iter().any(|p| p.slot == Slot::Page),
         };
         for p in &decl.panels {
             if !decl.actions.iter().any(|(a, _)| a == &p.id) {
@@ -374,6 +394,36 @@ impl QuickActions {
             .map(|i| (i.module.clone(), i.action.clone()))
     }
 
+    /// The words of the module's declared `identify` action ("Show the lights") when its
+    /// manifest has one and its `when` holds; `None` otherwise.
+    pub fn identify(&self, module: &str) -> Option<String> {
+        let d = self.modules.get(module)?;
+        let (_, when) = d.actions.iter().find(|(a, _)| a == IDENTIFY)?;
+        if !self.when(when.as_deref()) {
+            return None;
+        }
+        d.action_names
+            .iter()
+            .find(|(a, _)| a == IDENTIFY)
+            .map(|(_, n)| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+    }
+
+    /// The `hint` line the manifest gives the `identify` action, if any.
+    pub fn identify_hint(&self, module: &str) -> Option<String> {
+        self.modules
+            .get(module)?
+            .action_hints
+            .iter()
+            .find(|(a, _)| a == IDENTIFY)
+            .map(|(_, h)| h.clone())
+    }
+
+    /// The module registers a page that opening it can go to.
+    pub fn has_page(&self, module: &str) -> bool {
+        self.modules.get(module).is_some_and(|d| d.has_page)
+    }
+
     /// A module's name for people ("AI"), its id when no manifest gave one.
     pub fn name(&self, module: &str) -> String {
         self.modules
@@ -557,6 +607,37 @@ pub(crate) fn press(n: u32) {
             i(&module, &action);
         }
         None => log::warn!("tray: {module}/{action}: no router in this hub"),
+    }
+}
+
+/// The action id a manifest uses for "show me it works" (the done card's button, FR4).
+pub const IDENTIFY: &str = "identify";
+
+/// The words of `module`'s declared `identify` action, if its manifest has one.
+pub fn identify_words(module: &str) -> Option<String> {
+    with(|q| q.identify(module))
+}
+
+/// The manifest's hint line for `module`'s `identify` action, if it has one.
+pub fn identify_hint(module: &str) -> Option<String> {
+    with(|q| q.identify_hint(module))
+}
+
+/// Whether `module` registers a page (so the done card may offer "Open <app>").
+pub fn has_page(module: &str) -> bool {
+    with(|q| q.has_page(module))
+}
+
+/// The user's click on a hub button (the done card's Show the lights): `module`'s `action`
+/// goes to it as `action.invoke {source: "tray"}`, like a tray press. Nothing else calls it.
+pub fn invoke(module: &str, action: &str) {
+    let invoke = INVOKER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    match invoke {
+        Some(i) => {
+            log::info!("hub: {module}/{action} pressed");
+            i(module, action);
+        }
+        None => log::warn!("hub: {module}/{action}: no router in this hub"),
     }
 }
 

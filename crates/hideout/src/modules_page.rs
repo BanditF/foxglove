@@ -103,6 +103,8 @@ pub struct ModulesPage {
     /// The Found card and Add an app… (slice 5); `None` on a second hub.
     pub discover: Option<crate::discover::DiscoverUi>,
     restarts: hideout_shell::modules_list::Restarts,
+    /// The Done card after the user's Allow started an app (first-run FR4).
+    done: hideout_shell::done_card::Done,
     /// The Remove confirm: the row menu asks, only the confirm's Remove removes.
     ask: hideout_shell::modules_list::RemoveAsk,
     /// Which rebuild restarts were already told, by module id (the fact's value), so a redraw,
@@ -369,6 +371,8 @@ impl ModulesPage {
             Then::TurnOn => match a.turn_on(&done.id) {
                 Ok(()) => {
                     self.set_enabled(&done.id, true);
+                    // The user's Allow started it: the Done card says so, live.
+                    self.done.show_for(&done.id);
                     if done.id == crate::keyboard_actions::MODULE {
                         if let Some(g) = self.grant.as_mut() {
                             g.after_turn_on();
@@ -404,6 +408,75 @@ impl ModulesPage {
         if let Some(p) = self.perm.as_mut() {
             p.refresh();
             p.open(id, crate::permission_actions::Opener::TurnOn);
+        }
+    }
+
+    /// The Done card for this frame: the status from the app's facts, the button from its
+    /// manifest and the offers still worth making. `None` while it is hidden or its app is gone.
+    fn done_card(&self) -> Option<hideout_shell::done_card::Card> {
+        use hideout_shell::done_card::Inputs;
+        let id = self.done.module()?;
+        let name = self.installed.iter().find(|m| m.id == id)?.name.clone();
+        let none = |_: &str| None;
+        let facts: &dyn Fn(&str) -> Option<serde_json::Value> = match &self.facts {
+            Some(f) => f.as_ref(),
+            None => &none,
+        };
+        let more = self
+            .discover
+            .as_ref()
+            .map(|d| {
+                d.state
+                    .shown()
+                    .into_iter()
+                    .filter(|c| c.id != id && !self.installed.iter().any(|m| m.id == c.id))
+                    .map(|c| (c.id.clone(), c.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.done.card(&Inputs {
+            name: &name,
+            facts,
+            identify: hideout_shell::quick_actions::identify_words(id),
+            hint: hideout_shell::quick_actions::identify_hint(id),
+            has_page: hideout_shell::quick_actions::has_page(id),
+            sharing_open: id == crate::keyboard_actions::MODULE
+                && self.grant.as_ref().is_some_and(|g| g.can_offer()),
+            more,
+        })
+    }
+
+    /// A press on the Done card. A button only goes where the user decides (Settings, the
+    /// sharing dialog, the add step); nothing is turned on from here.
+    fn on_done(&mut self, press: hideout_shell::done_card::Press, ids: &[String]) {
+        use hideout_shell::done_card::{Offer, Press};
+        let Some(id) = self.done.module().map(String::from) else {
+            return;
+        };
+        match press {
+            Press::Show => match hideout_shell::quick_actions::identify_words(&id) {
+                Some(_) => hideout_shell::quick_actions::invoke(
+                    &id,
+                    hideout_shell::quick_actions::IDENTIFY,
+                ),
+                None => hideout_shell::open_module(&id),
+            },
+            Press::Offer(Offer::StartWithWindows) => {
+                hideout_shell::open_module(hideout_shell::settings_view::ID)
+            }
+            Press::Offer(Offer::Sharing) => {
+                if let Some(g) = self.grant.as_mut() {
+                    g.open_dialog();
+                }
+            }
+            Press::Offer(Offer::SetUp(app)) => {
+                let added = self.discover.as_mut().and_then(|d| d.set_up(&app, ids));
+                if let Some(added) = added {
+                    self.after_add(&added);
+                }
+            }
+            Press::NotNow(o) => self.done.put_off(o),
+            Press::Hide => self.done.hide(),
         }
     }
 
@@ -626,7 +699,21 @@ impl hideout_shell::Page for ModulesPage {
         let mut discover = self.discover.take();
         let ids: Vec<String> = self.installed.iter().map(|m| m.id.clone()).collect();
         let mut added: Option<String> = None;
+        let card = self.done_card();
+        let mut pressed = None;
+        // The Done card lists the other found apps itself: the Found card waits.
+        if let Some(d) = discover.as_mut() {
+            // The Found card steps aside only while this card still offers to set an app up.
+            d.quiet = card.as_ref().is_some_and(|c| {
+                c.offers
+                    .iter()
+                    .any(|o| matches!(o.offer, hideout_shell::done_card::Offer::SetUp(_)))
+            });
+        }
         let clicked = page_ui_with_head(ui, t, &rows, top, &mut |ui| {
+            if let Some(c) = &card {
+                pressed = hideout_shell::done_card::card_ui(ui, t, c);
+            }
             if let Some(g) = grant.as_mut() {
                 g.top(ui, t);
             }
@@ -642,6 +729,9 @@ impl hideout_shell::Page for ModulesPage {
         self.discover = discover;
         if let Some(id) = added {
             self.after_add(&id);
+        }
+        if let Some(p) = pressed {
+            self.on_done(p, &ids);
         }
         if let Some(click) = clicked {
             if click == Click::CopyDiagnostics {
@@ -698,6 +788,7 @@ pub fn pages(
         perm,
         discover,
         restarts: Default::default(),
+        done: Default::default(),
         ask: Default::default(),
         told: Default::default(),
     })]
@@ -751,6 +842,7 @@ mod tests {
             perm: None,
             discover: None,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
         };
@@ -790,6 +882,7 @@ mod tests {
             fresh: Some(fresh.clone()),
             discover: None,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
             grant: None,
@@ -897,6 +990,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            done: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -944,6 +1038,7 @@ mod tests {
             safe_by_closes: false,
             discover: None,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
             grant: None,
@@ -1006,6 +1101,7 @@ mod tests {
             safe_by_closes: false,
             discover: None,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
             grant: None,
@@ -1064,6 +1160,7 @@ mod tests {
             safe_by_closes: false,
             discover: None,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
             grant: None,
@@ -1118,6 +1215,7 @@ mod tests {
             perm: None,
             discover: None,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
         };
@@ -1166,6 +1264,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
             grant: None,
@@ -1234,6 +1333,7 @@ mod tests {
             actions: Some(Box::new(Log::default())),
             safe_by_closes: false,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
             grant: None,
@@ -1284,6 +1384,7 @@ mod tests {
             actions: None,
             safe_by_closes: false,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
             grant: None,
@@ -1320,6 +1421,7 @@ mod tests {
             actions: None,
             safe_by_closes: false,
             restarts: Default::default(),
+            done: Default::default(),
             ask: Default::default(),
             told: Default::default(),
             grant: None,

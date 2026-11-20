@@ -3098,6 +3098,86 @@ fn the_grant_dialog_keeps_tab_inside_and_is_named() {
     assert_eq!(seen.len(), 2, "Tab reaches both buttons: {seen:?}");
 }
 
+/// Review images of the Done card (first-run FR4): running with a keyboard, running with none,
+/// stopped, with and without the offers, both themes, wide and narrow (`HIDEOUT_REVIEW_DIR`,
+/// files `built-done-card-*.png`).
+#[test]
+fn renders_the_done_card_for_review() {
+    use crate::done_card::{card_ui, Done, Inputs};
+    use serde_json::{json, Value};
+    let with_kb = |k: &str| -> Option<Value> {
+        match k {
+            "module.foxglove.state" => Some(json!("running")),
+            "keyboard.connected" => Some(json!(true)),
+            "keyboard.name" => Some(json!("Eyelash Corne")),
+            "keyboard.layer_name" => Some(json!("Base")),
+            "keyboard.left.battery" => Some(json!(82)),
+            "keyboard.right.battery" => Some(json!(91)),
+            _ => None,
+        }
+    };
+    let no_kb = |k: &str| -> Option<Value> {
+        match k {
+            "module.foxglove.state" => Some(json!("running")),
+            "keyboard.connected" => Some(json!(false)),
+            _ => None,
+        }
+    };
+    let stopped = |k: &str| -> Option<Value> {
+        (k == "module.foxglove.state").then(|| json!("crash-stopped"))
+    };
+    let mut done = Done::default();
+    done.show_for("foxglove");
+    for (dark, name) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        for (w, tag) in [(760u32, "wide"), (400u32, "narrow")] {
+            let h = 760u32;
+            let Some(rgba) = rasterise(w, h, |ctx| {
+                set_theme(ctx, choice);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    for (f, identify, tail) in [
+                        (
+                            &with_kb as &dyn Fn(&str) -> Option<Value>,
+                            Some("Show the lights"),
+                            true,
+                        ),
+                        (&no_kb, None, true),
+                        (&stopped, None, false),
+                    ] {
+                        let mut i = Inputs {
+                            name: "Foxglove",
+                            facts: f,
+                            identify: identify.map(String::from),
+                            hint: Some("Press a layer key to see the layer overlay.".into()),
+                            has_page: true,
+                            sharing_open: tail,
+                            more: if tail {
+                                vec![("vulpes".into(), "Vulpes".into())]
+                            } else {
+                                Vec::new()
+                            },
+                        };
+                        i.sharing_open = tail;
+                        if let Some(c) = done.card(&i) {
+                            card_ui(ui, &t, &c);
+                        }
+                        ui.add_space(14.0);
+                    }
+                });
+            }) else {
+                eprintln!("no system font; render test skipped");
+                return;
+            };
+            save_png(&format!("built-done-card-{tag}-{name}.png"), w, h, rgba);
+        }
+    }
+}
+
 /// Review images of the keyboard grant (#1155-B): the dialog (plain and after a change) and the
 /// header lines and Permissions rows of every state, both themes (`HIDEOUT_REVIEW_DIR`).
 #[test]
