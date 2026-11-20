@@ -43,7 +43,8 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   the hub verified on the router pipe (same user, the pipe's own admission, §2.3, §7.7) that
   runs in no AppContainer may send it; a bridged plugin, a connection whose process is unknown
   and a contained process are refused with error 5, and an id that is not a module the hub
-  knows is -32602. It changes which page shows and nothing else. Contract crate:
+  knows is -32602 (the one exception is `hub.modules`, the hub's Apps page; no other hub page is
+  accepted). It changes which page shows and nothing else. Contract crate:
   `messages::HUB_SHOW`, `HubShow`; schema type `messages.HubShow`. (b) No new message for the
   state: a tool granted `facts.read:module.<id>.state` reads it with `facts.get` as any fact
   (§6.1, §8.6), which is how `foxglove.exe` learns that the hub runs Foxglove (`"running"`)
@@ -591,6 +592,11 @@ plug-ins** (no dylibs, no scripts in the hub).
 - **Dev folders (#1297).** With dev mode on (`HIDEOUT_DEV_MODE=1`, and only that: it is a separate
   switch from unsigned sideload, §12.6), an adopted app inside a folder the user marked keeps
   its grants across a rebuild; sensitive growth and leaving the folder still ask again.
+  Known limit of the trust model (#1362): a folder counts as cloud-synced only when its sync
+  tool registers a Windows sync root (or the files carry a cloud placeholder attribute). A tool
+  that registers none, such as a Syncthing-style mirror, is not detected, and no rule that names
+  no vendor could detect it; the user's choice of folder is the control there. Plug-in, network
+  and virtual drives are refused by drive kind whatever the tool.
 - **Remove from Hideout (#1293).** Stops the app and forgets its grants; an adopted app keeps its
   own install and settings.
 - **Sign-in fact (#1307).** `module.<id>.starts_at_sign_in` (read-only) says whether the hub starts
@@ -709,8 +715,10 @@ name = "Next art"
 - **One-label ids** (such as `vulpes`, `digitalis`, `obs`) are allowed for first-party modules
   only: family `hideout`, `foxglove`, `vulpes` or `digitalis`, listed as an exact id in that
   family's root scope (§12.3). Every other id has two or more labels (`manifest.id`).
-- **Reserved first labels:** `hideout`, `foxglove`, `vulpes`, `digitalis`, and `arete` (alias of
-  `vulpes`). A module whose id starts with one MUST have the matching `family`.
+- **Reserved first labels:** `hideout`, `hub`, `foxglove`, `vulpes`, `digitalis`, and `arete`
+  (alias of `vulpes`). A module whose id starts with one MUST have the matching `family`. `hub`
+  is the hub's own pages (`hub.modules`, `hub.settings`): `family = "hideout"` only, and a
+  third-party module that uses it is refused with `manifest.id`.
 - A `third-party` module MUST NOT use a reserved first label, and its id MUST be reverse-DNS
   (two or more labels).
 - The legacy prefix `org.foxglove.` (today's plugins) is family `foxglove`.
@@ -2323,7 +2331,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `settings.get` | H → M | call | `{}` | `{values: {name: value}}` | — |
 | `settings.set` | H → M | call | `{name, value}` | `{}`, or an error with `data.reason` | — |
 | `hub.notify` | M → H | call | `{title, body, level: "info" \| "warn" \| "error"}` | `{}` | `hub.notify` |
-| `hub.show` (v1.19) | C → H | call | `{id}` | `{}`; -32602 for an id that is not a module | — (the caller must be a verified same-user process on the router pipe outside an AppContainer; else error 5; at most one takes effect every 2 s hub-wide, else error 8 `rate-limited`) |
+| `hub.show` (v1.19) | C → H | call | `{id}` | `{}`; -32602 for an id that is not a module the hub knows or the hub page id `hub.modules` (and only that) | — (the caller must be a verified same-user process on the router pipe outside an AppContainer; else error 5; at most one takes effect every 2 s hub-wide, else error 8 `rate-limited`) |
 
 **Facts and channels**
 

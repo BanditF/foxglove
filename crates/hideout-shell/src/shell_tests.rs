@@ -4999,6 +4999,18 @@ fn dev_view(case: &str) -> crate::dev_settings::DevView {
                     problem: Some(Problem::Cloud),
                     also_inside: None,
                 },
+                DevRow {
+                    path: r"F:\mounted\app".into(),
+                    apps: vec![],
+                    problem: Some(Problem::VirtualDrive),
+                    also_inside: None,
+                },
+                DevRow {
+                    path: r"C:\Users\me\Unsure\app".into(),
+                    apps: vec![app("Beacon", AppState::Ignored)],
+                    problem: Some(Problem::CloudUnknown),
+                    also_inside: None,
+                },
             ],
             note: Some(Note {
                 text: Problem::Cloud.line().into(),
@@ -5096,9 +5108,9 @@ fn renders_the_developer_settings_for_review() {
         ("problem", false, 720, 1100, "df2-states-light.png"),
         ("problem", true, 720, 1100, "df2-states-dark.png"),
         ("problem", false, 360, 1500, "df2-states-narrow-light.png"),
-        ("df34", false, 720, 1100, "df34-refusals-light.png"),
-        ("df34", true, 720, 1100, "df34-refusals-dark.png"),
-        ("df34", false, 360, 1700, "df34-refusals-narrow-light.png"),
+        ("df34", false, 720, 1300, "df34-refusals-light.png"),
+        ("df34", true, 720, 1300, "df34-refusals-dark.png"),
+        ("df34", false, 360, 2100, "df34-refusals-narrow-light.png"),
         ("inside", false, 720, 760, "df34-inside-light.png"),
     ] {
         let view = dev_view(case);
@@ -5180,6 +5192,12 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
             .row_line()
             .to_string(),
         crate::dev_settings::Problem::Cloud.row_line().to_string(),
+        crate::dev_settings::Problem::VirtualDrive
+            .row_line()
+            .to_string(),
+        crate::dev_settings::Problem::CloudUnknown
+            .row_line()
+            .to_string(),
         crate::dev_settings::also_inside_line(r"D:\dev\app"),
     ] {
         assert!(

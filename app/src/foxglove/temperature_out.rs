@@ -21,6 +21,15 @@
 //!   changes at most once per [`MIN_CHANGE_MS`] ([`GAME_CHANGE_MS`] between two colours in game
 //!   mode, when a new reading comes only every 10 s), the newest wish wins when the wait ends,
 //!   and the ease runs on top. A reading that flips back inside the wait changes nothing.
+//!
+//! Known limits (security review of #1365, accepted):
+//! - Game mode is 10 s only between two colours. Going through "no reading" (the fallback) counts
+//!   as the 1 s wait, so a source that alternates reading and no reading can change the lights
+//!   about every 2 s even in game mode.
+//! - Colour to fallback is a hard cut, not an ease: the fallback starts at its own background.
+//!   It still happens at most once per [`MIN_CHANGE_MS`], well under 3 Hz.
+//! - A fast spoofing writer keeps the frame thread waking (each changed reading wakes it for the
+//!   linger time). That costs CPU only; writes to the devices stay deduped and rate limited.
 use foxglove_scene::{Effect, Rgb};
 
 use super::temperature::{colour_for, EASE_MS, FALLBACK_MS};

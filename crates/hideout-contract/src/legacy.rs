@@ -179,6 +179,8 @@ impl Manifest {
                     && p.chars()
                         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             });
+        // `hub` is the hub's own first label (its pages are `hub.modules`, `hub.settings`).
+        let id_ok = id_ok && m.id.split('.').next() != Some("hub");
         if !id_ok {
             return fail(
                 ErrorId::ManifestId,
@@ -275,6 +277,14 @@ mod tests {
     use super::*;
 
     const APP: Version = Version { major: 1, minor: 0 };
+
+    #[test]
+    fn a_plugin_cannot_be_named_like_a_hub_page() {
+        let text = plugin("").replace("com.example.weather", "hub.settings");
+        assert!(text.contains("hub.settings"), "{text}");
+        let e = Manifest::check(&text, APP).unwrap_err();
+        assert_eq!(e.id, ErrorId::ManifestId, "{e}");
+    }
 
     #[test]
     fn declared_secrets_need_the_permission() {
