@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use hideout_registry::dev_folder::{path_within, DevFolderRefusal, FolderProblem, RowProblem};
 use hideout_registry::inventory::{IdentityClass, ADOPTED};
 use hideout_registry::keyboard::same_path;
-use hideout_registry::Registry;
+use hideout_registry::{DevFlags, Registry};
 use hideout_shell::dev_settings::{
     self as words, AppAction, AppState, DevApp, DevClick, DevControl, DevRow, DevView, Note,
 };
@@ -34,7 +34,7 @@ pub struct RegistryDev {
     home: PathBuf,
     pick: Pick,
     /// Tests: open the registry with dev mode forced to this instead of reading the environment.
-    mode: Option<bool>,
+    mode: Option<DevFlags>,
     /// The line after the last click, and when it was said.
     note: Option<(Note, Instant)>,
     shown: Option<(DevView, Instant)>,
@@ -74,13 +74,13 @@ impl RegistryDev {
 
     #[cfg(test)]
     fn with_mode(mut self, on: bool) -> Self {
-        self.mode = Some(on);
+        self.mode = Some(DevFlags::both(on));
         self
     }
 
     fn open(&self) -> Option<Registry> {
         let r = match self.mode {
-            Some(on) => Registry::open(&self.home, on),
+            Some(flags) => Registry::open_with(&self.home, flags),
             None => Registry::open_from_env(&self.home),
         };
         match r {
@@ -708,13 +708,40 @@ mod tests {
         assert_eq!(asked.borrow().len(), 2);
     }
 
+    /// `HIDEOUT_DEV_UNSIGNED` alone (sideload on, dev folders off) never shows the Developer
+    /// section: not on an empty list, and not with folders still listed either (§12.6).
+    #[test]
+    fn unsigned_sideload_alone_hides_the_developer_section() {
+        let (mut c, next, home) = ctl("unsigned-only", true);
+        let dir = temp("unsigned-only-dir");
+        *next.borrow_mut() = Some(dir);
+        c.click(DevClick::Add);
+        assert_eq!(listed(&home).len(), 1);
+        c.mode = Some(DevFlags {
+            unsigned: true,
+            folders: false,
+        });
+        let v = c.view();
+        assert!(!v.on, "unsigned sideload does not turn dev folders on");
+        // The listed folder reads as the inert view: paths only, nothing to act on.
+        assert_eq!(v.folders.len(), 1);
+        assert!(v.folders[0].apps.is_empty() && v.folders[0].problem.is_none());
+        // With nothing listed it is the empty default: the page draws no Developer section.
+        let (mut c2, _n, _h) = ctl("unsigned-only-empty", true);
+        c2.mode = Some(DevFlags {
+            unsigned: true,
+            folders: false,
+        });
+        assert_eq!(c2.view(), DevView::default());
+    }
+
     #[test]
     fn dev_mode_off_with_folders_listed_shows_only_their_paths() {
         let (mut c, _next, home) = ctl("offlisted", true);
         let dir = temp("offlisted-dir");
         let mut reg = Registry::open(&home, true).unwrap();
         reg.add_dev_folder(&dir.display().to_string()).unwrap();
-        c.mode = Some(false);
+        c.mode = Some(DevFlags::both(false));
         let v = c.view();
         assert!(!v.on);
         assert_eq!(v.folders.len(), 1);
