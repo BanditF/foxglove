@@ -124,25 +124,24 @@ def hub_pid_from_env(env=os.environ):
 
 
 def open_router_pipe(name, hub_pid=None):
-    """Opens the router pipe `name` as a binary file. On Windows with client rights only (what
-    a module in an AppContainer is let in with, §7.7) and identification-level impersonation;
+    """Opens the router pipe `name` as a binary reader and writer. On Windows it is overlapped, so
+    a thread blocked in a read never delays another thread's write (the Rust SDK's #1338), with
+    client rights only (what a module in an AppContainer is let in with, §7.7) and
+    identification-level impersonation;
     with `hub_pid`, nothing can be sent before the pipe's server is known to be that process
     (PermissionError otherwise, §7.5): another process may have made an instance of the name."""
     if os.name != "nt":
         return open(name, "r+b", buffering=0)
-    import msvcrt
-
     from . import channel
 
-    h = channel.open_pipe(name)
+    h = channel.open_pipe(name, overlapped=True)
     try:
         if hub_pid is not None:
             channel.check_server(h, hub_pid)
-        fd = msvcrt.open_osfhandle(h, os.O_RDWR | os.O_BINARY)
     except BaseException:
         channel.close_handle(h)
         raise
-    return open(fd, "r+b", buffering=0)
+    return channel.RouterPipe(h)
 
 
 def connect_env():

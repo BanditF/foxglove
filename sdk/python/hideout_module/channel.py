@@ -579,6 +579,36 @@ if os.name == "nt":
             except Exception:
                 pass
 
+    class RouterPipe(ChannelConn):
+        """The router pipe, opened overlapped, as a binary reader and writer for `Session`. A
+        synchronous handle serialises I/O per file object, so a read blocked in one thread
+        starves every write from another (the Rust SDK's #1338); here a read and a write are
+        independent overlapped operations."""
+
+        def __init__(self, handle):
+            super().__init__(handle)
+            self._buf = b""
+            self._read_lock = threading.Lock()
+
+        def readline(self, limit=-1):
+            with self._read_lock:
+                while True:
+                    i = self._buf.find(b"\n")
+                    end = i + 1 if i >= 0 else (len(self._buf) if 0 <= limit <= len(self._buf) else -1)
+                    if 0 <= limit < end:
+                        end = limit
+                    if end >= 0:
+                        line, self._buf = self._buf[:end], self._buf[end:]
+                        return line
+                    part = self._read(65536) if self._h is not None else b""
+                    if not part:
+                        line, self._buf = self._buf, b""
+                        return line
+                    self._buf += part
+
+        def flush(self):
+            pass
+
     class ChannelPipe:
         """A one-time channel pipe: one instance, the first-instance flag, remote clients
         rejected, a DACL for the current user's SID alone, plus the consumer's AppContainer

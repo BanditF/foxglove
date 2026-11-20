@@ -78,5 +78,46 @@ class SampleModule(unittest.TestCase):
         self.assertEqual(router_pipe_name("Ana \u00d6-x_1"), r"\\.\pipe\hideout-Ana-x_1")
 
 
+@unittest.skipUnless(sys.platform == "win32", "named pipes are Windows only")
+class RouterPipe(unittest.TestCase):
+    """A read blocked in one thread must not delay a write from another (as Rust SDK #1338): a
+    synchronous pipe handle serialises I/O per file object, which stalled `facts.set` behind the
+    reader and got the module dropped. Real named pipe, no windows."""
+
+    def test_blocked_read_does_not_block_write(self):
+        import _winapi
+        import os
+        import threading
+
+        from hideout_module.session import open_router_pipe
+
+        name = rf"\\.\pipe\hideout-test-{os.getpid()}-{id(self)}"
+        server = _winapi.CreateNamedPipe(name, 0x3, 0, 1, 65536, 65536, 0, 0)  # duplex, byte, wait
+        self.addCleanup(_winapi.CloseHandle, server)
+        pipe = open_router_pipe(name)
+        s = Session(pipe, pipe)
+        self.addCleanup(pipe.close)
+
+        got = []
+        reader = threading.Thread(target=lambda: got.append(s.read()), daemon=True)
+        reader.start()  # blocks in ReadFile: the hub has sent nothing yet
+        reader.join(0.3)
+        self.assertTrue(reader.is_alive())
+
+        wrote = threading.Thread(target=lambda: s.notify("module.ready", {}), daemon=True)
+        wrote.start()
+        wrote.join(5)
+        self.assertFalse(wrote.is_alive(), "a write stalled behind a blocked read")
+
+        data = b""
+        while not data.endswith(b"\n"):
+            data += _winapi.ReadFile(server, 4096)[0]
+        self.assertEqual(json.loads(data)["method"], "module.ready")
+
+        _winapi.WriteFile(server, b'{"jsonrpc":"2.0","method":"x","params":{}}\n')
+        reader.join(5)
+        self.assertEqual(got, [{"jsonrpc": "2.0", "method": "x", "params": {}}])
+
+
 if __name__ == "__main__":
     unittest.main()
