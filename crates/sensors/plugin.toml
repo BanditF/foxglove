@@ -1,8 +1,0 @@
-id = "org.foxglove.sensors"
-name = "PC sensors"
-version = "0.1.0"
-api = "1.2"
-run = ["sensors.exe"]
-permissions = ["facts.write:sensor.*"]
-provides = ["facts"]
-description = "Publishes the PC's CPU, GPU and memory load and the GPU's temperature, clock, power and fan as facts, only while something is listening. It reads; it never controls anything."

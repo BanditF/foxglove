@@ -10,8 +10,8 @@ from typing import Any, ClassVar, Literal, Optional, Union
 
 from ._model import Model
 
-HUB = '1.4'
-SPEC = '1.19'
+HUB = '1.5'
+SPEC = '1.20'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -339,6 +339,24 @@ class DrainResultBusy(Model):
 
 DrainResult = Union['DrainResultDone', 'DrainResultBusy']
 DRAINRESULT_SPEC = ('union', 'state', {'done': 'DrainResultDone', 'busy': 'DrainResultBusy'})
+
+
+@dataclass(kw_only=True)
+class FactsDemand(Model):
+    """`facts.demand` (H -> M notification, v1.20): whether anyone listens to a fact pattern the
+module owns. Sent to the owning module only, when the number of live `facts.subscribe`
+subscriptions overlapping `pattern` (the module's own excluded) goes from 0 to non-zero or back
+to 0, and once after the module registers if it is already non-zero. `subscribers` is a count:
+who subscribed is never sent. A module that doesn't know it ignores it."""
+
+    pattern: str
+    subscribers: int
+
+    FIELDS: ClassVar[dict] = {
+        'pattern': ('pattern', 'str'),
+        'subscribers': ('subscribers', 'int'),
+    }
+    CLOSED: ClassVar[bool] = True
 
 
 NotifyLevel = Literal['info', 'warn', 'error']
@@ -1038,6 +1056,7 @@ TYPES = {
     'messages.ChannelOpen': ChannelOpen,
     'messages.ChannelOpened': ChannelOpened,
     'messages.DrainResult': DrainResult,
+    'messages.FactsDemand': FactsDemand,
     'messages.HubNotify': HubNotify,
     'messages.HubShow': HubShow,
     'messages.InitializeModule': InitializeModule,

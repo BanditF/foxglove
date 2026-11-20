@@ -246,6 +246,23 @@ pub struct HubShow {
     pub id: String,
 }
 
+/// The method name of [`FactsDemand`] (v1.20).
+pub const FACTS_DEMAND: &str = "facts.demand";
+
+/// `facts.demand` (H -> M notification, v1.20): whether anyone listens to a fact pattern the
+/// module owns. Sent to the owning module only, when the number of live `facts.subscribe`
+/// subscriptions overlapping `pattern` (the module's own excluded) goes from 0 to non-zero or back
+/// to 0, and once after the module registers if it is already non-zero. `subscribers` is a count:
+/// who subscribed is never sent. A module that doesn't know it ignores it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FactsDemand {
+    /// A pattern the module registered (`sensor.*`).
+    pub pattern: String,
+    /// Subscriptions that overlap it now; 0 means the last one left.
+    pub subscribers: u32,
+}
+
 /// Crashes in ten minutes that stop a module (§7.7).
 pub const CRASH_LIMIT: u32 = 5;
 
@@ -476,6 +493,8 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         "lease.closed" => typed::<crate::lease::LeaseClosed>(params),
         // A provider's own Resume (§8.5, v1.17).
         crate::lease::LEASE_END => typed::<crate::lease::LeaseEnd>(params),
+        // Demand for a module's facts (section 8.8, v1.20).
+        FACTS_DEMAND => typed::<FactsDemand>(params),
         // Bring a module's page to the front (section 8.8, v1.19).
         HUB_SHOW => typed::<HubShow>(params),
         _ => Ok(()),

@@ -1,0 +1,15 @@
+[package]
+name = "foxglove-sensors-host"
+version = "0.1.0"
+edition = "2021"
+description = "sensors.exe: the PC sensors as a Hideout module; samples only while the hub's facts.demand says someone listens"
+license = "MIT"
+
+[[bin]]
+name = "sensors"
+path = "src/main.rs"
+
+[dependencies]
+foxglove-sensors = { path = "../sensors" }
+foxglove-plugin = { path = "../plugin-sdk" }
+serde_json = "1"

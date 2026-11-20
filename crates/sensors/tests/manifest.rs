@@ -1,20 +1,25 @@
 //! The shipped manifests: what the module may do, and that it can't write outside its namespace.
 
 use foxglove_sensors::{write_permission, GuardedSink, Sink, ValueOut, NAMESPACE};
-use hideout_contract::legacy::{self, Provides};
 use hideout_contract::module::{Context, Module};
-use hideout_contract::Version;
 
 fn read(name: &str) -> String {
     std::fs::read_to_string(format!("{}/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
 }
 
-/// A13: provides facts, asks for `facts.write:sensor.*` and nothing else.
+/// A13: provides facts, writes only `sensor.*`, and reads only the one fact that slows it in a
+/// game (`keyboard.game_mode`). It is a native Hideout module: no plugin.toml.
 #[test]
-fn permission_is_facts_write_sensor_only() {
+fn permissions_are_the_sensor_namespace_and_the_game_flag() {
     let m = Module::parse(&read("module.toml"), &Context::default()).unwrap();
     let perms: Vec<String> = m.permissions.iter().map(|p| p.to_string()).collect();
-    assert_eq!(perms, [write_permission()]);
+    assert_eq!(
+        perms,
+        [
+            write_permission(),
+            "facts.read:keyboard.game_mode".to_string()
+        ]
+    );
     assert_eq!(m.provides, [format!("facts:{NAMESPACE}.*")]);
     for p in &perms {
         assert!(
@@ -22,26 +27,20 @@ fn permission_is_facts_write_sensor_only() {
             "{p}"
         );
     }
-
-    let legacy =
-        Module::parse_legacy(&read("plugin.toml"), Version::parse("1.2").unwrap()).unwrap();
-    let legacy_perms: Vec<String> = legacy.permissions.iter().map(|p| p.to_string()).collect();
-    assert_eq!(legacy_perms, perms, "plugin.toml and module.toml agree");
-    let plugin =
-        legacy::Manifest::parse(&read("plugin.toml"), Version::parse("1.2").unwrap()).unwrap();
-    assert_eq!(plugin.provides, vec![Provides::Facts]);
-    assert_eq!(legacy.id, m.id);
+    assert!(!std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("plugin.toml")
+        .exists());
 }
 
-/// A28: both manifests pass the contract's checker, and the sandbox-friendly shape holds
-/// (no network, files, devices or UI).
+/// A28: the manifest passes the contract's checker, asks for the hub that sends `facts.demand`,
+/// and the sandbox-friendly shape holds (no network, files, devices or UI).
 #[test]
-fn manifests_are_valid() {
+fn manifest_is_valid() {
     let m = Module::parse(&read("module.toml"), &Context::default()).unwrap();
     assert_eq!(m.id, "org.foxglove.sensors");
     assert!(m.panels.is_empty() && m.actions.is_empty() && m.secrets.is_empty());
     assert_eq!(m.run.as_deref(), Some(&["sensors.exe".to_string()][..]));
-    assert!(Module::parse_legacy(&read("plugin.toml"), Version::parse("1.2").unwrap()).is_ok());
+    assert_eq!(m.hub, "1.5");
 }
 
 #[derive(Default)]

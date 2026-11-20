@@ -1,5 +1,5 @@
 {
-  "hub": "1.4",
+  "hub": "1.5",
   "icons": [
     "module",
     "battery",
@@ -59,7 +59,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.19",
+  "spec": "1.20",
   "streams": {
     "nodes": [
       "canvas",
@@ -669,6 +669,28 @@
         }
       ],
       "title": "DrainResult"
+    },
+    "messages.FactsDemand": {
+      "additionalProperties": false,
+      "description": "`facts.demand` (H -> M notification, v1.20): whether anyone listens to a fact pattern the\nmodule owns. Sent to the owning module only, when the number of live `facts.subscribe`\nsubscriptions overlapping `pattern` (the module's own excluded) goes from 0 to non-zero or back\nto 0, and once after the module registers if it is already non-zero. `subscribers` is a count:\nwho subscribed is never sent. A module that doesn't know it ignores it.",
+      "properties": {
+        "pattern": {
+          "description": "A pattern the module registered (`sensor.*`).",
+          "type": "string"
+        },
+        "subscribers": {
+          "description": "Subscriptions that overlap it now; 0 means the last one left.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pattern",
+        "subscribers"
+      ],
+      "title": "FactsDemand",
+      "type": "object"
     },
     "messages.HubNotify": {
       "$defs": {
