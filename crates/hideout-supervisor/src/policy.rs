@@ -388,6 +388,12 @@ struct Slot {
     planned: VecDeque<Instant>,
     /// Rebuild restarts in the window, bounded by [`REBUILD_LIMIT`].
     rebuilds: VecDeque<Instant>,
+    /// The "held: too many" line is written once per full window, not at every build.
+    rebuild_held_noted: bool,
+    /// A rebuild restart is under way: the next Running says so (`module.<id>.rebuilt`).
+    rebuilt_restart: bool,
+    /// `module.<id>.rebuilt` is published now; the next state other than Running clears it.
+    rebuilt_shown: bool,
     /// Restarts in this run, for the backoff step.
     run_restarts: u32,
     restart_at: Option<Instant>,
@@ -574,6 +580,24 @@ impl Policy {
             format!("module.{id}.reason"),
             reason.map_or(Value::Null, Value::String),
         );
+        // R4: the row's "Rebuilt and restarted" line shows from the Running after a rebuild
+        // restart until the next state change. The driver puts the clock time in.
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        if state == State::Running && s.rebuilt_restart {
+            s.rebuilt_restart = false;
+            s.rebuilt_shown = true;
+            publish(out, format!("module.{id}.rebuilt"), json!(true));
+        } else if state != State::Running {
+            if state != State::Starting && state != State::Restarting {
+                s.rebuilt_restart = false;
+            }
+            if s.rebuilt_shown {
+                s.rebuilt_shown = false;
+                publish(out, format!("module.{id}.rebuilt"), Value::Null);
+            }
+        }
     }
 
     fn launch(&mut self, id: &str, out: &mut Vec<Cmd>) {
@@ -699,6 +723,9 @@ impl Policy {
                     crashes: VecDeque::new(),
                     planned: VecDeque::new(),
                     rebuilds: VecDeque::new(),
+                    rebuild_held_noted: false,
+                    rebuilt_restart: false,
+                    rebuilt_shown: false,
                     run_restarts: 0,
                     restart_at: None,
                     held: false,
@@ -1431,15 +1458,21 @@ impl Policy {
         let live = !s.ended && s.update.is_none() && !s.then_launch;
         let how = match s.state {
             State::Running | State::Starting | State::Waiting if live => 0,
-            State::Restarting if s.ended && s.restart_at.is_some() => 1,
+            // Not while an installer's helper holds the restart: it starts the new file anyway.
+            State::Restarting if s.ended && s.restart_at.is_some() && !s.held => 1,
             State::CrashStopped | State::InstallFailed => 2,
             _ => return,
         };
         s.rebuilds.retain(|t| now - *t < WINDOW);
         if s.rebuilds.len() >= REBUILD_LIMIT {
-            self.note(id, now, "rebuild restart held: too many in 10 min".into());
+            // One line per full window: a build loop would otherwise fill the history.
+            if !std::mem::replace(&mut s.rebuild_held_noted, true) {
+                self.note(id, now, "rebuild restart held: too many in 10 min".into());
+            }
             return;
         }
+        s.rebuild_held_noted = false;
+        s.rebuilt_restart = true;
         s.rebuilds.push_back(now);
         match how {
             0 => {
@@ -2872,5 +2905,110 @@ mod rebuild_tests {
         assert!(rebuilt(&mut p, later)
             .iter()
             .any(|c| matches!(c, Cmd::Exit { .. })));
+    }
+
+    fn rebuilt_fact(c: &[Cmd]) -> Option<Value> {
+        c.iter().rev().find_map(|c| match c {
+            Cmd::Publish { key, value } if key == &format!("module.{ID}.rebuilt") => {
+                Some(value.clone())
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_cap_note_is_written_once_per_full_window() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        for n in 0..REBUILD_LIMIT {
+            let at = t + Duration::from_secs(n as u64 * 5);
+            rebuilt(&mut p, at);
+            let inst = n as u64 + 1;
+            p.handle(
+                Ev::Exited {
+                    id: ID.into(),
+                    instance: inst,
+                    code: 0,
+                },
+                at,
+            );
+            p.handle(
+                Ev::Started {
+                    id: ID.into(),
+                    instance: inst + 1,
+                },
+                at,
+            );
+            p.handle(Ev::Ready { id: ID.into() }, at);
+        }
+        let at = t + Duration::from_secs(REBUILD_LIMIT as u64 * 5);
+        for k in 0..5 {
+            rebuilt(&mut p, at + Duration::from_secs(k));
+        }
+        let held = p
+            .history(ID)
+            .iter()
+            .filter(|(_, l)| l.contains("rebuild restart held"))
+            .count();
+        assert_eq!(held, 1);
+    }
+
+    #[test]
+    fn a_wait_for_an_installer_helper_is_not_cut_short_by_a_build() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: 1,
+                code: i64::from(PLANNED_EXIT_CODE),
+            },
+            t,
+        );
+        p.handle(
+            Ev::HelperRunning {
+                id: ID.into(),
+                instance: 1,
+            },
+            t,
+        );
+        let before = p.restart_at(ID);
+        assert!(rebuilt(&mut p, t).is_empty());
+        assert_eq!(p.restart_at(ID), before, "the hold stays");
+    }
+
+    #[test]
+    fn the_rebuilt_line_shows_from_running_until_the_next_state_change() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        let c = rebuilt(&mut p, t);
+        assert_eq!(rebuilt_fact(&c), None, "not while it restarts");
+        p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: 1,
+                code: 0,
+            },
+            t,
+        );
+        p.handle(
+            Ev::Started {
+                id: ID.into(),
+                instance: 2,
+            },
+            t,
+        );
+        let c = p.handle(Ev::Ready { id: ID.into() }, t);
+        assert_eq!(rebuilt_fact(&c), Some(json!(true)));
+        // The next crash clears it.
+        let c = p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: 2,
+                code: 1,
+            },
+            t,
+        );
+        assert_eq!(rebuilt_fact(&c), Some(Value::Null));
     }
 }

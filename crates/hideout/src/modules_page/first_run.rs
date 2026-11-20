@@ -279,6 +279,7 @@ impl Fx {
             }),
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
         };
         Fx {
             base,

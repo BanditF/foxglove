@@ -33,6 +33,10 @@ pub trait Page {
         "module"
     }
     fn ui(&mut self, ui: &mut egui::Ui, tokens: &Tokens);
+    /// Words for the shell to announce once, politely, after the page was drawn.
+    fn take_said(&mut self) -> Vec<String> {
+        Vec::new()
+    }
     /// Listed at the bottom of the sidebar, after the modules' pages (Settings, #1087).
     fn at_bottom(&self) -> bool {
         false
@@ -2384,7 +2388,17 @@ impl Hub {
         popout: bool,
     ) {
         match self.target(id) {
-            Some(Target::Page(p)) => self.pages[p].ui(ui, t),
+            Some(Target::Page(p)) => {
+                self.pages[p].ui(ui, t);
+                let place = if popout {
+                    Said::Popout(id.clone())
+                } else {
+                    Said::Main
+                };
+                for text in self.pages[p].take_said() {
+                    self.say(text, place.clone());
+                }
+            }
             Some(Target::Panel(key)) if self.search_off.contains_key(&key.module) => {
                 // Off for this round of a search (#1033): no Turn on, nothing of the module.
                 ui.label(

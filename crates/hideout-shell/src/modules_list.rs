@@ -34,6 +34,8 @@ pub struct Installed {
     /// Developer mode: the module runs from a dev folder and keeps its grants over rebuilds.
     /// Its row's version ends with the **Dev** marker.
     pub dev: bool,
+    /// The dev folder it runs from, for the Dev marker's tooltip; None when not known.
+    pub dev_folder: Option<String>,
 }
 
 /// The marker after an adopted module's version.
@@ -168,6 +170,10 @@ pub struct Row {
     /// What a screen reader says for the version: "version 0.1.0, installed separately" (some
     /// readers say "dot" for the visible middle dot).
     pub version_said: String,
+    /// The Dev marker's tooltip and accessible description; None for an app not in a dev folder.
+    pub dev_said: Option<String>,
+    /// What the shell announces once when a rebuild restart finishes; None otherwise.
+    pub rebuilt_said: Option<String>,
     /// The state in plain words (never an id).
     pub state: String,
     /// It needs the user (stopped, couldn't start or install, needs a newer Hideout): the red
@@ -342,7 +348,16 @@ pub fn row_in(
             primary(words::TURN_ON, Does::TurnOn),
         ),
         None if safe_mode => ("On \u{b7} not started in safe mode".into(), false, None),
-        None | Some("running") => ("On".into(), false, None),
+        // A rebuild restart finished (`module.<id>.rebuilt` is the clock time) until the next
+        // state change.
+        None | Some("running") => (
+            match get("rebuilt").filter(|t| !t.is_empty()) {
+                Some(at) => words::rebuilt_row(&at),
+                None => "On".into(),
+            },
+            false,
+            None,
+        ),
         Some("starting") => ("Starting\u{2026}".into(), false, None),
         Some("updating") => (words::UPDATING.into(), false, None),
         // Root cause once (§7.8): the root's name and Go to it; never red, never first.
@@ -438,6 +453,14 @@ pub fn row_in(
             }
             v
         },
+        dev_said: m.dev.then(|| match &m.dev_folder {
+            Some(f) => words::dev_chip_said(f),
+            None => words::DEV_CHIP_SAID.to_string(),
+        }),
+        rebuilt_said: (state.as_deref().is_none_or(|s| s == "running") && m.enabled)
+            .then(|| get("rebuilt").filter(|t| !t.is_empty()))
+            .flatten()
+            .map(|_| words::rebuilt_said(&m.name)),
         version_said: {
             let mut v = format!("version {}", m.version);
             if m.adopted {
@@ -673,12 +696,22 @@ pub fn page_ui_with_head(
                                 let version =
                                     ui.label(RichText::new(&r.version).color(c(t.text_muted)));
                                 let said = r.version_said.clone();
-                                ui.ctx()
-                                    .accesskit_node_builder(version.id, |n| n.set_label(said));
+                                let desc = r.dev_said.clone();
+                                ui.ctx().accesskit_node_builder(version.id, |n| {
+                                    n.set_label(said);
+                                    if let Some(d) = desc {
+                                        n.set_description(d);
+                                    }
+                                });
+                                if let Some(tip) = &r.dev_said {
+                                    version.on_hover_text(tip);
+                                }
                             });
                             if r.removal == Some(Removal::Removing) {
                                 ui.label(RichText::new(REMOVING).color(c(t.text_muted)));
                             } else {
+                                // The visible words are the accessible label; a finished rebuild
+                                // restart is told once through the shell's announcement.
                                 ui.label(RichText::new(&r.state).color(c(state_col)));
                             }
                         });
@@ -816,6 +849,7 @@ mod tests {
         Installed {
             adopted: false,
             dev: false,
+            dev_folder: None,
             id: id.into(),
             name: "Art".into(),
             version: "0.5.0".into(),
@@ -1042,6 +1076,8 @@ mod tests {
             name: name.into(),
             version: "1".into(),
             version_said: String::new(),
+            dev_said: None,
+            rebuilt_said: None,
             state: String::new(),
             stopped,
             off,
@@ -1119,6 +1155,53 @@ mod tests {
         );
         a.adopted = false;
         assert_eq!(row(&a, &fact, None).version, "0.5.0 \u{b7} Dev");
+    }
+
+    /// The Dev marker's tooltip and accessible description name the folder.
+    #[test]
+    fn the_dev_marker_says_where_the_build_comes_from() {
+        let fact = |_: &str| None;
+        let mut a = m("vulpes", true);
+        assert_eq!(row(&a, &fact, None).dev_said, None);
+        a.dev = true;
+        assert_eq!(
+            row(&a, &fact, None).dev_said.as_deref(),
+            Some("Dev build. Rebuilds keep what you allowed.")
+        );
+        a.dev_folder = Some("D:\\dev\\out".into());
+        assert_eq!(
+            row(&a, &fact, None).dev_said.as_deref(),
+            Some("Dev build from D:\\dev\\out. Rebuilds keep what you allowed.")
+        );
+    }
+
+    /// After a rebuild restart the row says when, and a screen reader hears it once; any other
+    /// state drops the line.
+    #[test]
+    fn a_rebuild_restart_shows_its_time_and_is_told_to_a_screen_reader() {
+        let a = m("vulpes", true);
+        let id = format!("module.{}.", a.id);
+        let with = |state: &'static str| {
+            let id = id.clone();
+            move |k: &str| -> Option<Value> {
+                match k.strip_prefix(&id)? {
+                    "state" => Some(Value::String(state.into())),
+                    "rebuilt" => Some(Value::String("20:41".into())),
+                    _ => None,
+                }
+            }
+        };
+        let r = row(&a, &with("running"), None);
+        assert_eq!(r.state, "On \u{b7} Rebuilt and restarted at 20:41");
+        assert_eq!(
+            r.rebuilt_said.as_deref(),
+            Some(format!("{} rebuilt and restarted", a.name).as_str())
+        );
+        assert!(!r.off && !r.stopped);
+        let r = row(&a, &with("restarting"), None);
+        assert_eq!(r.state, "Restarting\u{2026}");
+        assert_eq!(r.rebuilt_said, None);
+        assert_eq!(row(&a, &|_: &str| None, None).state, "On");
     }
 
     /// During a search (#1033): rows say on or off for the round, Off rows aren't part of it,
@@ -1235,6 +1318,7 @@ mod tests {
         let m = |id: &str, name: &str, enabled| Installed {
             adopted: false,
             dev: false,
+            dev_folder: None,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),
@@ -1444,6 +1528,7 @@ mod tests {
                 version: "1.0.0".into(),
                 enabled: true,
                 dev: false,
+                dev_folder: None,
                 adopted,
             },
             &|_| None,

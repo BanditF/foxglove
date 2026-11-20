@@ -578,6 +578,7 @@ fn installed() -> Vec<Installed> {
     .map(|(id, name)| Installed {
         adopted: false,
         dev: false,
+        dev_folder: None,
         id: (*id).into(),
         name: (*name).into(),
         version: "1.0.0".into(),
@@ -1208,6 +1209,7 @@ fn renders_adopted_row_states_for_review() {
     let mk = |id: &str, name: &str, v: &str, adopted: bool| Installed {
         adopted,
         dev: false,
+        dev_folder: None,
         id: id.into(),
         name: name.into(),
         version: v.into(),
@@ -1277,6 +1279,7 @@ fn the_planned_restart_row_has_no_count_and_the_crash_row_keeps_it() {
         .map(|(id, name)| Installed {
             adopted: false,
             dev: false,
+            dev_folder: None,
             id: (*id).into(),
             name: (*name).into(),
             version: "1.0.0".into(),
@@ -1308,4 +1311,57 @@ fn the_planned_restart_row_has_no_count_and_the_crash_row_keeps_it() {
         return;
     };
     save_png("built-planned-vs-crash-restart-row.png", w, h, px);
+}
+
+/// A rebuilt app's row (#1325): the Dev chip's description is the plan's line, the visible
+/// state line is the accessible label (no live relabel), and nothing on the row is live.
+#[test]
+fn a_rebuilt_row_keeps_its_visible_line_as_its_label() {
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let mut app = installed()[0].clone();
+    app.dev = true;
+    app.dev_folder = Some("D:/dev/out".into());
+    let all = [app.clone()];
+    let fact = |k: &str| match k {
+        "module.m.art.state" => Some(serde_json::json!("running")),
+        "module.m.art.rebuilt" => Some(serde_json::json!("20:41")),
+        _ => None,
+    };
+    let rows = vec![row_in(&app, &all, &fact, None)];
+    let chip = hideout_supervisor::words::dev_chip_said("D:/dev/out");
+    assert_eq!(rows[0].dev_said.as_deref(), Some(chip.as_str()));
+    let t = theme::tokens(true);
+    // Updates carry what changed: gather the nodes of every frame.
+    let mut nodes = Vec::new();
+    for _ in 0..3 {
+        let out = ctx.run(input(1000.0, 700.0, vec![]), |c| {
+            egui::CentralPanel::default().show(c, |ui| {
+                page_ui(ui, &t, &rows, None);
+            });
+        });
+        nodes.extend(
+            out.platform_output
+                .accesskit_update
+                .iter()
+                .flat_map(|u| u.nodes.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>()),
+        );
+    }
+    let want = "On \u{b7} Rebuilt and restarted at 20:41";
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.value() == Some(want) && n.label().is_none_or(|l| l != "rebuilt")),
+        "the state node keeps the visible line as its text"
+    );
+    assert!(
+        nodes.iter().any(|n| n.description() == Some(chip.as_str())),
+        "the version node describes where the build comes from"
+    );
+    assert!(
+        nodes
+            .iter()
+            .all(|n| n.live() != Some(egui::accesskit::Live::Polite)),
+        "the row itself says nothing live"
+    );
 }
