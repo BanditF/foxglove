@@ -287,10 +287,17 @@ pub fn reask_same_place(current: &str, bound: &str) -> bool {
         && on_local_fixed_drive(bound)
 }
 
-/// Whether a canonical path is on one of this PC's fixed drives: a drive letter (not UNC, not a
+/// Whether a canonical path is on one of this PC's internal fixed drives (not USB, see [`crate::drive`]): a drive letter (not UNC, not a
 /// `\\.\` device path) whose drive Windows reports as fixed (not network, removable, optical or
 /// RAM disk). A mapped network drive canonicalizes to its UNC form and fails too.
 pub fn on_local_fixed_drive(path: &str) -> bool {
+    on_local_fixed_drive_with(path, &crate::drive::SystemDrives)
+}
+
+/// [`on_local_fixed_drive`] with the disk questions asked of `probe` (tests pass a fake): the
+/// drive must be fixed *and* on an internal bus ([`crate::drive::BusType::is_internal`]), so a
+/// USB disk that reports `DRIVE_FIXED` is refused, and so is a bus that can't be read.
+pub fn on_local_fixed_drive_with(path: &str, probe: &dyn crate::drive::DriveProbe) -> bool {
     let p = crate::keyboard::strip_verbatim(path).replace('/', "\\");
     if crate::keyboard::is_unc(&p) || p.starts_with("\\\\") {
         return false;
@@ -299,21 +306,7 @@ pub fn on_local_fixed_drive(path: &str) -> bool {
     if b.len() < 4 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
         return false;
     }
-    drive_is_fixed(&p[..3])
-}
-
-#[cfg(windows)]
-fn drive_is_fixed(root: &str) -> bool {
-    // DRIVE_FIXED (winbase.h).
-    const DRIVE_FIXED: u32 = 3;
-    let wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
-    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
-    unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(wide.as_ptr()) == DRIVE_FIXED }
-}
-
-#[cfg(not(windows))]
-fn drive_is_fixed(_: &str) -> bool {
-    false
+    crate::drive::is_internal_fixed(probe, &p[..3])
 }
 
 /// Folder and file name of a canonical path (`\\?\` stripped, backslashes).
