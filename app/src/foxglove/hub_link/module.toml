@@ -33,6 +33,10 @@ provides = [
 permissions = [
   "facts.write:keyboard.*",
   "facts.read:module.*",
+  # Read-only, for the Temperature effect: the PC sensors app's readings. Optional (without it
+  # Temperature says it is not allowed and everything else runs); never subscribed until the
+  # effect is the look that lights something.
+  "facts.read:sensor.*",
   "provide:health.read",
   "provide:lights.page",
   "provide:scenes.page",

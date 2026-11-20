@@ -90,6 +90,12 @@ const GRANT: &str = "facts.write:keyboard.*";
 /// hand-off (P9, [`super::features`]). Without it nothing is handed off and the module serves
 /// everything in [`SERVED`], as before.
 const GRANT_REGISTRY: &str = "facts.read:module.*";
+/// The optional permission that lets it read the PC sensors app's readings (`sensor.*`), for the
+/// Temperature effect ([`super::temperature_feed`]). Optional: without it Foxglove runs as
+/// before and Temperature says it is not allowed. Nothing is subscribed until Temperature is
+/// the look that lights something (and it ends with it); the hub counts the subscription as a
+/// listener, so the sensors app samples only meanwhile.
+const GRANT_SENSORS: &str = "facts.read:sensor.*";
 /// The Foxglove API this module serves: the plugin API's own version, so a client built for it
 /// (the CLI, the SDK) is not refused with code 7. A test keeps it, `module.toml` and the crate
 /// constant equal.
@@ -337,6 +343,8 @@ struct Hub {
     opener: Option<Opener>,
     /// `module.<id>.provides` facts the hub sent (`facts.changed`), for the link to read.
     changes: Vec<(String, Value)>,
+    /// The sensors' facts the hub sent (`sensor.*` and the sensors app's state), in order.
+    sensor_changes: Vec<(String, Value)>,
     /// Who holds this module's Wallpaper Engine leases, by the hub's names (#1142, the hub
     /// fact `module.foxglove.lease_holders`), and whether that changed since the panels last
     /// looked.
@@ -418,6 +426,14 @@ impl Handler for Hub {
             if let (Some(tell), Some(on)) = (&self.signin, params["value"].as_bool()) {
                 tell(on);
             }
+            return;
+        }
+        if let Some(key) = params["key"]
+            .as_str()
+            .filter(|k| *k == super::temperature_feed::APP_STATE_KEY || k.starts_with("sensor."))
+        {
+            self.sensor_changes
+                .push((key.to_string(), params["value"].clone()));
             return;
         }
         if let Some(key) = params["key"].as_str().filter(|k| is_provides(k)) {
@@ -749,6 +765,41 @@ pub struct Link<W: Write> {
     /// Wallpaper Engine as the page shows it, for the hub's holder names (#1142); the app's
     /// reads Wallpaper Engine at each refresh, tests give their own.
     wallpaper: WallpaperProbe,
+    /// What Temperature reads from the hub on this connection.
+    sensors: Sensors,
+}
+
+/// Temperature's side of one connection ([`super::temperature_feed`]): the facts, and the
+/// subscription that is made only while the scene asks for it.
+struct Sensors {
+    feed: super::temperature_feed::Feed,
+    sub: super::temperature_feed::Subscription,
+    /// The `facts.list` request that carries the values now.
+    list: Option<i64>,
+    /// A missing grant was logged (once).
+    said: bool,
+    /// The last status handed to [`Link::take_sensor_status`].
+    sent: Option<super::temperature_feed::Status>,
+}
+
+impl Sensors {
+    fn new() -> Sensors {
+        Sensors {
+            feed: super::temperature_feed::Feed::new(super::temperature::DEFAULT_SOURCE),
+            sub: Default::default(),
+            list: None,
+            said: false,
+            sent: None,
+        }
+    }
+
+    /// The hub lets this module read the sensors, and the link is up.
+    fn allowed(&self) -> bool {
+        !matches!(
+            self.feed.status(),
+            super::temperature_feed::Status::NotAllowed | super::temperature_feed::Status::HubLost
+        )
+    }
 }
 
 /// Reads Wallpaper Engine for the page's section, given the hub's holder names.
@@ -813,6 +864,7 @@ impl<W: Write> Link<W> {
             provided: Default::default(),
             off: Vec::new(),
             wallpaper: wallpaper_now,
+            sensors: Sensors::new(),
         }
     }
 
@@ -1130,14 +1182,62 @@ impl<W: Write> Link<W> {
                 return Ok(Step::Handoff);
             }
         }
+        for (key, value) in std::mem::take(&mut self.hub.sensor_changes) {
+            // The sensors' own facts only while subscribed (a late one is dropped); the sensors
+            // app's state comes through the registry subscription at any time.
+            if key == super::temperature_feed::APP_STATE_KEY || self.sensors.sub.listening() {
+                self.sensors.feed.fact(&key, &value);
+            }
+        }
         let Incoming::Response {
-            method, outcome, ..
+            id,
+            method,
+            outcome,
         } = got
         else {
             return Ok(Step::Nothing);
         };
         match (method.as_str(), outcome) {
+            ("facts.subscribe", outcome) if self.sensors.sub.owns(id) => {
+                let number = match &outcome {
+                    Ok(result) => result["subscription"].as_u64(),
+                    Err(e) => {
+                        // Refused: no retry loop; the next change of the wish asks again.
+                        self.log.push(format!(
+                            "Foxglove: the hub would not let it read the PC sensors ({})",
+                            reason(e)
+                        ));
+                        None
+                    }
+                };
+                if let Some(super::temperature_feed::Act::Unsubscribe(n)) =
+                    self.sensors.sub.answered(number)
+                {
+                    self.session
+                        .request("facts.unsubscribe", json!({ "subscription": n }))?;
+                    self.sensors.feed.clear();
+                }
+                Ok(Step::Nothing)
+            }
+            ("facts.list", outcome) if self.sensors.list == Some(id) => {
+                self.sensors.list = None;
+                // An error is fine: the values come with the changes.
+                if let (Ok(result), true) = (outcome, self.sensors.sub.listening()) {
+                    for f in result["facts"].as_array().into_iter().flatten() {
+                        if let Some(key) = f["key"].as_str() {
+                            self.sensors.feed.fact(key, &f["value"]);
+                        }
+                    }
+                }
+                Ok(Step::Nothing)
+            }
             ("initialize", Ok(result)) => {
+                self.sensors.feed.link(
+                    true,
+                    result["granted"]
+                        .as_array()
+                        .is_some_and(|g| g.iter().any(|p| p.as_str() == Some(GRANT_SENSORS))),
+                );
                 let granted = result["granted"]
                     .as_array()
                     .is_some_and(|g| g.iter().any(|p| p.as_str() == Some(GRANT)));
@@ -1167,6 +1267,18 @@ impl<W: Write> Link<W> {
             ("facts.list", outcome) if self.phase == Phase::Surveying => {
                 match outcome {
                     Ok(result) => {
+                        // The sensors app's state, or its absence: not installed.
+                        let app = result["facts"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|f| {
+                                f["key"].as_str() == Some(super::temperature_feed::APP_STATE_KEY)
+                            })
+                            .map_or(Value::Null, |f| f["value"].clone());
+                        self.sensors
+                            .feed
+                            .fact(super::temperature_feed::APP_STATE_KEY, &app);
                         let found = result["facts"]
                             .as_array()
                             .into_iter()
@@ -1271,6 +1383,65 @@ impl<W: Write> Link<W> {
         }
     }
 
+    /// Temperature's wish: read the sensors (the running scene's look reads and nothing holds
+    /// it), or not. Subscribes and unsubscribes on a change, once each, and forgets the readings
+    /// when it ends. Before the hub has the module nothing is sent; the runner tells the wish
+    /// again after each message, so a reconnect subscribes once.
+    pub fn sync_sensors(&mut self, want: bool) -> Result<(), SessionError> {
+        if !self.registered() {
+            return Ok(());
+        }
+        if want && !self.sensors.allowed() {
+            if !self.sensors.said {
+                self.sensors.said = true;
+                self.log.push(format!(
+                    "Foxglove: the hub has not granted {GRANT_SENSORS}; the Temperature effect \
+                     has no readings"
+                ));
+            }
+            return Ok(());
+        }
+        match self.sensors.sub.want(want) {
+            Some(super::temperature_feed::Act::Subscribe) => {
+                self.sensors.feed.clear();
+                let pattern = super::temperature_feed::pattern(self.sensors.feed.group());
+                // Subscribe first, list second: a change between the two is not lost.
+                let id = self
+                    .session
+                    .request("facts.subscribe", json!({ "pattern": pattern }))?;
+                self.sensors.sub.sent(id);
+                self.sensors.list = Some(
+                    self.session
+                        .request("facts.list", json!({ "pattern": pattern }))?,
+                );
+            }
+            Some(super::temperature_feed::Act::Unsubscribe(n)) => {
+                self.session
+                    .request("facts.unsubscribe", json!({ "subscription": n }))?;
+                self.sensors.feed.clear();
+                self.sensors.list = None;
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    /// Whether the subscription to the sensors is held or being made (tests).
+    #[cfg(test)]
+    fn sensors_listening(&self) -> bool {
+        self.sensors.sub.listening()
+    }
+
+    /// What Temperature's reading is now, if it changed since this was last asked.
+    pub fn take_sensor_status(&mut self) -> Option<super::temperature_feed::Status> {
+        let now = self.sensors.feed.status();
+        if self.sensors.sent == Some(now) {
+            return None;
+        }
+        self.sensors.sent = Some(now);
+        Some(now)
+    }
+
     /// The facts the module holds now, sent when it is ready (and again after a reconnect).
     pub fn snapshot(&mut self, facts: Vec<(String, Fact)>) -> Result<(), SessionError> {
         for (key, value) in facts {
@@ -1285,6 +1456,12 @@ impl<W: Write> Link<W> {
     }
 
     fn set(&mut self, key: &str, value: Option<&Fact>) -> Result<(), SessionError> {
+        // Game mode changes how often the sensors sample; Temperature's line says so.
+        if key == "keyboard.game_mode" {
+            if let Some(Fact::Bool(on)) = value {
+                self.sensors.feed.set_game(*on);
+            }
+        }
         // Only the pattern the module registered, whatever the caller hands it.
         if !self.live() || !key.starts_with("keyboard.") {
             return Ok(());
@@ -1513,6 +1690,8 @@ mod runner {
         Reply(u64, super::Reply),
         /// A call worker of connection `.0` died: the connection ends.
         WorkerLost(u64),
+        /// The scene's wish to read the sensors changed ([`temperature_feed::want`]).
+        Sensors,
     }
 
     /// Why a connection ended.
@@ -1573,6 +1752,11 @@ mod runner {
         let gtx = tx.clone();
         crate::foxglove::hub_panels::on_guard_change(move || {
             let _ = gtx.send(Msg::Guard);
+        });
+        // The sensors subscription follows the scene's wish: told by its change, never polled.
+        let stx = tx.clone();
+        crate::foxglove::temperature_feed::on_want_change(move || {
+            let _ = stx.send(Msg::Sensors);
         });
         // Recorded while the hub's process is alive: a restarted hub must run this exact image.
         let mut hub = HubId {
@@ -1771,6 +1955,10 @@ mod runner {
             }
         });
         let (ended, live) = converse(launch, conn, generation, tx, rx, pending, facts);
+        // The link is gone: no reading survives it (a reconnect reads again).
+        crate::foxglove::temperature_feed::publish(
+            crate::foxglove::temperature_feed::Status::HubLost,
+        );
         stop_reader(&canceller, &done_rx, &stop);
         (ended, live)
     }
@@ -1888,6 +2076,14 @@ mod runner {
                 }
                 _ => Step::Nothing, // a line of an older connection
             };
+            // Temperature's wish and the reading, after every message: subscribes or ends the
+            // subscription on a change of the wish, and publishes the reading when it changed.
+            if let Err(e) = link.sync_sensors(crate::foxglove::temperature_feed::wanted()) {
+                return lost(e, live);
+            }
+            if let Some(status) = link.take_sensor_status() {
+                crate::foxglove::temperature_feed::publish(status);
+            }
             for l in link.take_log() {
                 crate::foxglove::app_log::line(&l);
             }

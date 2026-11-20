@@ -260,6 +260,10 @@ enum Ctl {
     /// Screen glow's hand-back (its generation) reached the lights' own colours (#1085): they
     /// may go.
     HandedBack(u64),
+    /// The running look reads the PC sensors' temperature (or no longer does): Foxglove listens
+    /// to them only meanwhile, and only while nothing holds the scene (the listener rule).
+    #[allow(dead_code)] // told by the Temperature page (slice 3)
+    Reads(bool),
     Stop,
 }
 
@@ -586,6 +590,15 @@ pub fn layer_sweep(colour: Rgb) {
     tell(Ctl::LayerSweep(colour));
 }
 
+/// The running scene's look reads the temperature of the PC sensors, or no longer does (the
+/// Temperature effect). Changing the look clears it first, so the caller says it again after
+/// [`set_effect`] when the new look reads one. A no-op when no scene runs; the scene's end ends
+/// the listening whatever was said.
+#[allow(dead_code)] // the Temperature page calls it (slice 3)
+pub fn set_reads_temperature(on: bool) {
+    tell(Ctl::Reads(on));
+}
+
 /// Foxglove paused or resumed (#404).
 pub fn pause_changed(paused: bool) {
     tell(Ctl::Paused(paused));
@@ -815,6 +828,9 @@ fn control(
     scheduler.set(Gate::Away, super::away::away());
     scheduler.set(Gate::Paused, super::pause::paused());
     scheduler.set(Gate::Scene, true);
+    // Listens to the PC sensors only while the look reads them and no gate holds the scene
+    // (away, paused, another app holding the lights); ends with the scene, however it ends.
+    let mut listener = super::temperature_feed::Listener::for_scene();
     let ended = pump(rx, limit.map(|l| Instant::now() + l), |ctl| {
         match ctl {
             Ctl::Away(a) => {
@@ -901,6 +917,8 @@ fn control(
                     .burst(sweep);
             }
             Ctl::Effect(name, effect) => {
+                // A look change clears what it read; the caller says Temperature again.
+                listener.set_reads(false);
                 super::lights_owner::retry("the scene's look changed");
                 let screen = is_screen(&effect);
                 // The wallpapers draw the new look on the same clock (#493); Screen glow leaves
@@ -949,8 +967,15 @@ fn control(
                     lamp_writer.release();
                 }
             }
+            Ctl::Reads(on) => listener.set_reads(on),
             Ctl::Stop => {}
         }
+        // The sensors' listener follows the same gates as the frames.
+        listener.set_gates(super::temperature_feed::Gates {
+            away: super::away::away(),
+            paused: super::pause::paused(),
+            held: reader.gates().scene_held(),
+        });
         // A full-screen game, or capture failing, holds the scene itself: the lights fade to
         // their own colours (#1085) and then go back to them; the hold's end eases back.
         let now_held = reader.gates().scene_held();
@@ -992,6 +1017,8 @@ fn control(
     });
     *FRAMES.lock().unwrap_or_else(|e| e.into_inner()) = None;
     give_back.ended = ended;
+    // Ends the sensors' listening before the lights go back.
+    drop(listener);
     drop(watch);
     // Stops the capture first: no picture is handed on after this (its threads end within 1 s).
     drop(reader);

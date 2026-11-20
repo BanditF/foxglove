@@ -483,7 +483,8 @@ fn first_run_with_a_generic_keyboard_app_costs_exactly_the_bound() {
 fn first_run_with_the_shipped_foxglove_manifest_costs_the_same() {
     let mut fx = Fx::new("foxglove", "foxglove", foxglove_manifest);
     let r = run_first_run(&mut fx);
-    assert_eq!(r.allowed, 21);
+    // 21 plus Foxglove's optional `facts.read:sensor.*` (the Temperature effect's readings).
+    assert_eq!(r.allowed, 22);
     assert_eq!(r.app, BOUND_APP);
     assert_eq!(r.clicks.len(), BOUND_TOTAL);
     assert!(fx.view().pending.is_empty());
@@ -540,19 +541,22 @@ fn no_sensitive_item_is_granted_without_its_i_understand() {
 #[test]
 fn the_first_run_dialog_shows_what_the_app_can_do_and_what_needs_ok() {
     use hideout_shell::permission_dialog::{needs_ok_heading, ALLOW_AND_START};
-    for (tag, id, manifest, can) in [
+    for (tag, id, manifest, can, everyday) in [
         (
             "fr2-gizmo",
             "gizmo-keys",
             gizmo_manifest as fn(&Path) -> String,
             "Gizmo Keys can: use your keyboard and PC lights, talk to other devices from the \
              same maker, go online, and read and save its own files.",
+            EVERYDAY,
         ),
         (
             "fr2-foxglove",
             "foxglove",
             foxglove_manifest as fn(&Path) -> String,
             "Foxglove can: use your keyboard and PC lights",
+            // Plus the optional read of the PC sensors' readings.
+            EVERYDAY + 1,
         ),
     ] {
         let mut fx = Fx::new(tag, id, manifest);
@@ -566,7 +570,7 @@ fn the_first_run_dialog_shows_what_the_app_can_do_and_what_needs_ok() {
         );
         assert!(d.view.starts, "{id}: Allow starts the app");
         assert_eq!(d.sensitive_count(), SENSITIVE.len(), "{id}");
-        assert_eq!(d.everyday(), EVERYDAY, "{id}");
+        assert_eq!(d.everyday(), everyday, "{id}");
         assert!(
             !d.everyday_shown(),
             "{id}: the everyday items start collapsed"
@@ -583,18 +587,18 @@ fn the_first_run_dialog_shows_what_the_app_can_do_and_what_needs_ok() {
         );
         assert_eq!(
             d.allow_label(),
-            "Allow 17",
+            format!("Allow {everyday}"),
             "{id}: sensitive items unticked"
         );
         let _ = ALLOW_AND_START;
         // Collapsed means still ticked: Allow alone records the 17 and no sensitive item.
-        assert_eq!(d.count(), EVERYDAY, "{id}");
+        assert_eq!(d.count(), everyday, "{id}");
         assert!(
             fx.view().granted.is_empty(),
             "{id}: showing the dialog grants nothing"
         );
         let n = fx.allow(&mut c);
-        assert_eq!(n, EVERYDAY, "{id}");
+        assert_eq!(n, everyday, "{id}");
     }
 }
 
