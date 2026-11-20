@@ -53,6 +53,12 @@ const DELETE: u32 = 0x0001_0000;
 /// `SE_GROUP_ENABLED`: a capability the token holds.
 const SE_GROUP_ENABLED: u32 = 0x4;
 
+/// The name and description Windows shows for a profile (Task Manager, Settings). Only used
+/// when the profile is created: an existing profile (ALREADY_EXISTS, then looked up by its
+/// unchanged `profile_name`) keeps the display name it was created with, so SIDs and ACLs
+/// stay as they were.
+const PROFILE_DISPLAY: &str = "Hideout app";
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -192,7 +198,7 @@ impl Container {
     /// Module `id`'s profile (made on first use, looked up after) with `capabilities`.
     pub fn for_module(id: &str, capabilities: &[&str]) -> io::Result<Container> {
         let name = wide(&profile_name(id));
-        let display = wide("Hideout module");
+        let display = wide(PROFILE_DISPLAY);
         let mut sid: PSID = std::ptr::null_mut();
         // SAFETY: NUL-terminated strings; no capabilities on the profile itself.
         let hr = unsafe {
@@ -644,6 +650,15 @@ pub fn capabilities(p: &Process) -> io::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_profile_display_name_says_app_and_the_moniker_is_unchanged() {
+        // Window-free: no profile is created here.
+        assert_eq!(PROFILE_DISPLAY, "Hideout app");
+        assert!(!PROFILE_DISPLAY.to_lowercase().contains("module"));
+        // The moniker identifies existing profiles and their ACLs; it must not move.
+        assert_eq!(profile_name("foxglove"), "hideout.foxglove");
+    }
 
     #[test]
     fn names_and_command_lines() {
