@@ -458,7 +458,8 @@ pub fn rebuild_preflight(
     if !exe.exists() {
         return Err(format!("the new build is not there: {}", exe.display()));
     }
-    let pin = crate::pin::Pin::open(&exe)
+    // `rebuild_gate` above proved an enrolled dev folder: its pin may be renamed aside.
+    let pin = crate::pin::Pin::open_dev(&exe)
         .map_err(|e| format!("the new build can't be read yet: {}: {e}", exe.display()))?;
     if !pin.sha256.eq_ignore_ascii_case(settled_sha256) {
         return Err("superseded: the file is not the build that settled".into());
@@ -1784,9 +1785,18 @@ impl Supervisor {
         // The program is pinned (write-locked) and hashed through that one handle, which stays
         // open until the instance is gone (#1155-B).
         self.launch_hook("before-pin");
-        let pin = match prepared.filter(|p| prepared_usable(p, &exe, Instant::now())) {
+        // Rename sharing only for an app enrolled in a listed dev folder, decided now from the
+        // registry; anything else (installed, signed, adopted outside a dev folder) is strict.
+        let dev = rebuild_gate(&reg, id, None, "").is_ok();
+        let pin = match prepared
+            .filter(|p| prepared_usable(p, &exe, Instant::now()))
+            .filter(|p| dev || !p.pin.renamable())
+        {
             // The build checked before the stop (R3); the checks below still run on it.
             Some(p) => p.pin,
+            None if dev => Arc::new(
+                crate::pin::Pin::open_dev(&exe).map_err(|e| format!("{}: {e}", exe.display()))?,
+            ),
             None => Arc::new(
                 crate::pin::Pin::open(&exe).map_err(|e| format!("{}: {e}", exe.display()))?,
             ),
