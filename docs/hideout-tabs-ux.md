@@ -144,7 +144,7 @@ Review items, all fixed in the PR:
 
 - Nav contrast fix is right (`on_accent` on `accent`, 8.0:1 dark) and has a test. Suggest the test
   also run on the palette's selected row and future tabs, through one `selected_label` helper.
-- Tray: one log line for the outcome is good; the menu's "No modules yet" and "Open Hideout" /
+- Tray: one log line for the outcome is good; the menu's "No modules yet" (shown only when no app is known; other states have their own status line, see `tray.rs`) and "Open Hideout" /
   "Pause Hideout" are plain words. No block.
 - Footprint wakeups: lab scripts only, no user-visible text. No block.
 

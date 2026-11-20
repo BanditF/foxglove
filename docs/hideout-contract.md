@@ -572,6 +572,16 @@ plug-ins** (no dylibs, no scripts in the hub).
   running hub picks up the new inventory and shows the module's tile and page. Registering again
   updates the version and keeps the grants. For Arete: copy its `module.toml` to a folder, set
   `run[0]` to this PC's `arete.exe`, keep `hub` as the second argument.
+- **Self-registration and discovery (#1292).** An app's installer may write
+  `HKCU\Software\Hideout\Modules\<id>`; the hub also reads a bundled `products.json`. Found apps
+  show on a Found card, and **Add an app...** takes a folder. Adding opens the same first-run OK;
+  nothing is allowed or started before it.
+- **Dev folders (#1297).** With dev mode on, an adopted app inside a folder the user marked keeps
+  its grants across a rebuild; sensitive growth and leaving the folder still ask again.
+- **Remove from Hideout (#1293).** Stops the app and forgets its grants; an adopted app keeps its
+  own install and settings.
+- **Sign-in fact (#1307).** `module.<id>.starts_at_sign_in` (read-only) says whether the hub starts
+  at sign-in.
 - A `runtime`'s processes belong to the service that launched them, inside that service's Job
   Object (§7.7).
 
