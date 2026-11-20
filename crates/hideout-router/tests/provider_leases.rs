@@ -547,3 +547,161 @@ fn a_provider_ends_its_own_leases_of_a_family() {
     let out = t.call(p, "lease.end", json!({}));
     assert_eq!(sends(&out, p)[0]["error"]["code"], -32602);
 }
+
+/// Local holders (v1.21): the module names callers the hub cannot see (its own local API); the
+/// hub merges them, cleaned, into the same fact, and drops them with the module's connection.
+#[test]
+fn a_module_names_its_local_holders_into_the_same_fact() {
+    let mut t = Rig::new();
+    let p = t.p;
+    let _ = t.r.watch_facts(vec![String::new()]);
+    let say = |t: &mut Rig, names: Value| {
+        t.now += std::time::Duration::from_millis(200);
+        let out = t.call(
+            p,
+            "lease.holders",
+            json!({"family": "example.lessor", "names": names}),
+        );
+        sends(&out, p)
+            .into_iter()
+            .find(|m| m.get("id").is_some())
+            .unwrap()
+    };
+    // Local only: named with nothing hub-routed.
+    assert_eq!(say(&mut t, json!(["Render queue"]))["result"], json!({}));
+    assert_eq!(
+        holders(&t),
+        Some(json!({"example.lessor": ["Render queue"]}))
+    );
+    // Merged with a hub holder, sorted, each name once; hostile text cleaned and cut at 32.
+    t.lease(t.a, json!("LA"));
+    let long = "x".repeat(60);
+    say(
+        &mut t,
+        json!([
+            "Render queue",
+            "Render queue",
+            "evil\u{202e}\nname",
+            "",
+            long
+        ]),
+    );
+    let fact = holders(&t).unwrap();
+    let names: Vec<String> = fact["example.lessor"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&A.to_string()) && names.contains(&"Render queue".to_string()));
+    assert_eq!(names.iter().filter(|n| *n == "Render queue").count(), 1);
+    assert!(
+        names
+            .iter()
+            .all(|n| !n.contains('\u{202e}') && !n.contains('\n')),
+        "{names:?}"
+    );
+    assert!(names
+        .iter()
+        .all(|n| n.chars().count() <= hideout_contract::lease::HOLDER_NAME_MAX));
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted);
+    // More than the cap is cut.
+    let many: Vec<String> = (0..40).map(|i| format!("app{i:02}")).collect();
+    say(&mut t, json!(many));
+    let n = holders(&t).unwrap()["example.lessor"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert!(n <= hideout_contract::lease::HOLDERS_MAX_NAMES + 1, "{n}");
+    // Bad params are refused; a caller (not a module) is denied.
+    assert_eq!(say(&mut t, json!("nope"))["error"]["code"], -32602);
+    let out = t.call(
+        t.a,
+        "lease.holders",
+        json!({"family": "example.lessor", "names": ["x"]}),
+    );
+    assert!(sends(&out, t.a)[0].get("error").is_some());
+    // An empty list clears the local names; the hub holder stays.
+    say(&mut t, json!([]));
+    assert_eq!(holders(&t), Some(json!({"example.lessor": [A]})));
+    // They end with the module's connection.
+    say(&mut t, json!(["Again"]));
+    t.r.disconnect(p);
+    assert_eq!(holders(&t), None);
+}
+
+/// Local holders are accepted only for a family the module has a route in (a module cannot make
+/// the tray show a pause in somebody else's family), and the refusal changes nothing.
+#[test]
+fn a_module_names_holders_only_in_its_own_family() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    for (from, family) in [
+        (t.p, "example.other"),
+        (t.p, "wallpaper-engine"),
+        (t.a, "example.lessor"),
+    ] {
+        let out = t.call(
+            from,
+            "lease.holders",
+            json!({"family": family, "names": ["Windows Update"]}),
+        );
+        let back = sends(&out, from)
+            .into_iter()
+            .find(|m| m.get("id").is_some())
+            .unwrap();
+        assert!(back.get("error").is_some(), "{family}: {back}");
+    }
+    assert_eq!(holders(&t), None);
+    let q = connect(&mut t.r, Q, t.now);
+    ready(&mut t.r, q, &["example.other.*"], t.now);
+    let out = t.call(
+        q,
+        "lease.holders",
+        json!({"family": "example.lessor", "names": ["x"]}),
+    );
+    assert!(sends(&out, q).iter().any(|m| m.get("error").is_some()));
+    assert_eq!(holders(&t), None);
+}
+
+/// A swap's new instance does not inherit the old instance's names, and a module cannot flood
+/// the fact: a second change inside the gap is refused, a repeat of the same list is free.
+#[test]
+fn local_holders_end_with_their_connection_and_changes_are_spaced() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    let list = |t: &mut Rig, from: ConnId, names: Value| {
+        let out = t.call(
+            from,
+            "lease.holders",
+            json!({"family": "example.lessor", "names": names}),
+        );
+        sends(&out, from)
+            .into_iter()
+            .find(|m| m.get("id").is_some())
+            .unwrap()
+    };
+    t.now += std::time::Duration::from_millis(500);
+    let p = t.p;
+    assert!(list(&mut t, p, json!(["Old"])).get("result").is_some());
+    assert_eq!(
+        list(&mut t, p, json!(["New"]))["error"]["code"],
+        8,
+        "inside the gap"
+    );
+    assert_eq!(holders(&t), Some(json!({"example.lessor": ["Old"]})));
+    assert!(
+        list(&mut t, p, json!(["Old"])).get("result").is_some(),
+        "a repeat is free"
+    );
+    // The new instance connects while the old one is still up, then the old one closes.
+    let p2 = connect(&mut t.r, P, t.now);
+    ready(&mut t.r, p2, &["example.lessor.*"], t.now);
+    t.r.disconnect(p);
+    assert_eq!(holders(&t), None, "the old instance's names are gone");
+    t.now += std::time::Duration::from_millis(500);
+    assert!(list(&mut t, p2, json!(["Mine"])).get("result").is_some());
+    assert_eq!(holders(&t), Some(json!({"example.lessor": ["Mine"]})));
+}

@@ -45,6 +45,9 @@ struct Lease {
     id: String,
     conn: u64,
     reason: String,
+    /// The holder's cleaned name (#1120 slice 1), empty for the hub's callers, which the hub
+    /// names itself.
+    name: String,
 }
 
 /// A new lease id: `we-<counter>-<64 random bits>`, at most 36 bytes, no control characters.
@@ -106,10 +109,23 @@ impl Leases {
     /// Takes a lease. The first one pauses, unless the user had (`user_paused`). Answers the
     /// lease and whether Wallpaper Engine is paused on its account (`false`: the user's pause,
     /// which this lease will not play over).
+    #[cfg(test)]
     pub fn pause(
         &mut self,
         apply: &mut impl Apply,
         conn: u64,
+        reason: &str,
+        user_paused: bool,
+    ) -> Result<(String, bool), Fail> {
+        self.pause_named(apply, conn, "", reason, user_paused)
+    }
+
+    /// [`Leases::pause`] for a holder with a name (already cleaned, see `api::clean_client_name`).
+    pub fn pause_named(
+        &mut self,
+        apply: &mut impl Apply,
+        conn: u64,
+        name: &str,
         reason: &str,
         user_paused: bool,
     ) -> Result<(String, bool), Fail> {
@@ -135,6 +151,7 @@ impl Leases {
             id: id.clone(),
             conn,
             reason: reason.to_string(),
+            name: name.to_string(),
         });
         Ok((id, self.we_paused))
     }
@@ -269,6 +286,18 @@ impl Leases {
     /// Wallpaper Engine is paused by a lease Foxglove sent.
     pub fn paused_by_lease(&self) -> bool {
         self.we_paused
+    }
+
+    /// The names of the local holders (not the hub's callers), in start order, each once, for
+    /// the hub's `lease.holders` (contract 1.21): the hub can't see these callers.
+    pub fn local_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for l in self.live.iter().filter(|l| l.conn != ROUTED) {
+            if !out.contains(&l.name) {
+                out.push(l.name.clone());
+            }
+        }
+        out
     }
 
     /// The live leases' reasons, for the `wallpaper_engine.paused_by` fact.
@@ -535,5 +564,29 @@ mod tests {
         // The router's per-caller cap is below it: four callers at their cap fill it.
         assert_eq!(ROUTED_TOTAL, 4 * hideout_contract::lease::MAX_PER_CALLER);
         assert_eq!(ROUTED, 0, "plugin-host connections count from 1");
+    }
+
+    /// #1120 slice 1: local holders are named (each once, in start order); the hub's callers
+    /// are not, and a released lease takes its name away.
+    #[test]
+    fn local_names_list_each_local_holder_once() {
+        let mut f = Fake {
+            running: true,
+            ..Default::default()
+        };
+        let mut l = Leases::default();
+        assert!(l.local_names().is_empty());
+        let (a, _) = l
+            .pause_named(&mut &mut f, 1, "Render queue", "a", false)
+            .unwrap();
+        l.pause_named(&mut &mut f, 1, "Render queue", "b", false)
+            .unwrap();
+        l.pause_named(&mut &mut f, 2, "Arete", "c", false).unwrap();
+        l.pause_named(&mut &mut f, ROUTED, "", "d", false).unwrap();
+        assert_eq!(l.local_names(), ["Render queue", "Arete"]);
+        l.release(&mut &mut f, 1, &a, true).unwrap();
+        assert_eq!(l.local_names(), ["Render queue", "Arete"]);
+        l.drop_conn(&mut &mut f, 1, true);
+        assert_eq!(l.local_names(), ["Arete"]);
     }
 }

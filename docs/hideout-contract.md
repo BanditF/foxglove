@@ -1,6 +1,6 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.20** (v1.19 plus `facts.demand`, the hub telling the module that owns a fact pattern when the first subscriber arrives and the last leaves, #1328 follow-up; v1.19 was v1.18 plus `hub.show` and the app's read of `module.foxglove.state` over the verified hub pipe, H5.5; v1.18 was v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
+Status: spec, contract version **1.21** (v1.20 plus `lease.holders`, a provider naming the callers it holds leases for outside the hub, #1142; v1.20 was v1.19 plus `facts.demand`, the hub telling the module that owns a fact pattern when the first subscriber arrives and the last leaves, #1328 follow-up; v1.19 was v1.18 plus `hub.show` and the app's read of `module.foxglove.state` over the verified hub pipe, H5.5; v1.18 was v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
 and the user's Resume that ends them, #1142; v1.16 was v1.15 plus the tray menu's quick actions: an `action`
 panel is a tray menu item, a press on a cold module starts it and is delivered, and `tray` is a
 user source, #1234; v1.15 was v1.14 plus a cap on the leases one caller holds at one
@@ -18,12 +18,30 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)", every v1.19 one "(v1.19)", every v1.20 one "(v1.20)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)", every v1.19 one "(v1.19)", every v1.20 one "(v1.20)", every v1.21 one "(v1.21)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.21** (#1142, who holds a pause): a provider can name the callers it holds leases for
+  outside the hub. `lease.holders {family, names}` → `{}` (M → H, §8.8): the hub keeps the list
+  per module and family and adds the names to the fact `module.<provider>.lease_holders`
+  (§8.5), so the tray's Resume item and the provider's own page read one list. The latest call
+  replaces that module's list for the family, an empty list removes it, and every list ends
+  with the module's connection. Each name is cleaned like a holder name (hidden characters
+  dropped, at most 32 characters; one that is empty after that is "An app"), at most 16 are
+  kept, each once. The names are the callers' own words and nobody checked them: they are shown
+  as names, never as an app the hub vouches for; a name may imitate a module's or an app's, so a
+  reader treats every holder name as untrusted text. A module lists at most 8 families (names
+  up to 64 bytes) and only a family it has a route in (else −32602); a call that changes its
+  lists within 100 ms of its last change is refused with error 8 `rate limited` (the
+  provider resends on its next change), and one repeating the current list is a no-op. A
+  connection's lists end with it, so a swap's new instance never inherits the old one's.
+  No new permission: it only names holds of the module's own. Contract crate:
+  `lease::LEASE_HOLDERS`, `LeaseHolders`; schema type `lease.LeaseHolders`. `hub` stays 1.5
+  (§8.7): an older hub answers `lease.holders` −32601, which a provider takes as "the hub lists
+  hub callers only".
 - **1.20** (OMEN sensors, the subscriber-demand signal): a module that owns a fact pattern
   learns whether anyone listens to it, so it can sample only then. `facts.demand {pattern,
   subscribers}` (H → M, §8.8) is a notification the hub sends to the module that registered
@@ -2171,7 +2189,11 @@ Rules:
   `initialize` name, hidden characters dropped (as a module's name, §4.1) and cut at 32
   characters. Never lease ids or a caller's reasons. It is removed when the last lease there
   ends. Readers hold `facts.read` on it like any `module.*` fact; a provider reads its own to
-  name who holds it.
+  name who holds it. (v1.21) The list also has the names the provider itself reported with
+  `lease.holders {family, names}` (M → H) for callers that reach it outside the hub; they are
+  cleaned the same way, merged with the hub's own (each name once, sorted), and dropped with
+  the provider's connection. They are the callers' own words, so a reader shows them as
+  names only.
 - **Resume (v1.17, #1142).** The user can end every live lease of one family at a provider at
   once: from the hub's tray (for a family the hub has words for, `wallpaper-engine`: *Resume
   wallpapers*), or in the provider's own page, which calls `lease.end {family}` (M → H); the
@@ -2314,6 +2336,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `state.import` | H → M | call | `{blob, from_version}` | `{}` | — |
 | `module.exit` | H → M | notification | `{reason}` | — (exit 0 within 5 s, or the Job ends it) | — |
 | `lease.end` (v1.17) | M → H | request | `{family}` | `{ended}` | −32602 without a family; denied for a tool |
+| `lease.holders` (v1.21) | M → H | request | `{family, names}` (the provider's own callers' names; latest replaces, empty removes) | `{}` | −32602 for a bad family or names; denied for a tool |
 | `lease.end` (v1.18) | H → M | notification | `{family}` (after the user's Resume at the hub's tray: end the holds you keep outside the hub too) | — | — |
 | `lease.closed` (v1.3) | H → M | notification | `{lease, reason: "disconnect" \| "released" \| "revoked" \| "restart"}` ((v1.14) `restart`; an unknown reason means ended) | — | — |
 

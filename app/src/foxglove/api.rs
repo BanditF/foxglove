@@ -174,7 +174,7 @@ pub(crate) struct LiveWallpaper;
 
 impl WallpaperControl for LiveWallpaper {
     fn pause(&self, conn: u64, reason: &str) -> Result<(String, bool), Fail> {
-        wallpaper_sync::pause(conn, reason)
+        wallpaper_sync::pause(conn, &client_name_of(conn), reason)
     }
     fn release(&self, conn: u64, lease: String) -> Result<Ended, Fail> {
         wallpaper_sync::release(conn, lease)
@@ -635,7 +635,49 @@ fn with_device<R>(
     super::lighting_sources::with_device(id, f).unwrap_or_else(no_device)
 }
 
+/// The name shown for a local caller that gave none.
+const NAMELESS_CALLER: &str = "An app";
+
+/// The longest name kept of a local caller (the hub's `HOLDER_NAME_MAX`).
+const CLIENT_NAME_MAX: usize = 32;
+
+/// A caller's own name made safe to show: no control, direction or hidden characters, at most
+/// [`CLIENT_NAME_MAX`] characters (cut with an ellipsis), "An app" when nothing is left. The
+/// name is the caller's word only: nothing vouches for it, and it is drawn as plain text.
+pub(crate) fn clean_client_name(raw: &str) -> String {
+    let kept: String = raw.chars().filter(|c| !spoofing_char(*c)).collect();
+    let kept = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    if kept.is_empty() {
+        return NAMELESS_CALLER.into();
+    }
+    if kept.chars().count() > CLIENT_NAME_MAX {
+        let cut: String = kept.chars().take(CLIENT_NAME_MAX - 1).collect();
+        return format!("{}\u{2026}", cut.trim_end());
+    }
+    kept
+}
+
+/// Each open local connection's cleaned name, by connection number (#1120 slice 1).
+static CLIENT_NAMES: std::sync::Mutex<std::collections::BTreeMap<u64, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn client_name_of(conn: u64) -> String {
+    CLIENT_NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&conn)
+        .cloned()
+        .unwrap_or_else(|| NAMELESS_CALLER.into())
+}
+
 impl Devices for AppDevices {
+    fn hello(&self, conn: u64, client_name: &str) {
+        CLIENT_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(conn, clean_client_name(client_name));
+    }
+
     fn call_from(&self, conn: u64, method: &str, params: Value) -> Result<Value, Error> {
         use super::lighting_leases::{self as leases, Priority};
         match method {
@@ -758,6 +800,10 @@ impl Devices for AppDevices {
     }
 
     fn closed(&self, conn: u64) {
+        CLIENT_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&conn);
         end_leases(|l| l.conn == conn);
         // Its Wallpaper Engine pause leases end too; the last one plays (#1120).
         wallpaper_sync::connection_closed(conn);

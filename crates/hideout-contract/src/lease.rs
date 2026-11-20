@@ -15,6 +15,12 @@ pub const LEASE_CLOSED: &str = "lease.closed";
 /// own Resume does. The holders aren't told; a later call naming one answers `lease.unknown`.
 pub const LEASE_END: &str = "lease.end";
 
+/// (v1.21) A provider tells the hub the names of the callers it holds leases for outside the
+/// hub, so the hub's `lease_holders` fact lists them with the hub's own (M -> H, §8.8):
+/// `{family, names}` -> `{}`. The latest call replaces the module's earlier list for that
+/// family; an empty list removes it; it ends with the module's connection.
+pub const LEASE_HOLDERS: &str = "lease.holders";
+
 /// The longest lease id, in bytes (v1.14).
 pub const MAX_ID_BYTES: usize = 128;
 
@@ -37,6 +43,17 @@ pub struct LeaseClosed {
 #[serde(deny_unknown_fields)]
 pub struct LeaseEnd {
     pub family: String,
+}
+
+/// `lease.holders` (§8.8, v1.21): the family and the names of the provider's own callers (the
+/// ones that don't come through the hub). The hub cleans every name like a holder name (hidden
+/// characters dropped, at most [`HOLDER_NAME_MAX`] characters), keeps at most
+/// [`HOLDERS_MAX_NAMES`] and lists each once. A name is the caller's own word, never checked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseHolders {
+    pub family: String,
+    pub names: Vec<String>,
 }
 
 /// Why a lease ended (§8.5).
@@ -69,6 +86,14 @@ pub const HOLDERS_FACT: &str = "lease_holders";
 
 /// (v1.17) The longest holder name in [`HOLDERS_FACT`], in characters; a longer one is cut.
 pub const HOLDER_NAME_MAX: usize = 32;
+
+/// (v1.21) The most names one `lease.holders` call keeps; the rest are dropped.
+pub const HOLDERS_MAX_NAMES: usize = 16;
+
+/// (v1.21) The most families one module may list with `lease.holders`, and the longest family
+/// name, in bytes.
+pub const HOLDERS_MAX_FAMILIES: usize = 8;
+pub const HOLDERS_FAMILY_MAX: usize = 64;
 
 /// The fact key of [`HOLDERS_FACT`] for `provider`.
 pub fn holders_key(provider: &str) -> String {
