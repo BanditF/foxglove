@@ -24,6 +24,12 @@
 # names, no wildcards), then wait for the child's handle, then CloseDesktop. Pid reuse cannot hit
 # another process: we hold the child's handle from the start. Same user only (we create everything).
 #
+# Through `powershell -File` a hashtable or array parameter does not bind (-ArgList a,b arrives as ONE
+# string, -Env @{} fails): use -ArgJson '["a","b"]' and -EnvJson '{"K":"v"}' there, or call this script from
+# -Command/-EncodedCommand with real arrays. -Run is one string through -File.
+# -AllowRunning: by default a launch is refused when a process with the same image name already runs
+# (single-instance apps hand off to the running one, on the user's desktop, bypassing the desktop).
+#
 # Refuses: relative or missing -Exe paths, bad desktop/event names, -TimeoutSec outside 1..3600,
 # -Desktop not recorded by a live supervisor of this user. Log: %LOCALAPPDATA%\Foxglove\lab\quiet-launch.log.
 # State files (one per live launch): %LOCALAPPDATA%\Foxglove\lab\quiet-launch-<name>.json.
@@ -39,6 +45,9 @@ param(
     [string[]]$Run = @(),
     [int]$RunTimeoutSec = 60,
     [switch]$Keep,
+    [switch]$AllowRunning,
+    [string]$ArgJson = '',
+    [string]$EnvJson = '',
     [string]$DesktopName = '',
     [string]$Desktop = '',
     [string]$Stop = '',
@@ -96,6 +105,7 @@ function New-EnvBlock([hashtable]$over, $base) {
     foreach ($k in $base.Keys) { $m[[string]$k] = [string]$base[$k] }
     foreach ($k in $over.Keys) {
         if (-not $k -or ([string]$k).Contains('=') -or ([string]$k).Contains("`0")) { throw "bad -Env name '$k'" }
+        if (([string]$over[$k]).Contains("`0")) { throw "NUL in the value of -Env '$k'" }
         $m[[string]$k] = [string]$over[$k]
     }
     $sb = New-Object Text.StringBuilder
@@ -103,6 +113,9 @@ function New-EnvBlock([hashtable]$over, $base) {
     [void]$sb.Append([char]0)
     $sb.ToString()
 }
+
+# Text inside a single-quoted PowerShell string.
+function ConvertTo-SqText([string]$s) { $s.Replace("'", "''") }
 
 function Expand-RunText([string]$text, [int]$pid_, [string]$desktop) {
     $text.Replace('{pid}', [string]$pid_).Replace('{desktop}', $desktop)
@@ -191,12 +204,11 @@ public static class Native {
     }
     // job may be Zero (then not suspended, not in a job). The child is created suspended, put in the
     // job, then resumed, so nothing it starts can escape the job.
-    public static Spawned Spawn(string app, string cmdline, string cwd, string env, string desktop, IntPtr job) {
+    public static Spawned Spawn(string app, string cmdline, string cwd, string env, string desktop, IntPtr job, bool hide) {
         STARTUPINFO si = new STARTUPINFO();
         si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
         si.lpDesktop = "winsta0\\" + desktop;
-        si.dwFlags = 0x1; // STARTF_USESHOWWINDOW
-        si.wShowWindow = 0; // SW_HIDE
+        if (hide) { si.dwFlags = 0x1; si.wShowWindow = 0; } // STARTF_USESHOWWINDOW + SW_HIDE: console helpers only
         uint flags = 0x400 | 0x08000000 | 0x4; // UNICODE_ENVIRONMENT | NO_WINDOW | SUSPENDED
         IntPtr envp = IntPtr.Zero;
         if (env != null) envp = Marshal.StringToHGlobalUni(env);
@@ -241,6 +253,14 @@ public static class Native {
         bool ok = SetEvent(e); CloseHandle(e); return ok;
     }
     public static bool SetEv(IntPtr e) { return SetEvent(e); }
+    public static IntPtr OpenWaitEvent(string name) { return OpenEventW(0x100000, false, name); } // SYNCHRONIZE
+    [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool GetUserObjectInformationW(IntPtr h, int idx, StringBuilder buf, int len, out int needed);
+    public static string WindowStation() {
+        StringBuilder sb = new StringBuilder(256); int n;
+        return GetUserObjectInformationW(GetProcessWindowStation(), 2, sb, 512, out n) ? sb.ToString() : "";
+    }
 }
 }
 '@
@@ -275,6 +295,10 @@ if ($SelfTest) {
     Check ((ConvertTo-CommandLine 'C:\a b\x.exe' @('-p', 'x y')) -eq '"C:\a b\x.exe" -p "x y"') 'command line joins quoted parts'
     $blk = New-EnvBlock @{ FOXGLOVE_CONFIG_DIR = 'C:\lab\cfg'; Path = 'X' } @{ Path = 'Y'; Other = '1' }
     Check ($blk -ceq "FOXGLOVE_CONFIG_DIR=C:\lab\cfg$([char]0)Other=1$([char]0)Path=X$([char]0)$([char]0)") 'env block: override wins, sorted, double NUL end'
+    $threw = $false
+    try { New-EnvBlock @{ 'A' = "x$([char]0)y" } @{} | Out-Null } catch { $threw = $true }
+    Check $threw 'NUL in an env value is refused'
+    Check ((ConvertTo-SqText "C:\it's\x") -ceq "C:\it''s\x") 'single quotes are doubled for the wrapper'
     $threw = $false
     try { New-EnvBlock @{ 'A=B' = 'x' } @{} | Out-Null } catch { $threw = $true }
     Check $threw 'env name with = is refused'
@@ -321,28 +345,43 @@ function Get-LiveState([string]$name) {
     $st
 }
 
-# Runs one command text in a hidden powershell on `desktopName`; prints its output, returns its exit code.
-function Invoke-OnDesktop([string]$desktopName, [string]$text, [int]$limitSec, [IntPtr]$job, [IntPtr]$stopEv) {
-    $tmp = Join-Path $LabDir ("quiet-run-{0}.txt" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+# Runs one command text in a hidden powershell on `desktopName`, in its own kill-on-close job (an
+# overrun or a stop kills the helper's whole tree); prints its output, returns its exit code.
+# Sets $script:stopped when the stop event ended it.
+$script:stopped = $false
+function Invoke-OnDesktop([string]$desktopName, [string]$text, [int]$limitSec, [IntPtr]$stopEv) {
+    $id = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $tmp = Join-Path $LabDir "quiet-run-$id.txt"
+    $body = Join-Path $LabDir "quiet-run-$id.ps1"
     # The text goes in a temp .ps1 so an `exit` in it ends only that script (output is still flushed).
-    $body = Join-Path $LabDir ("quiet-run-{0}.ps1" -f [IO.Path]::GetFileNameWithoutExtension($tmp).Substring(10))
     [IO.File]::WriteAllText($body, $text, (New-Object Text.UTF8Encoding($true)))
-    $script = "`$ErrorActionPreference='Continue'; `$global:LASTEXITCODE=0; & '$body' *>&1 | Out-File -LiteralPath '$tmp' -Encoding utf8; exit `$LASTEXITCODE"
+    $script = "`$ErrorActionPreference='Continue'; `$global:LASTEXITCODE=0; & '$(ConvertTo-SqText $body)' *>&1 | Out-File -LiteralPath '$(ConvertTo-SqText $tmp)' -Encoding utf8; exit `$LASTEXITCODE"
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $cl = ConvertTo-CommandLine $psExe @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc)
     Write-Log "run on ${desktopName}: $text"
-    $s = [QuietLaunch.Native]::Spawn($psExe, $cl, $PSScriptRoot, $null, $desktopName, $job)
+    $runJob = [QuietLaunch.Native]::NewJob()
     $code = 5
     try {
-        $r = [QuietLaunch.Native]::WaitFor($s.Process, $stopEv, [uint32]($limitSec * 1000))
-        if ($r -eq 0) { $code = [int][QuietLaunch.Native]::ExitCode($s.Process) }
-        else {
-            [QuietLaunch.Native]::KillProcess($s.Process)   # this exact handle only
-            $code = if ($r -eq 258) { 4 } else { 5 }
-            Say "run stopped ($(if ($r -eq 258) { 'timed out after ' + $limitSec + ' s' } else { 'stop asked' })): $text"
+        $s = [QuietLaunch.Native]::Spawn($psExe, $cl, $PSScriptRoot, $null, $desktopName, $runJob, $true)
+        try {
+            $r = [QuietLaunch.Native]::WaitFor($s.Process, $stopEv, [uint32]($limitSec * 1000))
+            if ($r -eq 0) { $code = [int][QuietLaunch.Native]::ExitCode($s.Process) }
+            else {
+                $code = if ($r -eq 258) { 4 } else { 5 }
+                if ($r -ne 258) { $script:stopped = $true }
+                Say "run stopped ($(if ($r -eq 258) { 'timed out after ' + $limitSec + ' s' } else { 'stop asked' })): $text"
+            }
+        } finally {
+            # the helper's whole tree, by the job we made for it
+            [QuietLaunch.Native]::KillJob($runJob)
+            [void][QuietLaunch.Native]::WaitFor($s.Process, [IntPtr]::Zero, 10000)
+            [QuietLaunch.Native]::Close($s.Process)
         }
-    } finally { [QuietLaunch.Native]::Close($s.Process); Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue }
+    } finally {
+        [QuietLaunch.Native]::Close($runJob)
+        Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
+    }
     if (Test-Path -LiteralPath $tmp) {
         Get-Content -LiteralPath $tmp -Encoding UTF8 | ForEach-Object { Say $_ }
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
@@ -372,12 +411,26 @@ if ($Desktop) {
     $st = Get-LiveState $Desktop
     if (-not $st) { Refuse "no live quiet-launch of yours owns desktop $Desktop" }
     Initialize-Native
+    $deadlineAt = [DateTime]::Parse([string]$st.deadlineUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+    $hAttStop = [QuietLaunch.Native]::OpenWaitEvent("Local\quiet-launch-stop-$Desktop")
     $last = 0
-    foreach ($r in $Run) { $last = Invoke-OnDesktop $Desktop (Expand-RunText $r ([int]$st.pid) $Desktop) $RunTimeoutSec ([IntPtr]::Zero) ([IntPtr]::Zero) }
+    try {
+        foreach ($r in $Run) {
+            $left = [int][Math]::Floor(($deadlineAt.ToUniversalTime() - [DateTime]::UtcNow).TotalSeconds)
+            if ($left -lt 1) { Say "the launch's hard limit has passed: not running '$r'"; $last = 4; break }
+            $last = Invoke-OnDesktop $Desktop (Expand-RunText $r ([int]$st.pid) $Desktop) ([Math]::Min($RunTimeoutSec, $left)) $hAttStop
+            if ($script:stopped) { break }
+        }
+    } finally { [QuietLaunch.Native]::Close($hAttStop) }
     exit $last
 }
 
 # Launch + supervise.
+if ($ArgJson) { try { $ArgList = @(ConvertFrom-Json -InputObject $ArgJson | ForEach-Object { [string]$_ }) } catch { Refuse "bad -ArgJson: $_" } }
+if ($EnvJson) {
+    try { $o = ConvertFrom-Json -InputObject $EnvJson; $Env = @{}; foreach ($pr in $o.PSObject.Properties) { $Env[$pr.Name] = [string]$pr.Value } }
+    catch { Refuse "bad -EnvJson: $_" }
+}
 $problem = Get-ExeProblem $Exe
 if (-not $problem) { $problem = Get-TimeoutProblem $TimeoutSec '-TimeoutSec' }
 if (-not $problem) { $problem = Get-TimeoutProblem $RunTimeoutSec '-RunTimeoutSec' }
@@ -389,11 +442,19 @@ $name = if ($DesktopName) { $DesktopName } else { New-DesktopName }
 if (Get-LiveState $name) { Refuse "desktop $name is already in use by a live launch" }
 $exeFull = [IO.Path]::GetFullPath($Exe)
 $image = [IO.Path]::GetFileName($exeFull)
+Initialize-Native
+$ws = [QuietLaunch.Native]::WindowStation()
+if ($ws -ine 'WinSta0') { Refuse "this process is in window station '$ws', not the interactive WinSta0" }
+if (-not $AllowRunning) {
+    # Exact image name (no wildcard): a running instance would take a single-instance handoff on the user's desktop.
+    $base = [IO.Path]::GetFileNameWithoutExtension($exeFull)
+    $already = @([Diagnostics.Process]::GetProcessesByName($base) | Where-Object { $_.Id -ne $PID })
+    if ($already.Count) { Refuse "$image is already running (pid $(($already | ForEach-Object { $_.Id }) -join ', ')): a single-instance app would hand off to it on the user's desktop; stop that one yourself or pass -AllowRunning" }
+}
 $cwd = if ($WorkDir) { $WorkDir } else { [IO.Path]::GetDirectoryName($exeFull) }
 $envBlock = New-EnvBlock $Env ([Environment]::GetEnvironmentVariables())
 $cmdline = ConvertTo-CommandLine $exeFull $ArgList
 
-Initialize-Native
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
 $hDesk = [IntPtr]::Zero; $hJob = [IntPtr]::Zero; $hStop = [IntPtr]::Zero; $hReady = [IntPtr]::Zero
 $child = $null; $exitCode = 0; $stateFile = StatePath $name
@@ -401,7 +462,7 @@ try {
     $hDesk = [QuietLaunch.Native]::NewDesktop($name)
     $hJob = [QuietLaunch.Native]::NewJob()
     $hStop = [QuietLaunch.Native]::NewEvent("Local\quiet-launch-stop-$name")
-    $child = [QuietLaunch.Native]::Spawn($exeFull, $cmdline, $cwd, $envBlock, $name, $hJob)
+    $child = [QuietLaunch.Native]::Spawn($exeFull, $cmdline, $cwd, $envBlock, $name, $hJob, $false)
     $me = Get-Process -Id $PID
     @{
         desktop = $name; pid = $child.Pid; image = $image; supervisorPid = $PID
@@ -419,9 +480,10 @@ try {
     foreach ($r in $Run) {
         $left = [int][Math]::Floor(($deadline - [DateTime]::UtcNow).TotalSeconds)
         if ($left -lt 1) { $timedOut = $true; break }
-        $exitCode = Invoke-OnDesktop $name (Expand-RunText $r $child.Pid $name) ([Math]::Min($RunTimeoutSec, $left)) $hJob $hStop
+        $exitCode = Invoke-OnDesktop $name (Expand-RunText $r $child.Pid $name) ([Math]::Min($RunTimeoutSec, $left)) $hStop
+        if ($script:stopped) { break }
     }
-    if (-not $timedOut -and ($Keep -or -not $Run.Count)) {
+    if (-not $timedOut -and -not $script:stopped -and ($Keep -or -not $Run.Count)) {
         $left = [int][Math]::Floor(($deadline - [DateTime]::UtcNow).TotalSeconds)
         $r = [QuietLaunch.Native]::WaitFor($child.Process, $hStop, [uint32][Math]::Max(0, $left * 1000))
         if ($r -eq 258) { $timedOut = $true }
