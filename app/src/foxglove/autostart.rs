@@ -907,6 +907,7 @@ pub fn checkbox(ui: &mut egui::Ui) {
     {
         MESSAGE.set(set_enabled(on).err());
     }
+    super::signin_flag::hosted_note(ui, super::signin_flag::hosted(), on);
     if let Some(m) = MESSAGE.with_borrow(|m| m.clone()) {
         ui.colored_label(super::theme::palette(ui).danger, m);
     }

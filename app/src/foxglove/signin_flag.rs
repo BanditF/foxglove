@@ -74,8 +74,50 @@ pub fn apply(
         eprintln!("Foxglove: sign-in hand-over: couldn't remember what the hub said: {e}");
         return false;
     }
+    remember_hosted(next.hideout_starts_me);
     log(&line(next.hideout_starts_me));
     true
+}
+
+/// Foxglove's Start with Windows line when Hideout starts it, switch on (UX plan, slice 4).
+pub const HOSTED_BACKUP_ON: &str = "Hideout starts Foxglove when you sign in. This switch is the backup: if Hideout does not start, Foxglove starts on its own.";
+/// The same line with the switch off.
+pub const HOSTED_BACKUP_OFF: &str =
+    "Hideout starts Foxglove when you sign in. With this off there is no backup.";
+
+/// The line under the Start with Windows switch: only while Hideout starts Foxglove.
+pub fn hosted_line(hosted: bool, switch_on: bool) -> Option<&'static str> {
+    hosted.then_some(if switch_on {
+        HOSTED_BACKUP_ON
+    } else {
+        HOSTED_BACKUP_OFF
+    })
+}
+
+/// Remembered `hideout_starts_me`: 0 = not read yet, 1 = no, 2 = yes.
+static HOSTED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn remember_hosted(on: bool) {
+    HOSTED.store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether Hideout starts Foxglove at sign-in, as remembered in `[signin]`.
+pub fn hosted() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    if HOSTED.load(Relaxed) == 0 {
+        let s = super::store::section(STORE_OWNER, SECTION)
+            .try_load::<SigninSettings>()
+            .unwrap_or_default();
+        remember_hosted(s.hideout_starts_me);
+    }
+    HOSTED.load(Relaxed) == 2
+}
+
+/// Draws the line under the switch; nothing when Hideout does not start Foxglove.
+pub fn hosted_note(ui: &mut egui::Ui, hosted: bool, switch_on: bool) {
+    if let Some(text) = hosted_line(hosted, switch_on) {
+        ui.weak(text);
+    }
 }
 
 /// The hub said `fact` (its exe is `hub_exe` while its process is alive).
@@ -145,6 +187,40 @@ mod tests {
             learn(&SigninSettings::default(), true, Some(Path::new("x")), yes),
             None
         );
+    }
+
+    #[test]
+    fn the_line_shows_only_when_hosted_and_follows_the_switch() {
+        assert_eq!(hosted_line(false, true), None);
+        assert_eq!(hosted_line(false, false), None);
+        assert_eq!(hosted_line(true, true), Some(HOSTED_BACKUP_ON));
+        assert_eq!(hosted_line(true, false), Some(HOSTED_BACKUP_OFF));
+        assert_eq!(
+            HOSTED_BACKUP_ON,
+            "Hideout starts Foxglove when you sign in. This switch is the backup: if Hideout does not start, Foxglove starts on its own."
+        );
+        assert_eq!(
+            HOSTED_BACKUP_OFF,
+            "Hideout starts Foxglove when you sign in. With this off there is no backup."
+        );
+    }
+
+    #[test]
+    fn the_note_renders_only_when_hosted() {
+        let height = |hosted, on| {
+            let ctx = egui::Context::default();
+            let mut h = 0.0;
+            let out = ctx.run_ui(Default::default(), |ui| {
+                hosted_note(ui, hosted, on);
+                h = ui.min_rect().height();
+            });
+            out.drop_without_applying_deltas();
+            h
+        };
+        assert_eq!(height(false, true), 0.0);
+        assert_eq!(height(false, false), 0.0);
+        assert!(height(true, true) > 0.0);
+        assert!(height(true, false) > 0.0);
     }
 
     #[test]
