@@ -1,0 +1,16 @@
+[package]
+name = "foxglove-sensors"
+version = "0.1.0"
+edition = "2021"
+description = "Read-only PC sensors as facts: PDH load counters and NVML GPU readings behind a Source trait, sampled only while something subscribes"
+license = "MIT"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    # PC load (#506): PDH counters and the memory load.
+    "Win32_System_Performance",
+    "Win32_System_SystemInformation",
+    # nvml.dll is loaded at run time, never linked.
+    "Win32_System_LibraryLoader",
+] }
