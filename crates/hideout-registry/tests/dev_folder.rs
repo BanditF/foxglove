@@ -186,6 +186,44 @@ fn removing_the_folder_ends_the_carry_and_a_void_drops_the_identity() {
     assert!(f.reg.dev_folder_of(ID).is_none());
 }
 
+/// DF1: Remove takes effect for carries at once. A copy of the registry that was opened before
+/// the Remove (the supervisor's, with the old enrolment still in its memory) reads the folder list
+/// from disk at every carry, so a build that lands right after the Remove is not carried: the
+/// carry itself is refused (the binding is not moved), the grant voids at that build, and the
+/// copy that was running is left alone.
+#[test]
+fn a_carry_attempted_right_after_remove_is_refused_even_on_a_registry_opened_before() {
+    let mut f = fx("carry-after-remove");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    let out = f.out.display().to_string();
+    // The other holder of the registry (a hub thread that read it earlier) still has the carry.
+    let mut stale = Registry::open(&f.home, true).unwrap();
+    assert!(stale.dev_folder_of(ID).is_some());
+    let bound_before = stale.inventory.modules[ID].bound.clone().unwrap();
+    assert!(f.reg.remove_dev_folder(&out).unwrap());
+    // Now, with no restart and no reload: the stale copy no longer counts the app as enrolled.
+    assert!(stale.dev_folder_of(ID).is_none());
+    rebuild(&f, b"build 2");
+    // The carry is refused: nothing is moved, nothing is attested.
+    assert!(!stale.keep_followed(ID, LATER).unwrap());
+    let b = stale.inventory.modules[ID].bound.clone().unwrap();
+    assert_eq!(
+        b.exe_sha256, bound_before.exe_sha256,
+        "the binding did not move"
+    );
+    assert!(b.attested.iter().all(|a| a.by != DEV_ATTESTED_BY));
+    // The check at a start voids the grant at this build, as for any app.
+    assert_eq!(
+        stale.void_if_changed(ID, LATER).unwrap(),
+        Some(VoidReason::Changed)
+    );
+    assert!(stale.inventory.modules[ID].granted.is_empty());
+    // On disk, too, and the running copy's file was never touched by the Remove.
+    let disk = Registry::open(&f.home, true).unwrap();
+    assert!(disk.inventory.modules[ID].identity.is_none());
+    assert!(f.exe.exists());
+}
+
 #[test]
 fn an_app_that_moves_outside_the_folder_is_a_new_identity() {
     let mut f = fx("moved");

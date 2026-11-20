@@ -162,7 +162,16 @@ impl RegistryDev {
             }
             Err(e) => {
                 log::warn!("dev folders: not removed: {e:?}");
-                self.say(words::FAILED, true);
+                // The folder list may have been written before the inventory write failed:
+                // then the folder is gone, and "Nothing changed" would be untrue.
+                let still_listed = self
+                    .open()
+                    .is_none_or(|r| r.dev_folder_rows().iter().any(|x| x.path == path));
+                if still_listed {
+                    self.say(words::FAILED, true);
+                } else {
+                    self.say(words::REMOVED_NOT_TIDY, true);
+                }
             }
         }
     }

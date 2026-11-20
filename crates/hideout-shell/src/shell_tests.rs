@@ -5103,59 +5103,311 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
     assert!(no_controls(&hidden), "{hidden:?}");
 }
 
-/// Each click the section makes: Add carries no path (the hub opens the picker itself).
-#[test]
-fn the_developer_section_sends_its_clicks() {
-    use crate::dev_settings::DevClick;
-    let ctx = ctx();
-    ctx.enable_accesskit();
-    let view = dev_view("ok");
-    let find = |label: &str| -> egui::accesskit::NodeId {
-        let mut found = None;
-        for _ in 0..3 {
-            let out = ctx.run(input(720.0, 900.0, vec![]), |c| {
-                draw_settings_with_dev(c, true, &view);
+/// One page the tests drive frame by frame: a persistent context, a view they may change, and
+/// the accessibility names of what was drawn.
+struct DevDriver {
+    ctx: egui::Context,
+    view: crate::dev_settings::DevView,
+    dark: bool,
+    w: f32,
+    names: HashMap<egui::accesskit::NodeId, (egui::accesskit::Role, String, String)>,
+    sent: Vec<crate::dev_settings::DevClick>,
+}
+
+impl DevDriver {
+    fn new(case: &str) -> Self {
+        let ctx = ctx();
+        ctx.enable_accesskit();
+        let mut d = Self {
+            ctx,
+            view: dev_view(case),
+            dark: true,
+            w: 720.0,
+            names: HashMap::new(),
+            sent: Vec::new(),
+        };
+        d.frames(3, vec![]);
+        d
+    }
+
+    fn frames(&mut self, n: usize, events: Vec<Event>) {
+        let mut events = Some(events);
+        for _ in 0..n {
+            let raw = input(self.w, 1400.0, events.take().unwrap_or_default());
+            let view = self.view.clone();
+            let dark = self.dark;
+            let sent = &mut self.sent;
+            let out = self.ctx.run(raw, |c| {
+                if let Some(d) = draw_settings_with_dev(c, dark, &view).dev {
+                    sent.push(d);
+                }
             });
-            found = out
-                .platform_output
-                .accesskit_update
-                .iter()
-                .flat_map(|u| u.nodes.iter())
-                .find(|(_, n)| n.label() == Some(label))
-                .map(|(id, _)| *id);
+            if let Some(u) = &out.platform_output.accesskit_update {
+                for (id, n) in &u.nodes {
+                    self.names.insert(
+                        *id,
+                        (
+                            n.role(),
+                            n.label().or(n.value()).unwrap_or_default().to_string(),
+                            n.description().unwrap_or_default().to_string(),
+                        ),
+                    );
+                }
+            }
         }
-        found.unwrap_or_else(|| panic!("no {label}"))
-    };
-    for (label, want) in [
-        (crate::dev_settings::ADD.to_string(), DevClick::Add),
-        (
-            crate::dev_settings::remove_name(r"D:\dev\foxglove"),
-            DevClick::Remove(r"D:\dev\foxglove".into()),
-        ),
-        (
-            crate::dev_settings::RESTART_SWITCH.to_string(),
-            DevClick::Restart(false),
-        ),
-    ] {
-        let id = find(&label);
-        let mut got = None;
+    }
+
+    fn id_of(&self, role: egui::accesskit::Role, label: &str) -> Option<egui::accesskit::NodeId> {
+        self.names
+            .iter()
+            .find(|(_, (r, l, _))| *r == role && l == label)
+            .map(|(id, _)| *id)
+    }
+
+    /// Presses the named button (by its accessible name), then lets the page settle.
+    fn press(&mut self, label: &str) {
+        self.press_only(label);
+        self.frames(2, vec![]);
+    }
+
+    /// The click frame alone: the hub changes the view before the next frame draws.
+    fn press_only(&mut self, label: &str) {
+        let id = self
+            .id_of(egui::accesskit::Role::Button, label)
+            .or_else(|| self.id_of(egui::accesskit::Role::CheckBox, label))
+            .unwrap_or_else(|| panic!("no button {label}"));
         let req = egui::accesskit::ActionRequest {
             action: egui::accesskit::Action::Click,
             target: id,
             data: None,
         };
-        for k in 0..3 {
-            let mut raw = input(720.0, 900.0, vec![]);
-            if k == 0 {
-                raw.events.push(Event::AccessKitActionRequest(req.clone()));
+        self.frames(1, vec![Event::AccessKitActionRequest(req)]);
+    }
+
+    fn has_button(&self, label: &str) -> bool {
+        self.id_of(egui::accesskit::Role::Button, label).is_some()
+    }
+
+    fn dialog_open(&mut self) -> bool {
+        // Names of nodes that are gone from the page stay in the map: read a fresh frame.
+        self.names.clear();
+        self.frames(1, vec![]);
+        self.names.values().any(|(r, l, _)| {
+            *r == egui::accesskit::Role::Dialog && l == crate::dev_settings::CONFIRM_TITLE
+        })
+    }
+
+    /// The accessible name of the focused widget.
+    fn focused(&mut self) -> Option<String> {
+        self.names.clear();
+        self.frames(1, vec![]);
+        let f = self.ctx.memory(|m| m.focused())?;
+        self.names
+            .get(&egui::accesskit::NodeId(f.value()))
+            .map(|(_, l, _)| l.clone())
+    }
+}
+
+const FOX: &str = r"D:\dev\foxglove";
+
+/// Each click the section makes. Add carries no path (the hub opens the picker itself). Remove
+/// sends nothing until the confirm is answered: a count of two clicks.
+#[test]
+fn the_developer_section_sends_its_clicks() {
+    use crate::dev_settings::{self as w, DevClick};
+    let mut d = DevDriver::new("ok");
+    d.press(w::ADD);
+    assert_eq!(d.sent, vec![DevClick::Add]);
+    d.sent.clear();
+    d.press(w::RESTART_SWITCH);
+    assert_eq!(d.sent, vec![DevClick::Restart(false)]);
+    d.sent.clear();
+    // Remove: click 1 asks and sends nothing; click 2 (Remove folder) sends exactly one.
+    d.press(&w::remove_name(FOX));
+    assert!(d.sent.is_empty(), "Remove... only asks: {:?}", d.sent);
+    assert!(d.dialog_open());
+    d.press(w::CONFIRM_OK);
+    assert_eq!(d.sent, vec![DevClick::Remove(FOX.into())]);
+    // Nothing else is sent by the settling frames, and the dialog is closed.
+    d.frames(3, vec![]);
+    assert_eq!(d.sent.len(), 1);
+    assert!(!d.dialog_open());
+}
+
+/// Cancel and Esc send nothing and put the focus back on the same Remove...
+#[test]
+fn the_remove_confirm_cancels_with_the_button_and_with_escape() {
+    use crate::dev_settings::{self as w};
+    let mut d = DevDriver::new("ok");
+    // Cancel is what has the focus when the confirm opens.
+    d.press(&w::remove_name(FOX));
+    assert!(d.dialog_open());
+    assert_eq!(d.focused().as_deref(), Some(w::CONFIRM_CANCEL));
+    d.press(w::CONFIRM_CANCEL);
+    assert!(d.sent.is_empty());
+    assert!(!d.dialog_open());
+    assert_eq!(d.focused(), Some(w::remove_name(FOX)));
+    // Escape does the same.
+    d.press(&w::remove_name(FOX));
+    assert!(d.dialog_open());
+    d.frames(1, vec![key(Key::Escape, Modifiers::NONE)]);
+    d.frames(2, vec![]);
+    assert!(d.sent.is_empty());
+    assert!(!d.dialog_open());
+    assert_eq!(d.focused(), Some(w::remove_name(FOX)));
+    // Enter on the opening focus is Cancel: it never removes.
+    d.press(&w::remove_name(FOX));
+    d.frames(1, vec![key(Key::Enter, Modifiers::NONE)]);
+    d.frames(2, vec![]);
+    assert!(d.sent.is_empty(), "{:?}", d.sent);
+}
+
+/// A click outside the dialog is Cancel too: nothing is sent, the dialog closes, and the focus
+/// goes back to the same Remove...
+#[test]
+fn a_click_outside_the_remove_confirm_cancels_it() {
+    use crate::dev_settings::{self as w};
+    let mut d = DevDriver::new("ok");
+    d.press(&w::remove_name(FOX));
+    assert!(d.dialog_open());
+    let at = egui::pos2(4.0, 1390.0);
+    let b = |pressed| Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    d.frames(1, vec![Event::PointerMoved(at)]);
+    d.frames(1, vec![b(true)]);
+    d.frames(1, vec![b(false)]);
+    d.frames(3, vec![]);
+    assert!(d.sent.is_empty(), "{:?}", d.sent);
+    assert!(!d.dialog_open());
+    assert_eq!(d.focused(), Some(w::remove_name(FOX)));
+}
+
+/// After Remove folder the focus goes to the next row's Remove..., else the previous one's, else
+/// Add a folder....
+#[test]
+fn focus_after_a_removal_goes_to_the_next_row_then_the_previous_then_add() {
+    use crate::dev_settings::{self as w, DevRow};
+    let row = |p: &str| DevRow {
+        path: p.into(),
+        apps: vec![],
+        problem: None,
+    };
+    let rows = [r"D:\a", r"D:\b", r"D:\c"];
+    let view = |list: &[&str]| crate::dev_settings::DevView {
+        on: true,
+        restart: true,
+        folders: list.iter().map(|p| row(p)).collect(),
+        ..Default::default()
+    };
+    // Middle row: the next one (c).
+    let mut d = DevDriver::new("empty");
+    d.view = view(&rows);
+    d.frames(3, vec![]);
+    d.press(&w::remove_name(r"D:\b"));
+    d.press_only(w::CONFIRM_OK);
+    d.view = view(&[r"D:\a", r"D:\c"]);
+    d.frames(3, vec![]);
+    assert_eq!(d.focused(), Some(w::remove_name(r"D:\c")));
+    // Last row: the previous one (a).
+    d.press(&w::remove_name(r"D:\c"));
+    d.press_only(w::CONFIRM_OK);
+    d.view = view(&[r"D:\a"]);
+    d.frames(3, vec![]);
+    assert_eq!(d.focused(), Some(w::remove_name(r"D:\a")));
+    // The only row: Add a folder...
+    d.press(&w::remove_name(r"D:\a"));
+    d.press_only(w::CONFIRM_OK);
+    d.view = view(&[]);
+    d.frames(3, vec![]);
+    assert_eq!(d.focused().as_deref(), Some(w::ADD));
+    // A save that failed leaves the row: the focus stays on its own Remove....
+    let mut d = DevDriver::new("empty");
+    d.view = view(&[r"D:\a", r"D:\b"]);
+    d.frames(3, vec![]);
+    d.press(&w::remove_name(r"D:\a"));
+    d.press(w::CONFIRM_OK);
+    d.frames(3, vec![]);
+    assert_eq!(d.focused(), Some(w::remove_name(r"D:\a")));
+}
+
+/// A row that goes while its confirm is open (removed elsewhere) takes the confirm with it.
+#[test]
+fn a_confirm_for_a_folder_that_went_closes() {
+    use crate::dev_settings::{self as w};
+    let mut d = DevDriver::new("ok");
+    d.press(&w::remove_name(FOX));
+    assert!(d.dialog_open());
+    d.view = dev_view("empty");
+    d.frames(3, vec![]);
+    assert!(!d.dialog_open());
+    assert!(d.sent.is_empty());
+}
+
+/// What a screen reader gets from the dialog: its title names it, its body describes it, and it
+/// says the running copy stays and the next build asks.
+#[test]
+fn the_remove_confirm_reads_well_to_a_screen_reader() {
+    use crate::dev_settings::{self as w};
+    let mut d = DevDriver::new("ok");
+    d.press(&w::remove_name(FOX));
+    d.names.clear();
+    d.frames(2, vec![]);
+    let (_, label, desc) = d
+        .names
+        .values()
+        .find(|(r, ..)| *r == egui::accesskit::Role::Dialog)
+        .cloned()
+        .expect("a dialog");
+    assert_eq!(label, w::CONFIRM_TITLE);
+    assert!(desc.contains(FOX), "{desc}");
+    assert!(desc.contains("keep running"), "{desc}");
+    assert!(desc.contains("next build asks for your OK again"), "{desc}");
+    assert!(d.has_button(w::CONFIRM_CANCEL));
+    assert!(d.has_button(w::CONFIRM_OK));
+}
+
+/// The confirm, light, dark and narrow, with apps and without, for the UX review.
+#[test]
+fn renders_the_remove_confirm_for_review() {
+    for (case, dark, width, h, file) in [
+        ("ok", true, 720u32, 640u32, "df1-remove-confirm-dark.png"),
+        ("ok", false, 720, 640, "df1-remove-confirm-light.png"),
+        ("ok", true, 360, 900, "df1-remove-confirm-narrow-dark.png"),
+        ("ok", false, 360, 900, "df1-remove-confirm-narrow-light.png"),
+        (
+            "empty-app",
+            false,
+            720,
+            640,
+            "df1-remove-confirm-noapps-light.png",
+        ),
+    ] {
+        let path = if case == "empty-app" {
+            r"D:\dev\new-app"
+        } else {
+            FOX
+        };
+        let view = dev_view(if case == "empty-app" { "problem" } else { case });
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        let mut opened = false;
+        let Some(rgba) = rasterise_in(choice, width, h, vec![Vec::new(); 12], |c| {
+            if !opened {
+                opened = true;
+                crate::settings_view::open_remove_confirm(c, path);
             }
-            let _ = ctx.run(raw, |c| {
-                let a = draw_settings_with_dev(c, true, &view);
-                if a.dev.is_some() {
-                    got = a.dev;
-                }
-            });
-        }
-        assert_eq!(got, Some(want), "{label}");
+            draw_settings_with_dev(c, dark, &view);
+        }) else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        save_png(file, width, h, rgba);
     }
 }

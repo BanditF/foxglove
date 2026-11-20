@@ -616,6 +616,11 @@ fn install_fonts(ctx: &egui::Context) {
         &["SegoeIcons.ttf", "segmdl2.ttf"],
         egui::FontFamily::Proportional,
     );
+    let bold = add(
+        "bold",
+        &["segoeuib.ttf", "seguisb.ttf"],
+        egui::FontFamily::Name(BOLD_FAMILY.into()),
+    );
     for (name, found) in [("symbols", symbols), ("icons", icons)] {
         if found {
             fonts
@@ -639,8 +644,27 @@ fn install_fonts(ctx: &egui::Context) {
         log::error!("no UI font found in {}", dir.display());
         return;
     }
+    // The bold face, for the few lines that need weight (a path in a confirm). Always defined,
+    // as egui panics on a named family that has no fonts: without the file it is the UI face.
+    if bold {
+        // The symbols still draw in a bold line.
+        if let Some(f) = fonts.families.get(&egui::FontFamily::Proportional).cloned() {
+            let b = fonts
+                .families
+                .entry(egui::FontFamily::Name(BOLD_FAMILY.into()))
+                .or_default();
+            b.extend(f.into_iter().filter(|n| n != "ui"));
+        }
+    } else if let Some(f) = fonts.families.get(&egui::FontFamily::Proportional).cloned() {
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(BOLD_FAMILY.into()), f);
+    }
     ctx.set_fonts(fonts);
 }
+
+/// The name of the bold font family `install_fonts` defines.
+pub(crate) const BOLD_FAMILY: &str = "hideout-bold";
 
 /// What a tab shows in the page area.
 enum Target {
