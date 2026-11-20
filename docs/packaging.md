@@ -33,7 +33,7 @@ a copy run outside the MSI can be found in Start as well. One starting another e
 is left alone; dev builds and test runs never write it. `--uninstall-cleanup` removes it when it
 starts this exe.
 
-**Start with Windows** belongs to the app alone. The switch is in **App -> Startup and
+**Start with Windows** is a switch per product: Foxglove has its own (below) and Hideout has its own; Foxglove learns whether Hideout starts it. The switch is in **App -> Startup and
 updates -> Start with Windows** and is on by default.
 - It is a shortcut, `Foxglove.lnk`, in the user's Startup folder. Its command line is
   `foxglove.exe --tray`. Windows' on/off state for it is the `Foxglove.lnk` value under

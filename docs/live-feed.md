@@ -30,7 +30,8 @@ the real check.
 
 - **The token:** Foxglove makes a 24-character token from the OS's random source when the feed
   is first turned on. The user pastes it into the wallpaper's "Foxglove pairing token"
-  property. It never goes on a command line.
+  property. It never goes on a command line. Once a wallpaper redeems a ticket (below), the token is
+  cleared and no longer admitted.
 - **The port:** the feed listens on `8768` by default (`[live_wallpaper] port`). Foxglove tells
   each wallpaper whose manifest supports `foxglove_live` the port as the `foxglove_live`
   property through Wallpaper Engine's command line (`wallpaper_sync`), and sends `0` when it
@@ -50,7 +51,7 @@ the real check.
   using an old pairing token". It clears when a wallpaper pairs, or 10 minutes after the last
   refusal. Nothing runs on a timer for either.
 
-### One-time tickets (additive; the pasted token above keeps working)
+### One-time tickets (the pasted token works only until the first redeem)
 
 Beside `foxglove_live`, Foxglove puts `foxglove_ticket` (24 characters, valid 120 s, used once)
 in the same `applyProperties` push, for a wallpaper that reads the feed, only when the feed is
@@ -66,8 +67,8 @@ on, the wallpaper is allowed, its monitor has no live socket and no ticket outst
   reconnect" until Reconnect. No timer is involved.
 - **Reconnect / Disconnect all** (functions only; the Hideout panel is S5): Reconnect resets the
   budget and hands every monitor without a socket a fresh ticket. Disconnect all clears the
-  tickets, closes every socket and hands out no ticket until Reconnect. A wallpaper still using
-  the old pasted token can reconnect after Disconnect all; S4 retires that path.
+  tickets, closes every socket and hands out no ticket until Reconnect. The pasted token
+  no longer reconnects anything once a ticket has been redeemed.
 - **Logs:** counts only. The ticket, the protocol header and the wallpaper command line are
   never logged.
 
