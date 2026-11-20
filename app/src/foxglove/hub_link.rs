@@ -2111,9 +2111,7 @@ mod runner {
                 Ok(free) => free,
                 Err(e) => return lost(e, live),
             };
-            if let Err(e) =
-                link.sync_sensors(crate::foxglove::temperature_feed::wanted() && free)
-            {
+            if let Err(e) = link.sync_sensors(crate::foxglove::temperature_feed::wanted() && free) {
                 return lost(e, live);
             }
             if let Some(status) = link.take_sensor_status() {

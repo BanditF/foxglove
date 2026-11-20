@@ -539,7 +539,11 @@ pub fn set_look(name: &str, effect: Effect, reads_temperature: bool) {
     if let Some(r) = running.as_mut().filter(|r| !r.thread.is_finished()) {
         r.name = name.to_string();
         r.effect = effect.clone();
-        let _ = r.tx.send(Ctl::Effect(name.to_string(), Box::new(effect), reads_temperature));
+        let _ = r.tx.send(Ctl::Effect(
+            name.to_string(),
+            Box::new(effect),
+            reads_temperature,
+        ));
         status().name = Some(name.to_string());
     }
 }

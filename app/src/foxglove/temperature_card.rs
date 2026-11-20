@@ -185,9 +185,8 @@ pub fn marker_text(running: bool, t: &TempView, look: &Look) -> String {
         return NO_READING.into();
     }
     match t.status {
-        Status::Working { temp_c, .. } => {
-            temp::summary(Some(temp_c), look.cool_c, look.hot_c).unwrap_or_else(|| NO_READING.into())
-        }
+        Status::Working { temp_c, .. } => temp::summary(Some(temp_c), look.cool_c, look.hot_c)
+            .unwrap_or_else(|| NO_READING.into()),
         Status::Reading => "Waiting for a reading…".into(),
         Status::Missing | Status::NoReport => "Not reported".into(),
         _ => NO_READING.into(),
@@ -222,7 +221,13 @@ pub fn step(end: End, up: bool, cool: u16, hot: u16) -> (u16, u16) {
     if (up && !up_ok) || (!up && !down_ok) {
         return (cool, hot);
     }
-    let by = |v: u16| if up { v + temp::STEP_C } else { v - temp::STEP_C };
+    let by = |v: u16| {
+        if up {
+            v + temp::STEP_C
+        } else {
+            v - temp::STEP_C
+        }
+    };
     match end {
         End::Cool => (by(cool), hot),
         End::Hot => (cool, by(hot)),
@@ -263,8 +268,7 @@ pub fn head(ui: &mut egui::Ui, look: &Look, set: &mut impl FnMut(Look, bool)) {
     ui.horizontal_wrapped(|ui| {
         theme::pill_group(ui, "Colours", |ui, g| {
             for c in Colours::ALL {
-                if g.pill(ui, look.temp_colours == c, c.label()).clicked()
-                    && look.temp_colours != c
+                if g.pill(ui, look.temp_colours == c, c.label()).clicked() && look.temp_colours != c
                 {
                     set(
                         Look {
@@ -308,7 +312,10 @@ fn stepper(ui: &mut egui::Ui, name: &str, value: u16, (down, up): (bool, bool)) 
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             up,
-            format!("{name}, {value} degrees Celsius, higher by {}", temp::STEP_C),
+            format!(
+                "{name}, {value} degrees Celsius, higher by {}",
+                temp::STEP_C
+            ),
         )
     });
     if plus.clicked() {
@@ -464,7 +471,11 @@ fn scale(ui: &mut egui::Ui, look: &Look, reading: Option<f32>, marker: &str) {
             let galley = painter.layout_no_wrap(marker.to_string(), font, p.text);
             let w = galley.size().x;
             let left = (x - w / 2.0).clamp(rect.left(), (rect.right() - w).max(rect.left()));
-            painter.galley(egui::pos2(left, rect.top() - 1.0), galley, Color32::PLACEHOLDER);
+            painter.galley(
+                egui::pos2(left, rect.top() - 1.0),
+                galley,
+                Color32::PLACEHOLDER,
+            );
         }
         None => {
             painter.text(
@@ -500,7 +511,15 @@ mod tests {
 
     /// Words the plan says never to show.
     const NEVER: [&str; 10] = [
-        "sensor.", "fact", "subscribe", "demand", "module", "plugin", "NVML", "GPU", "CPU",
+        "sensor.",
+        "fact",
+        "subscribe",
+        "demand",
+        "module",
+        "plugin",
+        "NVML",
+        "GPU",
+        "CPU",
         "unavailable",
     ];
 
@@ -600,16 +619,7 @@ mod tests {
         ] {
             assert_eq!(hosted(s).gate(), None, "{s:?}");
         }
-        let idle = |t: TempView| {
-            status_line(
-                false,
-                &TempView {
-                    live: false,
-                    ..t
-                },
-                &look(),
-            )
-        };
+        let idle = |t: TempView| status_line(false, &TempView { live: false, ..t }, &look());
         assert_eq!(
             idle(standalone),
             (
@@ -652,7 +662,9 @@ mod tests {
             let line = status_line(true, &t, &l).0;
             if s.reading().is_none() {
                 for text in [&marker, &line] {
-                    assert!(!text.contains("0 °C") && !text.contains('°') || text.contains("Today"));
+                    assert!(
+                        !text.contains("0 °C") && !text.contains('°') || text.contains("Today")
+                    );
                     assert!(!text.trim_start_matches("Running: ").is_empty());
                 }
                 assert!(
@@ -672,13 +684,22 @@ mod tests {
             ),
             "64 °C, warm"
         );
-        assert_eq!(marker_text(true, &hosted(Status::Missing), &l), "Not reported");
-        assert_eq!(marker_text(true, &hosted(Status::NoReport), &l), "Not reported");
+        assert_eq!(
+            marker_text(true, &hosted(Status::Missing), &l),
+            "Not reported"
+        );
+        assert_eq!(
+            marker_text(true, &hosted(Status::NoReport), &l),
+            "Not reported"
+        );
         assert_eq!(
             marker_text(true, &hosted(Status::Reading), &l),
             "Waiting for a reading…"
         );
-        assert_eq!(marker_text(false, &hosted(Status::Reading), &l), "No reading");
+        assert_eq!(
+            marker_text(false, &hosted(Status::Reading), &l),
+            "No reading"
+        );
     }
 
     #[test]

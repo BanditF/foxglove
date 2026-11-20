@@ -838,7 +838,9 @@ mod tests {
             assert!(valid_source(ok), "{ok}");
         }
         let long = "a".repeat(33);
-        for bad in ["", "*", "a.b", "a.*", "gpu ", "g/u", "gpu\n", "\u{e9}", "a*", &long] {
+        for bad in [
+            "", "*", "a.b", "a.*", "gpu ", "g/u", "gpu\n", "\u{e9}", "a*", &long,
+        ] {
             assert!(!valid_source(bad), "{bad:?}");
         }
     }

@@ -2045,50 +2045,50 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
             temp_card::head(ui, look, &mut set);
         }
         if !temperature || look.temp_colours == super::temperature::Colours::Palette {
-        ui.label(theme::caps_label(ui, "Palette"));
-        ui.horizontal_wrapped(|ui| {
-            theme::pill_group(ui, "Palette", |ui, g| {
-                // A wallpaper's palette shows only while its look has it and its wallpaper is
-                // here (#488, #562).
-                let own = (!PALETTES.iter().any(|(n, _)| *n == look.palette)
-                    && looks::scenes()
-                        .palettes
+            ui.label(theme::caps_label(ui, "Palette"));
+            ui.horizontal_wrapped(|ui| {
+                theme::pill_group(ui, "Palette", |ui, g| {
+                    // A wallpaper's palette shows only while its look has it and its wallpaper is
+                    // here (#488, #562).
+                    let own = (!PALETTES.iter().any(|(n, _)| *n == look.palette)
+                        && looks::scenes()
+                            .palettes
+                            .iter()
+                            .any(|p| p.name == look.palette))
+                    .then_some(look.palette.as_str());
+                    // Then the palette that follows the wallpaper on screen (#40).
+                    let names = PALETTES
                         .iter()
-                        .any(|p| p.name == look.palette))
-                .then_some(look.palette.as_str());
-                // Then the palette that follows the wallpaper on screen (#40).
-                let names = PALETTES
-                    .iter()
-                    .map(|(n, _)| *n)
-                    .chain([looks::WALLPAPER])
-                    .chain(own);
-                for name in names {
-                    let label = if name == looks::WALLPAPER {
-                        looks::WALLPAPER_LABEL
-                    } else {
-                        name
-                    };
-                    let mut pill = g.pill(ui, look.palette == name, label);
-                    if name == looks::WALLPAPER {
-                        pill = pill.on_hover_text(looks::WALLPAPER_HINT);
+                        .map(|(n, _)| *n)
+                        .chain([looks::WALLPAPER])
+                        .chain(own);
+                    for name in names {
+                        let label = if name == looks::WALLPAPER {
+                            looks::WALLPAPER_LABEL
+                        } else {
+                            name
+                        };
+                        let mut pill = g.pill(ui, look.palette == name, label);
+                        if name == looks::WALLPAPER {
+                            pill = pill.on_hover_text(looks::WALLPAPER_HINT);
+                        }
+                        if pill.clicked() {
+                            set(
+                                Look {
+                                    palette: name.into(),
+                                    ..look.clone()
+                                },
+                                true,
+                            );
+                        }
                     }
-                    if pill.clicked() {
-                        set(
-                            Look {
-                                palette: name.into(),
-                                ..look.clone()
-                            },
-                            true,
-                        );
-                    }
-                }
-            })
-        });
-        if !temperature {
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), Sense::hover());
-            strip(ui.painter(), rect, &looks::palette(&look.palette));
-        }
+                })
+            });
+            if !temperature {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), Sense::hover());
+                strip(ui.painter(), rect, &looks::palette(&look.palette));
+            }
         }
         if temperature {
             let asked = temp_card::tail(ui, look, &v.temperature, v.running.is_some(), &mut set);
@@ -2480,7 +2480,10 @@ pub(crate) mod tests {
             look,
             ..Chosen::default()
         };
-        assert!(needs_yes(&chosen), "Temperature without Hideout never starts");
+        assert!(
+            needs_yes(&chosen),
+            "Temperature without Hideout never starts"
+        );
         assert!(!needs_yes(&Chosen::default()));
     }
 
