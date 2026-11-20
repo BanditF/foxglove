@@ -1,6 +1,7 @@
 {
   "actions": [],
   "declared": [
+    "tile",
     "page"
   ],
   "module": "org.foxglove.sensors",
@@ -8,6 +9,42 @@
   "states": [
     {
       "panels": [
+        {
+          "icon": "chart",
+          "id": "tile",
+          "slot": "tile",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "Reading…"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Processor · Graphics card · Memory"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 100,
+                  "name": "PC sensors, reading",
+                  "value": 0.0
+                },
+                "type": "meter"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
         {
           "icon": "chart",
           "id": "page",
@@ -250,6 +287,42 @@
       "panels": [
         {
           "icon": "chart",
+          "id": "tile",
+          "slot": "tile",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Graphics card 87%"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Processor 23% · Memory 62%"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 100,
+                  "name": "Graphics card, 87 percent busy",
+                  "value": 87.0
+                },
+                "type": "meter"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "chart",
           "id": "page",
           "slot": "page",
           "title": "PC sensors",
@@ -488,6 +561,42 @@
     },
     {
       "panels": [
+        {
+          "icon": "chart",
+          "id": "tile",
+          "slot": "tile",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Graphics card 87%"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Processor 23% · Memory 62%"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 100,
+                  "name": "Graphics card, 87 percent busy",
+                  "value": 87.0
+                },
+                "type": "meter"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
         {
           "icon": "chart",
           "id": "page",
@@ -730,6 +839,42 @@
       "panels": [
         {
           "icon": "chart",
+          "id": "tile",
+          "slot": "tile",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Graphics card 87%"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Processor 23% · Memory 62%"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 100,
+                  "name": "Graphics card, 87 percent busy",
+                  "value": 87.0
+                },
+                "type": "meter"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "chart",
           "id": "page",
           "slot": "page",
           "title": "PC sensors",
@@ -968,6 +1113,42 @@
     },
     {
       "panels": [
+        {
+          "icon": "chart",
+          "id": "tile",
+          "slot": "tile",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Memory 62%"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Processor 23% · Graphics card not reported"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 100,
+                  "name": "Memory, 62 percent used",
+                  "value": 62.0
+                },
+                "type": "meter"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
         {
           "icon": "chart",
           "id": "page",
@@ -1218,6 +1399,42 @@
       "panels": [
         {
           "icon": "chart",
+          "id": "tile",
+          "slot": "tile",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Graphics card 87%"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Processor 23% · Memory 62%"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 100,
+                  "name": "Graphics card, 87 percent busy",
+                  "value": 87.0
+                },
+                "type": "meter"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "chart",
           "id": "page",
           "slot": "page",
           "title": "PC sensors",
@@ -1466,6 +1683,42 @@
       "panels": [
         {
           "icon": "chart",
+          "id": "tile",
+          "slot": "tile",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "Not reported"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Processor · Graphics card · Memory"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 100,
+                  "name": "PC sensors, not reported",
+                  "value": 0.0
+                },
+                "type": "meter"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "chart",
           "id": "page",
           "slot": "page",
           "title": "PC sensors",
@@ -1618,6 +1871,42 @@
     },
     {
       "panels": [
+        {
+          "icon": "chart",
+          "id": "tile",
+          "slot": "tile",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Graphics card 87%"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Processor 23% · Memory 62%"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 100,
+                  "name": "Graphics card, 87 percent busy",
+                  "value": 87.0
+                },
+                "type": "meter"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
         {
           "icon": "chart",
           "id": "page",

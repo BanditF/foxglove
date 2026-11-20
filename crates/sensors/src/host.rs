@@ -1,6 +1,6 @@
 //! What the program does with the hub's messages, with no pipe and no clock of its own (the
 //! binary owns both): `facts.demand` starts and stops sampling (contract §8.8, v1.20), the
-//! `keyboard.game_mode` fact slows it, the module's own page counts as a listener while it is on
+//! `keyboard.game_mode` fact slows it, the module's own page or tray tile counts as a listener while it is on
 //! screen (`ui.visibility`, contract §5.9: a hub `bind` creates no demand), and every value the engine publishes comes out as a
 //! write for the binary to send as `facts.set`. A key outside the namespace never gets this far
 //! ([`GuardedSink`]).
@@ -20,6 +20,8 @@ pub const GAME_MODE_FACT: &str = "keyboard.game_mode";
 
 /// The id of the module's page panel (module.toml `[[ui.panels]]`).
 pub const PAGE_PANEL: &str = "page";
+/// The id of its tray tile (hidden until the user adds it).
+pub const TILE_PANEL: &str = "tile";
 
 /// The pattern the module registers and the hub's demand names.
 pub fn registered_pattern() -> String {
@@ -60,6 +62,8 @@ pub struct Host {
     external: bool,
     /// The module's page is on screen (`ui.visibility visible`).
     page_visible: bool,
+    /// The module's tray tile is on screen.
+    tile_visible: bool,
     /// What the engine last wrote, for the page (cleared by the withdrawals at release).
     values: BTreeMap<Metric, i64>,
     states: BTreeMap<Group, GroupState>,
@@ -79,6 +83,7 @@ impl Host {
             sub: None,
             external: false,
             page_visible: false,
+            tile_visible: false,
             values: BTreeMap::new(),
             states: BTreeMap::new(),
             game_mode_on: false,
@@ -195,6 +200,16 @@ impl Host {
         crate::ui::page(&input)
     }
 
+    /// The tile's tree now; like the page it reads "Reading…" while it isn't on screen.
+    pub fn tile_tree(&self) -> serde_json::Value {
+        let mut input = PageInput::default();
+        if self.tile_visible {
+            input.values = self.values.clone();
+            input.states = self.states.clone();
+        }
+        crate::ui::tile(&input)
+    }
+
     /// Try again (`ui.event` on the page's button): the sources are dropped and opened once more.
     pub fn retry(&mut self, now: Duration) {
         self.watching(|h| {
@@ -226,7 +241,7 @@ impl Host {
     /// while it is `visible` and stops at once on `hidden` or `closed` unless an app still
     /// listens. Another panel id or state changes nothing.
     pub fn visibility(&mut self, panel: &str, state: &str, now: Duration) {
-        if panel != PAGE_PANEL {
+        if panel != PAGE_PANEL && panel != TILE_PANEL {
             return;
         }
         let visible = match state {
@@ -235,7 +250,11 @@ impl Host {
             _ => return,
         };
         self.watching(|h| {
-            h.page_visible = visible;
+            if panel == PAGE_PANEL {
+                h.page_visible = visible;
+            } else {
+                h.tile_visible = visible;
+            }
             h.reconcile(now);
         });
     }
@@ -243,7 +262,10 @@ impl Host {
     /// Sampling follows `external || page_visible`; repeating the same listening state does
     /// nothing.
     fn reconcile(&mut self, now: Duration) {
-        match (self.external || self.page_visible, self.sub) {
+        match (
+            self.external || self.page_visible || self.tile_visible,
+            self.sub,
+        ) {
             (true, None) => self.sub = self.engine.subscribe(&registered_pattern(), now),
             (false, Some(id)) => {
                 self.engine.unsubscribe(id, now);
@@ -264,6 +286,7 @@ impl Host {
         self.watching(|h| {
             h.external = false;
             h.page_visible = false;
+            h.tile_visible = false;
             h.reconcile(now);
         });
     }
