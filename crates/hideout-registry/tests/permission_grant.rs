@@ -730,7 +730,7 @@ fn a_fact_permission_is_listed_in_plain_words_not_as_a_raw_key() {
         ),
         (
             "facts.write:sensor.*",
-            "Share all of your PC's readings: load, graphics card temperature and fan speed",
+            "Share all of your PC's readings (processor, memory and graphics card: load, temperature, speed, power and fan)",
         ),
         (
             "facts.write:keyboard.*",

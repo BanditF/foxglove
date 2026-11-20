@@ -325,8 +325,8 @@ pub const FACT_WORDS: &[(&str, &str, &str)] = &[
     ),
     (
         "sensor.*",
-        "see all of your PC's readings: load, graphics card temperature and fan speed",
-        "share all of your PC's readings: load, graphics card temperature and fan speed",
+        "see all of your PC's readings (processor, memory and graphics card: load, temperature, speed, power and fan)",
+        "share all of your PC's readings (processor, memory and graphics card: load, temperature, speed, power and fan)",
     ),
     (
         "media.title",
@@ -370,8 +370,8 @@ pub const FACT_WORDS: &[(&str, &str, &str)] = &[
     ),
     (
         "mic.*",
-        "see all of your microphone's state (muted and which one)",
-        "share all of your microphone's state (muted and which one)",
+        "see all of your microphone's state (muted, which one and more)",
+        "share all of your microphone's state (muted, which one and more)",
     ),
 ];
 
