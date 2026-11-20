@@ -32,6 +32,9 @@ pub struct SystemSync;
 /// unpinned.
 const CLOUD_ATTRIBUTES: u32 = 0x4_0000 | 0x40_0000 | 0x8_0000 | 0x10_0000;
 
+/// `FILE_ATTRIBUTE_REPARSE_POINT`.
+const REPARSE_POINT: u32 = 0x400;
+
 /// `HRESULT_FROM_WIN32` of the codes `CfGetSyncRootInfoByPath` gives for a path that is not under
 /// a sync root: `ERROR_INVALID_FUNCTION` (1, what Windows 11 returned for a plain folder on an
 /// NTFS drive when this was written), `ERROR_NOT_A_CLOUD_FILE` (376),
@@ -50,6 +53,12 @@ pub(crate) fn decide(attributes: Option<u32>, root: Option<i32>) -> SyncAnswer {
         (Some(a), _) if a & CLOUD_ATTRIBUTES != 0 => SyncAnswer::Synced,
         // S_OK: the path is under a sync root.
         (_, Some(0)) => SyncAnswer::Synced,
+        // "Invalid function" most likely means no sync filter on the volume. For a reparse
+        // point (a junction, a link, a placeholder some provider left half-set-up) it proves
+        // nothing: refuse. A canonical dev folder or a built program is never one.
+        (Some(a), Some(h)) if h == NOT_UNDER_A_ROOT[0] && a & REPARSE_POINT != 0 => {
+            SyncAnswer::Unknown
+        }
         (Some(_), Some(h)) if NOT_UNDER_A_ROOT.contains(&h) => SyncAnswer::Local,
         _ => SyncAnswer::Unknown,
     }
@@ -104,6 +113,34 @@ mod tests {
         assert_eq!(decide(Some(0x8_0000 | 0x10), Some(1)), SyncAnswer::Synced);
         assert_eq!(decide(Some(0x10), Some(0)), SyncAnswer::Synced);
         assert_eq!(decide(None, Some(0)), SyncAnswer::Synced);
+    }
+
+    #[test]
+    fn invalid_function_on_a_reparse_point_is_not_proof_of_local() {
+        let invalid_function = NOT_UNDER_A_ROOT[0];
+        assert_eq!(
+            decide(Some(0x10 | 0x400), Some(invalid_function)),
+            SyncAnswer::Unknown
+        );
+        assert_eq!(
+            decide(Some(0x400), Some(invalid_function)),
+            SyncAnswer::Unknown
+        );
+        // The same answer on a plain folder or file is Local.
+        assert_eq!(
+            decide(Some(0x10), Some(invalid_function)),
+            SyncAnswer::Local
+        );
+        // The explicit "not a cloud file" codes still mean Local, reparse point or not.
+        assert_eq!(
+            decide(Some(0x10 | 0x400), Some(NOT_UNDER_A_ROOT[2])),
+            SyncAnswer::Local
+        );
+        // A cloud attribute or a sync root still wins.
+        assert_eq!(
+            decide(Some(0x400 | 0x40_0000), Some(invalid_function)),
+            SyncAnswer::Synced
+        );
     }
 
     #[test]

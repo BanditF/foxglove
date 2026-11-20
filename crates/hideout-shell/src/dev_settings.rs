@@ -307,7 +307,7 @@ impl Problem {
             Problem::NetworkDrive => "This folder is on a network drive, so Hideout ignores it.",
             Problem::Cloud => "This folder syncs with the cloud, so Hideout ignores it.",
             Problem::CloudUnknown => {
-                "Hideout couldn't check whether this folder syncs with the cloud, so it ignores it for now."
+                "Hideout couldn't check whether this folder syncs with the cloud, so Hideout ignores it for now."
             }
             Problem::NameUnreadable => "Hideout can't read this folder's name, so it ignores it.",
             Problem::Drive | Problem::Profile | Problem::DropZone | Problem::System => {

@@ -192,7 +192,7 @@ pub struct Registry {
     /// The dev-folder path is on (`HIDEOUT_DEV_MODE`): gates dev folders only, never sideload.
     pub dev_folders: bool,
     /// The disk and cloud-sync questions the dev-folder checks ask (the system's, unless a test
-    /// sets fakes with [`Registry::with_dev_probes`]).
+    /// sets fakes with `Registry::with_dev_probes`, behind the `test-probes` feature).
     pub(crate) probes: dev_folder::DevProbes,
     /// The API a legacy `plugin.toml` is checked against (§4.10): the Foxglove plugin API
     /// (`foxglove_plugin_api::API_VERSION`, what `plugin-host` serves), not the hub's version.
@@ -387,14 +387,14 @@ impl Registry {
 
     /// Asks the dev-folder checks of `probes` instead of the system (tests only: a registry with
     /// fakes would let an unsafe place through, so no shipped code calls this).
-    #[doc(hidden)]
+    #[cfg(feature = "test-probes")]
     pub fn with_dev_probes(mut self, probes: dev_folder::DevProbes) -> Registry {
         self.probes = probes;
         self
     }
 
     /// [`Registry::with_dev_probes`] on a registry already open (tests only).
-    #[doc(hidden)]
+    #[cfg(feature = "test-probes")]
     pub fn set_dev_probes(&mut self, probes: dev_folder::DevProbes) {
         self.probes = probes;
     }
