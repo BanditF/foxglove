@@ -5030,6 +5030,9 @@ fn renders_the_developer_settings_for_review() {
         ),
         ("off-listed", true, 720, 520, "r5-developer-off-dark.png"),
         ("off-listed", false, 720, 520, "r5-developer-off-light.png"),
+        ("off-listed", true, 720, 520, "df5-off-dark.png"),
+        ("off-listed", false, 720, 520, "df5-off-light.png"),
+        ("off-listed", false, 360, 760, "df5-off-narrow-light.png"),
         ("ok", false, 720, 760, "df2-apps-light.png"),
         ("added", false, 720, 760, "df2-added-light.png"),
         ("added", true, 720, 760, "df2-added-dark.png"),
@@ -5116,13 +5119,19 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
     assert!(off
         .iter()
         .any(|(_, l, _)| l.as_deref() == Some(crate::dev_settings::MODE_OFF)));
+    // DF5: the second line says what happens to their apps and how to turn it on.
+    assert!(off
+        .iter()
+        .any(|(_, l, _)| l.as_deref() == Some(crate::dev_settings::MODE_OFF_MORE)));
     assert!(off
         .iter()
         .any(|(_, l, _)| l.as_deref() == Some(r"D:\dev\foxglove")));
     let no_controls = |nodes: &Seen| {
         !nodes.iter().any(|(_, l, _)| {
             l.as_deref().is_some_and(|l| {
-                (l.contains("dev folder") && l != crate::dev_settings::MODE_OFF)
+                (l.contains("dev folder")
+                    && l != crate::dev_settings::MODE_OFF
+                    && l != crate::dev_settings::MODE_OFF_MORE)
                     || l == crate::dev_settings::ADD
                     || l == crate::dev_settings::RESTART_SWITCH
             })
@@ -5134,7 +5143,12 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
     assert!(hidden.iter().all(|(_, l, _)| {
         l.as_deref() != Some(crate::dev_settings::HEADING)
             && l.as_deref() != Some(crate::dev_settings::MODE_OFF)
+            && l.as_deref() != Some(crate::dev_settings::MODE_OFF_MORE)
     }));
+    // Dev on: the dev-off lines are not there.
+    assert!(on
+        .iter()
+        .all(|(_, l, _)| l.as_deref() != Some(crate::dev_settings::MODE_OFF_MORE)));
     assert!(no_controls(&hidden), "{hidden:?}");
 }
 

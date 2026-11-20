@@ -309,6 +309,10 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
     heading(ui, t, dev_settings::HEADING);
     if !v.on {
         ui.add(egui::Label::new(RichText::new(dev_settings::MODE_OFF).color(c(t.text))).wrap());
+        ui.add(
+            egui::Label::new(RichText::new(dev_settings::MODE_OFF_MORE).color(c(t.text_muted)))
+                .wrap(),
+        );
         ui.add_space(6.0);
         for row in &v.folders {
             ui.add(egui::Label::new(RichText::new(&row.path).color(c(t.text_muted))).wrap());

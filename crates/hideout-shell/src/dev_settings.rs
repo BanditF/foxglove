@@ -21,6 +21,9 @@ pub const RESTART_SWITCH: &str = "Restart apps after a rebuild";
 pub const RESTART_SUB: &str = "When off, the new build starts the next time you start the app.";
 pub const FOOTNOTE: &str = "Developer mode is on for this PC. Hideout as shipped keeps it off.";
 pub const MODE_OFF: &str = "Developer mode is off on this PC, so dev folders do nothing.";
+/// The second line when dev mode is off but folders are still listed (a developer): what
+/// happens to their apps, and the way back.
+pub const MODE_OFF_MORE: &str = "Apps from them ask for your OK at their next build. To use dev folders, start Hideout with HIDEOUT_DEV_MODE=1.";
 
 pub const ADDED: &str = "Added. Apps you allow from here keep what you allowed over rebuilds.";
 pub const ALREADY: &str = "That folder is already on the list.";
@@ -408,6 +411,7 @@ mod tests {
             FAILED.to_string(),
             REMOVED_NOT_TIDY.to_string(),
             REMOVED.to_string(),
+            MODE_OFF.to_string(),
         ];
         for n in 0..4 {
             let apps: Vec<String> = (0..n).map(|i| format!("App{i}")).collect();
@@ -420,6 +424,19 @@ mod tests {
             for bad in ["module", "hash", "enrol", "grant", "program"] {
                 assert!(!l.contains(bad), "{l}");
             }
+        }
+    }
+
+    /// DF5 (Q3): the dev-off second line, word for word, in plain words.
+    #[test]
+    fn the_dev_off_second_line_names_the_way_back() {
+        assert_eq!(
+            MODE_OFF_MORE,
+            "Apps from them ask for your OK at their next build. To use dev folders, start Hideout with HIDEOUT_DEV_MODE=1."
+        );
+        let l = MODE_OFF_MORE.to_lowercase();
+        for bad in ["module", "hash", "enrol", "grant", "program"] {
+            assert!(!l.contains(bad), "{l}");
         }
     }
 
