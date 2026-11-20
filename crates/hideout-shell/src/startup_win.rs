@@ -371,7 +371,9 @@ mod tests {
     }
 
     fn junction(link: &Path, target: &Path) {
+        use std::os::windows::process::CommandExt as _;
         let ok = Command::new("cmd")
+            .creation_flags(0x0800_0000)
             .args(["/C", "mklink", "/J"])
             .arg(link)
             .arg(target)

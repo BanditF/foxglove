@@ -935,10 +935,12 @@ mod tests {
 
     #[test]
     fn a_foreign_process_outside_the_hub_cannot_use_the_pipe() {
+        use std::os::windows::process::CommandExt as _;
         let f = fx("foreign", &ping());
         grant_all(&f);
         let (ps1, out) = script(&f);
         let status = std::process::Command::new(powershell())
+            .creation_flags(0x0800_0000)
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -988,11 +990,13 @@ mod tests {
 
     #[test]
     fn this_process_is_not_in_a_module_job_and_is_the_hubs_image() {
+        use std::os::windows::process::CommandExt as _;
         let f = fx("self", &ping());
         assert!(!f.sup.in_module_job(std::process::id()));
         assert!(caller_ok(&f.sup, std::process::id()));
         // A process that is not hideout.exe (any other image) may not grant.
         let mut other = std::process::Command::new(windir() + r"\System32\PING.EXE")
+            .creation_flags(0x0800_0000)
             .args(["-n", "30", "127.0.0.1"])
             .stdout(std::process::Stdio::null())
             .spawn()

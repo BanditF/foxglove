@@ -1061,6 +1061,7 @@ mod tests {
     /// eframe asks for one repaint and then nothing, the report comes every 200 ms. On cde0b451
     /// the gate handed winit its own passed report deadline back on every turn: a million turns
     /// before the second report. Now: the reports and the repaint, under 20 turns a second.
+    #[ignore = "creates a real window; set FOXGLOVE_QUIET_DESKTOP=1 and run with --ignored on a quiet desktop"]
     #[test]
     fn the_real_loop_sleeps_when_eframe_sets_no_flow() {
         use winit::event_loop::EventLoop;

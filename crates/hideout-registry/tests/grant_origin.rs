@@ -2,6 +2,7 @@
 //! Grants follow the origin of an install, not its id (trust model F1/F2, slice S0): a changed
 //! source, anchor, kind or sideload folder voids what was carried. Window-free, mock-only.
 
+use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 
 use hideout_contract::module::{Kind, Visibility};
@@ -334,6 +335,7 @@ fn the_same_folder_spelled_differently_still_carries() {
     // A junction to the same folder; a junction to another folder voids.
     let link = temp("spell-link-parent").join("link");
     let ok = std::process::Command::new("cmd")
+        .creation_flags(0x0800_0000)
         .args(["/C", "mklink", "/J"])
         .arg(&link)
         .arg(&a)
@@ -347,6 +349,7 @@ fn the_same_folder_spelled_differently_still_carries() {
         let b = sideload_folder("spell-b", "0.5.0");
         let link_b = temp("spell-link-b-parent").join("link");
         let ok_b = std::process::Command::new("cmd")
+            .creation_flags(0x0800_0000)
             .args(["/C", "mklink", "/J"])
             .arg(&link_b)
             .arg(&b)

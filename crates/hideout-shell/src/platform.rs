@@ -1475,6 +1475,7 @@ mod tests {
     /// screen that never activates, so even a failing run puts nothing on the desktop.
     /// It holds through its own cell: other tests call `show_main_window`, which lets go of
     /// the process-wide hold at any moment (#1030).
+    #[ignore = "creates a real window; set FOXGLOVE_QUIET_DESKTOP=1 and run with --ignored on a quiet desktop"]
     #[test]
     fn a_held_window_stays_hidden_when_shown() {
         use windows::core::w;

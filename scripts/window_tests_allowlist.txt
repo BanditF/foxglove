@@ -1,0 +1,5 @@
+# Test code the window-test lint (scripts/check_window_tests.py) lets through without #[ignore].
+# One entry per line: `path::fn` (or a whole `path`), then `# why it cannot open a window or take
+# focus`. Add an entry only after reading the code. Windows tests that DO create a window are
+# #[ignore]d instead (run with FOXGLOVE_QUIET_DESKTOP=1 and --ignored on a quiet desktop).
+crates/hideout-shell/src/wake.rs::other_wakes_name_their_messages  # helper, only called from the #[ignore]d the_real_loop_sleeps_when_eframe_sets_no_flow

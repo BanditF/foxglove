@@ -1,6 +1,16 @@
 //! The release workflow's `manifest` call (#1185): latest.json carries `exe_sha256`.
 use std::process::Command;
 
+/// A console child with no console window of its own (a test never puts a window on the desktop).
+fn quiet(c: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
 fn run(name: &str, extra: &[&str]) -> (bool, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "foxglove-manifest-cli-{}-{}",
@@ -11,23 +21,25 @@ fn run(name: &str, extra: &[&str]) -> (bool, std::path::PathBuf) {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.msi"), b"msi").unwrap();
     std::fs::write(dir.join("notes.txt"), b"notes").unwrap();
-    let ok = Command::new(env!("CARGO_BIN_EXE_foxglove-update-sign"))
-        .current_dir(&dir)
-        .args([
-            "manifest",
-            "--version",
-            "1.2.3",
-            "--msi",
-            "a.msi",
-            "--url",
-            "https://x/foxglove-x64.msi",
-            "--notes-file",
-            "notes.txt",
-        ])
-        .args(extra)
-        .status()
-        .unwrap()
-        .success();
+    let ok = quiet(&mut Command::new(env!(
+        "CARGO_BIN_EXE_foxglove-update-sign"
+    )))
+    .current_dir(&dir)
+    .args([
+        "manifest",
+        "--version",
+        "1.2.3",
+        "--msi",
+        "a.msi",
+        "--url",
+        "https://x/foxglove-x64.msi",
+        "--notes-file",
+        "notes.txt",
+    ])
+    .args(extra)
+    .status()
+    .unwrap()
+    .success();
     (ok, dir)
 }
 

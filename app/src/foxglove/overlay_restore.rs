@@ -985,6 +985,7 @@ mod tests {
     /// #912: on a hidden test window (never shown, so nothing on the desktop), the helper sets
     /// the tool-window bits, and the hook keeps them through a winit-like rewrite of the whole
     /// extended style.
+    #[ignore = "creates a real window; set FOXGLOVE_QUIET_DESKTOP=1 and run with --ignored on a quiet desktop"]
     #[cfg(windows)]
     #[test]
     fn a_hidden_test_window_becomes_and_stays_a_tool_window() {
@@ -1058,6 +1059,7 @@ mod tests {
 
     /// On a hidden test window, the hook strips caption bits and keeps them off through a
     /// winit-like rewrite of the whole style, and the corner preference is set (read back).
+    #[ignore = "creates a real window; set FOXGLOVE_QUIET_DESKTOP=1 and run with --ignored on a quiet desktop"]
     #[cfg(windows)]
     #[test]
     fn a_hidden_test_window_loses_its_caption_and_stays_square() {

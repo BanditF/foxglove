@@ -3,6 +3,7 @@
 //! slice 3): a new hash of the same file in the same local folder is kept and recorded; any
 //! other change voids as before; only the dialog can set it. Window-free.
 
+use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 
 use hideout_registry::keyboard::VoidReason;
@@ -257,6 +258,7 @@ fn a_junction_that_points_elsewhere_voids() {
     let parked = f.install.with_extension("old");
     std::fs::rename(&f.install, &parked).unwrap();
     let ok = std::process::Command::new("cmd")
+        .creation_flags(0x0800_0000)
         .args(["/C", "mklink", "/J"])
         .arg(&f.install)
         .arg(&elsewhere)
