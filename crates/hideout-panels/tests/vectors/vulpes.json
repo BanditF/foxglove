@@ -5,7 +5,9 @@
   ],
   "declared": [
     "tile",
-    "page"
+    "page",
+    "free-gpu",
+    "release-gpu-reservation"
   ],
   "module": "vulpes",
   "name": "AI",
@@ -191,6 +193,46 @@
             "id": "page",
             "type": "column"
           }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
         }
       ],
       "state": "idle"
@@ -368,6 +410,46 @@
             "id": "page",
             "type": "column"
           }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
         }
       ],
       "state": "idle-web-running"
@@ -543,6 +625,46 @@
               }
             ],
             "id": "page",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
             "type": "column"
           }
         }
@@ -730,6 +852,46 @@
             "id": "page",
             "type": "column"
           }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
         }
       ],
       "state": "held-chat-unknown"
@@ -913,6 +1075,46 @@
               }
             ],
             "id": "page",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
             "type": "column"
           }
         }
@@ -1100,6 +1302,46 @@
             "id": "page",
             "type": "column"
           }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
         }
       ],
       "state": "held-image"
@@ -1285,6 +1527,46 @@
             "id": "page",
             "type": "column"
           }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
         }
       ],
       "state": "held-mixed"
@@ -1427,6 +1709,47 @@
               }
             ],
             "id": "page",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "disabled": true,
+                  "label": "Freeing GPU\u2026"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
             "type": "column"
           }
         }
@@ -1589,6 +1912,46 @@
             "id": "page",
             "type": "column"
           }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
         }
       ],
       "state": "reserved"
@@ -1739,6 +2102,46 @@
               }
             ],
             "id": "page",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
             "type": "column"
           }
         }
@@ -1897,6 +2300,46 @@
               }
             ],
             "id": "page",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
             "type": "column"
           }
         }
@@ -2069,6 +2512,46 @@
               }
             ],
             "id": "page",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
             "type": "column"
           }
         }
@@ -2247,6 +2730,46 @@
             "id": "page",
             "type": "column"
           }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
         }
       ],
       "state": "long-profile"
@@ -2405,6 +2928,46 @@
             "id": "page",
             "type": "column"
           }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
         }
       ],
       "state": "free-failed"
@@ -2561,6 +3124,46 @@
               }
             ],
             "id": "page",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "free-gpu",
+          "slot": "action",
+          "title": "Free GPU",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "release-gpu-reservation",
+          "slot": "action",
+          "title": "Release GPU reservation",
+          "tree": {
+            "children": [
+              {
+                "id": "item",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release GPU reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "root",
             "type": "column"
           }
         }

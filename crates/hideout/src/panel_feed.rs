@@ -767,13 +767,10 @@ mod tests {
         use hideout_contract::module::{Context, Module};
         const VULPES: &str = "vulpes";
         let manifest = Module::parse(
-            &format!(
-                "{}\n[[ui.panels]]\nid = \"free-gpu\"\nslot = \"action\"\ntitle = \"Free GPU\"\nicon = \"sparkle\"\nwhen = \"!gpu.reserved\"\n",
-                include_str!("../../hideout-panels/tests/vectors/vulpes.module.toml")
-            ),
+            include_str!("../../hideout-panels/tests/vectors/vulpes.module.toml"),
             &Context::default(),
         )
-        .expect("Arete's manifest with its tray item");
+        .expect("Arete's manifest");
         let mut router = Router::new(Settings::default(), Box::new(|_, _| Vec::new()));
         router.add_module(ModuleEntry {
             id: VULPES.into(),

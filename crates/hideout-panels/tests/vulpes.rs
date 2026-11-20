@@ -331,7 +331,10 @@ fn aretes_manifest_is_an_on_demand_adopted_module_for_hub_1_1() {
     assert_eq!(m.hub, "1.1");
     assert_eq!(m.activation_on, ["open", "call"]);
     let panels: Vec<&str> = m.panels.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(panels, ["tile", "page"]);
+    assert_eq!(
+        panels,
+        ["tile", "page", "free-gpu", "release-gpu-reservation"]
+    );
     let actions: Vec<&str> = m.actions.iter().map(|a| a.decl.id.as_str()).collect();
     assert_eq!(actions, ["free-gpu", "release-gpu-reservation"]);
 }

@@ -1,10 +1,10 @@
 # The adopted Hideout manifest for Vulpes (Arete), contract 1.13 (foxglove#1116 H4.2, foxglove#1117 H4.3).
 #
-# Arete is an install the hub registers but did not make, so the kind is "adopted" and the hub checks it by path and
-# version only. `run[0]` MUST be an absolute path: the value below is a PLACEHOLDER. Whoever registers Arete with the
-# hub (the Hideout side, not this repo's installer) replaces it with this PC's real arete.exe, for example
-# %LOCALAPPDATA%\Programs\Arete\arete.exe, and keeps `hub` as the second argument. `version` must equal the version
-# Arete sends in `initialize`.
+# Vulpes (Arete) is an install the hub registers but did not make, so the kind is "adopted" and the hub checks it by path
+# and version only. `run[0]` MUST be an absolute path: the value below is a PLACEHOLDER. The installer renders this file
+# to <install>\hideout\module.toml with this PC's real arete.exe as `run[0]` and the installed version (#732,
+# arete.hideout.install_record), and writes the install record Hideout's finder reads. `hub` stays the second argument;
+# `version` must equal the version Vulpes sends in `initialize`.
 #
 # Started on demand only: activation is `open` and `call`, never `enable`, so nothing runs at sign-in.
 id = "vulpes"
@@ -17,7 +17,7 @@ api = { vulpes = "1.0" }
 description = "Local AI on this PC: who holds the GPU, and the gaming reservation."
 run = ["C:/Users/PLACEHOLDER/AppData/Local/Programs/Arete/arete.exe", "hub"]
 transport = "stdio"
-provides = ["method:gpu.*", "method:vulpes.*", "facts:gpu.*"]
+provides = ["method:gpu.*", "method:vulpes.*", "facts:gpu.*", "facts:vulpes.*"]
 permissions = ["provide:gpu.*", "provide:vulpes.*", "gpu.status", "gpu.request:any"]
 
 [activation]
@@ -37,6 +37,23 @@ id = "page"
 slot = "page"
 title = "AI"
 icon = "sparkle"
+
+# The tray menu's quick actions (contract 1.16, foxglove#1234): the panel id is the `[[actions]]` id below, `title` is
+# the words while this module is cold, and `when` (the hub's facts cache) picks which of the two shows. While the
+# module runs, the first button of the registered tree takes over the words and greys the item (panels.item_tree).
+[[ui.panels]]
+id = "free-gpu"
+slot = "action"
+title = "Free GPU"
+icon = "sparkle"
+when = "!gpu.reserved"
+
+[[ui.panels]]
+id = "release-gpu-reservation"
+slot = "action"
+title = "Release GPU reservation"
+icon = "sparkle"
+when = "gpu.reserved"
 
 # Reserving the GPU for gaming is never a method (8.9); it changes only through the user's own click on these.
 [[actions]]
