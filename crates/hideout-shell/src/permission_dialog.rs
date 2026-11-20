@@ -359,6 +359,15 @@ impl ListItem {
 
     /// "<plain line>. This lets <name> <risk sentence>." under a sensitive item.
     pub fn confirm_line(&self, name: &str) -> String {
+        format!(
+            "{}. {}",
+            self.line.trim_end_matches('.'),
+            self.risk_line(name)
+        )
+    }
+
+    /// "This lets <name> <risk>.": what the item lets the app do, in plain words.
+    pub fn risk_line(&self, name: &str) -> String {
         let risk = match self.raw.as_str() {
             r if r.starts_with("provide:gpu.") => {
                 "see every AI request from every app, \
@@ -366,15 +375,24 @@ impl ListItem {
             }
             "key.events" => "see every key you press",
             "hid.raw" => "talk to your devices directly",
+            r if r.starts_with("device.hid:") => "talk to your devices directly",
             r if r == "net" || r.starts_with("net.") => "use the network",
             r if r.starts_with("ai.ask:") => "send questions to an AI service",
             r if r.starts_with("secrets.ref:") => "use a secret you stored",
             _ => "do something Hideout can't describe in a line",
         };
-        format!(
-            "{}. This lets {name} {risk}.",
-            self.line.trim_end_matches('.')
-        )
+        format!("This lets {name} {risk}.")
+    }
+
+    /// In the group form the risk sentence stays on screen under every item the group note
+    /// does not already say: devices and the network are in the note, anything else (every key
+    /// press, AI requests, a stored secret, the GPU manager) is not. `None` for the former.
+    pub fn group_risk_line(&self, name: &str) -> Option<String> {
+        let in_note = self.raw.starts_with("device.hid:")
+            || self.raw == "hid.raw"
+            || self.raw == "net"
+            || self.raw.starts_with("net.");
+        (self.sensitive && !in_note).then(|| self.risk_line(name))
     }
 
     /// The accessible name: group verb, line, risk word and state ("..., checked").
@@ -447,6 +465,10 @@ pub struct View {
     pub starts: bool,
     /// The everyday items are listed (they start collapsed, still ticked).
     pub everyday_open: bool,
+    /// One "I understand" for the whole sensitive group (first run): `None` when it is not
+    /// offered (each sensitive item then has its own), else whether it is ticked. Ticking it
+    /// ticks and confirms every sensitive item; each item can still be unticked by itself.
+    pub group_ack: Option<bool>,
 }
 
 /// What Allow sends back.
@@ -554,7 +576,11 @@ impl PermDialog {
     pub fn binding_lines(&self) -> [String; 3] {
         let keeping = self.keep.as_ref().is_some_and(|k| !k.is_refused() && k.on);
         [
-            format!("Only for this copy of {}:", self.name),
+            if self.path.is_empty() {
+                format!("Only for this copy of {}:", self.name)
+            } else {
+                format!("Only for this copy of {} (the file above):", self.name)
+            },
             if keeping {
                 KEEP_BINDING.into()
             } else {
@@ -601,13 +627,43 @@ impl PermDialog {
         }
     }
 
-    /// Whether every sensitive item the user can allow is ticked. Until then Allow says how
+    /// Ticks or clears the group "I understand": every sensitive item the user can allow is
+    /// ticked and confirmed, or cleared. A no-op when the group box is not offered.
+    pub fn set_group_ack(&mut self, on: bool) {
+        if self.view.group_ack.is_none() {
+            return;
+        }
+        self.view.group_ack = Some(on);
+        for i in self.items.iter_mut().filter(|i| i.allowable && i.sensitive) {
+            i.checked = on;
+            i.confirmed = on;
+        }
+    }
+
+    /// The group box follows the items: with none of them still ticked it clears itself.
+    pub fn sync_group_ack(&mut self) {
+        if self.view.group_ack == Some(true)
+            && !self
+                .items
+                .iter()
+                .any(|i| i.allowable && i.sensitive && i.checked)
+        {
+            self.view.group_ack = Some(false);
+        }
+    }
+
+    /// Whether the group "I understand" is offered and ticked.
+    pub fn group_understood(&self) -> bool {
+        self.view.group_ack == Some(true)
+    }
+
+    /// Whether every sensitive item the user can allow counts (ticked and understood). Until then Allow says how
     /// many it grants: a button that says "and start" would imply the app starts limited.
     pub fn sensitive_decided(&self) -> bool {
         self.items
             .iter()
             .filter(|i| i.allowable && i.sensitive)
-            .all(|i| i.checked)
+            .all(|i| i.counts())
     }
 
     /// How many everyday items there are: can be allowed and not sensitive (what the All box
@@ -1726,6 +1782,7 @@ mod tests {
         );
         for i in d.items.iter_mut().filter(|i| i.sensitive) {
             i.checked = true;
+            i.confirmed = true;
         }
         assert_eq!(d.allow_label(), "Allow and start");
         for i in d.items.iter_mut() {
