@@ -1801,6 +1801,8 @@ fn turned(
         return Ok((s, None));
     }
     s.token = wire::new_token().ok_or("no random source for the pairing token")?;
+    // A feed turned on fresh never worked before the allow list: nothing is seeded for it.
+    s.allow_seeded = true;
     let why = if saved {
         TokenReason::EmptyOnEnable
     } else {
@@ -3529,6 +3531,17 @@ mod tests {
         };
         assert!(seed_with(&hud, upd).unwrap());
         assert!(saved.borrow().allow_seeded && saved.borrow().allowed.is_empty());
+        // A feed turned on fresh (it makes its token now) gets only the marker, never a seed.
+        let (fresh, why) = turned(LiveSettings::default(), true, false).unwrap();
+        assert!(why.is_some() && fresh.allow_seeded && !fresh.token.is_empty());
+        let saved = RefCell::new(fresh);
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        assert!(seed_with(&hud, upd).unwrap());
+        assert!(saved.borrow().allowed.is_empty());
         // A list the user already made is left alone.
         let saved = RefCell::new(LiveSettings {
             allowed: vec!["d:/w/mine".into()],
