@@ -179,6 +179,8 @@ pub mod store_split;
 pub(crate) mod studio_fake;
 pub mod studio_session;
 pub mod taskbar;
+pub mod temperature;
+pub mod temperature_feed;
 pub mod theme;
 #[cfg(test)]
 mod theme_preview;

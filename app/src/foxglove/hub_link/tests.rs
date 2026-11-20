@@ -2508,3 +2508,184 @@ fn a_stale_click_lands_on_its_own_wallpaper() {
     assert!(!saved.contains(&"stale-0".to_string()), "{saved:?}");
     super::super::live_feed::allow_wallpaper("stale-a", false).unwrap();
 }
+
+// ---- Temperature's reading feed (slice 2) ----
+
+use super::super::temperature_feed::Status as Reading;
+
+/// A rig that has the facts grants and, when `sensors`, the optional sensors grant.
+fn sensor_rig(sensors: bool) -> Rig {
+    let mut g = vec![GRANT, GRANT_REGISTRY];
+    if sensors {
+        g.push(GRANT_SENSORS);
+    }
+    Rig::new(&g)
+}
+
+impl Rig {
+    /// The scene's wish, told to the link; returns how many lines it wrote to the hub.
+    fn want_sensors(&mut self, on: bool) -> usize {
+        self.link.sync_sensors(on).unwrap();
+        let wrote = String::from_utf8_lossy(self.link.writer_mut())
+            .lines()
+            .count();
+        self.pump();
+        wrote
+    }
+
+    /// A hub fact changes (a sensor reading, the sensors app's state), routed to the link.
+    fn hub_fact(&mut self, key: &str, value: Value) {
+        let outs = self.router.publish(key, value);
+        self.feed(outs);
+    }
+
+    fn reading(&mut self) -> Reading {
+        self.link.take_sensor_status();
+        self.link.sensors.feed.status()
+    }
+}
+
+const APP_STATE: &str = "module.org.foxglove.sensors.state";
+
+#[test]
+fn the_manifest_asks_for_the_sensors_grant_and_the_module_runs_without_it() {
+    assert_eq!(GRANT_SENSORS, "facts.read:sensor.*");
+    let lines = MANIFEST
+        .lines()
+        .filter(|l| l.trim() == "\"facts.read:sensor.*\",");
+    assert_eq!(lines.count(), 1);
+    // Optional: not granted, the module still registers and goes ready.
+    let mut rig = sensor_rig(false);
+    let steps = rig.connect(&keyboard());
+    assert!(steps.contains(&Step::Ready), "{steps:?}");
+}
+
+#[test]
+fn a_fed_temperature_reads_and_a_missing_one_never_does() {
+    let mut rig = sensor_rig(true);
+    rig.connect(&keyboard());
+    rig.hub_fact(APP_STATE, json!("running"));
+    // Nothing is asked of the hub until the scene wants it.
+    assert!(!rig.link.sensors_listening());
+    assert_eq!(rig.reading(), Reading::Reading);
+    assert_eq!(rig.want_sensors(true), 2, "one subscribe, one list");
+    assert!(rig.link.sensors_listening());
+    assert_eq!(
+        rig.reading(),
+        Reading::Reading,
+        "no value yet is not a number"
+    );
+    rig.hub_fact("sensor.gpu.state", json!("ok"));
+    rig.hub_fact("sensor.gpu.temp_c", json!(64.0));
+    assert_eq!(
+        rig.reading(),
+        Reading::Working {
+            temp_c: 64.0,
+            game: false
+        }
+    );
+    // The card stops reporting: the value is not kept.
+    rig.hub_fact("sensor.gpu.state", json!("unavailable"));
+    assert_eq!(rig.reading(), Reading::Missing);
+    assert_eq!(rig.reading().reading(), None);
+    // Another group's facts do not count.
+    rig.hub_fact("sensor.cpu.temp_c", json!(30.0));
+    assert_eq!(rig.reading(), Reading::Missing);
+}
+
+#[test]
+fn it_subscribes_once_unsubscribes_once_and_forgets_the_reading() {
+    let mut rig = sensor_rig(true);
+    rig.connect(&keyboard());
+    rig.hub_fact(APP_STATE, json!("running"));
+    assert_eq!(
+        rig.want_sensors(false),
+        0,
+        "off and not wanted: nothing sent"
+    );
+    assert_eq!(rig.want_sensors(true), 2);
+    assert_eq!(rig.want_sensors(true), 0, "told again: nothing sent twice");
+    rig.hub_fact("sensor.gpu.state", json!("ok"));
+    rig.hub_fact("sensor.gpu.temp_c", json!(70.0));
+    assert!(rig.reading().reading().is_some());
+    assert_eq!(rig.want_sensors(false), 1, "one unsubscribe");
+    assert!(!rig.link.sensors_listening());
+    assert_eq!(rig.want_sensors(false), 0);
+    // The last value is gone, and the hub sends no more (nothing is listening).
+    assert_eq!(rig.reading().reading(), None);
+    rig.hub_fact("sensor.gpu.temp_c", json!(95.0));
+    assert_eq!(rig.reading().reading(), None);
+}
+
+#[test]
+fn a_reconnect_subscribes_again_once_and_starts_without_the_old_reading() {
+    let mut rig = sensor_rig(true);
+    rig.connect(&keyboard());
+    rig.hub_fact(APP_STATE, json!("running"));
+    rig.want_sensors(true);
+    rig.hub_fact("sensor.gpu.state", json!("ok"));
+    rig.hub_fact("sensor.gpu.temp_c", json!(64.0));
+    assert!(rig.reading().reading().is_some());
+    // The hub goes away and comes back: a fresh link on a fresh connection.
+    let outs = rig.router.disconnect(rig.conn);
+    drop(outs);
+    rig.conn = rig.router.connect(Origin::Pipe);
+    rig.link = Link::new(Vec::new(), launch());
+    let steps = rig.connect(&keyboard());
+    assert!(steps.contains(&Step::Ready), "{steps:?}");
+    assert!(!rig.link.sensors_listening());
+    assert_eq!(rig.reading().reading(), None);
+    // The runner tells the wish after each message: one subscribe.
+    assert_eq!(rig.want_sensors(true), 2);
+    assert_eq!(rig.want_sensors(true), 0);
+}
+
+#[test]
+fn without_the_grant_nothing_is_subscribed_and_it_is_said_once_only_when_asked() {
+    let mut rig = sensor_rig(false);
+    rig.connect(&keyboard());
+    rig.link.take_log();
+    // Not asked: no word.
+    assert_eq!(rig.want_sensors(false), 0);
+    assert!(rig.link.take_log().is_empty());
+    // Asked: nothing sent, one line, once.
+    assert_eq!(rig.want_sensors(true), 0);
+    assert!(!rig.link.sensors_listening());
+    let log = rig.link.take_log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(log[0].contains("facts.read:sensor.*"), "{log:?}");
+    assert_eq!(rig.want_sensors(true), 0);
+    assert!(rig.link.take_log().is_empty());
+    assert_eq!(rig.reading(), Reading::NotAllowed);
+}
+
+#[test]
+fn the_sensors_apps_state_is_read_with_or_without_listening() {
+    let mut rig = sensor_rig(true);
+    rig.connect(&keyboard());
+    // Not installed: the hub has no such module.
+    assert_eq!(rig.reading(), Reading::AppOff);
+    rig.hub_fact(APP_STATE, json!("running"));
+    assert_eq!(rig.reading(), Reading::Reading);
+    rig.want_sensors(true);
+    rig.hub_fact("sensor.gpu.state", json!("ok"));
+    rig.hub_fact("sensor.gpu.temp_c", json!(64.0));
+    assert!(rig.reading().reading().is_some());
+    // It stops: no reading, and the old value is not shown.
+    rig.hub_fact(APP_STATE, json!("crash-stopped"));
+    assert_eq!(rig.reading(), Reading::AppStopped);
+    assert_eq!(rig.reading().reading(), None);
+    rig.hub_fact(APP_STATE, json!("off"));
+    assert_eq!(rig.reading(), Reading::AppOff);
+}
+
+#[test]
+fn a_status_is_handed_over_only_when_it_changed() {
+    let mut rig = sensor_rig(true);
+    rig.connect(&keyboard());
+    assert!(rig.link.take_sensor_status().is_some());
+    assert!(rig.link.take_sensor_status().is_none());
+    rig.hub_fact(APP_STATE, json!("running"));
+    assert_eq!(rig.link.take_sensor_status(), Some(Reading::Reading));
+    assert!(rig.link.take_sensor_status().is_none());
+}

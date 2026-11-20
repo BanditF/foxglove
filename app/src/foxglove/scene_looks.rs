@@ -53,6 +53,10 @@ pub enum Kind {
     /// The screens' edge colours (the crate's `Screen`, #496): reads the screen, so it needs
     /// the user's yes (`screen_glow`).
     ScreenGlow,
+    /// A colour from a temperature reading ([`super::temperature`]): reads a
+    /// sensor through the hub, so it needs the PC sensors app. Not in [`Kind::ALL`] until the
+    /// Scenes page offers it (slice 3): no pill, no preset, no light output yet.
+    Temperature,
 }
 
 impl Kind {
@@ -80,6 +84,7 @@ impl Kind {
             // Tide is also a palette and a wallpaper: the effect says so (docs/palette.md).
             Kind::Tide => "Tide effect",
             Kind::ScreenGlow => super::screen_glow::NAME,
+            Kind::Temperature => super::temperature::NAME,
         }
     }
 
@@ -100,6 +105,7 @@ impl Kind {
                  the letters on a per-key board, the whole board elsewhere"
             }
             Kind::ScreenGlow => super::screen_glow::DESCRIPTION,
+            Kind::Temperature => super::temperature::DESCRIPTION,
         }
     }
 
@@ -112,18 +118,25 @@ impl Kind {
         // Two-tone keeps the palette rule's 8 s loop (docs/palette.md).
         !matches!(
             self,
-            Kind::Gradient | Kind::TwoTone | Kind::Tide | Kind::ScreenGlow
+            Kind::Gradient | Kind::TwoTone | Kind::Tide | Kind::ScreenGlow | Kind::Temperature
         )
     }
 
     /// Takes a palette (the others take a colour, or, Screen glow, nothing at all).
     pub fn uses_palette(self) -> bool {
+        // Temperature takes a palette too, as its Palette colours (`temp_colours`).
         !self.uses_colour() && self != Kind::ScreenGlow
     }
 
     /// Reads the screen: Screen glow (#496).
     pub fn reads_screen(self) -> bool {
         self == Kind::ScreenGlow
+    }
+
+    /// Reads a temperature from the hub's sensors: Temperature.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn reads_temperature(self) -> bool {
+        self == Kind::Temperature
     }
 
     pub fn uses_direction(self) -> bool {
@@ -431,6 +444,34 @@ pub struct Look {
     /// Windows' animation effects are off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smoothing: Option<foxglove_scene::Smoothing>,
+    /// Temperature's source: the sensor group it follows (`gpu`, the facts
+    /// `sensor.gpu.temp_c` and `sensor.gpu.state`). Data, so a processor reading needs no code.
+    #[serde(skip_serializing_if = "temp_source_is_default")]
+    pub temp_source: String,
+    /// Temperature's colours: the palette's, or the fixed Cool to hot ramp.
+    #[serde(skip_serializing_if = "temp_colours_is_default")]
+    pub temp_colours: super::temperature::Colours,
+    /// Temperature's ends in whole degrees Celsius: the cool colour at and below `cool_c`, the
+    /// hot colour at and above `hot_c`.
+    #[serde(skip_serializing_if = "cool_is_default")]
+    pub cool_c: u16,
+    #[serde(skip_serializing_if = "hot_is_default")]
+    pub hot_c: u16,
+}
+
+// Saved only when changed: a store written before Temperature stays byte for byte what it was,
+// and a key that is missing loads as its default.
+fn temp_source_is_default(v: &String) -> bool {
+    v == super::temperature::DEFAULT_SOURCE
+}
+fn temp_colours_is_default(v: &super::temperature::Colours) -> bool {
+    *v == super::temperature::Colours::default()
+}
+fn cool_is_default(v: &u16) -> bool {
+    *v == super::temperature::DEFAULT_COOL_C
+}
+fn hot_is_default(v: &u16) -> bool {
+    *v == super::temperature::DEFAULT_HOT_C
 }
 
 impl Default for Look {
@@ -446,6 +487,10 @@ impl Default for Look {
             direction: Direction::Down,
             width_mm: 80,
             smoothing: None,
+            temp_source: super::temperature::DEFAULT_SOURCE.into(),
+            temp_colours: super::temperature::Colours::default(),
+            cool_c: super::temperature::DEFAULT_COOL_C,
+            hot_c: super::temperature::DEFAULT_HOT_C,
         }
     }
 }
@@ -473,6 +518,7 @@ impl Look {
     pub fn clamped(mut self) -> Look {
         self.speed = self.speed.clamp(*SPEEDS.start(), *SPEEDS.end());
         self.width_mm = self.width_mm.clamp(*WIDTHS.start(), *WIDTHS.end());
+        (self.cool_c, self.hot_c) = super::temperature::clamp_ends(self.cool_c, self.hot_c);
         self
     }
 
@@ -544,6 +590,14 @@ impl Look {
             }
             Kind::ScreenGlow => Effect::Screen {
                 smoothing: super::screen_glow::smoothing_for(l.smoothing),
+            },
+            // The light output is slice 4 (Effect::Temperature in the scene crate); until then
+            // a Temperature look that is started anyway breathes its fallback colour, never a
+            // made-up reading.
+            Kind::Temperature => Effect::Breathe {
+                from: background,
+                to: super::temperature::fallback(l.temp_colours, &l.palette),
+                period_ms: super::temperature::FALLBACK_MS,
             },
         }
     }
@@ -828,6 +882,10 @@ impl FileLook {
             direction: self.direction.unwrap_or(d.direction),
             width_mm: self.width_mm.unwrap_or(d.width_mm),
             smoothing: None,
+            temp_source: d.temp_source,
+            temp_colours: d.temp_colours,
+            cool_c: d.cool_c,
+            hot_c: d.hot_c,
         };
         if !SPEEDS.contains(&look.speed) || !WIDTHS.contains(&look.width_mm) {
             return Err("speed or width out of range".into());
@@ -1365,5 +1423,78 @@ mod tests {
         // A restart reads the file again.
         assert_eq!(load_chosen(), chosen);
         assert_eq!(load_saved(), saved);
+    }
+
+    // ---- Temperature's saved keys (the effect's own look keys are additive) ----
+
+    /// An old store (written before Temperature) loads with the defaults, and saving it again
+    /// writes it byte for byte as it was; the new keys appear only when changed.
+    #[test]
+    fn an_old_look_loads_with_the_temperature_defaults_and_saves_unchanged() {
+        let old = r#"{"kind":"sweep","colour":[232,106,58],"background":"night","palette":"Bandit","speed":5,"direction":"down","width_mm":80}"#;
+        let look: Look = serde_json::from_str(old).unwrap();
+        assert_eq!(look.temp_source, "gpu");
+        assert_eq!(
+            look.temp_colours,
+            super::super::temperature::Colours::Palette
+        );
+        assert_eq!((look.cool_c, look.hot_c), (40, 80));
+        let again = serde_json::to_value(&look).unwrap();
+        assert_eq!(
+            again,
+            serde_json::from_str::<serde_json::Value>(old).unwrap()
+        );
+        let text = serde_json::to_string(&Look::default()).unwrap();
+        for key in ["temp_source", "temp_colours", "cool_c", "hot_c"] {
+            assert!(!text.contains(key), "{key} saved at its default: {text}");
+        }
+    }
+
+    /// Changed keys round-trip, and only the changed ones are written.
+    #[test]
+    fn the_temperature_keys_round_trip() {
+        let look = Look {
+            kind: Kind::Temperature,
+            temp_source: "cpu".into(),
+            temp_colours: super::super::temperature::Colours::CoolToHot,
+            cool_c: 30,
+            hot_c: 90,
+            ..Look::default()
+        };
+        let text = serde_json::to_string(&look).unwrap();
+        assert!(text.contains(r#""kind":"temperature""#), "{text}");
+        assert_eq!(serde_json::from_str::<Look>(&text).unwrap(), look);
+        let half = Look {
+            cool_c: 35,
+            ..Look::default()
+        };
+        let text = serde_json::to_string(&half).unwrap();
+        assert!(text.contains("cool_c") && !text.contains("hot_c"), "{text}");
+        assert_eq!(serde_json::from_str::<Look>(&text).unwrap(), half);
+        // The ends are kept apart whatever a file says.
+        let odd = Look {
+            cool_c: 95,
+            hot_c: 20,
+            ..Look::default()
+        }
+        .clamped();
+        assert!(odd.hot_c >= odd.cool_c + super::super::temperature::MIN_GAP_C);
+    }
+
+    /// Temperature is not offered yet: the page's list and the built-in scenes are what they were.
+    #[test]
+    fn temperature_is_not_offered_and_no_built_in_scene_uses_it() {
+        assert_eq!(Kind::ALL.len(), 9);
+        assert!(!Kind::ALL.contains(&Kind::Temperature));
+        assert!(built_in().iter().all(|p| p.look.kind != Kind::Temperature));
+        assert!(Kind::Temperature.reads_temperature());
+        assert!(!Kind::Scanline.reads_temperature());
+        // Until its output lands it draws a calm breathe, never a colour from a missing reading.
+        let e = Look {
+            kind: Kind::Temperature,
+            ..Look::default()
+        }
+        .effect(&RoomMap::default());
+        assert!(matches!(e, Effect::Breathe { .. }), "{e:?}");
     }
 }
