@@ -18,7 +18,7 @@ pub fn dialog_line(app: &str) -> String {
 
 /// The note when the copy stayed open.
 pub fn refusal_line(app: &str) -> String {
-    format!("{app} is still open on its own. Close it from its tray icon, then press Start again.")
+    format!("{app} is still open on its own. Close it, then press Start again.")
 }
 
 /// The quiet line while the copy is being asked to close.
@@ -28,6 +28,11 @@ pub fn closing_line(app: &str) -> String {
 
 /// The note's one button.
 pub const START_AGAIN: &str = "Start again";
+
+/// What a screen reader says for the button: two notes can show at once, so the app is named.
+pub fn start_again_label(app: &str) -> String {
+    format!("Start {app} again")
+}
 
 /// The note on the Modules page after a hand-over that did not happen.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,13 +86,15 @@ mod ui {
                     n.set_live(egui::accesskit::Live::Polite);
                 });
                 ui.add_space(8.0);
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new(START_AGAIN).color(c(t.on_accent)))
-                            .fill(c(t.accent)),
-                    )
-                    .clicked()
-                {
+                let button = ui.add(
+                    egui::Button::new(RichText::new(START_AGAIN).color(c(t.on_accent)))
+                        .fill(c(t.accent)),
+                );
+                let name = super::start_again_label(&note.name);
+                button.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name)
+                });
+                if button.clicked() {
                     again = true;
                 }
             });
@@ -109,7 +116,7 @@ mod tests {
         );
         assert_eq!(
             refusal_line("Gizmo"),
-            "Gizmo is still open on its own. Close it from its tray icon, then press Start again."
+            "Gizmo is still open on its own. Close it, then press Start again."
         );
     }
 
@@ -120,6 +127,7 @@ mod tests {
             refusal_line("Gizmo"),
             closing_line("Gizmo"),
             START_AGAIN.to_string(),
+            start_again_label("Gizmo"),
         ];
         for w in &words {
             let l = w.to_lowercase();

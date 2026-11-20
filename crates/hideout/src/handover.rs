@@ -44,6 +44,17 @@ pub enum Seen {
     Unsure,
 }
 
+/// How asking a copy to quit ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quit {
+    /// It said yes and went.
+    Gone,
+    /// It said no, or could not be asked: it stays, and no more waiting changes that.
+    Refused,
+    /// No answer in time. A copy that said yes just after still quits.
+    TimedOut,
+}
+
 /// What the hub knows about standalone copies, apart from the OS (tests use a fake).
 pub trait Standalone: Send + Sync {
     /// Whether a standalone copy of app `id` is open (no byte is sent).
@@ -51,10 +62,48 @@ pub trait Standalone: Send + Sync {
     /// Asks the copy to quit and waits (bounded) until it has gone. True only when it said yes
     /// and then went.
     fn ask_to_quit(&self, id: &str) -> bool;
+    /// Like [`Standalone::ask_to_quit`], and says whether a failure was the wait running out
+    /// (the copy may still be leaving) or an answer (no, or nothing to talk to).
+    fn ask(&self, id: &str) -> Quit {
+        if self.ask_to_quit(id) {
+            Quit::Gone
+        } else {
+            Quit::Refused
+        }
+    }
     /// The copy has gone and the name is free: the hub takes the app's alias name for its own
     /// clients (CLI and SDK tools on `foxglove-<user>`), as it does when it starts with the name
     /// free. Nothing for a fake.
     fn freed(&self, _id: &str) {}
+    /// How long a copy that did **not answer in time** may still be on its way out. Once a copy
+    /// has said yes its quit cannot be taken back, so a wait that ran out is looked at again for
+    /// this long before the app is called stuck. A plain refusal is not waited on. Zero (a fake)
+    /// looks no more.
+    fn grace(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
+/// How long the copy's own quit may take after the hub stopped waiting (its budget is 5 s).
+pub const GRACE: Duration = Duration::from_secs(5);
+
+/// Looks for the copy to leave, for at most `s.grace()`. Not a loop on the pipe: a few cheap
+/// looks, only after an answer that did not come in time.
+fn left_in_time(s: &dyn Standalone, id: &str) -> bool {
+    let end = std::time::Instant::now() + s.grace();
+    if s.grace().is_zero() {
+        return false;
+    }
+    loop {
+        if s.seen(id) == Seen::No {
+            return true;
+        }
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(250)));
+    }
 }
 
 /// Closes the standalone copy of `id` if there is one. True: the app may be started now. False:
@@ -65,7 +114,14 @@ pub fn hand_over(s: &dyn Standalone, id: &str) -> bool {
         Seen::No => true,
         Seen::Unsure => false,
         Seen::Standalone => {
-            let gone = s.ask_to_quit(id) && s.seen(id) == Seen::No;
+            // A copy that said yes after the wait ran out still quits: look again before saying
+            // it stays (so the note never says the copy stays open when it is on its way out).
+            // A refusal is final: no extra wait, the note comes at once.
+            let gone = match s.ask(id) {
+                Quit::Gone => s.seen(id) == Seen::No || left_in_time(s, id),
+                Quit::TimedOut => left_in_time(s, id),
+                Quit::Refused => false,
+            };
             if gone {
                 s.freed(id);
             }
@@ -175,7 +231,7 @@ impl Read for Gated {
 /// [`converse`] on a worker thread, answered within `limit`. When the limit passes the blocked
 /// read is cancelled, so the worker ends and the connection is let go (no thread is left behind
 /// for each Start again).
-fn within<O: Open>(o: Arc<O>, limit: Duration) -> bool {
+fn within<O: Open>(o: Arc<O>, limit: Duration) -> Quit {
     use std::sync::atomic::{AtomicBool, Ordering};
     let (tx, rx) = mpsc::channel();
     let (cancel_tx, cancel_rx) = mpsc::channel::<Arc<Cancel>>();
@@ -208,16 +264,17 @@ fn within<O: Open>(o: Arc<O>, limit: Duration) -> bool {
             let _ = tx.send(went);
         });
     if spawned.is_err() {
-        return false;
+        return Quit::Refused;
     }
     match rx.recv_timeout(limit) {
-        Ok(went) => went,
+        Ok(true) => Quit::Gone,
+        Ok(false) => Quit::Refused,
         Err(_) => {
             late.store(true, Ordering::SeqCst);
             if let Ok(cancel) = cancel_rx.try_recv() {
                 cancel();
             }
-            false
+            Quit::TimedOut
         }
     }
 }
@@ -227,6 +284,8 @@ pub struct Wire<O: Open> {
     pub id: String,
     pub open: Arc<O>,
     pub limit: Duration,
+    /// See [`Standalone::grace`].
+    pub grace: Duration,
 }
 
 impl<O: Open> Standalone for Wire<O> {
@@ -239,13 +298,25 @@ impl<O: Open> Standalone for Wire<O> {
     }
 
     fn ask_to_quit(&self, id: &str) -> bool {
-        id == self.id && within(self.open.clone(), self.limit)
+        self.ask(id) == Quit::Gone
+    }
+
+    fn ask(&self, id: &str) -> Quit {
+        if id == self.id {
+            within(self.open.clone(), self.limit)
+        } else {
+            Quit::Refused
+        }
     }
 
     fn freed(&self, id: &str) {
         if id == self.id {
             self.open.freed();
         }
+    }
+
+    fn grace(&self) -> Duration {
+        self.grace
     }
 }
 
@@ -350,6 +421,7 @@ pub fn foxglove(
             hub,
         }),
         limit: LIMIT,
+        grace: GRACE,
     })
 }
 
@@ -394,6 +466,43 @@ mod tests {
         fn freed(&self, _: &str) {
             *self.freed.lock().unwrap() += 1;
         }
+    }
+
+    /// A copy that said yes just after the wait ran out leaves within the grace: the app starts
+    /// and no "stays open" note is shown. One that never leaves still stays.
+    #[test]
+    fn a_copy_that_leaves_just_after_the_wait_is_not_called_stuck() {
+        struct Slow(Mutex<u32>, bool, bool);
+        impl Standalone for Slow {
+            fn seen(&self, _: &str) -> Seen {
+                let mut n = self.0.lock().unwrap();
+                *n += 1;
+                if self.1 && *n > 3 {
+                    Seen::No
+                } else {
+                    Seen::Standalone
+                }
+            }
+            fn ask_to_quit(&self, _: &str) -> bool {
+                false
+            }
+            fn ask(&self, _: &str) -> Quit {
+                if self.2 {
+                    Quit::TimedOut
+                } else {
+                    Quit::Refused
+                }
+            }
+            fn grace(&self) -> Duration {
+                Duration::from_millis(900)
+            }
+        }
+        assert!(hand_over(&Slow(Mutex::new(0), true, true), "app"));
+        assert!(!hand_over(&Slow(Mutex::new(0), false, true), "app"));
+        // A plain refusal is not waited on, even when the copy would leave a moment later.
+        let t = std::time::Instant::now();
+        assert!(!hand_over(&Slow(Mutex::new(0), true, false), "app"));
+        assert!(t.elapsed() < Duration::from_millis(300), "a refusal waited");
     }
 
     /// The alias is claimed only after a copy was closed and is gone: not when nothing was open,
@@ -537,6 +646,7 @@ mod tests {
             id: "app".into(),
             open: Arc::new(Stays),
             limit: Duration::from_millis(200),
+            grace: Duration::ZERO,
         };
         let t = std::time::Instant::now();
         assert!(!hand_over(&w, "app"));
@@ -549,6 +659,7 @@ mod tests {
             id: "app".into(),
             open: Arc::new(Stays),
             limit: Duration::from_millis(50),
+            grace: Duration::ZERO,
         };
         assert_eq!(w.seen("other"), Seen::No);
         assert!(!w.ask_to_quit("other"));
@@ -717,6 +828,7 @@ mod tests {
                 ended: Mutex::new(ended),
             }),
             limit: Duration::from_millis(200),
+            grace: Duration::ZERO,
         };
         assert!(!hand_over(&w, "app"));
         // The worker's read returned because of the cancel: its end is the event waited for.

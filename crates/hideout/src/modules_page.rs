@@ -26,6 +26,11 @@ pub trait Actions {
     fn go_back(&self, id: &str);
     fn turn_off(&self, id: &str);
     fn turn_on(&self, id: &str) -> Result<(), String>;
+    /// Turn on as a handle any thread can call, so a hand-over's worker can start the app itself
+    /// when its copy has gone (the page may not be on screen then). `None`: the page starts it.
+    fn starter(&self) -> Option<crate::permission_actions::Starter> {
+        None
+    }
     /// A withdrawn module's Check for updates (#1026).
     fn check_for_updates(&self, id: &str);
     /// Update ready's Force (§7.6).
@@ -64,6 +69,12 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     }
     fn turn_on(&self, id: &str) -> Result<(), String> {
         hideout_supervisor::driver::Supervisor::turn_on(self, id)
+    }
+    fn starter(&self) -> Option<crate::permission_actions::Starter> {
+        let me = self.clone();
+        Some(std::sync::Arc::new(move |id: &str| {
+            hideout_supervisor::driver::Supervisor::turn_on(&me, id)
+        }))
     }
     fn check_for_updates(&self, id: &str) {
         hideout_supervisor::driver::Supervisor::check_for_updates(self, id)
@@ -367,6 +378,7 @@ impl ModulesPage {
         if self.actions.is_none() {
             return;
         }
+        let starter = self.actions.as_deref().and_then(|a| a.starter());
         match done.then {
             // FR5: the dialog said a standalone copy would be closed. It is asked to quit on a
             // worker; the app starts when that finishes well (`settle_hand_over`). If the copy
@@ -377,7 +389,7 @@ impl ModulesPage {
                     && self
                         .perm
                         .as_mut()
-                        .is_some_and(|p| p.start_hand_over(&done.id)) => {}
+                        .is_some_and(|p| p.start_hand_over(&done.id, starter.clone())) => {}
             // A standalone copy opened after the dialog, which did not tell the user it would be
             // closed: nothing is started beside it and nothing is closed unasked. The note with
             // Start again shows, and Start again is the user's go-ahead to close it.
@@ -387,7 +399,7 @@ impl ModulesPage {
                     && self
                         .perm
                         .as_mut()
-                        .is_some_and(|p| p.start_late_check(&done.id)) => {}
+                        .is_some_and(|p| p.start_late_check(&done.id, starter.clone())) => {}
             Then::TurnOn => self.turn_on_now(&done.id),
             Then::Review => {
                 if let Some(a) = self.actions.as_deref() {
@@ -406,7 +418,13 @@ impl ModulesPage {
         let Some(a) = self.actions.as_deref() else {
             return;
         };
-        match a.turn_on(id) {
+        let result = a.turn_on(id);
+        self.after_turn_on(id, result);
+    }
+
+    /// The row, the Done card and any failure line for a start that has been tried.
+    fn after_turn_on(&mut self, id: &str, result: Result<(), String>) {
+        match result {
             Ok(()) => {
                 self.ask.clear_turn_on_failed(id);
                 self.set_enabled(id, true);
@@ -437,8 +455,16 @@ impl ModulesPage {
     /// A finished hand-over: the app starts once its copy has gone (looked at once per frame;
     /// `wait` is for tests).
     fn settle_hand_over(&mut self, wait: bool) {
-        if let Some((id, true)) = self.perm.as_mut().and_then(|p| p.finished_hand_over(wait)) {
-            self.turn_on_now(&id);
+        // Every finished app, not only the first: two apps allowed together both start. A worker
+        // that could start its app has done so already (whether or not this page was on screen);
+        // only the row and the card are left to do here.
+        while let Some((id, h)) = self.perm.as_mut().and_then(|p| p.finished_hand_over(wait)) {
+            if h.went {
+                match h.started {
+                    Some(r) => self.after_turn_on(&id, r),
+                    None => self.turn_on_now(&id),
+                }
+            }
         }
     }
 

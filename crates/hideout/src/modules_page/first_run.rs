@@ -833,8 +833,9 @@ fn a_copy_that_stays_is_left_alone_and_start_again_retries() {
         .perm
         .as_ref()
         .unwrap()
-        .handover_note
-        .clone()
+        .handover_notes
+        .first()
+        .cloned()
         .unwrap();
     assert!(note.line().contains("Gizmo Keys"), "{}", note.line());
     fx.assert_no_autostart_files();
@@ -844,7 +845,7 @@ fn a_copy_that_stays_is_left_alone_and_start_again_retries() {
     fx.page.start_again_pending();
     fx.page.settle_hand_over(true);
     assert_eq!(fx.asked.0.borrow().as_slice(), ["turn-on gizmo-keys"]);
-    assert!(fx.page.perm.as_ref().unwrap().handover_note.is_none());
+    assert!(fx.page.perm.as_ref().unwrap().handover_notes.is_empty());
     fx.assert_no_autostart_files();
 }
 
@@ -865,7 +866,14 @@ fn a_copy_that_opens_after_the_dialog_is_not_started_beside() {
     assert_eq!(*c.asked.lock().unwrap(), 0, "nothing is closed unasked");
     assert!(fx.asked.0.borrow().is_empty(), "nothing started");
     assert!(!fx.page.installed.iter().any(|m| m.enabled));
-    let note = fx.page.perm.as_ref().unwrap().handover_note.clone();
+    let note = fx
+        .page
+        .perm
+        .as_ref()
+        .unwrap()
+        .handover_notes
+        .first()
+        .cloned();
     assert!(note.is_some_and(|n| n.line().contains("Gizmo Keys")));
     fx.assert_no_autostart_files();
 }

@@ -533,11 +533,23 @@ pub struct PermUi {
     /// The note after a hand-over that did not happen, with Start again.
     pub(crate) retry: Option<String>,
     /// The app whose standalone copy is being closed, and the worker's answer when it comes.
-    handing: Option<(String, std::sync::mpsc::Receiver<bool>)>,
+    handing: Vec<(String, std::sync::mpsc::Receiver<Handed>)>,
     /// The window's context, to ask for a redraw when the worker is done.
     ctx: Option<egui::Context>,
-    pub(crate) handover_note: Option<hideout_shell::handover::Note>,
+    /// One note per app whose copy stayed (two apps can each have one).
+    pub(crate) handover_notes: Vec<hideout_shell::handover::Note>,
 }
+
+/// What a hand-over worker found. `started` is the app's start, done on the worker itself when
+/// the page gave it a way to (so it happens even when the Apps page is not on screen).
+#[derive(Debug)]
+pub struct Handed {
+    pub went: bool,
+    pub started: Option<Result<(), String>>,
+}
+
+/// Starts one app from any thread (the supervisor's Turn on).
+pub type Starter = std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 impl PermUi {
     pub fn new(home: &Path, hub: Hub) -> PermUi {
@@ -558,9 +570,9 @@ impl PermUi {
             first_run_drawn: false,
             first_hidden: Vec::new(),
             standalone: None,
-            handover_note: None,
+            handover_notes: Vec::new(),
             retry: None,
-            handing: None,
+            handing: Vec::new(),
             ctx: None,
         };
         p.refresh();
@@ -584,16 +596,16 @@ impl PermUi {
     /// window never blocks on it). True: a hand-over is under way (or already was) and the page
     /// starts the app only when [`PermUi::finished_hand_over`] says yes. False: nothing to hand
     /// over to (no standalone support here), so the app starts at once.
-    pub fn start_hand_over(&mut self, id: &str) -> bool {
-        self.start_worker(id, |s, app| crate::handover::hand_over(s, app))
+    pub fn start_hand_over(&mut self, id: &str, starter: Option<Starter>) -> bool {
+        self.start_worker(id, starter, |s, app| crate::handover::hand_over(s, app))
     }
 
     /// Allow without a promised hand-over: looks once more, on a worker, for a copy that opened
     /// after the dialog. Same contract as [`PermUi::start_hand_over`]: the page starts the app
     /// only when [`PermUi::finished_hand_over`] says yes (no copy now); a copy gives the note.
     /// Nothing is ever closed by this.
-    pub fn start_late_check(&mut self, id: &str) -> bool {
-        self.start_worker(id, |s, app| {
+    pub fn start_late_check(&mut self, id: &str, starter: Option<Starter>) -> bool {
+        self.start_worker(id, starter, |s, app| {
             s.seen(app) != crate::handover::Seen::Standalone
         })
     }
@@ -601,15 +613,17 @@ impl PermUi {
     fn start_worker(
         &mut self,
         id: &str,
+        starter: Option<Starter>,
         work: impl FnOnce(&dyn crate::handover::Standalone, &str) -> bool + Send + 'static,
     ) -> bool {
         let Some(s) = self.standalone.clone() else {
             return false;
         };
-        if self.handing.is_some() {
+        // One slot per app: a second app's Allow never waits behind (or is dropped by) the first.
+        if self.handing.iter().any(|(h, _)| h == id) {
             return true;
         }
-        self.handover_note = None;
+        self.handover_notes.retain(|n| n.id != id);
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = self.ctx.clone();
         let app = id.to_string();
@@ -617,7 +631,8 @@ impl PermUi {
             .name("hand-over-ui".into())
             .spawn(move || {
                 let went = work(s.as_ref(), &app);
-                let _ = tx.send(went);
+                let started = if went { starter.map(|f| f(&app)) } else { None };
+                let _ = tx.send(Handed { went, started });
                 // The page draws again at once (an event, no timer).
                 if let Some(c) = ctx {
                     c.request_repaint();
@@ -625,7 +640,7 @@ impl PermUi {
             })
             .is_ok();
         if spawned {
-            self.handing = Some((id.to_string(), rx));
+            self.handing.push((id.to_string(), rx));
         } else {
             self.stays(id);
         }
@@ -641,33 +656,50 @@ impl PermUi {
             .map(|e| e.view.listing.name.clone())
             .unwrap_or_else(|| id.to_string());
         log::warn!("hand-over: {id}: the standalone copy stays open; not starting");
-        self.handover_note = Some(hideout_shell::handover::Note {
+        self.handover_notes.retain(|n| n.id != id);
+        self.handover_notes.push(hideout_shell::handover::Note {
             id: id.to_string(),
             name,
         });
     }
 
-    /// The finished hand-over, once: the app's id and whether it may start now. `wait` blocks for
-    /// the worker (tests); the page passes false and looks once per drawn frame.
-    pub fn finished_hand_over(&mut self, wait: bool) -> Option<(String, bool)> {
-        let (id, rx) = self.handing.take()?;
-        let went = if wait {
-            rx.recv()
-        } else {
-            match rx.try_recv() {
-                Ok(v) => Ok(v),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.handing = Some((id, rx));
-                    return None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => Ok(false),
+    /// A finished hand-over, once: the app's id and what the worker found. `wait` blocks for the
+    /// oldest worker (tests); the page passes false and takes whatever is done. Call it until it
+    /// answers `None`: every app that was allowed gets its turn.
+    pub fn finished_hand_over(&mut self, wait: bool) -> Option<(String, Handed)> {
+        use std::sync::mpsc::TryRecvError;
+        let gone = || Handed {
+            went: false,
+            started: None,
+        };
+        let (id, handed) = if wait {
+            if self.handing.is_empty() {
+                return None;
             }
-        }
-        .unwrap_or(false);
-        if !went {
+            let (id, rx) = self.handing.remove(0);
+            (id, rx.recv().unwrap_or_else(|_| gone()))
+        } else {
+            let mut found = None;
+            for (i, (_, rx)) in self.handing.iter().enumerate() {
+                match rx.try_recv() {
+                    Ok(v) => {
+                        found = Some((i, v));
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        found = Some((i, gone()));
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => {}
+                }
+            }
+            let (i, v) = found?;
+            (self.handing.remove(i).0, v)
+        };
+        if !handed.went {
             self.stays(&id);
         }
-        Some((id, went))
+        Some((id, handed))
     }
 
     /// The app whose Start again was pressed, once.
@@ -1158,7 +1190,7 @@ impl PermUi {
         let mut keep_on: Option<(String, egui::Id)> = None;
         let mut keep_stop: Option<String> = None;
         let mut open_first: Option<egui::Id> = None;
-        if let Some((id, _)) = &self.handing {
+        for (id, _) in &self.handing {
             let name = self
                 .entries
                 .iter()
@@ -1166,12 +1198,17 @@ impl PermUi {
                 .map(|e| e.view.listing.name.clone())
                 .unwrap_or_else(|| id.clone());
             hideout_shell::handover::closing_ui(ui, t, &name);
-        } else if let Some(n) = self.handover_note.clone() {
-            if hideout_shell::handover::note_ui(ui, t, &n) {
-                self.handover_note = None;
-                self.retry = Some(n.id);
+        }
+        let mut again = None;
+        for n in &self.handover_notes {
+            if hideout_shell::handover::note_ui(ui, t, n) {
+                again = Some(n.id.clone());
             }
             ui.add_space(8.0);
+        }
+        if let Some(id) = again {
+            self.handover_notes.retain(|n| n.id != id);
+            self.retry = Some(id);
         }
         for q in self.queue.for_home(&self.home) {
             let Some(e) = self.entries.iter().find(|e| e.id == q.id) else {
@@ -2910,5 +2947,99 @@ mod tests {
         assert_eq!(done[0].id, ID);
         assert!(view_of(&f, FOX).granted.is_empty() && view_of(&f, FOX).bound.is_none());
         assert_eq!(f.ui.first_run.as_ref().unwrap().sections[0].id, FOX);
+    }
+
+    /// A standalone source that says "no copy" for every app, and a copy of `slow` that takes a
+    /// moment: no windows, no pipe.
+    struct NoCopy;
+    impl crate::handover::Standalone for NoCopy {
+        fn seen(&self, _: &str) -> crate::handover::Seen {
+            crate::handover::Seen::No
+        }
+        fn ask_to_quit(&self, _: &str) -> bool {
+            true
+        }
+    }
+
+    fn starter_log() -> (Starter, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let l = log.clone();
+        (
+            std::sync::Arc::new(move |id: &str| {
+                l.lock().unwrap().push(id.to_string());
+                Ok(())
+            }),
+            log,
+        )
+    }
+
+    /// First-run Allow for two apps at once: each has its own slot, so both start (before, the
+    /// second was dropped with no note).
+    #[test]
+    fn two_apps_allowed_together_each_get_their_own_hand_over() {
+        let mut f = fx("two-slots", &[]);
+        f.ui = PermUi::new(&f.home, f.ui.hub.clone()).with_standalone(std::sync::Arc::new(NoCopy));
+        let (st, log) = starter_log();
+        assert!(f.ui.start_late_check("app-a", Some(st.clone())));
+        assert!(f.ui.start_late_check("app-b", Some(st.clone())));
+        // The same app twice is still one slot.
+        assert!(f.ui.start_late_check("app-b", Some(st)));
+        let mut got = Vec::new();
+        while let Some((id, h)) = f.ui.finished_hand_over(true) {
+            assert!(h.went && matches!(h.started, Some(Ok(()))), "{id}");
+            got.push(id);
+        }
+        got.sort();
+        assert_eq!(got, ["app-a", "app-b"]);
+        let mut started = log.lock().unwrap().clone();
+        started.sort();
+        assert_eq!(started, ["app-a", "app-b"], "both started, once each");
+        assert!(f.ui.handover_notes.is_empty());
+    }
+
+    /// The worker starts the app itself: it is started although nothing ever draws the page or
+    /// reads the result (the user left the Apps page or closed to the tray).
+    #[test]
+    fn the_app_starts_without_the_page_being_drawn() {
+        let mut f = fx("undrawn", &[]);
+        f.ui = PermUi::new(&f.home, f.ui.hub.clone()).with_standalone(std::sync::Arc::new(NoCopy));
+        let (st, log) = starter_log();
+        assert!(f.ui.start_hand_over("app-a", Some(st)));
+        let t = std::time::Instant::now();
+        while log.lock().unwrap().is_empty() {
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(5),
+                "never started"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(log.lock().unwrap().as_slice(), ["app-a"]);
+    }
+
+    /// A copy that stays gives one note per app: two apps that waited show two notes.
+    #[test]
+    fn each_app_whose_copy_stays_gets_its_own_note() {
+        struct Stays;
+        impl crate::handover::Standalone for Stays {
+            fn seen(&self, _: &str) -> crate::handover::Seen {
+                crate::handover::Seen::Standalone
+            }
+            fn ask_to_quit(&self, _: &str) -> bool {
+                false
+            }
+        }
+        let mut f = fx("two-notes", &[]);
+        f.ui = PermUi::new(&f.home, f.ui.hub.clone()).with_standalone(std::sync::Arc::new(Stays));
+        let (st, log) = starter_log();
+        f.ui.start_hand_over("app-a", Some(st.clone()));
+        f.ui.start_late_check("app-b", Some(st));
+        while f.ui.finished_hand_over(true).is_some() {}
+        let mut ids: Vec<_> = f.ui.handover_notes.iter().map(|n| n.id.clone()).collect();
+        ids.sort();
+        assert_eq!(ids, ["app-a", "app-b"]);
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "nothing started beside a copy"
+        );
     }
 }
