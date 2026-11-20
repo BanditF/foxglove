@@ -966,6 +966,7 @@ impl Devices for AppDevices {
             "scene.status" => Ok(json!(scene_status())),
             "scene.repaint" => scene_repaint().map(|r| json!(r)).map_err(app_err),
             "scene.stop" => scene_stop().map(|r| json!(r)).map_err(app_err),
+            "app.hand_over" => super::hand_over::handle(),
             "scenes.page" => Ok(json!(scenes_page(&super::scenes_ui::presets_now()))),
             "health.read" => {
                 let p: methods::DeviceParams = params(_params)?;

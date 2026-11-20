@@ -283,6 +283,10 @@ fn head_ui(ui: &mut egui::Ui, t: &Tokens, d: &PermDialog) {
         ui.label(egui::RichText::new(line).strong().color(c(t.text)));
         ui.add_space(4.0);
     }
+    if let Some(line) = d.handover_line() {
+        ui.add(egui::Label::new(egui::RichText::new(line).color(c(t.text))).wrap());
+        ui.add_space(4.0);
+    }
     if let Some(src) = d.source_line() {
         ui.add(
             egui::Label::new(fine(ui, src).monospace().color(c(t.text_muted)))

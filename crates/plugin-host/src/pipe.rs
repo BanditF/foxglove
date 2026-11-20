@@ -20,8 +20,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::CreateEventW;
 use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
@@ -191,6 +191,10 @@ fn listen_on(
         let _ = std::thread::Builder::new()
             .name("plugin-host-client".into())
             .spawn(move || {
+                let mut pid = 0u32;
+                // SAFETY: a connected pipe instance owned by `conn`.
+                let known = unsafe { GetNamedPipeClientProcessId(conn.0 .0, &mut pid) } != 0;
+                crate::set_peer_pid(known.then_some(pid));
                 let _ = crate::serve(BufReader::new(conn.clone()), conn, ctx);
             });
     }

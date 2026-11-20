@@ -159,6 +159,24 @@ pub fn open_verified_with(
     }
 }
 
+/// Whether process `pid` (a pipe's CLIENT, as the server sees it) passes the same identity checks
+/// a server does: image name, same user, Medium integrity or above, no AppContainer, and a
+/// trusted path. `Free`: the process is gone. Nothing is sent. Off Windows: `Free`.
+pub fn verify_pid(pid: u32, expect: Expect, paths: &dyn PeerPaths) -> Probe {
+    #[cfg(windows)]
+    {
+        match win::verify_pid(pid, expect, paths) {
+            Ok(image) => Probe::Verified { pid, image },
+            Err(p) => p,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (pid, expect, paths);
+        Probe::Free
+    }
+}
+
 /// The full image path of process `pid`, or `None` when it is not running (or not readable).
 /// Used to tell a hub still alive from one that is gone, and to compare a new server's exact
 /// path with a recorded one (#1143 P5).
@@ -299,6 +317,17 @@ mod win {
                 try_open()
             }
             other => other,
+        }
+    }
+
+    pub fn verify_pid(pid: u32, expect: Expect, paths: &dyn PeerPaths) -> Result<PathBuf, Probe> {
+        match verify(pid, expect, paths) {
+            Ok(image) => Ok(image),
+            Err(Refusal::Gone) => Err(Probe::Free),
+            Err(Refusal::Foreign(why)) => Err(Probe::Foreign {
+                pid: Some(pid),
+                why,
+            }),
         }
     }
 

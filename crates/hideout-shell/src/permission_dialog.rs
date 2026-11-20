@@ -469,6 +469,9 @@ pub struct View {
     /// offered (each sensitive item then has its own), else whether it is ticked. Ticking it
     /// ticks and confirms every sensitive item; each item can still be unticked by itself.
     pub group_ack: Option<bool>,
+    /// The app is open on its own right now and Allow closes that copy first (FR5): the dialog
+    /// says so in one line. Presentation only; the hand-over is the page's, after the Allow.
+    pub handover: bool,
 }
 
 /// What Allow sends back.
@@ -733,6 +736,13 @@ impl PermDialog {
     // app is unsigned today.
     pub fn source_line(&self) -> Option<String> {
         (!self.path.is_empty()).then(|| format!("{SOURCE_UNSIGNED} \u{b7} {}", self.path))
+    }
+
+    /// The hand-over line (FR5), only while a standalone copy of the app is open.
+    pub fn handover_line(&self) -> Option<String> {
+        self.view
+            .handover
+            .then(|| crate::handover::dialog_line(&self.name))
     }
 
     /// The line under the sensitive group.

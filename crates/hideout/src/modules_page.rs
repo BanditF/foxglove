@@ -368,6 +368,11 @@ impl ModulesPage {
             return;
         };
         match done.then {
+            // FR5: the dialog said a standalone copy would be closed. It is asked to quit first;
+            // if it does not go (or anything is in doubt) the app is not started, a note with
+            // Start again shows, and the Startup entry is never touched.
+            Then::TurnOn
+                if done.handover && !self.perm.as_mut().is_none_or(|p| p.hand_over(&done.id)) => {}
             Then::TurnOn => match a.turn_on(&done.id) {
                 Ok(()) => {
                     self.set_enabled(&done.id, true);
@@ -387,6 +392,21 @@ impl ModulesPage {
         if let Some(p) = self.perm.as_mut() {
             p.refresh();
         }
+    }
+
+    /// Start again after a hand-over that did not happen: the same step, once more.
+    fn start_again_pending(&mut self) {
+        let Some(id) = self.perm.as_mut().and_then(|p| p.take_retry()) else {
+            return;
+        };
+        self.after_allow(crate::permission_actions::Done {
+            id,
+            code: String::new(),
+            chosen: Vec::new(),
+            declined: Vec::new(),
+            then: crate::permission_actions::Then::TurnOn,
+            handover: true,
+        });
     }
 
     /// An app was just added (Found card or Browse): the list takes it now and the normal
@@ -727,6 +747,7 @@ impl hideout_shell::Page for ModulesPage {
         self.grant = grant;
         self.perm = perm;
         self.discover = discover;
+        self.start_again_pending();
         if let Some(id) = added {
             self.after_add(&id);
         }
@@ -973,6 +994,7 @@ mod tests {
             chosen: Vec::new(),
             declined: Vec::new(),
             then,
+            handover: false,
         };
         let inst = Installed {
             adopted: true,

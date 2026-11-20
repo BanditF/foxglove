@@ -42,6 +42,7 @@ pub mod capture;
 pub mod done_card;
 #[cfg(windows)]
 pub mod exit_watch;
+pub mod handover;
 #[cfg(windows)]
 pub mod hotkeys;
 #[cfg(windows)]
