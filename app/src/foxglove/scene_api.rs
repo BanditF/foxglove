@@ -56,7 +56,11 @@ pub fn parse_start(raw: Value) -> Result<Look, Error> {
         )));
     }
     // serde would also read a JSON array as the struct's fields in order.
-    if !raw.is_object() || raw.get("params").is_some_and(|p| !(p.is_object() || p.is_null())) {
+    if !raw.is_object()
+        || raw
+            .get("params")
+            .is_some_and(|p| !(p.is_object() || p.is_null()))
+    {
         return Err(bad("scene.start takes an object {look, params?}"));
     }
     let p: SceneStartParams = serde_json::from_value(raw).map_err(|e| bad(e.to_string()))?;
@@ -153,7 +157,9 @@ fn apply(kind: Kind, p: &SceneStartLook) -> Result<Look, Error> {
             && s.bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
         if !ok {
-            return Err(bad("source is lower case letters, digits, _ or -, up to 24"));
+            return Err(bad(
+                "source is lower case letters, digits, _ or -, up to 24",
+            ));
         }
         look.temp_source = s.clone();
     }
@@ -296,14 +302,13 @@ pub fn lights_status(scene: &methods::SceneStatus) -> LightsStatus {
         scene: scene.scene.clone(),
         look: running.then(|| kind_name(if temp { Kind::Temperature } else { chosen.kind })),
         keyboard: scene.keyboard.clone(),
-        temperature: temp
-            .then(|| {
-                temperature_part(
-                    &chosen.temp_source,
-                    super::temperature_feed::latest(),
-                    super::temperature_out::last_target(),
-                )
-            }),
+        temperature: temp.then(|| {
+            temperature_part(
+                &chosen.temp_source,
+                super::temperature_feed::latest(),
+                super::temperature_out::last_target(),
+            )
+        }),
     }
 }
 

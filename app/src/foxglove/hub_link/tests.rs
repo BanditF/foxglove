@@ -2886,7 +2886,11 @@ fn scene_start_is_behind_lighting_write_and_the_reads_are_not() {
     let before = counting.seen.lock().unwrap().len();
     let r = rig.call(&reader, "scene.start", json!({"look": "temperature"}));
     assert!(r["error"].is_object(), "{r}");
-    assert_eq!(counting.seen.lock().unwrap().len(), before, "never reached the app");
+    assert_eq!(
+        counting.seen.lock().unwrap().len(),
+        before,
+        "never reached the app"
+    );
     let writer = rig.tool(&["devices.read", "lighting.write"]);
     let r = rig.call(&writer, "scene.start", json!({"look": "temperature"}));
     assert_eq!(r["result"]["served"], json!("scene.start"), "{r}");
