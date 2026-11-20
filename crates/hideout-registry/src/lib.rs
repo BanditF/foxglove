@@ -228,13 +228,39 @@ fn hash_files(dir: &Path) -> io::Result<BTreeMap<String, String>> {
     let mut skip = vec![DATA_DIR.to_string()];
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
-            if is_kept(&e.file_name()) {
+            if is_kept_dir(&e) {
                 skip.push(e.file_name().to_string_lossy().into_owned());
             }
         }
     }
     let skip: Vec<&str> = skip.iter().map(String::as_str).collect();
     hash_dir(dir, &skip)
+}
+
+/// Copies an archive's folder into `to`. The app's own folders (data, settings*) are never
+/// taken from an archive: only the installer's own carry creates them, so nothing unsigned
+/// there can become an app's config.
+fn copy_payload(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        if is_kept_dir(&entry) {
+            continue;
+        }
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// A top-level entry with a kept name that is a folder or a link (a file of that name is
+/// ordinary payload and is hashed).
+fn is_kept_dir(e: &std::fs::DirEntry) -> bool {
+    is_kept(&e.file_name()) && e.file_type().is_ok_and(|t| t.is_dir() || t.is_symlink())
 }
 
 fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
@@ -758,15 +784,37 @@ impl Registry {
         let dir = self.module_dir(&m.id, &m.version);
         let partial = sibling(&dir, "partial");
         let old_copy = sibling(&dir, "old");
+        let modules = self.home.join("modules");
+        if !self.is_lab(&m.id) {
+            own_base_ok(&modules, &modules.join(&m.id))?;
+        }
         // Leftovers of an interrupted install are never wiped while they hold the app's data:
         // the original comes back if the swap died half way, and what a leftover holds is
         // carried into the live folder first (a failure stops the install, nothing is deleted).
         if !dir.exists() && !is_link(&dir) && old_copy.is_dir() {
             std::fs::rename(&old_copy, &dir)?;
         }
-        retire(&old_copy, &dir)?;
-        retire(&partial, &dir)?;
-        copy_dir(folder, &partial)?;
+        retire(&old_copy, &dir, true)?;
+        if !dir.is_dir() && holds_kept(&partial) && partial.is_dir() {
+            // Nothing live to carry into yet: set it aside, the prune after the swap carries it.
+            let mut n = 0;
+            let mut orphan = sibling(&dir, "orphan");
+            while std::fs::symlink_metadata(&orphan).is_ok() {
+                n += 1;
+                orphan = sibling(&dir, &format!("orphan{n}"));
+            }
+            std::fs::rename(&partial, &orphan)?;
+        }
+        retire(&partial, &dir, true)?;
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            // A crash inside a carry leaves its temp copy: never part of the app.
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().ends_with(".carry-tmp") {
+                    remove_entry(&e.path())?;
+                }
+            }
+        }
+        copy_payload(folder, &partial)?;
         let copied = hash_files(&partial)?;
         if copied != found {
             let _ = std::fs::remove_dir_all(&partial);
@@ -855,7 +903,11 @@ impl Registry {
         self.inventory.modules.insert(m.id.clone(), entry);
         self.inventory.ask(&m.id, &m.permissions);
         self.save_inventory()?;
-        self.prune(&m.id, &m.version, previous.as_deref())?;
+        // The install itself is done: a prune that stops (it deletes nothing it could not carry)
+        // is logged and retried by the next install, not reported as a failed install.
+        if let Err(e) = self.prune(&m.id, &m.version, previous.as_deref()) {
+            log::warn!("registry: {}: old folders kept: {e}", m.id);
+        }
         Ok(self.inventory.modules[&m.id].clone())
     }
 
@@ -973,14 +1025,10 @@ impl Registry {
     fn prune(&self, id: &str, keep: &str, previous: Option<&str>) -> io::Result<()> {
         let modules = self.home.join("modules");
         let base = modules.join(id);
-        if is_link(&base)
-            || base.canonicalize()?.parent() != Some(modules.canonicalize()?.as_path())
-        {
-            return Err(io::Error::other(format!(
-                "{} is not inside the modules folder",
-                base.display()
-            )));
-        }
+        own_base_ok(&modules, &base)?;
+        // After an update the old settings are not the new version's: they only take the plain
+        // name when the module had no previous version (added again after Remove).
+        let plain_ok = previous.is_none();
         let live = base.join(keep);
         let running = self.running.get(id).map(String::as_str);
         let mut stale = Vec::new();
@@ -997,7 +1045,7 @@ impl Registry {
             if is_link(&path) {
                 unlink(&path)?;
             } else if path.is_dir() {
-                retire(&path, &live)?;
+                retire(&path, &live, plain_ok)?;
             } else {
                 std::fs::remove_file(&path)?;
             }
@@ -1478,6 +1526,20 @@ fn is_kept(name: &std::ffi::OsStr) -> bool {
         || name.starts_with("data.from-")
 }
 
+/// `modules\<id>` must be a real folder directly inside `modules` (a missing one is fine).
+fn own_base_ok(modules: &Path, base: &Path) -> io::Result<()> {
+    if std::fs::symlink_metadata(base).is_err() {
+        return Ok(());
+    }
+    if is_link(base) || base.canonicalize()?.parent() != Some(modules.canonicalize()?.as_path()) {
+        return Err(io::Error::other(format!(
+            "{} is not inside the modules folder",
+            base.display()
+        )));
+    }
+    Ok(())
+}
+
 /// `dir` with `.suffix` appended to its name (`0.1.0` -> `0.1.0.partial`; not an extension swap).
 fn sibling(dir: &Path, suffix: &str) -> PathBuf {
     let mut n = dir.file_name().unwrap_or_default().to_os_string();
@@ -1519,6 +1581,7 @@ fn trees_equal(a: &Path, b: &Path) -> bool {
             std::fs::read_dir(d)
                 .ok()?
                 .flatten()
+                .filter(|e| !is_link(&e.path()))
                 .map(|e| e.file_name())
                 .collect(),
         )
@@ -1529,10 +1592,12 @@ fn trees_equal(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Copies a tree; a link anywhere is an error (nothing is followed, nothing half-carried).
+/// Copies a tree. A link is not the app's data: it is skipped (never followed, never an error,
+/// so it cannot wedge an install), and the folder behind it is untouched.
 fn copy_tree_strict(from: &Path, to: &Path) -> io::Result<()> {
     if is_link(from) {
-        return Err(io::Error::other(format!("{} is a link", from.display())));
+        log::warn!("registry: link {} not carried", from.display());
+        return Ok(());
     }
     if std::fs::symlink_metadata(from)?.is_dir() {
         std::fs::create_dir_all(to)?;
@@ -1553,6 +1618,10 @@ fn copy_kept(from: &Path, to: &Path) -> io::Result<()> {
         if !is_kept(&item.file_name()) {
             continue;
         }
+        if is_link(&item.path()) {
+            log::warn!("registry: link {} not carried", item.path().display());
+            continue;
+        }
         let target = to.join(item.file_name());
         if std::fs::symlink_metadata(&target).is_ok() {
             remove_entry(&target)?;
@@ -1565,7 +1634,7 @@ fn copy_kept(from: &Path, to: &Path) -> io::Result<()> {
 /// Makes sure every kept entry of `from` is in `live` (never replacing one there): the same
 /// bytes there already count as carried, different ones send this copy to
 /// `<name>.from-<folder name>`. Copied through a temp name, so a crash leaves no half copy.
-fn carry_copy(from: &Path, live: &Path) -> io::Result<()> {
+fn carry_copy(from: &Path, live: &Path, plain_ok: bool) -> io::Result<()> {
     let label = from
         .file_name()
         .unwrap_or_default()
@@ -1577,12 +1646,17 @@ fn carry_copy(from: &Path, live: &Path) -> io::Result<()> {
             continue;
         }
         let src = item.path();
+        if is_link(&src) {
+            log::warn!("registry: link {} not carried", src.display());
+            continue;
+        }
         let name = item.file_name().to_string_lossy().into_owned();
         let mut dest = live.join(&name);
-        if std::fs::symlink_metadata(&dest).is_ok() {
-            if trees_equal(&src, &dest) {
-                continue;
-            }
+        let exists = std::fs::symlink_metadata(&dest).is_ok();
+        if exists && trees_equal(&src, &dest) {
+            continue;
+        }
+        if exists || !plain_ok {
             dest = live.join(format!("{name}.from-{label}"));
             if std::fs::symlink_metadata(&dest).is_ok() {
                 if trees_equal(&src, &dest) {
@@ -1607,7 +1681,7 @@ fn carry_copy(from: &Path, live: &Path) -> io::Result<()> {
 /// Deletes a leftover folder (an old version, `.old`, `.partial`). One that holds the app's
 /// data or settings is deleted only after they were carried into `live`; no live folder, or any
 /// failure, deletes nothing.
-fn retire(stale: &Path, live: &Path) -> io::Result<()> {
+fn retire(stale: &Path, live: &Path, plain_ok: bool) -> io::Result<()> {
     if std::fs::symlink_metadata(stale).is_err() {
         return Ok(());
     }
@@ -1624,7 +1698,7 @@ fn retire(stale: &Path, live: &Path) -> io::Result<()> {
                 stale.display()
             )));
         }
-        carry_copy(stale, live)?;
+        carry_copy(stale, live, plain_ok)?;
     }
     std::fs::remove_dir_all(stale)
 }

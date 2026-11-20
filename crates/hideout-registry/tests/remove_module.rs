@@ -457,14 +457,11 @@ fn an_interrupted_install_loses_no_data() {
     std::fs::remove_dir_all(base.join("0.1.0").join("a.exe")).ok();
     std::fs::remove_dir_all(&cur).unwrap();
     put(&base.join("0.1.0.partial"), "data/keep.txt", "k");
-    // Not restorable (no .old) and no live folder: the install proceeds only after carrying
-    // into a live folder, which does not exist yet, so it must fail closed and keep the data.
-    let r = reg.install(&src.join("example.rm.crash"), NOW);
-    assert!(r.is_err());
-    assert_eq!(
-        read(&base.join("0.1.0.partial").join("data").join("keep.txt")),
-        "k"
-    );
+    // No live folder and an orphan `.partial` holding data: set aside, then carried after the
+    // swap (no stuck install).
+    reg.install(&src.join("example.rm.crash"), NOW).unwrap();
+    assert_eq!(read(&cur.join("data").join("keep.txt")), "k");
+    assert!(!base.join("0.1.0.partial").exists() && !base.join("0.1.0.orphan").exists());
 }
 
 /// Carried settings do not fail the launch file check (data and settings* in any case).
@@ -480,13 +477,7 @@ fn carried_settings_pass_the_launch_check() {
     reg.remove("example.rm.launch").unwrap();
     reg.install(&src.join("example.rm.launch"), NOW).unwrap();
     reg.set_enabled("example.rm.launch", true).unwrap();
-    if let Err(e) = reg.pre_launch("example.rm.launch") {
-        let text = format!("{e:?}");
-        assert!(
-            !text.contains("signed file") && !text.contains("TrustFiles"),
-            "{text}"
-        );
-    }
+    reg.pre_launch("example.rm.launch").unwrap();
 }
 
 /// `modules\<id>\<ver>` a junction at install time: only the link goes; nothing behind it is
@@ -507,4 +498,111 @@ fn a_version_level_junction_is_not_followed_by_install() {
     assert_eq!(read(&decoy.join("data").join("precious.txt")), "keep");
     assert!(!ver.join("data").exists());
     assert!(ver.join("a.exe").is_file());
+}
+
+fn bump(src: &Path, id: &str, from: &str, to: &str) {
+    let m = src.join(id).join("module.toml");
+    let t = std::fs::read_to_string(&m).unwrap();
+    std::fs::write(&m, t.replace(from, to)).unwrap();
+}
+
+/// A catalog/sideload archive cannot smuggle `settings*`, `data.from-*` folders in; only a file
+/// of that name is ordinary payload (hashed).
+#[test]
+fn an_archive_cannot_ship_the_apps_own_folders() {
+    let home = temp("ship-home");
+    let src = temp("ship-src");
+    let mut reg = hub_copy(&home, &src, "example.rm.ship");
+    let pkg = src.join("example.rm.ship");
+    put(&pkg, "settings/evil.json", "evil");
+    put(&pkg, "Settings.bad-1/x", "x");
+    put(&pkg, "data.from-0.0.1/x", "x");
+    reg.remove("example.rm.ship").unwrap();
+    reg.install(&pkg, NOW).unwrap();
+    let cur = home.join("modules").join("example.rm.ship").join("0.1.0");
+    assert!(cur.join("a.exe").is_file());
+    for n in ["settings", "Settings.bad-1", "data.from-0.0.1"] {
+        assert!(!cur.join(n).exists(), "{n} came from the archive");
+    }
+}
+
+/// A junction inside the app's data, and one named `data`, never wedge a re-add or a prune, and
+/// the folders behind them are untouched.
+#[test]
+fn links_in_kept_data_do_not_wedge_install() {
+    let home = temp("kl-home");
+    let src = temp("kl-src");
+    let decoy = temp("kl-decoy");
+    put(&decoy, "precious.txt", "keep");
+    let mut reg = hub_copy(&home, &src, "example.rm.kl");
+    let base = home.join("modules").join("example.rm.kl");
+    let cur = base.join("0.1.0");
+    put(&cur, "data/d.txt", "d");
+    junction(&cur.join("data").join("link"), &decoy);
+    junction(&cur.join("settings"), &decoy);
+    // An older version with the same shape, to be pruned.
+    put(&base.join("0.0.5"), "data/o.txt", "o");
+    junction(&base.join("0.0.5").join("data").join("l2"), &decoy);
+
+    reg.install(&src.join("example.rm.kl"), NOW).unwrap();
+    reg.remove("example.rm.kl").unwrap();
+    reg.install(&src.join("example.rm.kl"), NOW).unwrap();
+
+    assert_eq!(read(&decoy.join("precious.txt")), "keep");
+    assert_eq!(read(&cur.join("data").join("d.txt")), "d");
+    assert!(!base.join("0.0.5").exists());
+}
+
+/// An update does not start on settings two versions old: with a previous version, a leftover's
+/// settings only land beside, never as the plain `settings`.
+#[test]
+fn an_update_does_not_revive_old_settings() {
+    let home = temp("upd-home");
+    let src = temp("upd-src");
+    let mut reg = hub_copy(&home, &src, "example.rm.upd");
+    let pkg = src.join("example.rm.upd");
+    let base = home.join("modules").join("example.rm.upd");
+    bump(&src, "example.rm.upd", "0.1.0", "0.2.0");
+    reg.install(&pkg, NOW).unwrap();
+    put(&base.join("0.1.0"), "settings/s.json", "v1");
+    put(&base.join("0.0.9"), "settings/s.json", "v09");
+    bump(&src, "example.rm.upd", "0.2.0", "0.3.0");
+    reg.install(&pkg, NOW).unwrap();
+    let cur = base.join("0.3.0");
+    assert!(!cur.join("settings").exists());
+    assert_eq!(read(&cur.join("settings.from-0.1.0").join("s.json")), "v1");
+    assert_eq!(read(&cur.join("settings.from-0.0.9").join("s.json")), "v09");
+    assert!(base.join("0.2.0").is_dir());
+}
+
+/// A prune that cannot carry (a different copy already sits at the `.from-` name) is logged,
+/// not a failed install, and the leftover keeps its data.
+#[test]
+fn a_stuck_prune_is_not_a_failed_install() {
+    let home = temp("stuck-home");
+    let src = temp("stuck-src");
+    let mut reg = hub_copy(&home, &src, "example.rm.stuck");
+    let pkg = src.join("example.rm.stuck");
+    let base = home.join("modules").join("example.rm.stuck");
+    bump(&src, "example.rm.stuck", "0.1.0", "0.2.0");
+    put(&base.join("0.0.9"), "settings/s.json", "old");
+    put(&base.join("0.2.0"), "settings.from-0.0.9/s.json", "other");
+    reg.install(&pkg, NOW).unwrap();
+    assert_eq!(
+        read(&base.join("0.0.9").join("settings").join("s.json")),
+        "old"
+    );
+    assert_eq!(
+        read(
+            &base
+                .join("0.2.0")
+                .join("settings.from-0.0.9")
+                .join("s.json")
+        ),
+        "other"
+    );
+    // A temp copy left by a crash is cleaned up by the next install.
+    put(&base.join("0.2.0"), "data.carry-tmp/x", "x");
+    reg.install(&pkg, NOW).unwrap();
+    assert!(!base.join("0.2.0").join("data.carry-tmp").exists());
 }
