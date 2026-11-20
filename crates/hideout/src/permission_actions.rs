@@ -356,6 +356,15 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
                     if a.by == hideout_registry::permission::FOLLOW_ATTESTED_BY {
                         return keep_history(&time_words(&a.at), grew);
                     }
+                    if a.by == hideout_registry::dev_folder::DEV_ATTESTED_BY {
+                        use hideout_supervisor::words::{new_build_line, NewBuild};
+                        let what = if grew > 0 {
+                            NewBuild::AsksMore(grew)
+                        } else {
+                            NewBuild::Kept
+                        };
+                        return new_build_line(&time_words(&a.at), what);
+                    }
                     let mut line = format!(
                         "Updated to {} on {}. Your OK stayed",
                         a.version,
@@ -447,6 +456,15 @@ fn asked_pending(v: &View) -> Vec<&hideout_registry::permission::Item> {
     items
 }
 
+/// Whether the newest program change the grant kept was a dev-folder rebuild (rebuild R6): the
+/// header then speaks of the new build, not of an update.
+fn dev_build(v: &View) -> bool {
+    v.bound
+        .as_ref()
+        .and_then(|b| b.attested.last())
+        .is_some_and(|a| a.by == hideout_registry::dev_folder::DEV_ATTESTED_BY)
+}
+
 /// Which header line a module gets, if any. `enabled`: the module is on in the hub's settings.
 pub fn header_kind(v: &View, enabled: bool, cli_seen: bool) -> Option<HeaderKind> {
     if v.void.is_some() {
@@ -455,7 +473,11 @@ pub fn header_kind(v: &View, enabled: bool, cli_seen: bool) -> Option<HeaderKind
         // Slice 2 (allow means on): an Off adopted app asks too, because Allow turns it on.
         Some(HeaderKind::Ask)
     } else if v.bound.is_some() && enabled && !asked_pending(v).is_empty() {
-        Some(HeaderKind::More)
+        Some(if dev_build(v) {
+            HeaderKind::MoreBuild
+        } else {
+            HeaderKind::More
+        })
     } else if v.bound.as_ref().is_some_and(|b| b.by == "cli") && !cli_seen {
         Some(HeaderKind::Cli)
     } else {
@@ -1034,7 +1056,7 @@ impl PermUi {
             });
             if let Some(k) = kind {
                 let name = &e.view.listing.name;
-                let cli = if k == HeaderKind::More {
+                let cli = if matches!(k, HeaderKind::More | HeaderKind::MoreBuild) {
                     let p = asked_pending(&e.view);
                     p.first().map(|f| (p.len(), f.line.clone()))
                 } else {
@@ -1047,7 +1069,7 @@ impl PermUi {
                     header(k, &e.id, name, cli.as_ref().map(|(n, w)| (*n, w.as_str())));
                 match perm_header_ui(ui, t, &h) {
                     Some((true, id)) => {
-                        let how = if k == HeaderKind::More {
+                        let how = if matches!(k, HeaderKind::More | HeaderKind::MoreBuild) {
                             Opener::More
                         } else {
                             Opener::Header
@@ -1973,6 +1995,42 @@ mod tests {
 
     fn more_header(f: &Fx) -> Option<HeaderKind> {
         header_kind(&view(f), true, true)
+    }
+
+    /// Rebuild R6: a dev-folder rebuild that asks for more reads as a new build, counts the
+    /// new things, and says the app runs with what was allowed until then.
+    #[test]
+    fn a_dev_rebuild_that_asks_for_more_gets_the_new_build_header_and_history_line() {
+        let f = updated_with_more("more-dev", &["provide:a.read", "provide:a.set"]);
+        let mut v = view(&f);
+        // An update by the installer still reads as an update.
+        assert_eq!(header_kind(&v, true, true), Some(HeaderKind::More));
+        v.bound.as_mut().unwrap().attested.last_mut().unwrap().by =
+            hideout_registry::dev_folder::DEV_ATTESTED_BY.into();
+        assert_eq!(header_kind(&v, true, true), Some(HeaderKind::MoreBuild));
+        // Off: no header, as for an update. A void still wins.
+        assert_eq!(header_kind(&v, false, true), None);
+        let p = asked_pending(&v);
+        let h = header(
+            HeaderKind::MoreBuild,
+            ID,
+            "Vulpes",
+            Some((p.len(), &p[0].line)),
+        );
+        assert_eq!(h.title, "Vulpes's new build asks for 2 more things");
+        assert_eq!(h.body, "It runs with what you allowed until then.");
+        assert_eq!(h.review, "Review\u{2026}");
+        let one = header(HeaderKind::MoreBuild, ID, "Vulpes", Some((1, "x")));
+        assert_eq!(one.title, "Vulpes's new build asks for 1 more thing");
+        // The history says what the plan's Details line says.
+        let s = section_for(ID, &v).unwrap();
+        let last = s.history.last().unwrap();
+        assert!(
+            last.starts_with("New build on ")
+                && last.ends_with("It asks for 2 more things; those wait for you."),
+            "{:?}",
+            s.history
+        );
     }
 
     #[test]

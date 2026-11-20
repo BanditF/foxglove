@@ -1027,6 +1027,9 @@ pub enum HeaderKind {
     Queued,
     /// Allowed, and a signed update asks for more (#1238); `cli` carries (count, first line).
     More,
+    /// A rebuilt dev app asks for more (rebuild R6): `cli` carries (count, first line). The app
+    /// keeps running with what was allowed; the title counts the new things.
+    MoreBuild,
     /// Two or more adopted apps wait for their first OK: one header, one dialog (UX cut 3).
     FirstRun,
 }
@@ -1074,6 +1077,14 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
                 format!("Its update asks for {n} new things, like “{first}”. They stay off until you allow them, so apps that ask for them are told no.")
             };
             (format!("{name}'s update asks for more"), body, NOT_NOW)
+        }
+        HeaderKind::MoreBuild => {
+            let (n, _) = cli.unwrap_or((0, ""));
+            (
+                hideout_supervisor::words::build_asks_for_more(name, n),
+                hideout_supervisor::words::RUNS_WITH_WHAT_YOU_ALLOWED.into(),
+                NOT_NOW,
+            )
         }
         HeaderKind::FirstRun => (
             first_run_title(cli.map_or(0, |c| c.0)),
