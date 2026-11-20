@@ -4,6 +4,7 @@
 //! nothing outside the hub's own `modules\<id>` is deleted, and adopting it again asks again.
 //! Window-free; the "install" is a fake exe in a temp folder.
 
+use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 
 use hideout_registry::keyboard::canonical_path;
@@ -211,6 +212,7 @@ fn a_hub_installed_module_loses_only_its_own_folder_under_modules() {
 /// A junction (no admin needed), made with the shell.
 fn junction(link: &Path, target: &Path) {
     let out = std::process::Command::new("cmd")
+        .creation_flags(0x0800_0000)
         .args(["/c", "mklink", "/J"])
         .arg(link)
         .arg(target)

@@ -2,6 +2,7 @@
 //! Dev folders (trust model, dev mode): an app inside a folder the user marked keeps its grants
 //! over a rebuild; nothing else does. Window-free.
 
+use std::os::windows::process::CommandExt as _;
 use std::path::PathBuf;
 
 use hideout_registry::dev_folder::{clear_tree_cache, path_within, DEV_ATTESTED_BY};
@@ -289,6 +290,7 @@ fn a_case_variant_is_inside_and_a_shared_prefix_is_not() {
 /// Gives Everyone (S-1-1-0) `rights` on `dir` through icacls (`"(OI)(CI)M"` or `"(W)"`).
 fn grant_everyone(dir: &std::path::Path, rights: &str) {
     let st = std::process::Command::new("icacls")
+        .creation_flags(0x0800_0000)
         .arg(dir)
         .arg("/grant")
         .arg(format!("*S-1-1-0:{rights}"))
@@ -570,6 +572,7 @@ fn a_conditional_allow_ace_counts_as_write() {
         dir.display()
     );
     let out = std::process::Command::new("powershell")
+        .creation_flags(0x0800_0000)
         .args(["-NoProfile", "-Command", &script])
         .output()
         .unwrap();
@@ -773,6 +776,7 @@ fn a_hand_edited_removal_ends_the_enrolment_and_re_listing_needs_an_allow() {
 fn junction(link: &std::path::Path, target: &std::path::Path) {
     let plain = |p: &std::path::Path| p.display().to_string().replace('/', "\\");
     let st = std::process::Command::new("cmd")
+        .creation_flags(0x0800_0000)
         .args(["/C", "mklink", "/J"])
         .arg(plain(link))
         .arg(plain(target))
@@ -831,6 +835,7 @@ fn an_8_3_short_name_or_other_case_is_the_same_folder_not_another_one() {
     // The short spelling (when the volume makes one) canonicalizes back to the long one; a raw
     // short spelling never matches by text.
     let out = std::process::Command::new("cmd")
+        .creation_flags(0x0800_0000)
         .args(["/C", "for", "%I", "in"])
         .arg(format!("({})", f.exe.display()))
         .args(["do", "@echo", "%~sI"])
@@ -1208,6 +1213,7 @@ mod settings {
         };
         // Raw OsStr arguments: `junction` would turn the name lossy and point at nothing.
         let st = std::process::Command::new("cmd")
+            .creation_flags(0x0800_0000)
             .args(["/C", "mklink", "/J"])
             .arg(back(&link))
             .arg(back(&bad))
@@ -1322,6 +1328,7 @@ fn a_writable_link_inside_the_tree_is_refused_even_when_it_leads_inside() {
     assert!(f.reg.dev_folder_of(ID).is_some(), "private link is fine");
     // /L: the link's own ACL, not the target's.
     let st = std::process::Command::new("icacls")
+        .creation_flags(0x0800_0000)
         .arg(&link)
         .args(["/grant", "*S-1-1-0:(W)", "/L"])
         .output()

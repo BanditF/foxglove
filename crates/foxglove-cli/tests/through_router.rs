@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
+use std::os::windows::process::CommandExt as _;
 use std::sync::mpsc;
 
 use hideout_contract::capability::Holder;
@@ -83,6 +84,7 @@ fn status_works_through_the_router() {
     let pipe = format!(r"\\.\pipe\hideout-test-{}", std::process::id());
     hub.serve_pipe(&pipe).unwrap();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_foxglove-cli"))
+        .creation_flags(0x0800_0000)
         .arg("status")
         .env("FOXGLOVE_PIPE", &pipe)
         .output()

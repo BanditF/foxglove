@@ -6,6 +6,7 @@
 
 mod common;
 
+use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -118,6 +119,7 @@ fn a_junction_retargeted_after_the_pin_still_starts_the_pinned_file() {
     std::fs::write(b_dir.join("foxglove.exe"), other).unwrap();
     let mklink = |target: &Path| {
         std::process::Command::new("cmd")
+            .creation_flags(0x0800_0000)
             .args(["/c", "mklink", "/J"])
             .arg(&link)
             .arg(target)
@@ -136,6 +138,7 @@ fn a_junction_retargeted_after_the_pin_still_starts_the_pinned_file() {
         if stage == "pinned" {
             let _ = std::fs::remove_dir(&l);
             let _ = std::process::Command::new("cmd")
+                .creation_flags(0x0800_0000)
                 .args(["/c", "mklink", "/J"])
                 .arg(&l)
                 .arg(&bd)

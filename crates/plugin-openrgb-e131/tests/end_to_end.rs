@@ -18,6 +18,11 @@ fn port() -> u16 {
 
 fn send(seq: u8, r: u8, g: u8, b: u8, stop: bool) {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_openrgb-e131"));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
     cmd.args([
         "--send-test",
         &r.to_string(),

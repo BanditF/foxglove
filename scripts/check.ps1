@@ -61,6 +61,13 @@ try {
     $start = Get-Date
     $rustRelevant = Test-RustRelevant
     if (-not $rustRelevant) { Write-Host 'Docs/python-only change: Rust, firmware and node steps skipped (FOXGLOVE_FULL_GATE=1 runs them).' -ForegroundColor Yellow }
+    # Safety (2026-11-20): the gate never opens a window. Tests that would are #[ignore]d and only run on
+    # purpose (cargo test -- --ignored, FOXGLOVE_QUIET_DESKTOP=1, quiet desktop); this gate never passes
+    # --ignored / --include-ignored, and clears the opt-in variable so a stray shell setting cannot arm them.
+    Remove-Item Env:FOXGLOVE_QUIET_DESKTOP -ErrorAction SilentlyContinue
+    # Source lint, runs first and needs no build: no test may create a window, take focus or start a visible
+    # console unless it is #[ignore]d or vetted in scripts/window_tests_allowlist.txt.
+    Step 'lint: no window-creating tests' { python scripts/check_window_tests.py --self-test; if (!$LASTEXITCODE) { python scripts/check_window_tests.py } }
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
     # The recurring ops scripts (#949) on fake inputs; window-free, no network.
     Step 'scripts: ops tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-ops.ps1 }
