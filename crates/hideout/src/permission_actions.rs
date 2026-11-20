@@ -574,7 +574,7 @@ impl PermUi {
     }
 
     /// Whether a verified standalone copy of `id` is open now (an unsure case is not one).
-    fn copy_open(&self, id: &str) -> bool {
+    pub(crate) fn copy_open(&self, id: &str) -> bool {
         self.standalone
             .as_ref()
             .is_some_and(|s| s.seen(id) == crate::handover::Seen::Standalone)
@@ -615,7 +615,7 @@ impl PermUi {
     }
 
     /// The copy stays: a note with Start again, nothing started.
-    fn stays(&mut self, id: &str) {
+    pub(crate) fn stays(&mut self, id: &str) {
         let name = self
             .entries
             .iter()

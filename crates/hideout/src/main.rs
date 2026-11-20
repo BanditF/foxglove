@@ -380,9 +380,9 @@ fn main() {
             .map(|h| keyboard_actions::GrantUi::new(&paths.root, h)),
         // The module permission dialog, header lines and sections (#1178): same condition.
         started._router.clone().map(|h| {
-            permission_actions::PermUi::new(&paths.root, h)
+            permission_actions::PermUi::new(&paths.root, h.clone())
                 .with_queue(grant_queue::shared().clone())
-                .with_standalone(handover::foxglove(&paths.root, keyboard_actions::MODULE))
+                .with_standalone(handover::foxglove(&paths.root, keyboard_actions::MODULE, h))
         }),
         // The Found card and Add an app…: the same hub only (adding goes through its dialog).
         started

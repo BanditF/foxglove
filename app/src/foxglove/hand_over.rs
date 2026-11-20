@@ -107,22 +107,43 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 /// How long the answer gets to leave before the app starts handing back (the exit follows it).
 const REPLY_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// The hub's request at the pipe: the answer goes out, then the app hands back and exits as the
-/// tray's Quit does. Anything but a verified hub is refused with nothing changed.
+/// Starts the quit once (the first caller wins; a second verified request while quitting does
+/// nothing): `quit` runs on its own thread after [`REPLY_GRACE`], so the answer leaves first.
+/// False when a quit was already under way.
+fn begin_quit(
+    flag: &AtomicBool,
+    grace: std::time::Duration,
+    quit: impl FnOnce() + Send + 'static,
+) -> bool {
+    if flag.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("hand-over-quit".into())
+        .spawn(move || {
+            std::thread::sleep(grace);
+            quit()
+        });
+    if spawned.is_err() {
+        // No thread to quit on: the request is refused, so a later one can try again.
+        flag.store(false, Ordering::SeqCst);
+    }
+    spawned.is_ok()
+}
+
+/// The hub's request at the pipe: the answer goes out, then the app quits through the same
+/// function the tray's Quit uses (`quit::quit_app`: hand back within 4 s, then exit). Anything
+/// but a verified hub is refused with nothing changed.
 pub fn handle() -> Result<serde_json::Value, foxglove_plugin_api::rpc::Error> {
     use foxglove_plugin_api::rpc::{code, Error};
     match verdict_now() {
         // A second verified request while the first is quitting changes nothing.
-        Verdict::Quit if QUITTING.swap(true, Ordering::SeqCst) => Ok(serde_json::json!({})),
         Verdict::Quit => {
-            super::app_log::line("Foxglove: Hideout asked this copy to quit; handing back");
-            let _ = std::thread::Builder::new()
-                .name("hand-over-quit".into())
-                .spawn(|| {
-                    std::thread::sleep(REPLY_GRACE);
-                    super::quit::hand_back("Hideout took over");
-                    std::process::exit(0)
-                });
+            if begin_quit(&QUITTING, REPLY_GRACE, || {
+                super::quit::quit_app("Hideout took over")
+            }) {
+                super::app_log::line("Foxglove: Hideout asked this copy to quit; handing back");
+            }
             Ok(serde_json::json!({}))
         }
         Verdict::Stay(why) => {
@@ -166,6 +187,39 @@ mod tests {
             Verdict::Stay(why) => assert!(why.contains("evil.exe"), "{why}"),
             v => panic!("{v:?}"),
         }
+    }
+
+    #[test]
+    fn a_verified_request_quits_once_through_the_given_quit() {
+        let flag = AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let again = tx.clone();
+        assert!(begin_quit(&flag, std::time::Duration::ZERO, move || {
+            tx.send("quit").unwrap()
+        }));
+        // A second request while quitting starts nothing.
+        assert!(!begin_quit(&flag, std::time::Duration::ZERO, move || {
+            again.send("second").unwrap()
+        }));
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok("quit")
+        );
+        assert!(rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err());
+    }
+
+    #[test]
+    fn the_quit_waits_for_the_answer_to_leave() {
+        let flag = AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t = std::time::Instant::now();
+        let grace = std::time::Duration::from_millis(150);
+        assert!(begin_quit(&flag, grace, move || tx.send(()).unwrap()));
+        assert!(rx.try_recv().is_err(), "quit before the grace");
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(t.elapsed() >= grace);
     }
 
     #[test]
