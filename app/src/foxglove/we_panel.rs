@@ -118,6 +118,7 @@ pub const DISCONNECT_ALL_NODE: &str = "we-disconnect-all";
 pub const ALLOW_LABEL: &str = "Allow";
 pub const HEADER: &str = "Wallpapers that want your keyboard";
 pub const RECONNECT_LABEL: &str = "Reconnect";
+pub const RECONNECT_ALL_LABEL: &str = "Reconnect all wallpapers";
 pub const DISCONNECT_ALL: &str = "Disconnect all wallpapers";
 /// What the hub shows when the module refuses a flip (the raw error goes to the log only).
 pub const REFUSED: &str = "Couldn't change this. Try again.";
@@ -446,8 +447,14 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Act> {
     let mut act = None;
     if let Some(l) = &v.line {
         ui.weak(&l.text);
-        if l.reconnect && ui.button(RECONNECT_LABEL).clicked() {
-            act = Some(Act::Reconnect);
+        if l.reconnect {
+            let b = ui.button(RECONNECT_LABEL);
+            b.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, RECONNECT_ALL_LABEL)
+            });
+            if b.on_hover_text(RECONNECT_ALL_LABEL).clicked() {
+                act = Some(Act::Reconnect);
+            }
         }
     }
     if !v.rows.is_empty() {
@@ -458,9 +465,18 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Act> {
         ui.add_space(4.0);
         let mut on = r.allowed;
         ui.horizontal(|ui| {
-            let c = ui
-                .checkbox(&mut on, &r.title)
-                .on_hover_text(format!("Let {} use your keyboard", r.title));
+            let name = format!("Let {} use your keyboard", r.title);
+            let c = ui.checkbox(&mut on, &r.title).on_hover_text(&name);
+            // The accessible name is the plan's, and the status and what it sees ride along.
+            c.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, r.allowed, &name)
+            });
+            let said = match &r.status {
+                Some((word, _)) => format!("{word}. {}", r.capability),
+                None => r.capability.clone(),
+            };
+            ui.ctx()
+                .accesskit_node_builder(c.id, |n| n.set_description(said));
             if c.changed() {
                 if let Some(k) = v.keys.get(r.slot) {
                     act = Some(Act::Allow(k.clone(), on));
@@ -470,28 +486,26 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Act> {
                 ui.label(egui::RichText::new(word).color(tone(t)));
             }
         });
+        // What it sees, then why it isn't connected, then the button that helps.
+        ui.weak(&r.capability);
+        if let Some(h) = &r.help {
+            ui.weak(h);
+        }
         if r.reconnect {
-            if let Some(h) = &r.help {
-                ui.weak(h);
-            }
-            if ui
-                .button(RECONNECT_LABEL)
-                .on_hover_text(format!("Reconnect {}", r.title))
-                .clicked()
-            {
+            let name = format!("Reconnect {}", r.title);
+            let b = ui.button(RECONNECT_LABEL);
+            b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+            if b.on_hover_text(&name).clicked() {
                 act = Some(Act::Reconnect);
-            }
-            ui.weak(&r.capability);
-        } else {
-            ui.weak(&r.capability);
-            if let Some(h) = &r.help {
-                ui.weak(h);
             }
         }
     }
-    ui.add_space(4.0);
-    if v.disconnect_all && ui.button(DISCONNECT_ALL).clicked() {
-        act = Some(Act::DisconnectAll);
+    if v.disconnect_all {
+        ui.add_space(8.0);
+        ui.separator();
+        if ui.button(DISCONNECT_ALL).clicked() {
+            act = Some(Act::DisconnectAll);
+        }
     }
     act
 }
@@ -511,11 +525,36 @@ pub fn run(act: Act) -> Result<(), String> {
     }
 }
 
-/// The card's list from what Foxglove knows now. Wallpaper Engine counts as running (the list
-/// must not scan processes every frame; a wallpaper that isn't on screen says so itself).
-pub fn settings_card(ui: &mut egui::Ui) -> Option<String> {
-    let v = view(&inputs_now(true));
-    draw(ui, &v).and_then(|a| run(a).err())
+/// Is Wallpaper Engine running, for the card. A process snapshot is read when the card opens
+/// (not drawn in the last second) and after each click: never per frame and never on a timer.
+fn engine_running_for_card(after_click: bool) -> bool {
+    static SEEN: std::sync::Mutex<Option<(std::time::Instant, bool)>> = std::sync::Mutex::new(None);
+    let mut s = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    let fresh =
+        matches!(*s, Some((at, _)) if now.duration_since(at) < std::time::Duration::from_secs(1));
+    let running = match *s {
+        Some((_, r)) if fresh && !after_click => r,
+        _ => {
+            #[cfg(not(test))]
+            let r = super::wallpaper_engine::running_now();
+            #[cfg(test)]
+            let r = true;
+            r
+        }
+    };
+    *s = Some((now, running));
+    running
+}
+
+/// The card's list from what Foxglove knows now; `Some` is what a click did.
+pub fn settings_card(ui: &mut egui::Ui) -> Option<Result<(), String>> {
+    let v = view(&inputs_now(engine_running_for_card(false)));
+    let r = draw(ui, &v).map(run);
+    if r.is_some() {
+        engine_running_for_card(true);
+    }
+    r
 }
 
 /// What a click or a switch on `node` means (S5b's router uses it).
@@ -972,8 +1011,187 @@ mod tests {
 
     /// S5c: no string the app shows tells the user to paste a pairing token (the Calibrate
     /// copy-paste is another feature, exempt by path; log lines start with "Foxglove:").
+    /// The code above a file's test module: cut at the `#[cfg(test)]` that comes right before
+    /// `mod ...`, not at the first one (a single test-only fn would hide the rest).
+    fn non_test_code(text: &str) -> String {
+        let text = text.replace("\r\n", "\n");
+        match text.find("#[cfg(test)]\nmod ") {
+            Some(i) => text[..i].to_string(),
+            None => text,
+        }
+    }
+
+    /// Words a user must never read (plan 3.2): paste, pair, token, ticket in any form.
+    fn forbidden_word(lit: &str) -> bool {
+        lit.to_lowercase()
+            .split(|c: char| !c.is_alphabetic())
+            .any(|w| {
+                matches!(
+                    w,
+                    "paste"
+                        | "pasted"
+                        | "pastes"
+                        | "pasting"
+                        | "pair"
+                        | "pairs"
+                        | "paired"
+                        | "pairing"
+                        | "token"
+                        | "tokens"
+                        | "ticket"
+                        | "tickets"
+                )
+            })
+    }
+
+    /// Every string literal in `code` that holds a forbidden word, with its line. Log lines
+    /// (starting "Foxglove:") are not UI. Handles escapes, continued literals, raw strings,
+    /// char literals and comments.
+    fn forbidden_literals(code: &str) -> Vec<(usize, String)> {
+        let c: Vec<char> = code.chars().collect();
+        let (mut i, mut line, mut hits) = (0, 1, Vec::new());
+        while i < c.len() {
+            let raw_start = c[i] == 'r'
+                && (i == 0 || !(c[i - 1].is_alphanumeric() || c[i - 1] == '_'))
+                && matches!(c.get(i + 1), Some('"') | Some('#'));
+            if c[i] == '\n' {
+                line += 1;
+            } else if c[i] == '/' && c.get(i + 1) == Some(&'/') {
+                while i < c.len() && c[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            } else if c[i] == '\'' {
+                // 'x' or '\x' is a char literal; a lifetime has no closing quote.
+                if c.get(i + 1) == Some(&'\\') {
+                    i += 3;
+                } else if c.get(i + 2) == Some(&'\'') {
+                    i += 2;
+                }
+            } else if c[i] == '"' || raw_start {
+                let raw = c[i] == 'r';
+                let mut j = i;
+                let mut hashes = 0;
+                if raw {
+                    j += 1;
+                    while c.get(j) == Some(&'#') {
+                        hashes += 1;
+                        j += 1;
+                    }
+                    if c.get(j) != Some(&'"') {
+                        i += 1;
+                        continue;
+                    }
+                }
+                let start_line = line;
+                j += 1;
+                let mut lit = String::new();
+                while j < c.len() {
+                    if !raw && c[j] == '\\' {
+                        if c.get(j + 1) == Some(&'\n') {
+                            line += 1;
+                            // A continued line: the next line's indent is skipped.
+                            lit.push(' ');
+                        }
+                        j += 2;
+                        continue;
+                    }
+                    if c[j] == '"' && (0..hashes).all(|k| c.get(j + 1 + k) == Some(&'#')) {
+                        break;
+                    }
+                    if c[j] == '\n' {
+                        line += 1;
+                    }
+                    lit.push(c[j]);
+                    j += 1;
+                }
+                if !lit.starts_with("Foxglove:") && forbidden_word(&lit) {
+                    hits.push((start_line, lit));
+                }
+                i = j + 1 + hashes;
+                continue;
+            }
+            i += 1;
+        }
+        hits
+    }
+
+    /// Screen readers get the plan's names: "Let {T} use your keyboard" for the switch, "Reconnect
+    /// {T}" for a row's button, "Reconnect all wallpapers" for the section's.
     #[test]
-    fn no_ui_string_talks_of_pasting_or_a_pairing_token() {
+    fn the_card_gives_screen_readers_the_plans_names() {
+        let mut i = Inputs {
+            feed_on: true,
+            engine_running: true,
+            asks: vec![
+                ask("hud", "Bandit HUD", true, true),
+                ask("courier", "Courier", true, true),
+            ],
+            links: links(&[("hud", Link::Connected), ("courier", Link::Capped)]),
+            hold: None,
+            slots: Vec::new(),
+        };
+        i.links.held = false;
+        let mut v = view(&i);
+        v.line = Some(Line {
+            text: "Held.".into(),
+            reconnect: true,
+        });
+        let ctx = crate::foxglove::theme::headless::ctx(crate::foxglove::theme::Choice::Dark);
+        ctx.enable_accesskit();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| {
+            draw(ui, &v);
+        });
+        out.textures_delta.clear();
+        let tree = out.platform_output.accesskit_update.expect("a tree");
+        let names: Vec<String> = tree
+            .nodes
+            .iter()
+            .filter_map(|(_, n)| n.label().map(str::to_owned))
+            .collect();
+        for want in [
+            "Let Bandit HUD use your keyboard",
+            "Let Courier use your keyboard",
+            "Reconnect Courier",
+            "Reconnect all wallpapers",
+        ] {
+            assert!(names.iter().any(|n| n == want), "{want} in {names:#?}");
+        }
+        let described = tree
+            .nodes
+            .iter()
+            .any(|(_, n)| n.description().is_some_and(|d| d.starts_with("Connected.")));
+        assert!(described, "the status rides on the switch");
+    }
+
+    #[test]
+    fn the_guard_sees_what_it_should() {
+        // The old paste line, back in a card, is caught even after a test-only fn.
+        let src = "#[cfg(test)]\nfn handshake() {}\nfn group() { ui.weak(\"Paste it into the wallpaper.\"); }\n#[cfg(test)]\nmod tests { fn t() { \"token\"; } }\n";
+        let code = non_test_code(src);
+        assert!(code.contains("fn group"), "{code}");
+        assert!(!code.contains("mod tests"));
+        assert_eq!(forbidden_literals(&code).len(), 1);
+        // Whole words, continuation lines and log lines.
+        assert!(forbidden_word("a paired wallpaper"));
+        assert!(forbidden_word("Pasted."));
+        assert!(!forbidden_word("a pastel colour"));
+        let two = "let a = \"first \\\n    pairing token\";";
+        assert_eq!(forbidden_literals(two).len(), 1);
+        let log = "eprintln!(\"Foxglove: live feed: new pairing token\");";
+        assert!(forbidden_literals(log).is_empty());
+        assert!(forbidden_literals("// \"paste\"\nlet c = '\"'; let n = 1;").is_empty());
+    }
+
+    #[test]
+    fn no_ui_string_talks_of_pasting_pairing_tokens_or_tickets() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for e in std::fs::read_dir(dir).unwrap().flatten() {
                 let p = e.path();
@@ -990,29 +1208,37 @@ mod tests {
             &mut files,
         );
         let mut hits = Vec::new();
+        let mut card_seen = false;
         for f in files {
             let name = f.file_name().unwrap().to_string_lossy().to_string();
             if name.starts_with("calibrate") || name == "tests.rs" || name == "theme_preview.rs" {
                 continue;
             }
-            let text = std::fs::read_to_string(&f).unwrap();
-            // Only the code above the file's test module.
-            let code = text.split("#[cfg(test)]").next().unwrap();
-            for (n, line) in code.lines().enumerate() {
-                let t = line.trim_start();
-                if t.starts_with("//") {
+            let code = non_test_code(&std::fs::read_to_string(&f).unwrap());
+            // Wire words, log text, secret masking and Bluetooth pairing are not the panel's.
+            let exempt = |lit: &str| {
+                matches!(
+                    (name.as_str(), lit.split_whitespace().next().unwrap_or("")),
+                    ("app_log.rs", "token")
+                        | ("diagnostics.rs", "2026-10-25")
+                        | ("live_feed.rs", "token")
+                        | ("live_wire.rs", "Tickets({}" | "wrong" | "live" | "token")
+                        | ("wallpaper_sync.rs", "foxglove_ticket")
+                        | ("consumer.rs" | "keyboard.rs", "Paste")
+                        | ("zmk_rpc.rs", "Failed")
+                )
+            };
+            if name == "live_feed.rs" {
+                card_seen = code.contains("pub fn group(");
+            }
+            for (n, lit) in forbidden_literals(&code) {
+                if exempt(&lit) {
                     continue;
                 }
-                for lit in line.split('"').skip(1).step_by(2) {
-                    let low = lit.to_lowercase();
-                    if !lit.starts_with("Foxglove:")
-                        && (low.contains("paste ") || low.contains("pairing token"))
-                    {
-                        hits.push(format!("{name}:{}: {lit}", n + 1));
-                    }
-                }
+                hits.push(format!("{name}:{n}: {lit}"));
             }
         }
+        assert!(card_seen, "the card's code in live_feed.rs is scanned");
         assert!(hits.is_empty(), "{hits:#?}");
     }
 

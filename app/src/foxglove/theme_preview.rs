@@ -4077,20 +4077,61 @@ fn live_wallpaper_card_allow_list_renders() {
         hold: None,
         ..list.clone()
     };
+    let none = Inputs {
+        asks: Vec::new(),
+        links: Links::default(),
+        hold: None,
+        ..list.clone()
+    };
+    let engine_off = Inputs {
+        engine_running: false,
+        links: Links::default(),
+        hold: None,
+        ..list.clone()
+    };
+    let old_way = Inputs {
+        asks: Vec::new(),
+        links: Links {
+            old_way: 2,
+            ..Links::default()
+        },
+        hold: None,
+        ..list.clone()
+    };
+    let refused = "Couldn't change this. Try again.";
+    // Following the focus, as the real card's keyboard row does.
+    let follow = crate::foxglove::focus_pins::PinView {
+        pinned: None,
+        keyboards: vec![
+            ("corne".to_string(), "Eyelash Corne".to_string(), true),
+            ("k5".to_string(), "K5 Pro".to_string(), true),
+        ],
+        limited: false,
+    };
+    crate::foxglove::focus_pins::PREVIEW.with_borrow_mut(|p| {
+        *p = Some((follow.clone(), follow.clone()));
+    });
     for (choice, theme, ground) in [
         (Choice::Dark, "dark", DARK.ground),
         (Choice::Light, "light", LIGHT.ground),
     ] {
         for (width, size) in [(720.0f32, "wide"), (360.0, "narrow")] {
-            for (case, inputs, hub) in [
-                ("list", &list, false),
-                ("held", &held, false),
-                ("hub", &list, true),
+            for (case, inputs, hub, error) in [
+                ("list", &list, false, None),
+                ("held", &held, false, None),
+                ("none", &none, false, None),
+                ("engine-off", &engine_off, false, None),
+                ("old-way", &old_way, false, None),
+                ("error", &list, false, Some(refused)),
+                ("hub", &list, true, None),
             ] {
                 let ctx = preview_ctx();
                 crate::foxglove::theme::apply_choice(&ctx, choice);
                 let v = we_panel::view(inputs);
-                let img = render(&ctx, egui::vec2(width + 40.0, 560.0), ground, |ctx| {
+                // Tall enough that the card's bottom (Disconnect all, keyboard row, notify row,
+                // status line) is in the picture at every width.
+                let height = if width < 400.0 { 1180.0 } else { 760.0 };
+                let img = render(&ctx, egui::vec2(width + 40.0, height), ground, |ctx| {
                     egui::Area::new(egui::Id::new("live-card"))
                         .fixed_pos(egui::pos2(20.0, 14.0))
                         .show(ctx, |ui| {
@@ -4103,9 +4144,15 @@ fn live_wallpaper_card_allow_list_renders() {
                                 } else {
                                     we_panel::draw(ui, &v);
                                 }
+                                crate::foxglove::focus_pins::feed_row(ui);
                                 notify_row(ui, &mut true);
                                 ui.weak("Listening on 127.0.0.1:8768: 1 wallpaper connected");
+                                if let Some(e) = error {
+                                    ui.colored_label(crate::foxglove::theme::palette(ui).danger, e);
+                                }
                             });
+                            // Where the card ends, so the render can prove nothing is cut off.
+                            ui.label("END");
                         });
                 });
                 keep(&format!("settings-live-{case}-{size}-{theme}.png"), &img);
@@ -4114,9 +4161,18 @@ fn live_wallpaper_card_allow_list_renders() {
                     .filter(|p| p.0[..3] == [ground.r(), ground.g(), ground.b()])
                     .count();
                 assert!(n > 1000, "{theme} {size} {case}: the theme's ground shows");
+                // The last rows of the picture are bare ground: the card ended inside it.
+                let last = img.height() - 1;
+                assert!(
+                    (0..img.width())
+                        .all(|x| img.get_pixel(x, last).0[..3]
+                            == [ground.r(), ground.g(), ground.b()]),
+                    "{theme} {size} {case}: the card is cut off at the bottom"
+                );
             }
         }
     }
+    crate::foxglove::focus_pins::PREVIEW.with_borrow_mut(|p| *p = None);
 }
 
 /// #801: "Keyboard: Follow focus ▾" in the layer overlay's card and the Live wallpaper card, dark

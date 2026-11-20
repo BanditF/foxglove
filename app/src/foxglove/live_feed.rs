@@ -535,7 +535,7 @@ fn refusal_rows(warns: bool) -> Vec<super::health::HealthRow> {
     }
     vec![super::health::HealthRow::new(
         "live_feed",
-        "Live wallpaper pairing",
+        "Live wallpaper",
         super::health::Level::Warn,
         "a wallpaper couldn't connect",
     )
@@ -646,6 +646,8 @@ pub fn allow_wallpaper(key: &str, on: bool) -> Result<(), String> {
 
 fn allow_with(key: &str, on: bool, update: impl Updater) -> Result<(), String> {
     const FAILED: &str = "Couldn't change this. Try again.";
+    // Trying again can't help here: say what does.
+    const FULL: &str = "That is as many wallpapers as can be allowed. Turn one off first.";
     if key.is_empty() || key.len() > 1024 {
         return Err(FAILED.into());
     }
@@ -665,7 +667,7 @@ fn allow_with(key: &str, on: bool, update: impl Updater) -> Result<(), String> {
     })
     .map_err(|_| FAILED.to_string())?;
     if full {
-        return Err(FAILED.into());
+        return Err(FULL.into());
     }
     apply_allowed(&s);
     super::we_panel::changed();
@@ -1797,7 +1799,7 @@ fn turned(
     if !(on && s.token.is_empty()) || s.ticket_verified {
         return Ok((s, None));
     }
-    s.token = wire::new_token().ok_or("no random source for the pairing token")?;
+    s.token = wire::new_token().ok_or("Couldn't turn this on. Try again.")?;
     // A feed turned on fresh never worked before the allow list: nothing is seeded for it.
     s.allow_seeded = true;
     let why = if saved {
@@ -1937,7 +1939,7 @@ pub const IN_HIDEOUT: &str =
 
 /// The notification switch's label and hover.
 pub const NOTIFY_LABEL: &str = "Show notifications on the wallpaper when it's on screen";
-pub const NOTIFY_HOVER: &str = "Foxglove's own notifications, such as a low battery, show on a paired wallpaper that can draw them. When none is on screen, or it doesn't answer within 2 seconds, or a full-screen game, a locked PC or a pause holds the feed, they show as Windows notifications instead.";
+pub const NOTIFY_HOVER: &str = "Foxglove's own notifications, such as a low battery, show on a wallpaper you allow that can draw them. When none is on screen, or it doesn't answer within 2 seconds, or a full-screen game, a locked PC or a pause holds the feed, they show as Windows notifications instead.";
 
 /// "Show notifications on the wallpaper" changed.
 fn set_notify(on: bool) -> Result<(), String> {
@@ -1949,17 +1951,30 @@ pub fn notify_row(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     ui.checkbox(on, NOTIFY_LABEL).on_hover_text(NOTIFY_HOVER)
 }
 
+/// The last refused change on the card, kept until the next change is made (a refusal that
+/// shows for one frame can't be read). It is not the status line: that says what the feed does.
+static CARD_ERROR: Mutex<String> = Mutex::new(String::new());
+
+fn card_error() -> String {
+    CARD_ERROR.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn set_card_error(e: Option<String>) {
+    *CARD_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = e.unwrap_or_default();
+}
+
 /// The settings card.
 pub fn group(ui: &mut egui::Ui) {
     super::settings_ui::section(ui, "Live wallpaper", |ui| {
         let s = settings();
         let mut on = s.enabled;
-        let mut error = None;
+        // What this frame's change did: `Some(None)` worked, `Some(Some(e))` was refused.
+        let mut outcome: Option<Option<String>> = None;
         if ui
             .checkbox(&mut on, "Live keyboard feed for wallpapers")
             .changed()
         {
-            error = set_enabled(on).err();
+            outcome = Some(set_enabled(on).err());
         }
         ui.weak(EXPLAINER);
         // What the store holds: a refused change shows no setting it didn't save (#741).
@@ -1969,14 +1984,14 @@ pub fn group(ui: &mut egui::Ui) {
             // hub has the module, else the same list here.
             if super::hub_link::module_mode() {
                 ui.weak(IN_HIDEOUT);
-            } else if let Some(e) = super::we_panel::settings_card(ui) {
-                error = Some(e);
+            } else if let Some(r) = super::we_panel::settings_card(ui) {
+                outcome = Some(r.err());
             }
             // #801: which keyboard the wallpaper shows, the focus or a pin.
             super::focus_pins::feed_row(ui);
             let mut notify = s.notify;
             if notify_row(ui, &mut notify).changed() {
-                error = set_notify(notify).err();
+                outcome = Some(set_notify(notify).err());
             }
             let status = STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
             let n = CONNECTED.load(Ordering::Relaxed);
@@ -1989,8 +2004,11 @@ pub fn group(ui: &mut egui::Ui) {
                 ui.weak(line);
             }
         }
-        if let Some(e) = error {
-            set_status(e.clone());
+        if let Some(e) = outcome {
+            set_card_error(e);
+        }
+        let e = card_error();
+        if !e.is_empty() {
             ui.colored_label(super::theme::palette(ui).danger, e);
         }
     });
@@ -3423,7 +3441,10 @@ mod tests {
             allow_with(&format!("k{n}"), true, upd).unwrap();
         }
         let e = allow_with("one-too-many", true, upd).unwrap_err();
-        assert_eq!(e, "Couldn't change this. Try again.");
+        assert_eq!(
+            e,
+            "That is as many wallpapers as can be allowed. Turn one off first."
+        );
         assert_eq!(saved.borrow().allowed.len(), MAX_ALLOWED);
         let e = allow_with("x", true, |_: &mut dyn FnMut(&mut LiveSettings)| {
             Err("[live_wallpaper] token = \"secret\"".to_string())
