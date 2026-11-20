@@ -39,6 +39,21 @@ fn temp_dir(name: &str) -> PathBuf {
 }
 
 fn hub_in(dir: &std::path::Path, feed: Option<Box<dyn PanelFeed>>) -> Hub {
+    hub_with_pages(
+        dir,
+        feed,
+        vec![
+            Box::new(FakePage("modules", "Modules")),
+            Box::new(FakePage("settings", "Settings")),
+        ],
+    )
+}
+
+fn hub_with_pages(
+    dir: &std::path::Path,
+    feed: Option<Box<dyn PanelFeed>>,
+    pages: Vec<Box<dyn Page>>,
+) -> Hub {
     let root = dir.as_os_str().to_owned();
     let paths = HubPaths::resolve(|k| (k == "HIDEOUT_CONFIG_DIR").then(|| root.clone())).unwrap();
     let shared = Arc::new(Shared {
@@ -51,10 +66,6 @@ fn hub_in(dir: &std::path::Path, feed: Option<Box<dyn PanelFeed>>) -> Hub {
         start_normally: None,
         quit: QuitAsk::default(),
     });
-    let pages: Vec<Box<dyn Page>> = vec![
-        Box::new(FakePage("modules", "Modules")),
-        Box::new(FakePage("settings", "Settings")),
-    ];
     Hub::new(shared, pages, feed, None)
 }
 
@@ -4655,4 +4666,63 @@ fn without_the_group_box_each_sensitive_item_keeps_its_own_i_understand() {
     d.set_group_ack(true);
     assert_eq!(d.count(), 17, "no group box, no group confirm");
     assert!(!d.group_understood());
+}
+
+/// A page that hands the shell words to announce (a rebuild restart finishing, say).
+struct SaysPage(Arc<Mutex<Vec<String>>>);
+
+impl Page for SaysPage {
+    fn id(&self) -> &str {
+        "modules"
+    }
+    fn title(&self) -> &str {
+        "Modules"
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, _t: &Tokens) {
+        ui.label("A hub page.");
+    }
+    fn take_said(&mut self) -> Vec<String> {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+}
+
+/// The words a page hands over are said once through the polite announcement, and later
+/// frames do not say them again.
+#[test]
+fn a_pages_words_are_announced_once_politely() {
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let dir = temp_dir("page-says");
+    let queue = Arc::new(Mutex::new(Vec::new()));
+    let mut hub = hub_with_pages(&dir, None, vec![Box::new(SaysPage(queue.clone()))]);
+    let _ = frames(&ctx, &mut hub, vec![]);
+    assert!(hub.announce.is_none());
+    queue
+        .lock()
+        .unwrap()
+        .push("Foxglove rebuilt and restarted".into());
+    let said = |out: &egui::FullOutput| -> Vec<egui::accesskit::NodeId> {
+        out.platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|u| u.nodes.iter())
+            .filter(|(_, n)| {
+                n.live() == Some(egui::accesskit::Live::Polite)
+                    && n.label() == Some("Foxglove rebuilt and restarted")
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    let first = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    let second = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    // One node, one id: the screen reader says it when it appears and not again.
+    let (a, b) = (said(&first), said(&second));
+    assert_eq!(a.len(), 1, "one polite node on the first frame");
+    assert_eq!(a, b, "the same node (same id) on the next frame");
+    let n = hub.announce.as_ref().map(|a| a.n);
+    assert!(n.is_some());
+    assert!(queue.lock().unwrap().is_empty());
+    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert_eq!(hub.announce.as_ref().map(|a| a.n), n);
+    let _ = std::fs::remove_dir_all(&dir);
 }

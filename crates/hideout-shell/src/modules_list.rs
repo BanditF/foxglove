@@ -172,7 +172,7 @@ pub struct Row {
     pub version_said: String,
     /// The Dev marker's tooltip and accessible description; None for an app not in a dev folder.
     pub dev_said: Option<String>,
-    /// What a screen reader is told when a rebuild restart finishes (polite); None otherwise.
+    /// What the shell announces once when a rebuild restart finishes; None otherwise.
     pub rebuilt_said: Option<String>,
     /// The state in plain words (never an id).
     pub state: String,
@@ -710,14 +710,9 @@ pub fn page_ui_with_head(
                             if r.removal == Some(Removal::Removing) {
                                 ui.label(RichText::new(REMOVING).color(c(t.text_muted)));
                             } else {
-                                let line = ui.label(RichText::new(&r.state).color(c(state_col)));
-                                // A finished rebuild restart is told once, politely.
-                                if let Some(said) = r.rebuilt_said.clone() {
-                                    ui.ctx().accesskit_node_builder(line.id, |n| {
-                                        n.set_label(said);
-                                        n.set_live(egui::accesskit::Live::Polite);
-                                    });
-                                }
+                                // The visible words are the accessible label; a finished rebuild
+                                // restart is told once through the shell's announcement.
+                                ui.label(RichText::new(&r.state).color(c(state_col)));
                             }
                         });
                         let busy = r.removal == Some(Removal::Removing);

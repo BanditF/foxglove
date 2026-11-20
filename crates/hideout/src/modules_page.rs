@@ -105,6 +105,18 @@ pub struct ModulesPage {
     restarts: hideout_shell::modules_list::Restarts,
     /// The Remove confirm: the row menu asks, only the confirm's Remove removes.
     ask: hideout_shell::modules_list::RemoveAsk,
+    /// Which rebuild restarts were already told, by module id (the fact's value), so a redraw,
+    /// a search or a reopened window doesn't say one twice.
+    told: Told,
+}
+
+/// The announcements the page hands the shell, and what it already told.
+#[derive(Default)]
+struct Told {
+    /// The first frame only learns what is there; a restart from before isn't news.
+    seeded: bool,
+    by_id: std::collections::BTreeMap<String, String>,
+    said: Vec<String>,
 }
 
 /// The Modules page's list as the inventory watch last read it (#1054.1): the watch thread
@@ -446,6 +458,27 @@ impl ModulesPage {
                 row_in(m, &self.installed, facts, left)
             })
             .collect();
+        // A rebuild restart is told once, when its line first appears (absent to set).
+        for r in &rows {
+            let at = r
+                .rebuilt_said
+                .as_ref()
+                .and_then(|_| facts(&format!("module.{}.rebuilt", r.id)))
+                .and_then(|v| v.as_str().map(str::to_string));
+            match (at, r.rebuilt_said.as_ref()) {
+                (Some(at), Some(said)) => {
+                    let new = self.told.by_id.get(&r.id) != Some(&at);
+                    if new && self.told.seeded {
+                        self.told.said.push(said.clone());
+                    }
+                    self.told.by_id.insert(r.id.clone(), at);
+                }
+                _ => {
+                    self.told.by_id.remove(&r.id);
+                }
+            }
+        }
+        self.told.seeded = true;
         // A search's words (#1033): on or off for this round, or not part of it.
         if let Some(s) = self.finder.as_ref().and_then(|f| f.rows()) {
             for r in &mut rows {
@@ -499,15 +532,18 @@ pub fn list(reg: &hideout_registry::Registry) -> Vec<hideout_shell::modules_list
         .inventory
         .modules
         .iter()
-        .map(|(id, m)| hideout_shell::modules_list::Installed {
-            id: id.clone(),
-            // A manifest for a newer hub is named from its head (#1096).
-            name: reg.module_name(id),
-            version: m.version.clone(),
-            enabled: reg.hub.enabled(id),
-            adopted: m.source == hideout_registry::inventory::ADOPTED,
-            dev_folder: reg.dev_folder_of(id),
-            dev: reg.dev_folder_of(id).is_some(),
+        .map(|(id, m)| {
+            let dev_folder = reg.dev_folder_of(id);
+            hideout_shell::modules_list::Installed {
+                id: id.clone(),
+                // A manifest for a newer hub is named from its head (#1096).
+                name: reg.module_name(id),
+                version: m.version.clone(),
+                enabled: reg.hub.enabled(id),
+                adopted: m.source == hideout_registry::inventory::ADOPTED,
+                dev: dev_folder.is_some(),
+                dev_folder,
+            }
         })
         .collect();
     out.sort_by_key(|m| m.name.to_lowercase());
@@ -527,6 +563,10 @@ impl hideout_shell::Page for ModulesPage {
     /// Its own glyph among the hub pages (#953 F4): the module icon, since it lists the modules.
     fn icon(&self) -> &str {
         "module"
+    }
+
+    fn take_said(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.told.said)
     }
 
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
@@ -659,6 +699,7 @@ pub fn pages(
         discover,
         restarts: Default::default(),
         ask: Default::default(),
+        told: Default::default(),
     })]
 }
 
@@ -711,6 +752,7 @@ mod tests {
             discover: None,
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
         };
         let (rows, counting) = page.rows();
         let words: Vec<_> = rows.iter().map(|r| r.state.as_str()).collect();
@@ -749,6 +791,7 @@ mod tests {
             discover: None,
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
             grant: None,
             perm: None,
         };
@@ -859,6 +902,7 @@ mod tests {
             finder: None,
             fresh: None,
             ask: Default::default(),
+            told: Default::default(),
             discover: None,
         };
         page.after_allow(done(Then::Nothing));
@@ -901,6 +945,7 @@ mod tests {
             discover: None,
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -962,6 +1007,7 @@ mod tests {
             discover: None,
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -1019,6 +1065,7 @@ mod tests {
             discover: None,
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -1072,6 +1119,7 @@ mod tests {
             discover: None,
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
         };
         assert!(page.safe_mode());
         let (rows, _) = page.rows();
@@ -1119,6 +1167,7 @@ mod tests {
             safe_by_closes: false,
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -1186,6 +1235,7 @@ mod tests {
             safe_by_closes: false,
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -1235,6 +1285,7 @@ mod tests {
             safe_by_closes: false,
             restarts: Default::default(),
             ask: Default::default(),
+            told: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -1244,5 +1295,60 @@ mod tests {
         page.on_click(Click::AskRemove("m.a".into()));
         page.on_click(Click::Remove("m.a".into()));
         assert_eq!(page.installed.len(), 1);
+    }
+
+    /// A rebuild restart is handed to the shell once: not on the first frame (nothing new),
+    /// once when the fact appears, not again on a redraw, and again after the app left Running.
+    #[test]
+    fn a_rebuild_restart_is_told_once_per_appearance() {
+        use hideout_shell::Page;
+        let facts: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
+        > = Default::default();
+        let f = facts.clone();
+        let mut page = ModulesPage {
+            installed: vec![hideout_shell::modules_list::Installed {
+                id: "m.a".into(),
+                name: "Art".into(),
+                version: "1".into(),
+                enabled: true,
+                adopted: false,
+                dev: true,
+                dev_folder: None,
+            }],
+            facts: Some(Box::new(move |k: &str| f.lock().unwrap().get(k).cloned())),
+            actions: None,
+            safe_by_closes: false,
+            restarts: Default::default(),
+            ask: Default::default(),
+            told: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: None,
+            discover: None,
+        };
+        let set = |state: &str, at: Option<&str>| {
+            let mut m = facts.lock().unwrap();
+            m.insert("module.m.a.state".into(), state.into());
+            match at {
+                Some(a) => m.insert("module.m.a.rebuilt".into(), a.into()),
+                None => m.remove("module.m.a.rebuilt"),
+            };
+        };
+        set("running", None);
+        page.rows();
+        assert!(page.take_said().is_empty());
+        set("running", Some("20:41"));
+        page.rows();
+        assert_eq!(page.take_said(), ["Art rebuilt and restarted"]);
+        page.rows();
+        page.rows();
+        assert!(page.take_said().is_empty(), "a redraw says nothing");
+        set("restarting", None);
+        page.rows();
+        set("running", Some("20:41"));
+        page.rows();
+        assert_eq!(page.take_said(), ["Art rebuilt and restarted"]);
     }
 }

@@ -578,6 +578,38 @@ pub fn every_string() -> Vec<String> {
     ] {
         v.push(s.into());
     }
+    // Rebuilds of an app in a dev folder (the folder lines need a path, which the rule below
+    // keeps out of drawn text; their path-free reasons are here).
+    v.extend([
+        rebuilt_row("20:41"),
+        rebuilt_said("Art"),
+        DEV_CHIP_SAID.into(),
+        NEW_BUILD_HELD_FOR_GAME.into(),
+        NEW_BUILD_READY.into(),
+        REBUILD_STARTS_IT.into(),
+        restart_with_new_build("Art"),
+        build_unfinished_running("Art"),
+        build_unfinished_stopped("Art"),
+        build_unreadable("Art"),
+        build_needs_ok("Art"),
+        build_asks_for_more("Art", 1),
+        build_asks_for_more("Art", 3),
+        RUNS_WITH_WHAT_YOU_ALLOWED.into(),
+        not_carried(NotCarried::DevModeOff, ""),
+        not_carried(NotCarried::AllowedFromCommandLine, ""),
+        not_carried(NotCarried::OutsideDevFolders, ""),
+    ]);
+    for w in [
+        NewBuild::Kept,
+        NewBuild::AsksMore(1),
+        NewBuild::AsksMore(2),
+        NewBuild::Unfinished,
+        NewBuild::Unreadable,
+        NewBuild::HeldForOk,
+        NewBuild::StoppedAfterCrashes,
+    ] {
+        v.push(new_build_line("19 Nov 2026, 20:41", w));
+    }
     // Finding the module that breaks Hideout (#1033).
     v.extend(crate::bisect::words::every_string());
     v
@@ -674,7 +706,10 @@ pub fn new_build_line(when: &str, what: NewBuild) -> String {
         NewBuild::Unfinished => format!("{head}, not used: it looked unfinished."),
         NewBuild::Unreadable => format!("{head}, not used: Hideout couldn't read it."),
         NewBuild::HeldForOk => format!("{head}, held for your OK."),
-        NewBuild::StoppedAfterCrashes => format!("{head} stopped after 5 crashes."),
+        NewBuild::StoppedAfterCrashes => format!(
+            "{head} stopped after {} crashes.",
+            crate::policy::CRASH_LIMIT
+        ),
     }
 }
 
@@ -890,6 +925,72 @@ mod tests {
         assert_eq!(
             new_build_line(at, NewBuild::StoppedAfterCrashes),
             "New build on 19 Nov 2026, 20:41 stopped after 5 crashes."
+        );
+        assert_eq!(
+            new_build_line(at, NewBuild::Unfinished),
+            "New build on 19 Nov 2026, 20:41, not used: it looked unfinished."
+        );
+        assert_eq!(
+            new_build_line(at, NewBuild::Unreadable),
+            "New build on 19 Nov 2026, 20:41, not used: Hideout couldn't read it."
+        );
+        assert_eq!(
+            new_build_line(at, NewBuild::HeldForOk),
+            "New build on 19 Nov 2026, 20:41, held for your OK."
+        );
+        assert_eq!(
+            NEW_BUILD_HELD_FOR_GAME,
+            "New build ready. Restarts after your game."
+        );
+        assert_eq!(NEW_BUILD_READY, "New build ready");
+        assert_eq!(
+            REBUILD_STARTS_IT,
+            "Rebuild it and Hideout starts the new build."
+        );
+        assert_eq!(
+            restart_with_new_build("Foxglove"),
+            "Restart Foxglove with the new build"
+        );
+        assert_eq!(
+            build_unfinished_running("Foxglove"),
+            "The new build of Foxglove looks unfinished. The earlier one keeps running."
+        );
+        assert_eq!(
+            build_unfinished_stopped("Foxglove"),
+            "The new build of Foxglove looks unfinished. Hideout starts it when the build is done."
+        );
+        assert_eq!(
+            build_unreadable("Foxglove"),
+            "Hideout couldn't read the new build of Foxglove. Build it again, or Try again."
+        );
+        assert_eq!(
+            build_needs_ok("Foxglove"),
+            "The new build of Foxglove needs your OK"
+        );
+        assert_eq!(
+            RUNS_WITH_WHAT_YOU_ALLOWED,
+            "It runs with what you allowed until then."
+        );
+        let d = "D:/out";
+        assert_eq!(
+            not_carried(NotCarried::DevModeOff, d),
+            "Developer mode is off, so Hideout asks again."
+        );
+        assert_eq!(
+            not_carried(NotCarried::FolderGone, d),
+            "D:/out is no longer a dev folder, so Hideout asks again."
+        );
+        assert_eq!(
+            not_carried(NotCarried::OthersCanWrite, d),
+            "Other accounts on this PC can change D:/out or this app, so Hideout no longer trusts its builds."
+        );
+        assert_eq!(
+            not_carried(NotCarried::AllowedFromCommandLine, d),
+            "This app was allowed from the command line. Allow it here once to keep its OK over rebuilds."
+        );
+        assert_eq!(
+            not_carried(NotCarried::OutsideDevFolders, d),
+            "This build is outside your dev folders, so Hideout asks again."
         );
     }
 
