@@ -36,6 +36,10 @@ pub const HELPER_WAIT_CAP: Duration = Duration::from_secs(60);
 /// budget (3 in 10 minutes for the GPU reset) is under this, so an honest module never reaches
 /// it; one that exits with the code in a loop is counted as crashing from the next exit on.
 pub const PLANNED_LIMIT: usize = 6;
+/// Rebuild restarts (an enrolled dev app's new build, R3) in [`WINDOW`] the supervisor takes
+/// up. Past it the new build waits for the next start: a file rewritten in a loop cannot spin
+/// restarts.
+pub const REBUILD_LIMIT: usize = 20;
 /// Lines of history kept per module for Copy diagnostics (oldest dropped first).
 pub const HISTORY: usize = 32;
 
@@ -299,6 +303,12 @@ pub enum Ev {
     Idle {
         id: String,
     },
+    /// An enrolled dev app's new build settled and the driver's gate passed (enrolment, dev
+    /// mode, the carry would hold). The running copy is stopped by a planned exit and the new
+    /// build starts; the launch check still runs before it does (R3).
+    Rebuilt {
+        id: String,
+    },
 }
 
 /// Where a waiting update is (§7.6).
@@ -376,6 +386,8 @@ struct Slot {
     crashes: VecDeque<Instant>,
     /// Planned exits (§7.7, #1143 P7) in the window; not crashes, but bounded by [`PLANNED_LIMIT`].
     planned: VecDeque<Instant>,
+    /// Rebuild restarts in the window, bounded by [`REBUILD_LIMIT`].
+    rebuilds: VecDeque<Instant>,
     /// Restarts in this run, for the backoff step.
     run_restarts: u32,
     restart_at: Option<Instant>,
@@ -686,6 +698,7 @@ impl Policy {
                     ended: true,
                     crashes: VecDeque::new(),
                     planned: VecDeque::new(),
+                    rebuilds: VecDeque::new(),
                     run_restarts: 0,
                     restart_at: None,
                     held: false,
@@ -1098,6 +1111,7 @@ impl Policy {
                 }
             }
             Ev::Round { on } => self.round(on, now, &mut out),
+            Ev::Rebuilt { id } => self.rebuilt(&id, now, &mut out),
             Ev::StartNormally => {
                 self.safe_mode = false;
                 self.round = None;
@@ -1400,6 +1414,53 @@ impl Policy {
         self.set_state(id, State::Restarting, None, out);
     }
 
+    /// A new build of an enrolled dev app (R3; the driver already checked enrolment, dev mode
+    /// and that the carry holds). What runs is stopped by a planned exit and the new build
+    /// starts as the swap does, with no crash counted; an app stopped after crashes or refused
+    /// at launch starts with a fresh count (the new build is the fix). Off, idle (waiting for a
+    /// call), withdrawn, blocked or in safe mode: nothing, the carry happens at its next start.
+    /// More than [`REBUILD_LIMIT`] in the window: nothing, and the history says so.
+    fn rebuilt(&mut self, id: &str, now: Instant, out: &mut Vec<Cmd>) {
+        let held = self.held(id);
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        if !s.enabled || held || s.withdrawn.is_some() || s.quarantined || s.needs_hub {
+            return;
+        }
+        let live = !s.ended && s.update.is_none() && !s.then_launch;
+        let how = match s.state {
+            State::Running | State::Starting | State::Waiting if live => 0,
+            State::Restarting if s.ended && s.restart_at.is_some() => 1,
+            State::CrashStopped | State::InstallFailed => 2,
+            _ => return,
+        };
+        s.rebuilds.retain(|t| now - *t < WINDOW);
+        if s.rebuilds.len() >= REBUILD_LIMIT {
+            self.note(id, now, "rebuild restart held: too many in 10 min".into());
+            return;
+        }
+        s.rebuilds.push_back(now);
+        match how {
+            0 => {
+                s.then_launch = true;
+                s.exit_by = Some(now + EXIT_AFTER_PIPE);
+                self.note(id, now, "new build; restarting".into());
+                self.set_state(id, State::Restarting, None, out);
+                out.push(Cmd::Exit { id: id.into() });
+            }
+            1 => {
+                // Waiting out a crash delay: the new build starts now. The crash count stays.
+                s.restart_at = Some(now);
+                self.note(id, now, "new build; restarting now".into());
+            }
+            _ => {
+                self.note(id, now, "new build; started with a fresh count".into());
+                self.start_by_hand(id, false, out);
+            }
+        }
+    }
+
     /// Counts a crash at `now` and restarts with backoff, or stops after five in ten minutes.
     fn crash(&mut self, id: &str, now: Instant, out: &mut Vec<Cmd>) {
         let Some(s) = self.slots.get_mut(id) else {
@@ -1676,6 +1737,8 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
             },
         ),
         Ev::Idle { id } => (id.clone(), "module.idle".into()),
+        // `rebuilt` leaves its own lines (or none, when it does nothing).
+        Ev::Rebuilt { .. } => return None,
         Ev::Known { .. }
         | Ev::Activate { .. }
         | Ev::StartNormally
@@ -2608,5 +2671,206 @@ mod planned_tests {
         let cmds = exit(&mut p, t, 99, 75);
         assert!(cmds.is_empty());
         assert_eq!(p.state(ID), Some(State::Running));
+    }
+}
+
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+
+    const ID: &str = "m.fox";
+
+    fn running(p: &mut Policy, t: Instant) {
+        p.handle(
+            Ev::Known {
+                id: ID.into(),
+                name: "Foxglove".into(),
+                enabled: true,
+                at_enable: true,
+                previous: None,
+            },
+            t,
+        );
+        p.handle(
+            Ev::Started {
+                id: ID.into(),
+                instance: 1,
+            },
+            t,
+        );
+        p.handle(Ev::Ready { id: ID.into() }, t);
+    }
+
+    fn rebuilt(p: &mut Policy, t: Instant) -> Vec<Cmd> {
+        p.handle(Ev::Rebuilt { id: ID.into() }, t)
+    }
+
+    fn launches(c: &[Cmd]) -> usize {
+        c.iter().filter(|c| matches!(c, Cmd::Launch { .. })).count()
+    }
+
+    #[test]
+    fn a_running_app_is_asked_to_exit_and_the_exit_starts_the_new_build() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        let c = rebuilt(&mut p, t);
+        assert!(c.contains(&Cmd::Exit { id: ID.into() }));
+        assert_eq!(launches(&c), 0, "it starts when the old one is gone");
+        assert_eq!(p.state(ID), Some(State::Restarting));
+        let c = p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: 1,
+                code: 0,
+            },
+            t,
+        );
+        assert_eq!(launches(&c), 1);
+        assert_eq!(p.crashes(ID, t), 0, "no crash counted");
+    }
+
+    #[test]
+    fn an_exit_that_does_not_come_ends_through_the_job_not_as_a_crash() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        rebuilt(&mut p, t);
+        let c = p.tick(t + EXIT_AFTER_PIPE);
+        assert!(c.contains(&Cmd::Kill { id: ID.into() }));
+        assert_eq!(p.crashes(ID, t), 0);
+    }
+
+    #[test]
+    fn two_builds_in_a_row_make_one_restart() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        rebuilt(&mut p, t);
+        let c = rebuilt(&mut p, t);
+        assert!(c.is_empty(), "the stop is already under way: {c:?}");
+    }
+
+    #[test]
+    fn a_stopped_app_starts_with_a_fresh_count_and_a_crash_wait_is_cut_short() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        let mut inst = 1;
+        for n in 0..CRASH_LIMIT {
+            let at = t + Duration::from_secs(n as u64);
+            p.handle(
+                Ev::Exited {
+                    id: ID.into(),
+                    instance: inst,
+                    code: 1,
+                },
+                at,
+            );
+            if n + 1 < CRASH_LIMIT {
+                // A rebuild during the wait: the new build starts now.
+                assert_eq!(p.state(ID), Some(State::Restarting));
+                assert!(p.restart_at(ID).is_some());
+                inst += 1;
+                p.handle(
+                    Ev::Started {
+                        id: ID.into(),
+                        instance: inst,
+                    },
+                    at,
+                );
+            }
+        }
+        assert_eq!(p.state(ID), Some(State::CrashStopped));
+        let c = rebuilt(&mut p, t + Duration::from_secs(9));
+        assert_eq!(launches(&c), 1, "the new build is the fix");
+        assert_eq!(p.crashes(ID, t + Duration::from_secs(9)), 0);
+    }
+
+    #[test]
+    fn a_crash_wait_gives_way_to_the_new_build_without_clearing_the_count() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: 1,
+                code: 1,
+            },
+            t,
+        );
+        assert_eq!(p.restart_at(ID), Some(t + backoff(1)));
+        rebuilt(&mut p, t);
+        assert_eq!(p.restart_at(ID), Some(t));
+        assert_eq!(p.crashes(ID, t), 1, "still counted");
+        assert_eq!(launches(&p.tick(t)), 1);
+    }
+
+    #[test]
+    fn off_idle_and_safe_mode_do_nothing() {
+        let t = Instant::now();
+        // Off.
+        let mut p = Policy::new();
+        running(&mut p, t);
+        p.handle(Ev::Disable { id: ID.into() }, t);
+        assert!(rebuilt(&mut p, t).is_empty());
+        // Idle (stopped by its own clean exit).
+        let mut p = Policy::new();
+        running(&mut p, t);
+        p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: 1,
+                code: 0,
+            },
+            t,
+        );
+        assert_eq!(p.state(ID), Some(State::Idle));
+        assert!(rebuilt(&mut p, t).is_empty());
+        // Safe mode.
+        let mut p = Policy::new();
+        running(&mut p, t);
+        p.safe_mode = true;
+        assert!(rebuilt(&mut p, t).is_empty());
+        // Unknown id.
+        assert!(Policy::new()
+            .handle(Ev::Rebuilt { id: "x".into() }, t)
+            .is_empty());
+    }
+
+    #[test]
+    fn the_flapping_cap_holds_the_twenty_first_restart_in_ten_minutes() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        for n in 0..REBUILD_LIMIT {
+            let inst = n as u64 + 1;
+            let at = t + Duration::from_secs(n as u64 * 5);
+            let c = rebuilt(&mut p, at);
+            assert!(c.contains(&Cmd::Exit { id: ID.into() }), "restart {n}");
+            p.handle(
+                Ev::Exited {
+                    id: ID.into(),
+                    instance: inst,
+                    code: 0,
+                },
+                at,
+            );
+            p.handle(
+                Ev::Started {
+                    id: ID.into(),
+                    instance: inst + 1,
+                },
+                at,
+            );
+            p.handle(Ev::Ready { id: ID.into() }, at);
+        }
+        let at = t + Duration::from_secs(REBUILD_LIMIT as u64 * 5);
+        assert!(rebuilt(&mut p, at).is_empty(), "held");
+        assert_eq!(p.state(ID), Some(State::Running), "still running as it was");
+        assert!(p
+            .history(ID)
+            .iter()
+            .any(|(_, l)| l.contains("rebuild restart held")));
+        // Ten minutes after the first, the window has room again.
+        let later = t + WINDOW + Duration::from_secs(1);
+        assert!(rebuilt(&mut p, later)
+            .iter()
+            .any(|c| matches!(c, Cmd::Exit { .. })));
     }
 }

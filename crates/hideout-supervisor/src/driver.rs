@@ -362,6 +362,34 @@ fn under(path: &str, base: &str) -> Option<String> {
     head.eq_ignore_ascii_case(b).then(|| rest.to_string())
 }
 
+/// Whether a settled new build of `id` may restart it (R3). Read-only, and it only decides
+/// whether to *try*: the launch check (`pre_launch`, the carry and the pinned hash) still runs
+/// before anything starts. All of these must hold now, not when the watch started:
+/// developer mode is on; `id` is enrolled under a listed dev folder (the Allow was the window's,
+/// the folder passes the writable-by-others checks, `run[1..]` unchanged); the carry would hold
+/// for the file now there (`binding_void` is `None`); and the build is not the one already
+/// running.
+pub fn rebuild_gate(
+    reg: &Registry,
+    id: &str,
+    running_sha256: Option<&str>,
+    new_sha256: &str,
+) -> Result<(), &'static str> {
+    if !reg.dev_mode {
+        return Err("developer mode is off");
+    }
+    if reg.dev_folder_of(id).is_none() {
+        return Err("not enrolled in a dev folder, or the folder no longer qualifies");
+    }
+    if reg.binding_void(id).is_some() {
+        return Err("the new build would need your OK");
+    }
+    if running_sha256.is_some_and(|r| r.eq_ignore_ascii_case(new_sha256)) {
+        return Err("it is the build already running");
+    }
+    Ok(())
+}
+
 /// The launch check the router runs at a module's `initialize` (§7.5, §8.2 v1.3).
 fn launch_check(
     expected: &Mutex<BTreeMap<String, Expected>>,
@@ -1023,6 +1051,29 @@ impl Supervisor {
     /// "Start again" (§7.8).
     pub fn start_again(&self, id: &str) {
         self.feed(Ev::StartAgain { id: id.into() });
+    }
+
+    /// R3: the rebuild watch saw an enrolled dev app's new program settle (`exe_sha256`). The
+    /// gate ([`rebuild_gate`]) runs on the registry as it is now; only a pass reaches the policy.
+    /// Every refusal is one log line and nothing else: a running copy is never stopped for a
+    /// build Hideout would not start.
+    pub fn rebuilt(&self, id: &str, exe_sha256: &str) {
+        let running = self
+            .0
+            .expected
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|e| e.sha256.clone());
+        let gate = Registry::open_from_env(&self.0.home)
+            .map_err(|e| format!("registry not read: {e:?}"))
+            .and_then(|reg| {
+                rebuild_gate(&reg, id, running.as_deref(), exe_sha256).map_err(String::from)
+            });
+        match gate {
+            Ok(()) => self.feed(Ev::Rebuilt { id: id.into() }),
+            Err(why) => log::info!("rebuild {id}: not carried: {why}"),
+        }
     }
 
     /// "Start with default settings" (§7.8).

@@ -1,0 +1,140 @@
+// SPDX-License-Identifier: MIT
+//! R3: the gate in front of a rebuild restart. It must pass only for an app the window enrolled
+//! under a dev folder, with developer mode on, when the carry would hold. Window-free.
+
+use std::path::PathBuf;
+
+use hideout_registry::Registry;
+use hideout_supervisor::driver::rebuild_gate;
+
+const NOW: &str = "2026-11-19T12:00:00Z";
+const ID: &str = "foxglove";
+
+fn temp(name: &str) -> PathBuf {
+    // Not %TEMP%: a dev folder must not be writable by other accounts.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("hideout-rebuild-gate")
+        .join(format!("{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+struct Fx {
+    home: PathBuf,
+    out: PathBuf,
+    exe: PathBuf,
+    reg: Registry,
+}
+
+fn manifest(exe: &std::path::Path, extra_arg: Option<&str>) -> String {
+    let exe = exe
+        .display()
+        .to_string()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    let args = extra_arg.map_or(String::new(), |a| format!(", \"{a}\""));
+    format!(
+        "id = \"{ID}\"\nname = \"Foxglove\"\nversion = \"1.0.0\"\nkind = \"adopted\"\n\
+         family = \"foxglove\"\nhub = \"1.0\"\nrun = [\"{exe}\"{args}]\n\
+         api = {{ foxglove = \"1.0\" }}\npermissions = [\"hub.notify\"]\n"
+    )
+}
+
+/// An app at `<out>\foxglove.exe` in a listed dev folder, allowed in the window (`by`).
+fn fx(name: &str, by: &str) -> Fx {
+    let out = temp(&format!("{name}-out"));
+    let exe = out.join("foxglove.exe");
+    std::fs::write(&exe, b"build 1").unwrap();
+    let folder = temp(&format!("{name}-manifest"));
+    std::fs::write(folder.join("module.toml"), manifest(&exe, None)).unwrap();
+    let home = temp(&format!("{name}-home"));
+    let mut reg = Registry::open(&home, true).unwrap();
+    reg.register_adopted(&folder, NOW).unwrap();
+    reg.add_dev_folder(&out.display().to_string()).unwrap();
+    let list = reg.permission_list(ID).unwrap();
+    let chosen = vec!["hub.notify".to_string()];
+    reg.approve_listed(ID, list.code(), &chosen, &[], NOW, by, false)
+        .unwrap();
+    reg.set_enabled(ID, true).unwrap();
+    Fx {
+        home,
+        out,
+        exe,
+        reg,
+    }
+}
+
+fn rebuild(f: &Fx, bytes: &[u8]) {
+    std::fs::write(&f.exe, bytes).unwrap();
+}
+
+#[test]
+fn an_enrolled_app_with_a_carried_build_passes() {
+    let f = fx("pass", "dialog");
+    rebuild(&f, b"build 2");
+    assert_eq!(rebuild_gate(&f.reg, ID, Some("old"), "new"), Ok(()));
+    // Not running (stopped after crashes): nothing to compare, still passes.
+    assert_eq!(rebuild_gate(&f.reg, ID, None, "new"), Ok(()));
+}
+
+#[test]
+fn the_build_already_running_is_not_restarted() {
+    let f = fx("same", "dialog");
+    assert!(rebuild_gate(&f.reg, ID, Some("ABCD"), "abcd").is_err());
+}
+
+#[test]
+fn developer_mode_off_refuses_even_for_a_listed_enrolled_app() {
+    let f = fx("devoff", "dialog");
+    rebuild(&f, b"build 2");
+    let shipped = Registry::open(&f.home, false).unwrap();
+    assert_eq!(
+        rebuild_gate(&shipped, ID, None, "new"),
+        Err("developer mode is off")
+    );
+}
+
+#[test]
+fn a_cli_allow_never_enrols_so_it_never_restarts() {
+    let f = fx("cli", "cli");
+    rebuild(&f, b"build 2");
+    assert!(rebuild_gate(&f.reg, ID, None, "new").is_err());
+}
+
+#[test]
+fn a_removed_dev_folder_refuses() {
+    let mut f = fx("removed", "dialog");
+    rebuild(&f, b"build 2");
+    let out = f.out.display().to_string();
+    f.reg.remove_dev_folder(&out).unwrap();
+    assert!(rebuild_gate(&f.reg, ID, None, "new").is_err());
+}
+
+#[test]
+fn a_build_that_starts_differently_is_not_carried_and_does_not_restart() {
+    let f = fx("args", "dialog");
+    rebuild(&f, b"build 2");
+    // The manifest now passes an extra argument: run[1..] changed.
+    let dir = f.reg.module_dir(ID, "1.0.0");
+    std::fs::write(dir.join("module.toml"), manifest(&f.exe, Some("--new"))).unwrap();
+    let reg = Registry::open(&f.home, true).unwrap();
+    assert!(rebuild_gate(&reg, ID, None, "new").is_err());
+}
+
+#[test]
+fn an_app_moved_outside_the_folder_refuses() {
+    let f = fx("moved", "dialog");
+    let elsewhere = temp("moved-elsewhere");
+    let exe2 = elsewhere.join("foxglove.exe");
+    std::fs::write(&exe2, b"build 1").unwrap();
+    let dir = f.reg.module_dir(ID, "1.0.0");
+    std::fs::write(dir.join("module.toml"), manifest(&exe2, None)).unwrap();
+    let reg = Registry::open(&f.home, true).unwrap();
+    assert!(rebuild_gate(&reg, ID, None, "new").is_err());
+}
+
+#[test]
+fn an_unknown_app_refuses() {
+    let f = fx("unknown", "dialog");
+    assert!(rebuild_gate(&f.reg, "nobody", None, "new").is_err());
+}
