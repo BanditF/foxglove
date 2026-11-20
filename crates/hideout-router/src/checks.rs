@@ -58,7 +58,7 @@ pub const FIRST_PARTY_AREAS: &[&str] = &[
     "tray.*",
     "overlay.*",
     "wallpaper-engine.*",
-    // (v1.17) The hub asks a standalone copy to quit: `app.hand_over`.
+    // (plugin API 1.17) The hub asks a standalone copy to quit: `app.hand_over`.
     "app.*",
 ];
 

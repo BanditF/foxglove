@@ -51,6 +51,10 @@ pub fn hand_over(s: &dyn Standalone, id: &str) -> bool {
     }
 }
 
+/// The plugin API version this hub speaks to a standalone app, as `major.minor` text (the app's
+/// `initialize` takes a string; the `{}` map belongs to the hub's own router protocol).
+const API: &str = "1.17";
+
 /// How long the hub waits for the copy to answer and leave: its own hand-back budget is 4 s.
 pub const LIMIT: Duration = Duration::from_secs(8);
 /// Lines read while waiting for one answer (events may come first).
@@ -101,7 +105,7 @@ fn converse<R: Read, W: Write>(r: R, mut w: W) -> bool {
         0,
         "initialize",
         json!({"client": {"name": "hideout", "version": env!("CARGO_PKG_VERSION")},
-               "api": {}, "permissions": ["app.windows"]}),
+               "api": API, "permissions": ["app.windows"]}),
     );
     if w.write_all(init.as_bytes()).is_err() || !answered(&mut r, 0) {
         return false;
@@ -391,5 +395,118 @@ mod tests {
         assert_eq!(w.seen("other"), Seen::No);
         assert!(!w.ask_to_quit("other"));
         assert_eq!(w.seen("app"), Seen::Standalone);
+    }
+
+    /// A pipe end made of channels: the hub writes, the "app" reads, and the other way.
+    struct ChanR {
+        rx: mpsc::Receiver<Vec<u8>>,
+        left: Vec<u8>,
+    }
+    impl Read for ChanR {
+        fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+            if self.left.is_empty() {
+                match self.rx.recv() {
+                    Ok(v) => self.left = v,
+                    Err(_) => return Ok(0),
+                }
+            }
+            let n = self.left.len().min(b.len());
+            b[..n].copy_from_slice(&self.left[..n]);
+            self.left.drain(..n);
+            Ok(n)
+        }
+    }
+    struct ChanW(Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>);
+    impl Write for ChanW {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            match self.0.lock().unwrap().as_ref() {
+                Some(tx) => tx
+                    .send(b.to_vec())
+                    .map(|_| b.len())
+                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed")),
+                None => Err(std::io::ErrorKind::BrokenPipe.into()),
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The app's own side: `Devices` answers `app.hand_over` and then the pipe closes, as the
+    /// app's exit closes it.
+    struct App {
+        asked: Arc<Mutex<u32>>,
+        close: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
+    }
+    impl foxglove_plugin_host::Devices for App {
+        fn call(
+            &self,
+            method: &str,
+            _params: Value,
+        ) -> Result<Value, foxglove_plugin_api::rpc::Error> {
+            assert_eq!(method, "app.hand_over");
+            *self.asked.lock().unwrap() += 1;
+            let close = self.close.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                close.lock().unwrap().take();
+            });
+            Ok(json!({}))
+        }
+    }
+
+    /// The hub's real request against the app's real connection handler (`serve`): the
+    /// initialize it sends is accepted, `app.hand_over` is reached, and the wait ends when the
+    /// app closes the pipe.
+    #[test]
+    fn the_real_request_is_accepted_by_the_apps_connection_handler() {
+        let (to_app, from_hub) = mpsc::channel();
+        let (to_hub, from_app) = mpsc::channel();
+        let close = Arc::new(Mutex::new(Some(to_hub)));
+        let asked = Arc::new(Mutex::new(0));
+        let ctx = foxglove_plugin_host::Context {
+            facts: Default::default(),
+            devices: Arc::new(App {
+                asked: asked.clone(),
+                close: close.clone(),
+            }),
+            client: foxglove_plugin_host::Client::Tool(Arc::new(
+                |_: &foxglove_plugin_api::methods::ClientInfo,
+                 asked: &[foxglove_plugin_api::permission::Permission]| {
+                    asked.to_vec()
+                },
+            )),
+            app_version: "0.3.0".into(),
+            limits: Default::default(),
+        };
+        let reader = BufReader::new(ChanR {
+            rx: from_hub,
+            left: Vec::new(),
+        });
+        let server =
+            std::thread::spawn(move || foxglove_plugin_host::serve(reader, ChanW(close), ctx));
+        let hub_end = ChanR {
+            rx: from_app,
+            left: Vec::new(),
+        };
+        let went = converse(hub_end, ChanW(Arc::new(Mutex::new(Some(to_app)))));
+        assert!(
+            went,
+            "the app accepted initialize and app.hand_over, then closed"
+        );
+        assert_eq!(*asked.lock().unwrap(), 1);
+        let _ = server.join();
+    }
+
+    #[test]
+    fn the_initialize_line_is_the_plugin_apis_own_shape() {
+        let (_, sent) = talk(&format!(
+            "{INIT}
+{YES}
+"
+        ));
+        let p: foxglove_plugin_api::methods::InitializeParams =
+            serde_json::from_value(sent[0]["params"].clone()).expect("a valid initialize");
+        assert_eq!(p.api, foxglove_plugin_api::API_VERSION.to_string());
     }
 }

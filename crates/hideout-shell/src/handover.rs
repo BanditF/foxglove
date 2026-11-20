@@ -21,6 +21,11 @@ pub fn refusal_line(app: &str) -> String {
     format!("{app} is still open on its own. Close it from its tray icon, then press Start again.")
 }
 
+/// The quiet line while the copy is being asked to close.
+pub fn closing_line(app: &str) -> String {
+    format!("Closing the other copy of {app}…")
+}
+
 /// The note's one button.
 pub const START_AGAIN: &str = "Start again";
 
@@ -40,7 +45,7 @@ impl Note {
 }
 
 #[cfg(windows)]
-pub use ui::note_ui;
+pub use ui::{closing_ui, note_ui};
 
 #[cfg(windows)]
 mod ui {
@@ -50,6 +55,15 @@ mod ui {
 
     fn c(x: Rgb) -> egui::Color32 {
         egui::Color32::from_rgb(x.0, x.1, x.2)
+    }
+
+    /// The quiet line while a hand-over is under way (read out politely, no button).
+    pub fn closing_ui(ui: &mut egui::Ui, t: &Tokens, app: &str) {
+        let line = ui.label(RichText::new(super::closing_line(app)).color(c(t.text_muted)));
+        ui.ctx().accesskit_node_builder(line.id, |n| {
+            n.set_live(egui::accesskit::Live::Polite);
+        });
+        ui.add_space(8.0);
     }
 
     /// Draws the note above the rows; true when Start again was pressed.
@@ -104,6 +118,7 @@ mod tests {
         let words = [
             dialog_line("Gizmo"),
             refusal_line("Gizmo"),
+            closing_line("Gizmo"),
             START_AGAIN.to_string(),
         ];
         for w in &words {

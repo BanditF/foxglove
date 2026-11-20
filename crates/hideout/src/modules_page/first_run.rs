@@ -378,6 +378,8 @@ impl Fx {
         let done = perm.answer(PermAnswer::Allow(a)).expect("Allow records");
         assert_eq!(done.then, crate::permission_actions::Then::TurnOn);
         self.page.after_allow(done);
+        // A hand-over runs on a worker; the page looks at it once per frame.
+        self.page.settle_hand_over(true);
         n
     }
 
@@ -719,6 +721,7 @@ use std::sync::{Arc, Mutex};
 
 /// A standalone copy that is open, answers the request as told, and is gone after a yes.
 struct Copy {
+    slow: bool,
     open: Mutex<bool>,
     quits: bool,
     asked: Mutex<u32>,
@@ -728,6 +731,7 @@ struct Copy {
 impl Copy {
     fn new(open: bool, quits: bool) -> Arc<Copy> {
         Arc::new(Copy {
+            slow: false,
             open: Mutex::new(open),
             quits,
             asked: Mutex::new(0),
@@ -748,6 +752,9 @@ impl Standalone for Copy {
     }
     fn ask_to_quit(&self, _: &str) -> bool {
         *self.asked.lock().unwrap() += 1;
+        if self.slow {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
         if self.quits {
             *self.open.lock().unwrap() = false;
         }
@@ -831,6 +838,7 @@ fn a_copy_that_stays_is_left_alone_and_start_again_retries() {
     *c.open.lock().unwrap() = false;
     fx.page.perm.as_mut().unwrap().retry = Some(fx.id.clone());
     fx.page.start_again_pending();
+    fx.page.settle_hand_over(true);
     assert_eq!(fx.asked.0.borrow().as_slice(), ["turn-on gizmo-keys"]);
     assert!(fx.page.perm.as_ref().unwrap().handover_note.is_none());
     fx.assert_no_autostart_files();
@@ -841,6 +849,7 @@ fn a_copy_that_stays_is_left_alone_and_start_again_retries() {
 fn an_unverified_pipe_is_never_asked_and_never_called_a_copy() {
     let mut fx = Fx::new("fr5-unsure", "gizmo-keys", gizmo_manifest);
     let c = Arc::new(Copy {
+        slow: false,
         open: Mutex::new(true),
         quits: true,
         asked: Mutex::new(0),
@@ -854,4 +863,39 @@ fn an_unverified_pipe_is_never_asked_and_never_called_a_copy() {
     fx.tick_sensitive(&mut clicks);
     fx.allow(&mut clicks);
     assert_eq!(*c.asked.lock().unwrap(), 0);
+}
+
+/// The wait is on a worker: Allow returns at once, nothing starts until the copy has gone, and
+/// the page shows it is closing meanwhile.
+#[test]
+fn the_wait_never_blocks_the_page() {
+    let mut fx = Fx::new("fr5-slow", "gizmo-keys", gizmo_manifest);
+    let c = Arc::new(Copy {
+        slow: true,
+        open: Mutex::new(true),
+        quits: true,
+        asked: Mutex::new(0),
+        unsure: false,
+    });
+    with_copy(&mut fx, &c);
+    let mut clicks = Clicks::default();
+    fx.look();
+    fx.add(&mut clicks);
+    fx.tick_sensitive(&mut clicks);
+    let perm = fx.page.perm.as_mut().unwrap();
+    let a = perm.dialog.as_ref().unwrap().allowed();
+    let done = perm.answer(PermAnswer::Allow(a)).unwrap();
+    let t = std::time::Instant::now();
+    fx.page.after_allow(done);
+    assert!(
+        t.elapsed() < std::time::Duration::from_millis(300),
+        "Allow waited"
+    );
+    fx.page.settle_hand_over(false);
+    assert!(
+        fx.asked.0.borrow().is_empty(),
+        "not started while the copy is closing"
+    );
+    fx.page.settle_hand_over(true);
+    assert_eq!(fx.asked.0.borrow().as_slice(), ["turn-on gizmo-keys"]);
 }

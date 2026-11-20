@@ -33,3 +33,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Network
 [dev-dependencies]
 # The catalog fetch tests sign their own catalogs with keys made per run (minisign, MIT).
 foxglove-plugin-trust = { path = "../plugin-trust", features = ["sign"] }
+# The hand-over test talks to the app's real connection handler, not a canned reply.
+foxglove-plugin-api = { path = "../plugin-api" }
+foxglove-plugin-host = { path = "../plugin-host" }

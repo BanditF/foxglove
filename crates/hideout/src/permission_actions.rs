@@ -532,6 +532,10 @@ pub struct PermUi {
     standalone: Option<std::sync::Arc<dyn crate::handover::Standalone>>,
     /// The note after a hand-over that did not happen, with Start again.
     pub(crate) retry: Option<String>,
+    /// The app whose standalone copy is being closed, and the worker's answer when it comes.
+    handing: Option<(String, std::sync::mpsc::Receiver<bool>)>,
+    /// The window's context, to ask for a redraw when the worker is done.
+    ctx: Option<egui::Context>,
     pub(crate) handover_note: Option<hideout_shell::handover::Note>,
 }
 
@@ -556,6 +560,8 @@ impl PermUi {
             standalone: None,
             handover_note: None,
             retry: None,
+            handing: None,
+            ctx: None,
         };
         p.refresh();
         p
@@ -574,16 +580,42 @@ impl PermUi {
             .is_some_and(|s| s.seen(id) == crate::handover::Seen::Standalone)
     }
 
-    /// Closes the standalone copy of `id` before the app starts. True: start the app. False: the
-    /// copy stays, a note with Start again shows, and nothing is started.
-    pub fn hand_over(&mut self, id: &str) -> bool {
+    /// Starts closing the standalone copy of `id` on a worker (the wait can take seconds, so the
+    /// window never blocks on it). True: a hand-over is under way (or already was) and the page
+    /// starts the app only when [`PermUi::finished_hand_over`] says yes. False: nothing to hand
+    /// over to (no standalone support here), so the app starts at once.
+    pub fn start_hand_over(&mut self, id: &str) -> bool {
         let Some(s) = self.standalone.clone() else {
-            return true;
+            return false;
         };
-        if crate::handover::hand_over(s.as_ref(), id) {
-            self.handover_note = None;
+        if self.handing.is_some() {
             return true;
         }
+        self.handover_note = None;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        let app = id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name("hand-over-ui".into())
+            .spawn(move || {
+                let went = crate::handover::hand_over(s.as_ref(), &app);
+                let _ = tx.send(went);
+                // The page draws again at once (an event, no timer).
+                if let Some(c) = ctx {
+                    c.request_repaint();
+                }
+            })
+            .is_ok();
+        if spawned {
+            self.handing = Some((id.to_string(), rx));
+        } else {
+            self.stays(id);
+        }
+        true
+    }
+
+    /// The copy stays: a note with Start again, nothing started.
+    fn stays(&mut self, id: &str) {
         let name = self
             .entries
             .iter()
@@ -595,7 +627,29 @@ impl PermUi {
             id: id.to_string(),
             name,
         });
-        false
+    }
+
+    /// The finished hand-over, once: the app's id and whether it may start now. `wait` blocks for
+    /// the worker (tests); the page passes false and looks once per drawn frame.
+    pub fn finished_hand_over(&mut self, wait: bool) -> Option<(String, bool)> {
+        let (id, rx) = self.handing.take()?;
+        let went = if wait {
+            rx.recv()
+        } else {
+            match rx.try_recv() {
+                Ok(v) => Ok(v),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.handing = Some((id, rx));
+                    return None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Ok(false),
+            }
+        }
+        .unwrap_or(false);
+        if !went {
+            self.stays(&id);
+        }
+        Some((id, went))
     }
 
     /// The app whose Start again was pressed, once.
@@ -1062,6 +1116,7 @@ impl PermUi {
     /// The header lines (at most one per module) and the Permissions sections, at the top of the
     /// Modules page.
     pub fn top(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        self.ctx = Some(ui.ctx().clone());
         let mut open: Option<(String, Opener, egui::Id)> = None;
         let mut hide: Option<(String, HeaderKind, String)> = None;
         let mut off: Option<(String, Option<String>)> = None;
@@ -1069,7 +1124,15 @@ impl PermUi {
         let mut keep_on: Option<(String, egui::Id)> = None;
         let mut keep_stop: Option<String> = None;
         let mut open_first: Option<egui::Id> = None;
-        if let Some(n) = self.handover_note.clone() {
+        if let Some((id, _)) = &self.handing {
+            let name = self
+                .entries
+                .iter()
+                .find(|e| &e.id == id)
+                .map(|e| e.view.listing.name.clone())
+                .unwrap_or_else(|| id.clone());
+            hideout_shell::handover::closing_ui(ui, t, &name);
+        } else if let Some(n) = self.handover_note.clone() {
             if hideout_shell::handover::note_ui(ui, t, &n) {
                 self.handover_note = None;
                 self.retry = Some(n.id);
@@ -1199,6 +1262,7 @@ impl PermUi {
     /// Draws the dialog while it is open. An Allow that was recorded comes back so the page can
     /// turn the module on; the focus goes back to the button that opened it.
     pub fn dialog(&mut self, ctx: &egui::Context, t: &Tokens) -> Vec<Done> {
+        self.ctx = Some(ctx.clone());
         if self.first_run.is_some() {
             let first = !self.first_run_drawn;
             self.first_run_drawn = true;

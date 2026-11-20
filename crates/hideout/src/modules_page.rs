@@ -364,33 +364,61 @@ impl ModulesPage {
         if let Some(g) = self.grant.as_mut() {
             g.refresh();
         }
-        let Some(a) = self.actions.as_deref() else {
+        if self.actions.is_none() {
             return;
-        };
+        }
         match done.then {
-            // FR5: the dialog said a standalone copy would be closed. It is asked to quit first;
-            // if it does not go (or anything is in doubt) the app is not started, a note with
-            // Start again shows, and the Startup entry is never touched.
+            // FR5: the dialog said a standalone copy would be closed. It is asked to quit on a
+            // worker; the app starts when that finishes well (`settle_hand_over`). If the copy
+            // does not go (or anything is in doubt) the app is not started, a note with Start
+            // again shows, and the Startup entry is never touched.
             Then::TurnOn
-                if done.handover && !self.perm.as_mut().is_none_or(|p| p.hand_over(&done.id)) => {}
-            Then::TurnOn => match a.turn_on(&done.id) {
-                Ok(()) => {
-                    self.set_enabled(&done.id, true);
-                    // The user's Allow started it: the Done card says so, live.
-                    self.done.show_for(&done.id);
-                    if done.id == crate::keyboard_actions::MODULE {
-                        if let Some(g) = self.grant.as_mut() {
-                            g.after_turn_on();
-                        }
-                    }
+                if done.handover
+                    && self
+                        .perm
+                        .as_mut()
+                        .is_some_and(|p| p.start_hand_over(&done.id)) => {}
+            Then::TurnOn => self.turn_on_now(&done.id),
+            Then::Review => {
+                if let Some(a) = self.actions.as_deref() {
+                    a.review(&done.id);
                 }
-                Err(why) => log::warn!("Modules page: {} not turned on ({why})", done.id),
-            },
-            Then::Review => a.review(&done.id),
+            }
             Then::Nothing => {}
         }
         if let Some(p) = self.perm.as_mut() {
             p.refresh();
+        }
+    }
+
+    /// Starts the app now and shows the row and the Done card as on.
+    fn turn_on_now(&mut self, id: &str) {
+        let Some(a) = self.actions.as_deref() else {
+            return;
+        };
+        match a.turn_on(id) {
+            Ok(()) => {
+                self.set_enabled(id, true);
+                // The user's Allow started it: the Done card says so, live.
+                self.done.show_for(id);
+                if id == crate::keyboard_actions::MODULE {
+                    if let Some(g) = self.grant.as_mut() {
+                        g.after_turn_on();
+                    }
+                }
+            }
+            Err(why) => log::warn!("Modules page: {id} not turned on ({why})"),
+        }
+        if let Some(p) = self.perm.as_mut() {
+            p.refresh();
+        }
+    }
+
+    /// A finished hand-over: the app starts once its copy has gone (looked at once per frame;
+    /// `wait` is for tests).
+    fn settle_hand_over(&mut self, wait: bool) {
+        if let Some((id, true)) = self.perm.as_mut().and_then(|p| p.finished_hand_over(wait)) {
+            self.turn_on_now(&id);
         }
     }
 
@@ -748,6 +776,7 @@ impl hideout_shell::Page for ModulesPage {
         self.perm = perm;
         self.discover = discover;
         self.start_again_pending();
+        self.settle_hand_over(false);
         if let Some(id) = added {
             self.after_add(&id);
         }
