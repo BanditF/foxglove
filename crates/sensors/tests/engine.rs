@@ -79,6 +79,7 @@ fn full() -> Reading {
         .with(Metric::GpuClock, 1800)
         .with(Metric::GpuPower, 95)
         .with(Metric::GpuFan, 2100)
+        .with(Metric::GpuFanPct, 45)
 }
 
 struct Rig {
@@ -205,6 +206,7 @@ fn key_names_and_units_are_exact() {
         "sensor.cpu.load_pct",
         "sensor.cpu.state",
         "sensor.gpu.clock_mhz",
+        "sensor.gpu.fan_pct",
         "sensor.gpu.fan_rpm",
         "sensor.gpu.load_pct",
         "sensor.gpu.power_w",
@@ -217,7 +219,7 @@ fn key_names_and_units_are_exact() {
     assert_eq!(r.facts.get("sensor.gpu.temp_c"), Some(ValueOut::Int(61)));
     assert_eq!(r.facts.state(Group::Gpu), Some("ok"));
     let units: Vec<_> = Metric::ALL.iter().map(|m| m.unit()).collect();
-    assert_eq!(units, ["%", "%", "%", "C", "MHz", "W", "RPM"]);
+    assert_eq!(units, ["%", "%", "%", "C", "MHz", "W", "RPM", "%"]);
     assert!(
         !r.facts.keys().iter().any(|k| k.contains("cpu.temp")),
         "no CPU temperature without a source for it"
@@ -302,8 +304,11 @@ fn state_is_unknown_before_the_first_read() {
 }
 
 #[test]
-fn game_mode_stops_sampling_and_leaves_nothing_stale() {
-    let mut r = rig(Config::default());
+fn game_mode_can_stop_sampling_and_leaves_nothing_stale() {
+    let mut r = rig(Config {
+        game_interval: None,
+        ..Config::default()
+    });
     r.engine.subscribe("sensor.*", secs(0)).unwrap();
     r.run(0, 3);
     let before = r.reads();
@@ -328,22 +333,45 @@ fn game_mode_stops_sampling_and_leaves_nothing_stale() {
 }
 
 #[test]
-fn game_mode_can_throttle_instead() {
-    let mut r = rig(Config {
-        interval: secs(1),
-        game_interval: Some(secs(10)),
-    });
+fn game_mode_throttles_to_ten_seconds_by_default_and_keeps_values() {
+    assert_eq!(Config::default().game_interval, Some(secs(10)));
+    let mut r = rig(Config::default());
     r.engine.subscribe("sensor.*", secs(0)).unwrap();
     r.run(0, 1);
     r.engine.set_game_mode(true, secs(1));
     let before = r.reads();
     r.run(2, 31);
     let during = r.reads() - before;
-    assert!((2..=4).contains(&during), "{during}");
+    assert!((2..=3).contains(&during), "{during}");
+    assert!(r.engine.sampling(), "throttled, not stopped");
+    assert_eq!(r.counters.borrow().dropped, 0, "the sampler is kept");
+    assert_eq!(r.facts.get("sensor.gpu.temp_c"), Some(ValueOut::Int(61)));
+    assert_eq!(
+        r.facts.state(Group::Gpu),
+        Some("ok"),
+        "values stay published"
+    );
     r.engine.set_game_mode(false, secs(31));
     let before = r.reads();
     r.run(32, 36);
     assert!(r.reads() - before >= 4, "back to 1 Hz");
+}
+
+#[test]
+fn a_group_is_ok_while_any_of_its_values_is_present() {
+    let mut r = rig(Config::default());
+    *r.answer.borrow_mut() = Ok(Reading::new().with(Metric::GpuFanPct, 40));
+    r.engine.subscribe("sensor.*", secs(0)).unwrap();
+    r.engine.poll(secs(0));
+    assert_eq!(r.facts.state(Group::Gpu), Some("ok"));
+    assert_eq!(r.facts.get("sensor.gpu.fan_pct"), Some(ValueOut::Int(40)));
+    assert_eq!(
+        r.facts.get("sensor.gpu.fan_rpm"),
+        None,
+        "no RPM from a percent"
+    );
+    assert_eq!(r.facts.get("sensor.gpu.temp_c"), None);
+    assert_eq!(r.facts.state(Group::Cpu), Some("unavailable"));
 }
 
 #[test]
@@ -380,6 +408,9 @@ impl Backend for FakeNvml {
     fn fan_rpm(&mut self) -> Result<u32, String> {
         Err("no RPM call".into())
     }
+    fn fan_pct(&mut self) -> Result<u32, String> {
+        Ok(38)
+    }
 }
 
 impl Drop for FakeNvml {
@@ -400,6 +431,11 @@ fn nvml_units_and_a_missing_fan() {
     assert_eq!(r.get(Metric::GpuTemp), Some(64));
     assert_eq!(r.get(Metric::GpuClock), Some(1950));
     assert_eq!(r.get(Metric::GpuFan), None, "no RPM: absent, not 0");
+    assert_eq!(
+        r.get(Metric::GpuFanPct),
+        Some(38),
+        "a percent is its own fact, never RPM"
+    );
     drop(s);
     assert_eq!(*drops.borrow(), 1, "NVML is shut down with the source");
 }
@@ -436,6 +472,7 @@ fn a_missing_nvml_dll_is_unavailable_all_the_way_to_the_facts() {
         Metric::GpuClock,
         Metric::GpuPower,
         Metric::GpuFan,
+        Metric::GpuFanPct,
     ] {
         assert_eq!(facts.get(&m.key()), None);
     }

@@ -20,6 +20,8 @@ pub trait Backend {
     /// Fan speed in RPM. Older drivers have no such call: an error, so the fan stays
     /// unavailable (NVML's classic fan call is a percent, which is not published as RPM).
     fn fan_rpm(&mut self) -> Result<u32, String>;
+    /// The fan's duty in percent (NVML's classic fan call). Published as `fan_pct`, never as RPM.
+    fn fan_pct(&mut self) -> Result<u32, String>;
 }
 
 /// The first GPU's readings. A value NVML can't give is left out, never 0.
@@ -56,6 +58,10 @@ impl<B: Backend> Source for NvmlSource<B> {
                 b.power_mw().map(|mw| (i64::from(mw) + 500) / 1000),
             ),
             (Metric::GpuFan, b.fan_rpm().map(i64::from)),
+            (
+                Metric::GpuFanPct,
+                b.fan_pct().map(|p| i64::from(p.min(100))),
+            ),
         ] {
             if let Ok(v) = value {
                 reading.set(metric, v);
@@ -119,6 +125,7 @@ mod real {
         clock: Typed,
         power: Read,
         fan: Option<Fan>,
+        fan_pct: Option<Read>,
         /// The first GPU, null when NVML sees none.
         device: Device,
     }
@@ -172,6 +179,7 @@ mod real {
             let power = sym!(module, "nvmlDeviceGetPowerUsage", Read)
                 .ok_or_else(|| missing("nvmlDeviceGetPowerUsage"))?;
             let fan = sym!(module, "nvmlDeviceGetFanSpeedRPM", Fan);
+            let fan_pct = sym!(module, "nvmlDeviceGetFanSpeed", Read);
             // SAFETY: nvmlInit_v2 takes no arguments.
             let code = unsafe { init() };
             if code != 0 {
@@ -194,6 +202,7 @@ mod real {
                 clock,
                 power,
                 fan,
+                fan_pct,
                 device,
             })
         }
@@ -249,6 +258,24 @@ mod real {
                 Err(format!("fan: {code}"))
             }
         }
+
+        fn fan_pct(&mut self) -> Result<u32, String> {
+            self.pct()
+        }
+    }
+
+    impl Nvml {
+        fn pct(&self) -> Result<u32, String> {
+            let f = self.fan_pct.ok_or("no fan percent call in this driver")?;
+            let mut v = 0u32;
+            // SAFETY: a valid device handle and an out value of the right size.
+            let code = unsafe { f(self.device, &mut v) };
+            if code == 0 {
+                Ok(v)
+            } else {
+                Err(format!("fan percent: {code}"))
+            }
+        }
     }
 
     impl Drop for Nvml {
@@ -288,6 +315,9 @@ impl Backend for Nvml {
         Err("not Windows".into())
     }
     fn fan_rpm(&mut self) -> Result<u32, String> {
+        Err("not Windows".into())
+    }
+    fn fan_pct(&mut self) -> Result<u32, String> {
         Err("not Windows".into())
     }
 }

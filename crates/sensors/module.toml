@@ -1,0 +1,15 @@
+# Hideout's manifest (contract §4.10): the sensors module publishes read-only `sensor.*` facts.
+# Foxglove reads plugin.toml; Hideout reads this file. Keep the shared keys the same.
+# The program (sensors.exe) comes with the plugin slice that wires the host's subscriber demand.
+id = "org.foxglove.sensors"
+name = "PC sensors"
+version = "0.1.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+transport = "stdio"
+api = { foxglove = "1.2" }
+run = ["sensors.exe"]
+permissions = ["facts.write:sensor.*"]
+provides = ["facts:sensor.*"]
+description = "Publishes the PC's CPU, GPU and memory load and the GPU's temperature, clock, power and fan as facts, only while something is listening. It reads; it never controls anything."

@@ -1509,6 +1509,7 @@ dependencies = [
 name = "foxglove-sensors"
 version = "0.1.0"
 dependencies = [
+ "hideout-contract",
  "windows 0.62.2",
 ]
 

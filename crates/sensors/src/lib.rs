@@ -14,7 +14,7 @@ mod engine;
 pub mod nvml;
 pub mod pdh;
 
-pub use engine::{Config, Engine, Sink, SourceFactory, SubId, ValueOut};
+pub use engine::{Config, Engine, GuardedSink, Sink, SourceFactory, SubId, ValueOut};
 
 /// The facts' namespace. The one place the word appears: keys, the write permission and the
 /// subscription match all derive from it, so a rename is this line.
@@ -60,10 +60,12 @@ pub enum Metric {
     GpuClock,
     GpuPower,
     GpuFan,
+    /// The fan's duty in percent: its own fact, never published as RPM.
+    GpuFanPct,
 }
 
 impl Metric {
-    pub const ALL: [Metric; 7] = [
+    pub const ALL: [Metric; 8] = [
         Metric::CpuLoad,
         Metric::GpuLoad,
         Metric::RamUsed,
@@ -71,6 +73,7 @@ impl Metric {
         Metric::GpuClock,
         Metric::GpuPower,
         Metric::GpuFan,
+        Metric::GpuFanPct,
     ];
 
     pub fn group(self) -> Group {
@@ -80,7 +83,8 @@ impl Metric {
             | Metric::GpuTemp
             | Metric::GpuClock
             | Metric::GpuPower
-            | Metric::GpuFan => Group::Gpu,
+            | Metric::GpuFan
+            | Metric::GpuFanPct => Group::Gpu,
             Metric::RamUsed => Group::Ram,
         }
     }
@@ -93,13 +97,14 @@ impl Metric {
             Metric::GpuClock => "clock_mhz",
             Metric::GpuPower => "power_w",
             Metric::GpuFan => "fan_rpm",
+            Metric::GpuFanPct => "fan_pct",
         }
     }
 
     /// The unit, as the key's suffix says it.
     pub fn unit(self) -> &'static str {
         match self {
-            Metric::CpuLoad | Metric::GpuLoad | Metric::RamUsed => "%",
+            Metric::CpuLoad | Metric::GpuLoad | Metric::RamUsed | Metric::GpuFanPct => "%",
             Metric::GpuTemp => "C",
             Metric::GpuClock => "MHz",
             Metric::GpuPower => "W",
