@@ -29,11 +29,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-/// Today's measured bound (main 614f3c78). Lower these, never raise them.
-const BOUND_INSTALLER: usize = 3;
-const BOUND_LAUNCH: usize = 1;
+/// Today's measured bound (FR6: one-page installer, Open Hideout now ticked). Lower these, never raise them.
+const BOUND_INSTALLER: usize = 2;
+const BOUND_LAUNCH: usize = 0;
 const BOUND_APP: usize = 3;
-const BOUND_TOTAL: usize = 7;
+const BOUND_TOTAL: usize = 5;
 
 const NOW: &str = "2026-11-19T08:00:00Z";
 const HUB_WXS: &str = include_str!("../../wix/hideout.wxs");
@@ -92,7 +92,10 @@ fn strip_xml_comments(s: &str) -> String {
 /// sequence for fails loudly: whoever changes the installer adds its screens here.
 fn installer_clicks(wxs: &str) -> Vec<String> {
     let wxs = strip_xml_comments(wxs);
-    if wxs.contains(r#"<UIRef Id="WixUI_Minimal""#) {
+    if wxs.contains(r#"<Dialog Id="HideoutInstallDlg""#) && !wxs.contains("LicenseAccepted") {
+        // FR6: one page (Install; the license is a button, not a box), then the finish page.
+        vec!["installer: Install".into(), "installer: Finish".into()]
+    } else if wxs.contains(r#"<UIRef Id="WixUI_Minimal""#) {
         // WixUI_Minimal: one welcome+license page (accept box, Install), then the finish page.
         vec![
             "installer: tick I accept the terms in the License Agreement".into(),

@@ -44,7 +44,6 @@ class WixHideout(unittest.TestCase):
         roots = {r.get('Root') for r in self.root.iter('{%s}RegistryValue' % NS['w'])}
         self.assertEqual(roots, {'HKCU'})
         self.assertNotIn('ProgramFiles', self.text)
-        self.assertIn('WixUI_Minimal', self.text)
 
     def test_downgrade_refused_and_unc_refused(self):
         up = self.product.find('w:MajorUpgrade', NS)
@@ -113,6 +112,89 @@ class WixHideout(unittest.TestCase):
         for r in self.root.iter('{%s}RemoveFile' % NS['w']):
             self.fail('no wildcard file removal')
         self.assertNotIn('RemoveRegistry', self.text)
+
+
+class InstallerDialogs(unittest.TestCase):
+    """FR6: the dialog sequence, checked on the WiX source (nothing is built or run)."""
+
+    def setUp(self):
+        self.text = WXS.read_text(encoding='utf-8')
+        self.root = ET.fromstring(self.text.replace('$(var.Version)', '0.1.0').replace('$(sys.SOURCEFILEDIR)', ''))
+        self.ui = self.root.find('.//w:UI', NS)
+        self.dlg = {d.get('Id'): d for d in self.ui.findall('w:Dialog', NS)}
+        self.props = {p.get('Id'): p.get('Value') for p in self.root.iter('{%s}Property' % NS['w'])}
+
+    def controls(self, dialog):
+        return {c.get('Id'): c for c in self.dlg[dialog].findall('w:Control', NS)}
+
+    def publishes(self, control):
+        return [(p.get('Event'), p.get('Value'), (p.text or '').strip()) for p in control.findall('w:Publish', NS)]
+
+    def all_text(self, dialog):
+        out = []
+        for c in self.dlg[dialog].findall('w:Control', NS):
+            t = c.find('w:Text', NS)
+            out.append(c.get('Text') or (t.text if t is not None and t.text else ''))
+        return ' | '.join(out)
+
+    def test_sequence_is_install_page_then_progress_then_finish(self):
+        shows = [(s.get('Dialog'), s.get('Before'), s.get('OnExit')) for s in self.ui.iter('{%s}Show' % NS['w'])]
+        self.assertEqual(shows, [('HideoutInstallDlg', 'ProgressDlg', None), ('ExitDialog', None, 'success')])
+        for gone in ('WixUI_Minimal', 'WelcomeEulaDlg', 'LicenseAccepted'):
+            self.assertNotIn(gone, self.text)
+
+    def test_install_page_is_one_click_without_an_accept_box(self):
+        c = self.controls('HideoutInstallDlg')
+        self.assertFalse([x for x in c.values() if x.get('Type') == 'CheckBox'], 'no accept box (Q1)')
+        self.assertEqual(c['Install'].get('Default'), 'yes')
+        self.assertEqual(self.publishes(c['Install']), [('EndDialog', 'Return', '1')])
+        self.assertEqual(self.publishes(c['ReadLicense']), [('NewDialog', 'HideoutLicenseDlg', '1')])
+        txt = self.all_text('HideoutInstallDlg')
+        for s in ('It installs for you only, in your user folder.', 'MIT license', 'Read the license'):
+            self.assertIn(s, txt)
+        self.assertEqual(self.dlg['HideoutInstallDlg'].get('Title'), 'Install Hideout')
+
+    def test_license_page_shows_the_rtf_and_goes_back(self):
+        c = self.controls('HideoutLicenseDlg')
+        self.assertEqual(c['License'].get('Type'), 'ScrollableText')
+        self.assertEqual(c['License'].find('w:Text', NS).get('SourceFile'), 'license.rtf')
+        self.assertEqual(self.publishes(c['Back']), [('NewDialog', 'HideoutInstallDlg', '1')])
+
+    def test_finish_page_opens_hideout_ticked_and_says_apps_stay(self):
+        self.assertEqual(self.props['WIXUI_EXITDIALOGOPTIONALCHECKBOX'], '1')  # ticked
+        self.assertEqual(self.props['WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT'], 'Open Hideout now')
+        c = self.controls('ExitDialog')
+        self.assertEqual(c['OptionalCheckBox'].get('Text'), 'Open Hideout now')
+        self.assertEqual(c['OptionalCheckBox'].get('Property'), 'WIXUI_EXITDIALOGOPTIONALCHECKBOX')
+        txt = self.all_text('ExitDialog')
+        self.assertIn('Hideout is installed', txt)
+        self.assertIn('Apps you already have stay as they are.', txt)
+        self.assertIn('does not start when you sign in unless you turn that on', txt)
+        pubs = self.publishes(c['Finish'])
+        self.assertEqual(pubs[0][:2], ('DoAction', 'LaunchHideout'))
+        self.assertIn('WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1', pubs[0][2])
+        self.assertEqual(pubs[1], ('EndDialog', 'Return', '1'))
+
+    def test_open_now_starts_the_hub_as_the_user_with_no_arguments(self):
+        ca = self.root.find(".//w:CustomAction[@Id='LaunchHideout']", NS)
+        self.assertEqual(ca.get('DllEntry'), 'WixShellExec')
+        self.assertEqual(ca.get('Impersonate'), 'yes')
+        self.assertEqual(self.props['WixShellExecTarget'], '[#HideoutExe]')
+        self.assertNotIn('WixShellExecCmdLine', self.props)  # never --tray or any argument
+        body = re.sub(r'<!--.*?-->', '', self.text, flags=re.S)
+        self.assertNotIn('--tray', body)
+        # only the finish button launches it, never the install sequence
+        self.assertEqual([c.get('Action') for c in self.root.iter('{%s}Custom' % NS['w'])], ['RemoveAutostart'])
+        self.assertIn('WixUtilExtension', PS1.read_text(encoding='utf-8'))
+
+    def test_no_run_value_or_startup_entry_anywhere(self):
+        for r in self.root.iter('{%s}RegistryValue' % NS['w']):
+            self.assertEqual(r.get('Key').split(SEP)[:2], ['Software', 'Hideout'], r.get('Key'))
+        self.assertFalse(list(self.root.iter('{%s}RegistryKey' % NS['w'])))
+        body = re.sub(r'<!--.*?-->', '', self.text, flags=re.S).lower()
+        for bad in ('currentversion', SEP + 'run', 'runonce', 'startupfolder', 'startupapproved', 'hideout.lnk'):
+            self.assertNotIn(bad, body, bad)
+        self.assertEqual([k.get('Id') for k in self.root.iter('{%s}Shortcut' % NS['w'])], ['StartMenuShortcut'])
 
 
 class DryRun(unittest.TestCase):
