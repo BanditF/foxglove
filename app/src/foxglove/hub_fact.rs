@@ -137,12 +137,13 @@ fn within<C: Connect>(c: Arc<C>, ask: Ask, limit: Duration) -> Option<Value> {
     rx.recv_timeout(limit).ok().flatten()
 }
 
-/// Does the hub report Foxglove's row as running? Only the word "running" is `Hosted`; any
+/// Does the hub report Foxglove's row as running? Only "running", "waiting" and "update-waiting" are `Hosted`; any
 /// other value is `OnItsOwn`; no answer is `Unknown`.
 pub fn hosting<C: Connect>(c: Arc<C>, limit: Duration) -> Hosting {
     match within(c, Ask::Fact, limit) {
         Some(v) => match v.get("value").and_then(Value::as_str) {
-            Some("running") => Hosting::Hosted,
+            // `waiting` and `update-waiting` are Foxglove running as an app too.
+            Some("running" | "waiting" | "update-waiting") => Hosting::Hosted,
             _ => Hosting::OnItsOwn,
         },
         None => Hosting::Unknown,
@@ -223,9 +224,11 @@ mod tests {
     }
 
     #[test]
-    fn running_means_hosted_and_only_running() {
+    fn running_waiting_and_update_waiting_mean_hosted() {
         for (word, want) in [
             ("running", Hosting::Hosted),
+            ("waiting", Hosting::Hosted),
+            ("update-waiting", Hosting::Hosted),
             ("restarting", Hosting::OnItsOwn),
             ("crash-stopped", Hosting::OnItsOwn),
         ] {

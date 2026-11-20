@@ -32,9 +32,11 @@ pub fn decide(key: &str, value: &Value) -> Option<Decision> {
         return None;
     }
     Some(match value.as_str()? {
-        "running" => Decision::Running,
+        // `waiting` (running, a dependency is down) and `update-waiting` (the old version keeps
+        // running while an update waits) both have Foxglove running as an app.
+        "running" | "waiting" | "update-waiting" => Decision::Running,
         "crash-stopped" | "crash-looped" => Decision::NotRunning("stopped after crashes"),
-        "waiting" | "needs-hub" | "update-waiting" => Decision::NotRunning("waiting for an answer"),
+        "needs-hub" => Decision::NotRunning("waiting for an answer"),
         "off" => Decision::NotRunning("turned off in Hideout"),
         "install-failed" => Decision::NotRunning("could not install or update"),
         "revoked" => Decision::NotRunning("withdrawn"),
@@ -151,8 +153,10 @@ mod tests {
             state("crash-stopped"),
             Some(Decision::NotRunning("stopped after crashes"))
         );
+        assert_eq!(state("waiting"), Some(Decision::Running));
+        assert_eq!(state("update-waiting"), Some(Decision::Running));
         assert_eq!(
-            state("waiting"),
+            state("needs-hub"),
             Some(Decision::NotRunning("waiting for an answer"))
         );
         assert_eq!(state("crash-looped"), state("crash-stopped"));

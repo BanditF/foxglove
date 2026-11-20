@@ -458,7 +458,8 @@ pub fn rebuild_preflight(
     if !exe.exists() {
         return Err(format!("the new build is not there: {}", exe.display()));
     }
-    let pin = crate::pin::Pin::open(&exe)
+    // `rebuild_gate` above proved an enrolled dev folder: its pin may be renamed aside.
+    let pin = crate::pin::Pin::open_dev(&exe)
         .map_err(|e| format!("the new build can't be read yet: {}: {e}", exe.display()))?;
     if !pin.sha256.eq_ignore_ascii_case(settled_sha256) {
         return Err("superseded: the file is not the build that settled".into());
@@ -1784,9 +1785,18 @@ impl Supervisor {
         // The program is pinned (write-locked) and hashed through that one handle, which stays
         // open until the instance is gone (#1155-B).
         self.launch_hook("before-pin");
-        let pin = match prepared.filter(|p| prepared_usable(p, &exe, Instant::now())) {
+        // Rename sharing only for an app enrolled in a listed dev folder, decided now from the
+        // registry; anything else (installed, signed, adopted outside a dev folder) is strict.
+        let dev = rebuild_gate(&reg, id, None, "").is_ok();
+        let pin = match prepared
+            .filter(|p| prepared_usable(p, &exe, Instant::now()))
+            .filter(|p| dev || !p.pin.renamable())
+        {
             // The build checked before the stop (R3); the checks below still run on it.
             Some(p) => p.pin,
+            None if dev => Arc::new(
+                crate::pin::Pin::open_dev(&exe).map_err(|e| format!("{}: {e}", exe.display()))?,
+            ),
             None => Arc::new(
                 crate::pin::Pin::open(&exe).map_err(|e| format!("{}: {e}", exe.display()))?,
             ),
@@ -1804,8 +1814,15 @@ impl Supervisor {
         }
         self.check_keyboard(id, &pin.path, &sha256);
         self.launch_hook("pinned");
-        // From here the process starts from the held handle's own canonical path, never from the
-        // name, so a junction or link retargeted after the pin cannot run other bytes (S7).
+        // The process is spawned BY NAME from the pinned handle's own canonical path, so a
+        // junction or link retargeted after the pin cannot run other bytes (S7). A dev-folder
+        // pin allows a rename, so its name is held still by a second strict handle (the same
+        // file id, or the launch is refused) until the process is running: nothing can be put
+        // at the name between the hash and the start. A strict pin needs no lock.
+        let _name_lock = pin.lock_name().map_err(|e| {
+            log::warn!("supervisor: {id}: the program changed before it started ({e})");
+            format!("{}: {e}", pin.path)
+        })?;
         let exe = PathBuf::from(&pin.path);
         let instance = self.0.next_instance.fetch_add(1, Ordering::Relaxed);
         let caps = self.caps_of(Some(&reg), id);

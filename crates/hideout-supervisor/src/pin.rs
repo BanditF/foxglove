@@ -2,7 +2,8 @@
 //! The program pin of a started module (#1155-B): the exe is opened once with sharing for reads
 //! only, so while the pin lives nobody can write, rename or delete it (a sharing violation), and
 //! the hash and the canonical path both come from that one handle. The pin is held from the
-//! hash to the process start, and for as long as the instance runs.
+//! hash to the process start, and for as long as the instance runs. (A dev-folder pin also lets
+//! the file be renamed; see [`Pin::open_dev`] and [`Pin::lock_name`].)
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -17,13 +18,63 @@ pub struct Pin {
     pub path: String,
     /// The SHA-256 of the bytes read through the pinned handle.
     pub sha256: String,
+    /// True only for a pin taken with [`Pin::open_dev`] that is allowed to be renamed aside.
+    renamable: bool,
 }
 
 impl Pin {
     /// Opens `exe` write-locked and hashes it through that handle.
     pub fn open(exe: &Path) -> io::Result<Pin> {
-        let mut file = open_locked(exe)?;
-        let path = final_path(&file, exe)?;
+        Pin::open_with(exe, false)
+    }
+
+    /// Like [`Pin::open`] for an app in an enrolled dev folder ONLY (the caller proves that with
+    /// the registry's dev-folder check): the file may be renamed or deleted while pinned, so a
+    /// rebuild can move the running exe aside and put the new build in its place (R3/R7). Writes
+    /// stay refused. A path that is a link (reparse point) gets the strict pin instead.
+    pub fn open_dev(exe: &Path) -> io::Result<Pin> {
+        let link = std::fs::symlink_metadata(exe)
+            .map(|m| is_reparse(&m))
+            .unwrap_or(true);
+        Pin::open_with(exe, !link)
+    }
+
+    /// Holds the NAME of the pinned file still: a second, strict handle (no rename, no delete) to
+    /// the same file, refused unless it is the very file the pin holds (same volume and file id).
+    /// A dev pin lets the file be renamed, so the launch takes this lock before it spawns by name
+    /// and keeps it until the process is running: nothing can be put at the name in between,
+    /// and the process runs the bytes that were hashed. A strict pin needs no such lock.
+    pub fn lock_name(&self) -> io::Result<NameLock> {
+        if !self.renamable {
+            return Ok(NameLock(None));
+        }
+        let f = open_locked(Path::new(&self.path), false)?;
+        if file_id(&f)? != file_id(&self.file)? {
+            return Err(io::Error::other(
+                "the program was replaced while it was being started",
+            ));
+        }
+        Ok(NameLock(Some(f)))
+    }
+
+    /// Whether this pin lets the file be renamed or deleted (dev-folder pins only).
+    pub fn renamable(&self) -> bool {
+        self.renamable
+    }
+
+    fn open_with(exe: &Path, renamable: bool) -> io::Result<Pin> {
+        let mut file = open_locked(exe, renamable)?;
+        let mut path = final_path(&file, exe)?;
+        let mut renamable = renamable;
+        // Decided from the opened handle: rename sharing stays only when the handle's own final
+        // path is the path asked for. A link, 8.3 or relative spelling, or a swap between the
+        // earlier checks and the open gets the strict pin instead (fail closed).
+        if renamable && !same_spelling(exe, &path) {
+            drop(file);
+            renamable = false;
+            file = open_locked(exe, false)?;
+            path = final_path(&file, exe)?;
+        }
         let mut h = Sha256::new();
         let mut buf = vec![0u8; 64 * 1024];
         file.seek(SeekFrom::Start(0))?;
@@ -35,7 +86,12 @@ impl Pin {
             h.update(&buf[..n]);
         }
         let sha256 = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        Ok(Pin { file, path, sha256 })
+        Ok(Pin {
+            file,
+            path,
+            sha256,
+            renamable,
+        })
     }
 
     /// Hashes the pinned handle again (the bytes now), for a re-check at `initialize`.
@@ -53,6 +109,42 @@ impl Pin {
         }
         Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
     }
+}
+
+/// A strict handle that keeps a dev pin's file name in place; see [`Pin::lock_name`].
+#[derive(Debug)]
+pub struct NameLock(#[allow(dead_code)] Option<std::fs::File>);
+
+/// `a` and `b` spell the same absolute path (slashes, case and a verbatim prefix aside).
+fn same_spelling(a: &Path, b: &str) -> bool {
+    let norm = |s: &str| {
+        hideout_registry::keyboard::strip_verbatim(s)
+            .replace('/', "\\")
+            .to_lowercase()
+    };
+    norm(&a.to_string_lossy()) == norm(b)
+}
+
+/// The volume serial and file id of an open file: its identity, whatever it is called.
+#[cfg(windows)]
+fn file_id(f: &std::fs::File) -> io::Result<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut i: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(f.as_raw_handle() as _, &mut i) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((
+        i.dwVolumeSerialNumber,
+        (u64::from(i.nFileIndexHigh) << 32) | u64::from(i.nFileIndexLow),
+    ))
+}
+
+#[cfg(not(windows))]
+fn file_id(_f: &std::fs::File) -> io::Result<(u32, u64)> {
+    Ok((0, 0))
 }
 
 /// The path of the file the handle really names, so a link swapped after the open cannot make the
@@ -92,18 +184,30 @@ fn final_path(_file: &std::fs::File, exe: &Path) -> io::Result<String> {
 }
 
 #[cfg(windows)]
-fn open_locked(exe: &Path) -> io::Result<std::fs::File> {
+fn open_locked(exe: &Path, renamable: bool) -> io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
-    // FILE_SHARE_READ only: no writer, no rename, no delete while this handle is open.
+    // FILE_SHARE_READ only: no writer, no rename, no delete while this handle is open. A
+    // dev-folder pin adds FILE_SHARE_DELETE (4): rename and delete, still no writer.
     std::fs::OpenOptions::new()
         .read(true)
-        .share_mode(1)
+        .share_mode(if renamable { 1 | 4 } else { 1 })
         .open(exe)
 }
 
 #[cfg(not(windows))]
-fn open_locked(exe: &Path) -> io::Result<std::fs::File> {
+fn open_locked(exe: &Path, _renamable: bool) -> io::Result<std::fs::File> {
     std::fs::File::open(exe)
+}
+
+#[cfg(windows)]
+fn is_reparse(m: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    m.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse(m: &std::fs::Metadata) -> bool {
+    m.file_type().is_symlink()
 }
 
 #[cfg(all(test, windows))]
@@ -135,6 +239,62 @@ mod tests {
         assert_eq!(pin.rehash().unwrap(), pin.sha256);
         drop(pin);
         std::fs::write(&exe, b"two").unwrap();
+    }
+
+    #[test]
+    fn a_dev_pin_can_be_renamed_aside_but_not_written() {
+        let d = temp("dev");
+        let exe = d.join("foxglove.exe");
+        std::fs::write(&exe, b"one").unwrap();
+        let pin = Pin::open_dev(&exe).unwrap();
+        assert!(pin.renamable());
+        assert!(std::fs::write(&exe, b"two").is_err(), "overwrite");
+        std::fs::rename(&exe, d.join("old.exe")).expect("rename aside");
+        std::fs::write(&exe, b"new").expect("a new file at the name");
+        // The pin still holds the old bytes.
+        assert_eq!(pin.rehash().unwrap(), pin.sha256);
+        assert_ne!(pin.sha256, crate::sha256_file(&exe).unwrap());
+    }
+
+    #[test]
+    fn the_name_lock_refuses_a_swap_and_holds_the_name() {
+        let d = temp("namelock");
+        let exe = d.join("foxglove.exe");
+        std::fs::write(&exe, b"one").unwrap();
+        // Swapped before the lock: other bytes at the name, the pinned file renamed aside.
+        let pin = Pin::open_dev(&exe).unwrap();
+        std::fs::rename(&exe, d.join("aside.exe")).unwrap();
+        std::fs::write(&exe, b"evil").unwrap();
+        // The pin's path is the name it was taken at: another file is there now.
+        let err = pin.lock_name().expect_err("a different file at the name");
+        assert!(err.to_string().contains("replaced"), "{err}");
+        // The same file: locked, and the name cannot be moved while the lock lives.
+        let exe2 = d.join("b.exe");
+        std::fs::write(&exe2, b"b").unwrap();
+        let pin2 = Pin::open_dev(&exe2).unwrap();
+        let lock = pin2.lock_name().unwrap();
+        assert!(std::fs::rename(&exe2, d.join("c.exe")).is_err(), "locked");
+        drop(lock);
+        std::fs::rename(&exe2, d.join("c.exe")).expect("free again");
+        // A strict pin has nothing to lock.
+        assert!(Pin::open(&d.join("c.exe")).unwrap().lock_name().is_ok());
+    }
+
+    #[test]
+    fn the_strict_pin_stays_strict_and_a_linked_dev_exe_gets_it_too() {
+        let d = temp("strict");
+        let exe = d.join("foxglove.exe");
+        std::fs::write(&exe, b"one").unwrap();
+        let pin = Pin::open(&exe).unwrap();
+        assert!(!pin.renamable());
+        assert!(std::fs::rename(&exe, d.join("m.exe")).is_err());
+        drop(pin);
+        let link = d.join("link.exe");
+        if std::os::windows::fs::symlink_file(&exe, &link).is_ok() {
+            let p = Pin::open_dev(&link).unwrap();
+            assert!(!p.renamable(), "a reparse point never gets rename sharing");
+            assert!(std::fs::rename(&exe, d.join("m2.exe")).is_err());
+        }
     }
 
     #[test]
@@ -288,7 +448,7 @@ mod tests {
         std::fs::create_dir_all(&real).unwrap();
         std::fs::write(real.join("foxglove.exe"), b"B").unwrap();
         // A plain open: the handle's path has no verbatim prefix and names the file.
-        let file = open_locked(&real.join("foxglove.exe")).unwrap();
+        let file = open_locked(&real.join("foxglove.exe"), false).unwrap();
         let got = final_path(&file, &real.join("foxglove.exe")).unwrap();
         assert!(!got.starts_with(r"\\"), "no verbatim prefix: {got}");
         let want = real.join("foxglove.exe").display().to_string();
@@ -306,7 +466,7 @@ mod tests {
             .map(|s| s.success())
             .unwrap_or(false);
         if ok {
-            let f = open_locked(&junction.join("foxglove.exe")).unwrap();
+            let f = open_locked(&junction.join("foxglove.exe"), false).unwrap();
             let other = d.join("elsewhere.exe");
             let got = final_path(&f, &other).unwrap();
             assert!(hideout_registry::keyboard::same_path(&got, &want), "{got}");
