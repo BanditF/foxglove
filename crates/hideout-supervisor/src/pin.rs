@@ -113,7 +113,7 @@ impl Pin {
 
 /// A strict handle that keeps a dev pin's file name in place; see [`Pin::lock_name`].
 #[derive(Debug)]
-pub struct NameLock(Option<std::fs::File>);
+pub struct NameLock(#[allow(dead_code)] Option<std::fs::File>);
 
 /// `a` and `b` spell the same absolute path (slashes, case and a verbatim prefix aside).
 fn same_spelling(a: &Path, b: &str) -> bool {
@@ -266,7 +266,7 @@ mod tests {
         std::fs::rename(&exe, d.join("aside.exe")).unwrap();
         std::fs::write(&exe, b"evil").unwrap();
         // The pin's path is the name it was taken at: another file is there now.
-        let err = pin.lock_name().err().expect("a different file at the name");
+        let err = pin.lock_name().expect_err("a different file at the name");
         assert!(err.to_string().contains("replaced"), "{err}");
         // The same file: locked, and the name cannot be moved while the lock lives.
         let exe2 = d.join("b.exe");
