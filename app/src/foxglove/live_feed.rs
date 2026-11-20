@@ -549,10 +549,6 @@ fn refusal_rows(warns: bool) -> Vec<super::health::HealthRow> {
         "Live wallpaper",
         super::health::Level::Warn,
         "a wallpaper couldn't connect",
-    )
-    .with_notice(
-        "Wallpaper couldn't connect",
-        "Foxglove hands it a new connection by itself. If it still doesn't connect, reload the wallpaper in Wallpaper Engine.",
     )]
 }
 
@@ -2156,16 +2152,11 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].level, super::super::health::Level::Warn);
         assert_eq!(rows[0].detail, "a wallpaper couldn't connect");
-        let (title, body) = super::super::health_notice::text(&rows[0]);
-        assert_eq!(title, "Wallpaper couldn't connect");
-        assert_eq!(
-            body,
-            "Foxglove hands it a new connection by itself. If it still doesn't connect, reload the wallpaper in Wallpaper Engine."
-        );
-        for text in [&rows[0].detail, &title, &body] {
-            let low = text.to_lowercase();
-            assert!(!low.contains("paste") && !low.contains("token") && !low.contains("copy"));
-        }
+        // Health card only: no Windows notification for a refused wallpaper connection.
+        assert!(rows[0].notice.is_none());
+        assert!(super::super::health_notice::health_only(&rows[0]));
+        let low = rows[0].detail.to_lowercase();
+        assert!(!low.contains("paste") && !low.contains("token") && !low.contains("copy"));
     }
 
     /// #587: a hub that panics drops its tap, which moves the shared generation on, so the old
@@ -3392,13 +3383,7 @@ mod tests {
         let rows = refusal_rows(true);
         let mut texts = vec![format!("{:?}", load().unwrap().unwrap())];
         texts.push(rows[0].detail.clone());
-        let (title, body) = super::super::health_notice::text(&rows[0]);
-        texts.extend([
-            title,
-            body,
-            EXPLAINER.to_string(),
-            token_line(TokenReason::FirstEnable),
-        ]);
+        texts.extend([EXPLAINER.to_string(), token_line(TokenReason::FirstEnable)]);
         for text in &texts {
             assert!(!text.contains(pasted), "{text}");
         }

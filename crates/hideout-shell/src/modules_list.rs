@@ -94,6 +94,18 @@ pub const REMOVING: &str = "Removing\u{2026}";
 pub fn remove_failed(name: &str) -> String {
     format!("Couldn't remove {name}. It may still be running or a file is in use. Try again.")
 }
+/// The line under a row whose Turn on did not work after the user's Allow, for `name`. `why` is
+/// the supervisor's raw error: it only picks the plain reason and is never shown.
+pub fn turn_on_failed(name: &str, why: &str) -> String {
+    let reason = if why.contains("trust.revoked") || why.contains("withdrawn") {
+        "its maker withdrew this version"
+    } else if why.contains("OK first") {
+        "it still needs your OK"
+    } else {
+        "the app didn't start"
+    };
+    format!("Couldn't turn on {name}: {reason}.")
+}
 /// The error's choices: ask again (the confirm shows again), or put the message away.
 pub const TRY_AGAIN: &str = "Try again";
 pub const CLOSE: &str = "Close";
@@ -113,6 +125,8 @@ pub enum Removal {
 pub struct RemoveAsk {
     asked: Option<String>,
     states: std::collections::BTreeMap<String, Removal>,
+    /// A Turn on that did not work, by module id: the plain line for the row.
+    turn_on: std::collections::BTreeMap<String, String>,
 }
 
 impl RemoveAsk {
@@ -136,6 +150,18 @@ impl RemoveAsk {
     /// Keeps the states of modules still listed (a removed module's row is gone).
     pub fn retain_listed(&mut self, listed: impl Fn(&str) -> bool) {
         self.states.retain(|id, _| listed(id));
+        self.turn_on.retain(|id, _| listed(id));
+    }
+    /// A Turn on that did not work: the row says so until the next try.
+    pub fn set_turn_on_failed(&mut self, id: &str, line: String) {
+        self.turn_on.insert(id.into(), line);
+    }
+    /// Puts a row's Turn on line away (the next try, or it worked).
+    pub fn clear_turn_on_failed(&mut self, id: &str) {
+        self.turn_on.remove(id);
+    }
+    pub fn turn_on_line(&self, id: &str) -> Option<&str> {
+        self.turn_on.get(id).map(String::as_str)
     }
     /// The module whose confirm shows.
     pub fn pending(&self) -> Option<&str> {
@@ -190,6 +216,8 @@ pub struct Row {
     pub adopted: bool,
     /// A Remove in progress or failed ([`Removal`]).
     pub removal: Option<Removal>,
+    /// A Turn on that did not work: one plain line under the row.
+    pub turn_on_note: Option<String>,
 }
 
 /// What a click on the page asks for.
@@ -440,6 +468,7 @@ pub fn row_in(
     };
     Row {
         removal: None,
+        turn_on_note: None,
         adopted: m.adopted,
         id: m.id.clone(),
         name: m.name.clone(),
@@ -812,6 +841,10 @@ pub fn page_ui_with_head(
                             }
                         });
                     }
+                    if let Some(line) = &r.turn_on_note {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(line).color(c(t.danger)));
+                    }
                     if r.removal == Some(Removal::Failed) {
                         ui.add_space(8.0);
                         ui.separator();
@@ -841,6 +874,23 @@ pub fn page_ui_with_head(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_turn_on_has_one_plain_line_and_never_the_raw_error() {
+        let line = turn_on_failed("Art", "trust.revoked: a@1 was withdrawn");
+        assert_eq!(
+            line,
+            "Couldn't turn on Art: its maker withdrew this version."
+        );
+        let other = turn_on_failed("Art", "Io(Os { code: 5 })");
+        assert_eq!(other, "Couldn't turn on Art: the app didn't start.");
+        assert!(!other.contains("Os"));
+        let mut a = RemoveAsk::default();
+        a.set_turn_on_failed("m", other.clone());
+        assert_eq!(a.turn_on_line("m"), Some(other.as_str()));
+        a.clear_turn_on_failed("m");
+        assert_eq!(a.turn_on_line("m"), None);
+    }
+
     use super::*;
     use serde_json::json;
     use std::time::Duration;
@@ -1085,6 +1135,7 @@ mod tests {
             primary: None,
             adopted: false,
             removal: None,
+            turn_on_note: None,
         };
         let mut rows = vec![
             mk("Beat", false, false),

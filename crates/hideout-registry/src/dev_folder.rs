@@ -52,9 +52,14 @@ const PARENT_WRITE: u32 = 0x2 | 0x40 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x4000_0
 /// (an inherit-only placeholder) and the current user.
 fn trusted_writer(sid: &str, me: &str) -> bool {
     sid == me
-        || matches!(sid, "S-1-5-18" | "S-1-5-32-544" | "S-1-3-0")
-        || sid.starts_with("S-1-5-80-")
+        || matches!(
+            sid,
+            "S-1-5-18" | "S-1-5-32-544" | "S-1-3-0" | TRUSTED_INSTALLER
+        )
 }
+
+/// The TrustedInstaller service SID. Other `S-1-5-80-*` service SIDs are not trusted writers.
+const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 
 /// What matters on the drive root: swapping or deleting what is in it. Add-file and add-folder
 /// are left out (every default root grants them); inherit-only ACEs there apply to children only.
@@ -559,5 +564,26 @@ impl Registry {
             return None;
         }
         Some(now)
+    }
+}
+
+#[cfg(test)]
+mod trusted_writer_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_trusted_installer_service_sid_is_trusted_of_the_service_sids() {
+        let me = "S-1-5-21-1-2-3-1001";
+        for ok in [me, "S-1-5-18", "S-1-5-32-544", "S-1-3-0", TRUSTED_INSTALLER] {
+            assert!(trusted_writer(ok, me), "{ok}");
+        }
+        for bad in [
+            "S-1-5-80-0",
+            "S-1-5-80-1-2-3-4-5",
+            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478465",
+            "S-1-1-0",
+        ] {
+            assert!(!trusted_writer(bad, me), "{bad}");
+        }
     }
 }
