@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use foxglove_plugin::hideout::{
     connect_pipe, Handler, Incoming, InitializeModule, Launch, ModulePipe, ModuleRegister, PatchOp,
-    Register, RpcError, Session, UiEvent, UiPatch,
+    Register, RpcError, Session, UiEvent, UiPatch, MODULE_GRANTS,
 };
 use foxglove_sensors::host::{registered_pattern, Host, Write, GAME_MODE_FACT};
 use foxglove_sensors::ui::{self, PageInput, PanelsOut, PanelsView};
@@ -168,8 +168,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Game mode is optional: without the grant the module reads at the normal rate.
     let id = session.request("facts.get", json!({"key": GAME_MODE_FACT}))?;
-    let game_mode_get = id;
-    session.request("facts.subscribe", json!({"pattern": GAME_MODE_FACT}))?;
+    let mut game_mode_get = id;
+    // Denied before the user's Allow: the session asks again by itself on `module.grants`.
+    session.subscribe(GAME_MODE_FACT)?;
 
     let factories: Vec<SourceFactory> = vec![
         Box::new(|| Box::new(pdh::PdhSource::new()) as Box<dyn Source>),
@@ -189,14 +190,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         match line {
             Ok(line) => {
+                let incoming = session.handle_line(&line, &mut inbox)?;
+                if matches!(&incoming, Incoming::Notified { method } if method == MODULE_GRANTS) {
+                    // The user's Allow may have brought the game-mode grant: read the value
+                    // as it is now (the session subscribes again by itself).
+                    game_mode_get = session.request("facts.get", json!({"key": GAME_MODE_FACT}))?;
+                }
                 if let Incoming::Response {
                     id,
                     method,
                     outcome,
-                } = session.handle_line(&line, &mut inbox)?
+                } = incoming
                 {
                     match outcome {
-                        Ok(v) if id == game_mode_get => game_mode = Some(is_on(&v["value"])),
+                        Ok(v) if id == game_mode_get => {
+                            host.set_game_mode_visible(true);
+                            game_mode = Some(is_on(&v["value"]));
+                        }
                         Ok(_) => {}
                         // Without the game-mode grant the module reads at the normal rate.
                         Err(e) => {

@@ -263,6 +263,22 @@ pub struct FactsDemand {
     pub subscribers: u32,
 }
 
+/// The method name of [`ModuleGrants`] (v1.22).
+pub const MODULE_GRANTS: &str = "module.grants";
+
+/// `module.grants` (H -> M notification, v1.22): the user's Allow just widened what the module
+/// holds while it runs. `added` lists the permissions (as the module's manifest spells them)
+/// it holds now and did not before; a call that was denied for want of one of them, a
+/// `facts.subscribe` above all, is worth sending again. Sent to the module's own connections
+/// only, and only when something was added: a turn-off is never announced this way (leases
+/// end with `lease.closed`). A module that doesn't know it ignores it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleGrants {
+    /// Permissions the module holds now and did not before, sorted, each once.
+    pub added: Vec<String>,
+}
+
 /// Crashes in ten minutes that stop a module (§7.7).
 pub const CRASH_LIMIT: u32 = 5;
 
@@ -495,6 +511,8 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         crate::lease::LEASE_END => typed::<crate::lease::LeaseEnd>(params),
         // A provider's own callers' names (§8.8, v1.21).
         crate::lease::LEASE_HOLDERS => typed::<crate::lease::LeaseHolders>(params),
+        // An Allow widened a running module's grants (section 8.8, v1.22).
+        MODULE_GRANTS => typed::<ModuleGrants>(params),
         // Demand for a module's facts (section 8.8, v1.20).
         FACTS_DEMAND => typed::<FactsDemand>(params),
         // Bring a module's page to the front (section 8.8, v1.19).

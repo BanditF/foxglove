@@ -1,6 +1,6 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.21** (v1.20 plus `lease.holders`, a provider naming the callers it holds leases for outside the hub, #1142; v1.20 was v1.19 plus `facts.demand`, the hub telling the module that owns a fact pattern when the first subscriber arrives and the last leaves, #1328 follow-up; v1.19 was v1.18 plus `hub.show` and the app's read of `module.foxglove.state` over the verified hub pipe, H5.5; v1.18 was v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
+Status: spec, contract version **1.22** (v1.21 plus `module.grants`, the hub telling a running module that the user's Allow widened what it holds, so a denied `facts.subscribe` is sent again; v1.21 was v1.20 plus `lease.holders`, a provider naming the callers it holds leases for outside the hub, #1142; v1.20 was v1.19 plus `facts.demand`, the hub telling the module that owns a fact pattern when the first subscriber arrives and the last leaves, #1328 follow-up; v1.19 was v1.18 plus `hub.show` and the app's read of `module.foxglove.state` over the verified hub pipe, H5.5; v1.18 was v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
 and the user's Resume that ends them, #1142; v1.16 was v1.15 plus the tray menu's quick actions: an `action`
 panel is a tray menu item, a press on a cold module starts it and is delivered, and `tray` is a
 user source, #1234; v1.15 was v1.14 plus a cap on the leases one caller holds at one
@@ -18,12 +18,24 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)", every v1.19 one "(v1.19)", every v1.20 one "(v1.20)", every v1.21 one "(v1.21)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)", every v1.19 one "(v1.19)", every v1.20 one "(v1.20)", every v1.21 one "(v1.21)", every v1.22 one "(v1.22)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.22** (an Allow reaches a running module): a module connection's capabilities are read
+  from the module's grants at `initialize` and now follow the grants the hub holds in memory,
+  both ways, while the module runs. After the user's Allow the calls the module makes next are
+  checked against the wider grant, with no restart; after a turn-off (or a narrowing from the
+  file) they are checked against the narrower one at once, and a fact subscription the
+  connection may no longer hold ends. `module.grants {added}` (H → M notification, §8.8) tells
+  every connection of that module, and nobody else, which items an Allow added; nothing is sent
+  when nothing was added or on a narrowing. The notification grants nothing: it only says a
+  call that was denied is worth sending again, and the hub checks that call as any other. The
+  module SDKs keep each `facts.subscribe` the hub denied (64 at most, the oldest dropped) and
+  send them once more per `module.grants`, with no timer. Additive: the hub version stays
+  1.5; an older hub never sends it and an older module ignores it.
 - **1.21** (#1142, who holds a pause): a provider can name the callers it holds leases for
   outside the hub. `lease.holders {family, names}` → `{}` (M → H, §8.8): the hub keeps the list
   per module and family and adds the names to the fact `module.<provider>.lease_holders`
@@ -2364,6 +2376,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `facts.get`, `facts.list`, `facts.subscribe`, `facts.unsubscribe` | C → H | call | as Foxglove API v1 | as v1 | `facts.read:<pattern>`; (v1.7) `apps.watch:<name>.exe` for that app's `apps.*` facts (§4.6) |
 | `facts.set` | M → H | call | as v1 | as v1 | `facts.write:<pattern>`, or `facts:` in `provides` |
 | `facts.changed` | H → C | notification | as v1 | — | the subscription |
+| `module.grants` (v1.22) | H → M | notification | `{added}` (the grant items the user's Allow added to what this module holds, sorted) | — | sent to every connection of that module only, when an Allow widened its grants while it runs; never on a narrowing; grants nothing by itself |
 | `facts.demand` (v1.20) | H → M | notification | `{pattern, subscribers}` (`pattern` one the module registered; `subscribers` = live subscriptions overlapping it, the module's own excluded) | — | sent only to the owner, on the 0 ↔ non-zero edges and once after its register result if already non-zero |
 | `channel.open` | C → H | call | `{module, channel}` | `{pipe, nonce}` | `channel.open:<module>/<channel>` |
 | `channel.create` | H → M | call | `{channel, consumer, nonce}` | `{pipe}` | the provider offers it |

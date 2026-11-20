@@ -33,6 +33,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+/// `module.grants` (H -> M, v1.22): an Allow widened what the module holds while it runs.
+pub use foxglove_plugin_api::hideout::messages::MODULE_GRANTS;
 pub use foxglove_plugin_api::hideout::messages::{
     ActionInvoke, ChannelCreate, ChannelOpen, ChannelOpened, DrainReason, DrainResult, HubNotify,
     InitializeModule, ModuleDrain, ModuleReady, ModuleRegister, NotifyLevel, PatchOp, PatchOpKind,
@@ -342,7 +344,14 @@ pub struct Session<R, W> {
     writer: W,
     next_id: i64,
     pending: HashMap<i64, String>,
+    /// The params of each `facts.subscribe` not answered yet, by request id.
+    subscribing: HashMap<i64, Value>,
+    /// The params of each `facts.subscribe` the hub denied: sent again on `module.grants`.
+    denied_subs: Vec<Value>,
 }
+
+/// Denied subscriptions a session keeps to send again (the oldest goes first).
+const MAX_DENIED_SUBS: usize = 64;
 
 impl<R: BufRead, W: Write> Session<R, W> {
     pub fn new(reader: R, writer: W) -> Session<R, W> {
@@ -351,6 +360,8 @@ impl<R: BufRead, W: Write> Session<R, W> {
             writer,
             next_id: 1,
             pending: HashMap::new(),
+            subscribing: HashMap::new(),
+            denied_subs: Vec::new(),
         }
     }
 
@@ -385,7 +396,31 @@ impl<R: BufRead, W: Write> Session<R, W> {
         let params = to_value(params)?;
         self.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         self.pending.insert(id, method.to_string());
+        if method == "facts.subscribe" {
+            self.subscribing.insert(id, params);
+        }
         Ok(id)
+    }
+
+    /// `facts.subscribe {pattern}`. One the hub denies (the user has not allowed it yet) is
+    /// kept and sent again by itself when the hub says the module's grants widened
+    /// (`module.grants`, v1.22): the new answer arrives as another [`Incoming::Response`].
+    pub fn subscribe(&mut self, pattern: &str) -> Result<i64> {
+        self.request("facts.subscribe", json!({ "pattern": pattern }))
+    }
+
+    /// The `facts.subscribe` params the hub denied and that wait for an Allow.
+    pub fn denied_subscriptions(&self) -> &[Value] {
+        &self.denied_subs
+    }
+
+    /// `module.grants` arrived: every denied subscription is asked for once more. One that is
+    /// denied again waits for the next `module.grants`; nothing is sent on a timer.
+    fn resubscribe(&mut self) -> Result<()> {
+        for params in std::mem::take(&mut self.denied_subs) {
+            self.request("facts.subscribe", params)?;
+        }
+        Ok(())
     }
 
     /// Sends a notification (no answer).
@@ -475,6 +510,15 @@ impl<R: BufRead, W: Write> Session<R, W> {
                 (None, Some(e)) => Err(RpcError::from_value(e)),
                 _ => return Err(SessionError::Protocol("one of result and error".into())),
             };
+            if let Some(params) = self.subscribing.remove(&id) {
+                let denied = matches!(&outcome, Err(e) if e.code == code::DENIED);
+                if denied && !self.denied_subs.contains(&params) {
+                    if self.denied_subs.len() >= MAX_DENIED_SUBS {
+                        self.denied_subs.remove(0);
+                    }
+                    self.denied_subs.push(params);
+                }
+            }
             return Ok(Incoming::Response {
                 id,
                 method,
@@ -486,6 +530,10 @@ impl<R: BufRead, W: Write> Session<R, W> {
         let Some(id) = msg.get("id").cloned() else {
             match method.as_str() {
                 "module.exit" => handler.exit(),
+                MODULE_GRANTS => {
+                    self.resubscribe()?;
+                    handler.notification(&method, params);
+                }
                 _ => handler.notification(&method, params),
             }
             return Ok(Incoming::Notified { method });
