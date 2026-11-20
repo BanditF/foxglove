@@ -951,8 +951,10 @@ fn the_allow_list_is_part_of_the_wallpaper_engine_section() {
         assert!(text.contains(want), "{want}");
     }
     assert!(!text.contains("d:/we"), "no path on the page");
-    let mut off = Wallpaper::default();
-    off.allow = Some(inputs(false));
+    let off = Wallpaper {
+        allow: Some(inputs(false)),
+        ..Wallpaper::default()
+    };
     let all = panels(&we_view(off));
     let text = serde_json::to_string(&panel(&all, PAGE)["tree"]).unwrap();
     assert_eq!(text.matches("Wallpaper Engine isn't running.").count(), 1);
