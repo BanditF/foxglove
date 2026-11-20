@@ -81,6 +81,9 @@ pub struct LiveSettings {
     /// The wallpapers the user allowed to get the feed (S5a): folder keys
     /// (`wallpaper_manifest::key_of_dir`), not secrets. Empty: none yet.
     pub allowed: Vec<String>,
+    /// The one-time seed ran ([`seed_allowed`]): a feed that worked before the allow list keeps
+    /// the wallpapers on screen then. A fact, not a secret.
+    pub allow_seeded: bool,
 }
 
 impl Default for LiveSettings {
@@ -92,11 +95,29 @@ impl Default for LiveSettings {
             ticket_verified: false,
             notify: true,
             allowed: Vec::new(),
+            allow_seeded: false,
         }
     }
 }
 
 static SETTINGS: Mutex<Option<LiveSettings>> = Mutex::new(None);
+
+/// Why the feed is quiet now (its own reason: paused, away, full screen), for the Hideout panel.
+static QUIET: Mutex<Option<Why>> = Mutex::new(None);
+
+/// The feed's own reason for sending nothing right now, if any.
+#[cfg_attr(test, allow(dead_code))]
+pub fn quiet_now() -> Option<Why> {
+    *QUIET.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Keeps [`QUIET`] and tells the panel when it changed (an event, never a timer).
+fn set_quiet(why: Option<Why>) {
+    let was = std::mem::replace(&mut *QUIET.lock().unwrap_or_else(|e| e.into_inner()), why);
+    if was != why {
+        super::we_panel::changed();
+    }
+}
 
 /// The settings, read from the store once and then kept in step by [`save`]. A read that
 /// fails isn't kept (#741): the next call reads again, so the defaults' empty token never
@@ -376,6 +397,7 @@ impl Hub {
             return Vec::new();
         }
         self.quiet = quiet;
+        set_quiet(quiet);
         self.batch = wire::Batch::default();
         match quiet {
             Some(why) => self.broadcast(out, &Message::Quiet { why }),
@@ -533,7 +555,6 @@ fn send(msg: Msg) {
 /// every socket is closed (the ones the old pasted token admitted too), the saved token is
 /// blanked the way the first redeemed ticket blanks it, and no ticket is handed out until
 /// [`reconnect`]. The allowances stay.
-#[allow(dead_code)] // Entry point for the Hideout panel (S5b); no UI calls it yet.
 pub fn disconnect_all() {
     {
         let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
@@ -555,15 +576,61 @@ fn allowed_set(s: &LiveSettings) -> std::collections::BTreeSet<String> {
     s.allowed.iter().cloned().collect()
 }
 
-/// Whether the allow list gates the feed. Off until S5b ships the switch: with it on and no way
-/// to flip a wallpaper on, a wallpaper that works today would silently lose its ticket (UX review
-/// of #1316). While off, every wallpaper that asks is allowed, as before; the list is still
-/// saved so S5b starts from the user's choices. S5b turns this on.
-const ALLOW_GATE: bool = false;
+/// Whether the allow list gates the feed. On since S5b ships the switches: a wallpaper gets a
+/// ticket only after the user allows it in the Wallpaper Engine section. (Off in S5a, so a
+/// wallpaper that worked kept working until there was a switch to flip.)
+const ALLOW_GATE: bool = true;
 
 /// What the pairing store is told: the saved list when the gate is on, else no restriction.
 fn gate(s: &LiveSettings) -> Option<std::collections::BTreeSet<String>> {
     ALLOW_GATE.then(|| allowed_set(s))
+}
+
+/// The one-time seed (S5b): a feed that worked before the allow list (it is on and has a token or
+/// has redeemed a ticket) keeps the wallpapers on screen right now, which is no wider than what
+/// it fed before the switches existed. Runs once, on the first look at the monitors; a fresh
+/// install, or a user who already has allowed wallpapers, only gets the marker.
+#[cfg_attr(test, allow(dead_code))]
+/// Returns whether the seed is used up: only a look with a wallpaper on screen while the feed is
+/// on counts, so an empty look (Wallpaper Engine not running yet) or a feed that is off leaves it
+/// for the next look.
+pub fn seed_allowed(on_screen: &[String]) -> bool {
+    let s = settings();
+    if s.allow_seeded {
+        return true;
+    }
+    if on_screen.is_empty() || !s.enabled {
+        return false;
+    }
+    seed_with(on_screen, update_settings).unwrap_or(false)
+}
+
+/// `Ok(true)` when the seed is used up (the marker is saved).
+fn seed_with(on_screen: &[String], update: impl Updater) -> Result<bool, String> {
+    let (mut used, mut added) = (false, false);
+    let s = update(&mut |s| {
+        (used, added) = (false, false);
+        if s.allow_seeded {
+            used = true;
+            return;
+        }
+        if on_screen.is_empty() || !s.enabled {
+            return;
+        }
+        used = true;
+        s.allow_seeded = true;
+        if s.allowed.is_empty() && (s.ticket_verified || !s.token.is_empty()) {
+            let mut set = allowed_set(s);
+            set.extend(on_screen.iter().take(MAX_ALLOWED).cloned());
+            s.allowed = set.into_iter().collect();
+            added = true;
+        }
+    })?;
+    if added {
+        apply_allowed(&s);
+        super::we_panel::changed();
+    }
+    Ok(used)
 }
 
 /// Most wallpapers the allow list keeps.
@@ -573,7 +640,6 @@ const MAX_ALLOWED: usize = 256;
 /// saved, handed to the pairing store, and the pusher is woken: switching on gets the wallpaper
 /// a ticket at the next sync, switching off cancels its ticket and closes its socket now.
 /// The error is fixed words; the store's own text can quote the settings file.
-#[allow(dead_code)] // Entry point for the Hideout panel (S5b); no UI calls it yet.
 pub fn allow_wallpaper(key: &str, on: bool) -> Result<(), String> {
     allow_with(key, on, update_settings)
 }
@@ -602,6 +668,7 @@ fn allow_with(key: &str, on: bool, update: impl Updater) -> Result<(), String> {
         return Err(FAILED.into());
     }
     apply_allowed(&s);
+    super::we_panel::changed();
     Ok(())
 }
 
@@ -621,7 +688,6 @@ fn apply_allowed(s: &LiveSettings) {
 
 /// The user's Reconnect: wallpapers that lost their ticket or their socket get a fresh ticket
 /// (`wallpaper_sync::reconnect`).
-#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
 pub fn reconnect() {
     super::wallpaper_sync::reconnect();
 }
@@ -872,6 +938,8 @@ fn join(store: Store, tx: &Sender<Msg>, id: u64, monitor: Option<&str>, writer: 
         p.left(id);
         return false;
     }
+    drop(p);
+    super::we_panel::changed();
     true
 }
 
@@ -950,6 +1018,7 @@ fn serve(
     }
     locked(store).left(id);
     let _ = tx.send(Msg::Leave(id));
+    super::we_panel::changed();
 }
 
 /// Reads with one deadline for the whole upgrade request, however it trickles in.
@@ -1078,6 +1147,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
     };
     let mut fullscreen = fullscreen_now();
     hub.quiet = wire::quiet(super::pause::paused(), super::away::away(), fullscreen);
+    set_quiet(hub.quiet);
     let mut art = ArtWatch::default();
     hub.art = art.read().unwrap_or_default();
     // The art published against the keyboard's (#1053): one log line per step into a gap.
@@ -1731,6 +1801,8 @@ fn turned(
         return Ok((s, None));
     }
     s.token = wire::new_token().ok_or("no random source for the pairing token")?;
+    // A feed turned on fresh never worked before the allow list: nothing is seeded for it.
+    s.allow_seeded = true;
     let why = if saved {
         TokenReason::EmptyOnEnable
     } else {
@@ -1841,6 +1913,13 @@ fn change(
 }
 
 fn apply(what: Change) -> Result<(), String> {
+    let done = apply_now(what);
+    // The panel's "feed is off" line follows the feed, however it was turned.
+    super::we_panel::changed();
+    done
+}
+
+fn apply_now(what: Change) -> Result<(), String> {
     let (s, why) = change(what, update_settings)?;
     if let Some(why) = why {
         eprintln!("{}", token_line(why));
@@ -3399,13 +3478,95 @@ mod tests {
         assert!(!e.contains("secret"));
     }
 
-    /// Until S5b ships the switch, an empty saved list must not cut a working wallpaper off.
+    /// The one-time seed (S5b): a feed that worked keeps the wallpapers on screen, once, and only
+    /// a look with something on screen (feed on) uses it up.
     #[test]
-    fn an_empty_allow_list_gates_nothing_until_s5b() {
-        let s = LiveSettings::default();
-        assert!(s.allowed.is_empty());
-        assert_eq!(gate(&s), None);
+    fn the_seed_keeps_what_worked_once_and_widens_nothing() {
+        use std::cell::RefCell;
+        let hud = vec!["d:/w/hud".to_string()];
+        let worked = LiveSettings {
+            enabled: true,
+            ticket_verified: true,
+            ..LiveSettings::default()
+        };
+        let saved = RefCell::new(worked.clone());
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        // An empty look (Wallpaper Engine not running yet) uses nothing up.
+        assert!(!seed_with(&[], upd).unwrap());
+        assert!(!saved.borrow().allow_seeded && saved.borrow().allowed.is_empty());
+        // The look with the HUD on screen keeps it allowed, once.
+        assert!(seed_with(&hud, upd).unwrap());
+        assert_eq!(saved.borrow().allowed, hud);
+        assert!(saved.borrow().allow_seeded);
+        assert!(seed_with(&["d:/w/other".to_string()], upd).unwrap());
+        assert_eq!(saved.borrow().allowed, hud, "runs once");
+        // A feed that is off at the first look: no marker; the feed-on look still seeds.
+        let saved = RefCell::new(LiveSettings {
+            enabled: false,
+            ..worked.clone()
+        });
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        assert!(!seed_with(&hud, upd).unwrap());
+        assert!(!saved.borrow().allow_seeded && saved.borrow().allowed.is_empty());
+        saved.borrow_mut().enabled = true;
+        assert!(seed_with(&hud, upd).unwrap());
+        assert_eq!(saved.borrow().allowed, hud);
+        // A fresh feed (no token, no ticket): only the marker.
+        let saved = RefCell::new(LiveSettings {
+            enabled: true,
+            ..LiveSettings::default()
+        });
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        assert!(seed_with(&hud, upd).unwrap());
+        assert!(saved.borrow().allow_seeded && saved.borrow().allowed.is_empty());
+        // A feed turned on fresh (it makes its token now) gets only the marker, never a seed.
+        let (fresh, why) = turned(LiveSettings::default(), true, false).unwrap();
+        assert!(why.is_some() && fresh.allow_seeded && !fresh.token.is_empty());
+        let saved = RefCell::new(fresh);
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        assert!(seed_with(&hud, upd).unwrap());
+        assert!(saved.borrow().allowed.is_empty());
+        // A list the user already made is left alone.
+        let saved = RefCell::new(LiveSettings {
+            allowed: vec!["d:/w/mine".into()],
+            ..worked
+        });
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        assert!(seed_with(&hud, upd).unwrap());
+        assert_eq!(saved.borrow().allowed, ["d:/w/mine"]);
+    }
+
+    /// With the switches in the panel (S5b), an empty saved list allows nothing.
+    #[test]
+    fn the_allow_list_gates_the_feed() {
+        let mut s = LiveSettings::default();
+        assert_eq!(gate(&s), Some(Default::default()));
         let mut p = pairing::Pairing::new();
+        p.set_allowed(gate(&s));
+        assert!(p
+            .mint("//?/DISPLAY#A", "hud/index.html", Instant::now())
+            .is_none());
+        s.allowed = vec!["hud".into()];
         p.set_allowed(gate(&s));
         assert!(p
             .mint("//?/DISPLAY#A", "hud/index.html", Instant::now())

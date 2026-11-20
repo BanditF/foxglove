@@ -343,6 +343,9 @@ struct Hub {
     holders_changed: bool,
     /// The page's Resume was pressed: the link ends the hub's leases (`lease.end`).
     resume_asked: bool,
+    /// The row keys of the allow list the hub was last shown, by index: a switch's node names
+    /// only an index, and it means the wallpaper that row was when the hub drew it.
+    we_keys: Vec<String>,
     /// Told the hub's `starts_at_sign_in` fact (a change, or its first sight); `None` ignores it.
     signin: Option<Box<dyn Fn(bool) + Send>>,
 }
@@ -423,6 +426,17 @@ impl Handler for Hub {
     fn ui_event(&mut self, event: UiEvent) -> Result<Value, RpcError> {
         if !self.live {
             return Err(RpcError::new(code::DISCONNECTED, "disconnected"));
+        }
+        if event.panel == super::hub_panels::PAGE && event.node.starts_with("we-") {
+            let value = event.value.as_bool();
+            if matches!(event.kind.as_str(), "click" | "change") && event.node != "we-resume" {
+                let done = super::we_panel::handle(&event.node, value, &self.we_keys);
+                super::we_panel::changed();
+                return match done {
+                    Ok(()) => Ok(json!({})),
+                    Err(why) => Err(RpcError::new(code::INVALID_PARAMS, &why)),
+                };
+            }
         }
         if event.kind == "click" && super::hub_panels::is_resume(&event.panel, &event.node) {
             // The user's word (#1142): every hold ends, the local API's at once, the hub's
@@ -724,15 +738,18 @@ fn wallpaper_now(holders: &[String]) -> Option<super::hub_panels::Wallpaper> {
     if !super::wallpaper_engine::presence().installed() {
         return None;
     }
+    let running = super::wallpaper_engine::running_now();
+    let full_screen = !matches!(
+        super::screen_glow::full_screen_now(),
+        super::screen_glow::FullScreen::Nothing
+    );
     Some(super::hub_panels::Wallpaper {
-        running: super::wallpaper_engine::running_now(),
+        running,
         user_paused: super::live_feed::wallpaper_paused(),
-        full_screen: !matches!(
-            super::screen_glow::full_screen_now(),
-            super::screen_glow::FullScreen::Nothing
-        ),
+        full_screen,
         holders: holders.to_vec(),
         reasons: super::wallpaper_sync::reasons_now(),
+        allow: Some(super::we_panel::inputs_now(running)),
     })
 }
 
@@ -894,8 +911,13 @@ impl<W: Write> Link<W> {
         if self.phase != Phase::Live {
             return Ok(());
         }
-        let view = super::hub_panels::View::of(facts, stopped)
-            .with_wallpaper((self.wallpaper)(&self.hub.holders));
+        let wallpaper = (self.wallpaper)(&self.hub.holders);
+        self.hub.we_keys = wallpaper
+            .as_ref()
+            .and_then(|w| w.allow.as_ref())
+            .map(|i| super::we_panel::view(i).keys)
+            .unwrap_or_default();
+        let view = super::hub_panels::View::of(facts, stopped).with_wallpaper(wallpaper);
         let panels = super::hub_panels::panels(&view);
         if self.shown.as_ref() == Some(&panels) {
             return Ok(());
@@ -1518,6 +1540,11 @@ mod runner {
                     break;
                 }
             }
+        });
+        // The Wallpaper Engine allow list follows its switches and sockets: told, never polled.
+        let atx = tx.clone();
+        crate::foxglove::we_panel::on_change(move || {
+            let _ = atx.send(Msg::Guard);
         });
         // The panels follow the page guard (P8): told by its change, never polled.
         let gtx = tx.clone();

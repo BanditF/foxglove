@@ -837,6 +837,12 @@ pub fn reconnected() {
     wake(Wake::Reconnected);
 }
 
+/// The monitors showing a wallpaper that reads Foxglove's properties now.
+#[cfg_attr(test, allow(dead_code))]
+pub fn targets_now() -> Vec<Target> {
+    with(|s| s.targets.clone())
+}
+
 /// A refusal marked monitors for a fresh ticket (`live_pairing`): they are pushed again now.
 pub fn repush() {
     changed(Reason::Pairing, |_| {});
@@ -845,7 +851,6 @@ pub fn repush() {
 /// The user's Reconnect (the Hideout panel, S5, calls this; there is no button yet): the
 /// re-push budget is new and every monitor without a socket gets a fresh ticket, pushed now.
 /// Event-driven: nothing retries on its own after this.
-#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
 pub fn reconnect() {
     super::live_pairing::reconnect(super::live_pairing::store());
     repush();
@@ -884,6 +889,10 @@ pub fn scene_stopped() {
     changed(Reason::Scene, |s| s.state.scene = None);
 }
 
+/// Whether a look with a wallpaper on screen has used up the allow list.
+#[cfg(not(test))]
+static SEEDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The wallpapers on screen, from Wallpaper Engine's config (`wallpaper.rs`, on each change):
 /// `targets` are the monitors showing a wallpaper that reads Foxglove's properties, empty
 /// without Wallpaper Engine or while it isn't running. `reloads`: its config stops wallpapers
@@ -891,6 +900,19 @@ pub fn scene_stopped() {
 /// the worker.
 pub fn wallpapers(targets: Vec<Target>, reloads: bool) {
     stale_pause();
+    // The first look with a wallpaper on screen seeds the allow list (a feed that worked keeps its
+    // wallpapers); an empty look or a feed that is off leaves the seed for the next one.
+    #[cfg(not(test))]
+    if !SEEDED.load(std::sync::atomic::Ordering::SeqCst) {
+        let keys: Vec<String> = targets
+            .iter()
+            .filter(|t| t.supports.live)
+            .map(|t| super::wallpaper_manifest::key_of_file(&t.file))
+            .collect();
+        if super::live_feed::seed_allowed(&keys) {
+            SEEDED.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
     let start = with(|s| s.wake.is_none() && !s.quitting && !targets.is_empty());
     if start {
         start_worker();
@@ -901,6 +923,7 @@ pub fn wallpapers(targets: Vec<Target>, reloads: bool) {
         s.reloads = reloads;
         again
     });
+    super::we_panel::changed();
     // A reinstall waits for the copy and Wallpaper Engine's reload; anything else goes at once.
     wake(if again {
         Wake::Reinstalled

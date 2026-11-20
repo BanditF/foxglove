@@ -67,6 +67,8 @@ pub struct Wallpaper {
     pub holders: Vec<String>,
     /// The holders' own reasons (`wallpaper_engine.paused_by`), shown in quotes after the names.
     pub reasons: Vec<String>,
+    /// The allow list (S5b); `None` before Foxglove has read it (tests).
+    pub allow: Option<super::we_panel::Inputs>,
 }
 
 impl Wallpaper {
@@ -655,6 +657,16 @@ fn wallpaper_section(w: &Wallpaper) -> Value {
             "",
             &Button::new(RESUME, Press::Event(RESUME_NODE)),
         ));
+    }
+    if let Some(inputs) = &w.allow {
+        let mut inputs = inputs.clone();
+        inputs.engine_running = w.running;
+        // "Wallpaper Engine isn't running." is already the section's line above.
+        kids.extend(
+            super::we_panel::nodes(&super::we_panel::view(&inputs))
+                .into_iter()
+                .filter(|n| w.running || n["id"] != "we-line"),
+        );
     }
     ui::section(WALLPAPER, "Wallpaper Engine", kids)
 }

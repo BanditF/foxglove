@@ -7,23 +7,122 @@
 //! The words are the plan's, exactly. The panel says "app" for programs and "wallpaper" only for
 //! Wallpaper Engine projects, and never "token", "ticket", "pair" or "paste". A file path, a
 //! ticket or a token never reaches a node id, a label or the view's words: a row is known to the
-//! panel by its index in [`View::keys`], a list Foxglove keeps.
-
-// The model lands first and is exercised by its tests; S5b wires it into the page and removes this.
-#![allow(dead_code)]
+//! panel by its slot in [`View::keys`], a list Foxglove keeps.
 
 use std::collections::BTreeSet;
 
 use serde_json::Value;
 
 use super::live_pairing::{Link, Links};
+#[cfg(not(test))]
+use super::live_wire::Why;
 use super::wallpaper_manifest::{self as manifest, Manifest};
 use super::wallpaper_sync::Target;
 use foxglove_plugin::ui;
 
+type Notify = Box<dyn Fn() + Send + Sync>;
+static NOTIFY: std::sync::Mutex<Option<Notify>> = std::sync::Mutex::new(None);
+
+/// The hub link registers how to say "the section changed" (it refreshes the panels).
+pub fn on_change(f: impl Fn() + Send + Sync + 'static) {
+    *NOTIFY.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
+}
+
+/// Something the section shows changed: a switch, a socket, the wallpapers on screen. An event,
+/// never a timer; the link drops a refresh that changes nothing.
+pub fn changed() {
+    if let Some(f) = NOTIFY.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        f();
+    }
+}
+
+/// Every wallpaper key numbered this session, oldest first. Append-only: a key's number never
+/// changes while Foxglove runs, so a click made against an older tree still means its own row.
+#[cfg(not(test))]
+static SLOTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The slots with `keys` appended (those not numbered yet).
+#[cfg(not(test))]
+fn slots_with<'a>(keys: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let mut s = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+    for k in keys {
+        if !s.contains(k) {
+            s.push(k.clone());
+        }
+    }
+    s.clone()
+}
+
+/// The inputs from what Foxglove knows now (the app; tests build [`Inputs`] themselves).
+#[cfg(not(test))]
+pub fn inputs_now(engine_running: bool) -> Inputs {
+    let saved = super::live_feed::settings();
+    let allowed: BTreeSet<String> = saved.allowed.iter().cloned().collect();
+    let asks = asks(
+        &manifest::known(),
+        &super::wallpaper_sync::targets_now(),
+        &allowed,
+    );
+    Inputs {
+        feed_on: saved.enabled,
+        engine_running,
+        slots: slots_with(asks.iter().map(|a| &a.key)),
+        asks,
+        links: super::live_pairing::links(super::live_pairing::store()),
+        hold: super::live_feed::quiet_now().map(|w| match w {
+            Why::Paused => Hold::Paused,
+            Why::Away => Hold::Away,
+            Why::Fullscreen => Hold::FullScreenGame,
+        }),
+    }
+}
+
+/// What a click or switch means once it is checked against the slots the hub was shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Act {
+    Allow(String, bool),
+    Reconnect,
+    DisconnectAll,
+}
+
+/// Checks `node` against the slot keys and whether Disconnect all is in force. `Err` is the fixed
+/// words: a node that isn't ours, a switch without a value, a slot the hub was never shown, and a
+/// Reconnect while disconnected (Reconnect would undo Disconnect all).
+pub fn plan(node: &str, value: Option<bool>, keys: &[String], held: bool) -> Result<Act, String> {
+    let refused = || REFUSED.to_string();
+    let Some(ev) = event(node, value) else {
+        return Err(refused());
+    };
+    let key = |n: usize| keys.get(n).cloned().ok_or_else(refused);
+    match ev {
+        Event::Allow(n, on) => Ok(Act::Allow(key(n)?, on)),
+        Event::Reconnect(n) if held => key(n).and_then(|_| Err(refused())),
+        Event::Reconnect(n) => key(n).map(|_| Act::Reconnect),
+        Event::ReconnectAll => Ok(Act::Reconnect),
+        Event::DisconnectAll => Ok(Act::DisconnectAll),
+    }
+}
+
+/// Does what a click or switch on `node` asks, against the slot keys the hub was last shown.
+/// `Err` carries the words the hub shows beside the switch (never the store's own text).
+pub fn handle(node: &str, value: Option<bool>, keys: &[String]) -> Result<(), String> {
+    let held = super::live_pairing::links(super::live_pairing::store()).held;
+    match plan(node, value, keys, held)? {
+        Act::Allow(key, on) => super::live_feed::allow_wallpaper(&key, on),
+        Act::Reconnect => {
+            super::live_feed::reconnect();
+            Ok(())
+        }
+        Act::DisconnectAll => {
+            super::live_feed::disconnect_all();
+            Ok(())
+        }
+    }
+}
+
 /// The allow list's section, inside the Wallpaper Engine section.
 pub const ASKS: &str = "we-asks";
-/// A row's switch: `we-allow:<n>`, with `n` the row's index in [`View::keys`].
+/// A row's switch: `we-allow:<n>`, with `n` the row's slot in [`View::keys`].
 pub const ALLOW: &str = "we-allow";
 /// A row's Reconnect: `we-reconnect:<n>`; `we-reconnect:all` is the section line's.
 pub const RECONNECT: &str = "we-reconnect";
@@ -42,8 +141,8 @@ pub const REFUSED: &str = "Couldn't change this. Try again.";
 pub enum Hold {
     FullScreenGame,
     Paused,
-    Locked,
-    ScreenOff,
+    /// The session is locked or the display is off (the feed can't tell them apart).
+    Away,
 }
 
 impl Hold {
@@ -51,8 +150,7 @@ impl Hold {
         match self {
             Hold::FullScreenGame => "Nothing is sent while a full-screen game runs.",
             Hold::Paused => "Nothing is sent while Foxglove is paused.",
-            Hold::Locked => "Nothing is sent while the PC is locked.",
-            Hold::ScreenOff => "Nothing is sent while the screen is off.",
+            Hold::Away => "Nothing is sent while the PC is locked or the screen is off.",
         }
     }
 }
@@ -84,6 +182,10 @@ pub struct Inputs {
     pub links: Links,
     /// The feed's own reason for sending nothing right now, if any.
     pub hold: Option<Hold>,
+    /// Every wallpaper key the panel has numbered this session, oldest first (append-only, so a
+    /// key's number never changes while Foxglove runs). A key missing here is numbered after
+    /// these, in ask order.
+    pub slots: Vec<String>,
 }
 
 /// The asks, from the scanned manifests, the monitors' targets and the saved allow list. Only
@@ -115,6 +217,8 @@ pub type Tone = &'static str;
 /// One row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
+    /// The row's stable number: what its nodes' ids carry (never its position).
+    pub slot: usize,
     pub title: String,
     pub allowed: bool,
     /// The status word beside the title; none while the section line says it.
@@ -139,8 +243,8 @@ pub struct Line {
 pub struct View {
     pub line: Option<Line>,
     pub rows: Vec<Row>,
-    /// The folder key behind each row, in row order (the list Foxglove keeps; the nodes carry
-    /// only the index).
+    /// The folder key behind each slot (the append-only list Foxglove keeps; the nodes carry only
+    /// the slot number, which never changes for a key while Foxglove runs).
     pub keys: Vec<String>,
     /// Show **Disconnect all wallpapers**.
     pub disconnect_all: bool,
@@ -174,6 +278,12 @@ pub fn view(i: &Inputs) -> View {
             a.key.clone(),
         )
     });
+    let mut slots = i.slots.clone();
+    for a in &i.asks {
+        if !slots.contains(&a.key) {
+            slots.push(a.key.clone());
+        }
+    }
     let link = |a: &Ask| i.links.by_dir.get(&a.key).copied().unwrap_or(Link::Idle);
     let say = |s: &str, t: Tone| Some((s.to_string(), t));
 
@@ -182,6 +292,7 @@ pub fn view(i: &Inputs) -> View {
         .map(|a| {
             let t = &a.title;
             let mut r = Row {
+                slot: slots.iter().position(|k| *k == a.key).unwrap_or(0),
                 title: t.clone(),
                 allowed: a.allowed,
                 status: None,
@@ -268,7 +379,7 @@ pub fn view(i: &Inputs) -> View {
     View {
         line,
         rows,
-        keys: order.iter().map(|a| a.key.clone()).collect(),
+        keys: slots,
         disconnect_all,
     }
 }
@@ -290,16 +401,19 @@ pub fn nodes(v: &View) -> Vec<Value> {
         let rows = v
             .rows
             .iter()
-            .enumerate()
-            .map(|(n, r)| {
-                let mut head = vec![ui::value(&format!("we-title:{n}"), &r.title, "neutral")];
+            .map(|r| {
+                let n = r.slot;
+                // The switch comes first, so it sits at one x whatever the status word is.
+                let mut head = vec![
+                    ui::named(
+                        ui::toggle(&format!("{ALLOW}:{n}"), ALLOW_LABEL, r.allowed),
+                        &format!("Let {} use your keyboard", r.title),
+                    ),
+                    ui::value(&format!("we-title:{n}"), &r.title, "neutral"),
+                ];
                 if let Some((word, tone)) = &r.status {
                     head.push(ui::value(&format!("we-status:{n}"), word, tone));
                 }
-                head.push(ui::named(
-                    ui::toggle(&format!("{ALLOW}:{n}"), ALLOW_LABEL, r.allowed),
-                    &format!("Let {} use your keyboard", r.title),
-                ));
                 let help = r
                     .help
                     .as_ref()
@@ -388,6 +502,7 @@ mod tests {
             asks,
             links,
             hold: None,
+            slots: Vec::new(),
         }
     }
 
@@ -455,8 +570,10 @@ mod tests {
                 "Nothing is sent while a full-screen game runs.",
             ),
             (Hold::Paused, "Nothing is sent while Foxglove is paused."),
-            (Hold::Locked, "Nothing is sent while the PC is locked."),
-            (Hold::ScreenOff, "Nothing is sent while the screen is off."),
+            (
+                Hold::Away,
+                "Nothing is sent while the PC is locked or the screen is off.",
+            ),
         ] {
             let mut i = base(
                 vec![ask("hud", "Bandit HUD", true, true)],
@@ -596,7 +713,11 @@ mod tests {
                 "Neon Rain (Workshop)"
             ]
         );
-        assert_eq!(a.keys, ["a", "b", "c", "d", "e"]);
+        assert_eq!(
+            a.keys,
+            ["e", "d", "c", "b", "a"],
+            "slots follow first sight, never the sort"
+        );
         let b = view(&base(
             asks,
             links(&[
@@ -689,7 +810,7 @@ mod tests {
             );
             (i.feed_on, i.engine_running) = (feed, engine);
             (i.links.held, i.links.old_way) = (held, old);
-            i.hold = Some(Hold::Locked);
+            i.hold = Some(Hold::Away);
             texts.push(serde_json::to_string(&nodes(&view(&i))).unwrap());
         }
         texts.push(REFUSED.into());
@@ -699,6 +820,82 @@ mod tests {
                 assert!(!t.contains(word), "{word} in {t}");
             }
         }
+    }
+
+    #[test]
+    fn a_rows_number_never_changes_when_the_rows_reorder() {
+        let mut i = base(
+            vec![
+                ask("a", "Atlas", true, false),
+                ask("b", "Bandit", true, false),
+            ],
+            Links::default(),
+        );
+        let first = view(&i);
+        assert_eq!(first.keys, ["a", "b"]);
+        let slot = |v: &View, t: &str| v.rows.iter().find(|r| r.title == t).unwrap().slot;
+        assert_eq!((slot(&first, "Atlas"), slot(&first, "Bandit")), (0, 1));
+        // Bandit is allowed: it sorts first, and a new manifest appears between them.
+        i.slots = first.keys.clone();
+        i.asks[1].allowed = true;
+        i.asks.push(ask("0", "Aardvark", false, false));
+        let second = view(&i);
+        assert_eq!(second.rows[0].title, "Bandit");
+        assert_eq!((slot(&second, "Atlas"), slot(&second, "Bandit")), (0, 1));
+        assert_eq!(second.keys, ["a", "b", "0"]);
+        let ids = serde_json::to_string(&nodes(&second)).unwrap();
+        assert!(
+            ids.contains("we-allow:0") && ids.contains("we-allow:1") && ids.contains("we-allow:2")
+        );
+        // A click made against the first tree still means the same wallpaper.
+        assert_eq!(
+            plan("we-allow:0", Some(true), &second.keys, false),
+            Ok(Act::Allow("a".into(), true))
+        );
+    }
+
+    #[test]
+    fn the_switch_is_first_in_the_row() {
+        let v = one(Link::Connected, true);
+        let rows = serde_json::to_string(&nodes(&v)).unwrap();
+        let (sw, title, st) = (
+            rows.find("we-allow:0").unwrap(),
+            rows.find("we-title:0").unwrap(),
+            rows.find("we-status:0").unwrap(),
+        );
+        assert!(sw < title && title < st);
+    }
+
+    #[test]
+    fn refusals_are_fixed_words_and_never_reach_the_store() {
+        let keys = vec!["a".to_string()];
+        for (node, value, held) in [
+            ("we-allow:0", None, false),
+            ("we-allow:x", Some(true), false),
+            ("we-allow:9", Some(true), false),
+            ("we-mystery:0", None, false),
+            ("we-reconnect:9", None, false),
+            ("we-reconnect:0", None, true),
+            ("we-nothing", None, false),
+        ] {
+            assert_eq!(
+                plan(node, value, &keys, held),
+                Err(REFUSED.to_string()),
+                "{node} {value:?} {held}"
+            );
+        }
+        assert_eq!(
+            plan("we-reconnect:all", None, &keys, true),
+            Ok(Act::Reconnect)
+        );
+        assert_eq!(
+            plan("we-reconnect:0", None, &keys, false),
+            Ok(Act::Reconnect)
+        );
+        assert_eq!(
+            plan(DISCONNECT_ALL_NODE, None, &keys, false),
+            Ok(Act::DisconnectAll)
+        );
     }
 
     #[test]
@@ -717,6 +914,7 @@ mod tests {
             asks,
             links: l,
             hold,
+            slots: Vec::new(),
         };
         let three = |a: bool, b: bool, c: bool| {
             vec![

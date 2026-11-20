@@ -2351,3 +2351,120 @@ fn an_unreadable_hub_image_counts_as_present() {
     let nowhere = std::env::temp_dir().join("foxglove-no-such-hub-image.exe");
     assert!(!super::image_present(&nowhere));
 }
+
+/// The tests that write the allow list share one saved settings store: they take turns.
+static ALLOW_STORE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// S5b: a switch means the row the hub was last shown, by index; an index the hub was never shown
+/// is refused with the fixed words, and nothing is saved.
+#[test]
+fn a_switch_the_hub_was_never_shown_is_refused_in_fixed_words() {
+    let _one = ALLOW_STORE.lock().unwrap_or_else(|e| e.into_inner());
+    fn probe(_: &[String]) -> Option<super::super::hub_panels::Wallpaper> {
+        Some(super::super::hub_panels::Wallpaper {
+            running: true,
+            allow: Some(super::super::we_panel::Inputs {
+                feed_on: true,
+                engine_running: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+    let mut rig = Rig::new(&[GRANT]);
+    rig.link = Link::new(Vec::new(), launch()).with_wallpaper(probe);
+    let facts = board();
+    rig.connect(&facts);
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    assert!(rig.link.hub.we_keys.is_empty(), "no rows were shown");
+    written(&mut rig);
+    let before = super::super::live_feed::settings().allowed;
+    for (id, node, value) in [
+        (4, "we-allow:7", json!(true)),
+        (5, "we-allow:0", Value::Null),
+        (6, "we-mystery:0", json!(true)),
+        (7, "we-reconnect:7", Value::Null),
+    ] {
+        let flip = json!({"jsonrpc":"2.0","id":id,"method":"ui.event","params":
+            {"panel":"page","node":node,"kind":"change","value":value}});
+        rig.link.line(&flip.to_string()).unwrap();
+        let out = written(&mut rig);
+        let answer = out.iter().find(|m| m["id"] == id).expect("answered");
+        assert_eq!(
+            answer["error"]["message"], "Couldn't change this. Try again.",
+            "{node}"
+        );
+    }
+    assert_eq!(
+        super::super::live_feed::settings().allowed,
+        before,
+        "nothing was saved"
+    );
+}
+
+/// A click made against an older tree (the rows moved or grew since) means the wallpaper it was
+/// drawn on, never whichever row has that number now (review of #1327).
+#[test]
+fn a_stale_click_lands_on_its_own_wallpaper() {
+    let _one = ALLOW_STORE.lock().unwrap_or_else(|e| e.into_inner());
+    use super::super::we_panel::{Ask, Inputs};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static LATER: AtomicBool = AtomicBool::new(false);
+    fn ask(key: &str, title: &str, allowed: bool) -> Ask {
+        Ask {
+            key: key.into(),
+            title: title.into(),
+            on_screen: true,
+            allowed,
+            needs_update: false,
+        }
+    }
+    fn probe(_: &[String]) -> Option<super::super::hub_panels::Wallpaper> {
+        let later = LATER.load(Ordering::SeqCst);
+        // Later: B is allowed (sorts first) and a new wallpaper Z appeared.
+        let mut asks = vec![
+            ask("stale-a", "Atlas", false),
+            ask("stale-b", "Bandit", later),
+        ];
+        if later {
+            asks.push(ask("stale-0", "Aardvark", false));
+        }
+        Some(super::super::hub_panels::Wallpaper {
+            running: true,
+            allow: Some(Inputs {
+                feed_on: true,
+                engine_running: true,
+                asks,
+                slots: vec!["stale-a".into(), "stale-b".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+    let mut rig = Rig::new(&[GRANT]);
+    rig.link = Link::new(Vec::new(), launch()).with_wallpaper(probe);
+    let facts = board();
+    rig.connect(&facts);
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    LATER.store(true, Ordering::SeqCst);
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    assert_eq!(rig.link.hub.we_keys, ["stale-a", "stale-b", "stale-0"]);
+    written(&mut rig);
+    // The click the hub drew against the first tree: slot 0 is Atlas.
+    let flip = json!({"jsonrpc":"2.0","id":4,"method":"ui.event","params":
+        {"panel":"page","node":"we-allow:0","kind":"change","value":true}});
+    rig.link.line(&flip.to_string()).unwrap();
+    let out = written(&mut rig);
+    assert!(out.iter().any(|m| m["id"] == 4 && m.get("error").is_none()));
+    let saved = super::super::live_feed::settings().allowed;
+    assert!(saved.contains(&"stale-a".to_string()), "{saved:?}");
+    assert!(!saved.contains(&"stale-b".to_string()), "{saved:?}");
+    assert!(!saved.contains(&"stale-0".to_string()), "{saved:?}");
+    super::super::live_feed::allow_wallpaper("stale-a", false).unwrap();
+}
