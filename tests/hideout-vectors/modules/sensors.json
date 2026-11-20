@@ -1,0 +1,1860 @@
+{
+  "actions": [],
+  "declared": [
+    "page"
+  ],
+  "module": "org.foxglove.sensors",
+  "name": "PC sensors",
+  "states": [
+    {
+      "panels": [
+        {
+          "icon": "chart",
+          "id": "page",
+          "slot": "page",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "now-cpu-name",
+                        "props": {
+                          "text": "Processor"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-cpu-value",
+                        "props": {
+                          "name": "Processor, reading",
+                          "tone": "off",
+                          "value": "Reading…"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-cpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Processor, reading",
+                          "value": 0.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-cpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-gpu-name",
+                        "props": {
+                          "text": "Graphics card"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-gpu-value",
+                        "props": {
+                          "name": "Graphics card, reading",
+                          "tone": "off",
+                          "value": "Reading…"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-gpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Graphics card, reading",
+                          "value": 0.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-gpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-ram-name",
+                        "props": {
+                          "text": "Memory"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-ram-value",
+                        "props": {
+                          "name": "Memory, reading",
+                          "tone": "off",
+                          "value": "Reading…"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-ram-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Memory, reading",
+                          "value": 0.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-ram",
+                    "type": "row"
+                  },
+                  {
+                    "id": "now-rate",
+                    "props": {
+                      "text": "Updates once a second while this page is open.",
+                      "tone": "neutral"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-temp-name",
+                        "props": {
+                          "text": "Temperature"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-temp-value",
+                        "props": {
+                          "name": "Graphics card temperature, reading",
+                          "tone": "off",
+                          "value": "Reading…"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-clock-name",
+                        "props": {
+                          "text": "Speed"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-clock-value",
+                        "props": {
+                          "name": "Graphics card speed, reading",
+                          "tone": "off",
+                          "value": "Reading…"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-clock",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-power-name",
+                        "props": {
+                          "text": "Power"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-power-value",
+                        "props": {
+                          "name": "Graphics card power, reading",
+                          "tone": "off",
+                          "value": "Reading…"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-power",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-fan-name",
+                        "props": {
+                          "text": "Fan"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-fan-value",
+                        "props": {
+                          "name": "Graphics card fan, reading",
+                          "tone": "off",
+                          "value": "Reading…"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-fan",
+                    "type": "row"
+                  }
+                ],
+                "id": "gpu",
+                "props": {
+                  "title": "Graphics card"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Reading"
+    },
+    {
+      "panels": [
+        {
+          "icon": "chart",
+          "id": "page",
+          "slot": "page",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "now-cpu-name",
+                        "props": {
+                          "text": "Processor"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-cpu-value",
+                        "props": {
+                          "name": "Processor, 23 percent busy",
+                          "tone": "neutral",
+                          "value": "23%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-cpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Processor, 23 percent busy",
+                          "value": 23.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-cpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-gpu-name",
+                        "props": {
+                          "text": "Graphics card"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-gpu-value",
+                        "props": {
+                          "name": "Graphics card, 87 percent busy",
+                          "tone": "neutral",
+                          "value": "87%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-gpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Graphics card, 87 percent busy",
+                          "value": 87.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-gpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-ram-name",
+                        "props": {
+                          "text": "Memory"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-ram-value",
+                        "props": {
+                          "name": "Memory, 62 percent used",
+                          "tone": "neutral",
+                          "value": "62% used"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-ram-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Memory, 62 percent used",
+                          "value": 62.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-ram",
+                    "type": "row"
+                  },
+                  {
+                    "id": "now-rate",
+                    "props": {
+                      "text": "Updates once a second while this page is open.",
+                      "tone": "neutral"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-temp-name",
+                        "props": {
+                          "text": "Temperature"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-temp-value",
+                        "props": {
+                          "name": "Graphics card temperature, 64 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "64 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-clock-name",
+                        "props": {
+                          "text": "Speed"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-clock-value",
+                        "props": {
+                          "name": "Graphics card speed, 1845 megahertz",
+                          "tone": "neutral",
+                          "value": "1845 MHz"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-clock",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-power-name",
+                        "props": {
+                          "text": "Power"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-power-value",
+                        "props": {
+                          "name": "Graphics card power, 185 watts",
+                          "tone": "neutral",
+                          "value": "185 W"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-power",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-fan-name",
+                        "props": {
+                          "text": "Fan"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-fan-value",
+                        "props": {
+                          "name": "Graphics card fan, 1450 revolutions per minute",
+                          "tone": "neutral",
+                          "value": "1450 RPM"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-fan",
+                    "type": "row"
+                  }
+                ],
+                "id": "gpu",
+                "props": {
+                  "title": "Graphics card"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Working"
+    },
+    {
+      "panels": [
+        {
+          "icon": "chart",
+          "id": "page",
+          "slot": "page",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "now-cpu-name",
+                        "props": {
+                          "text": "Processor"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-cpu-value",
+                        "props": {
+                          "name": "Processor, 23 percent busy",
+                          "tone": "neutral",
+                          "value": "23%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-cpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Processor, 23 percent busy",
+                          "value": 23.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-cpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-gpu-name",
+                        "props": {
+                          "text": "Graphics card"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-gpu-value",
+                        "props": {
+                          "name": "Graphics card, 87 percent busy",
+                          "tone": "neutral",
+                          "value": "87%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-gpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Graphics card, 87 percent busy",
+                          "value": 87.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-gpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-ram-name",
+                        "props": {
+                          "text": "Memory"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-ram-value",
+                        "props": {
+                          "name": "Memory, 62 percent used",
+                          "tone": "neutral",
+                          "value": "62% used"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-ram-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Memory, 62 percent used",
+                          "value": 62.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-ram",
+                    "type": "row"
+                  },
+                  {
+                    "id": "now-rate",
+                    "props": {
+                      "text": "Game mode is on, so this updates every 10 seconds.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-temp-name",
+                        "props": {
+                          "text": "Temperature"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-temp-value",
+                        "props": {
+                          "name": "Graphics card temperature, 64 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "64 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-clock-name",
+                        "props": {
+                          "text": "Speed"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-clock-value",
+                        "props": {
+                          "name": "Graphics card speed, 1845 megahertz",
+                          "tone": "neutral",
+                          "value": "1845 MHz"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-clock",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-power-name",
+                        "props": {
+                          "text": "Power"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-power-value",
+                        "props": {
+                          "name": "Graphics card power, 185 watts",
+                          "tone": "neutral",
+                          "value": "185 W"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-power",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-fan-name",
+                        "props": {
+                          "text": "Fan"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-fan-value",
+                        "props": {
+                          "name": "Graphics card fan, 1450 revolutions per minute",
+                          "tone": "neutral",
+                          "value": "1450 RPM"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-fan",
+                    "type": "row"
+                  }
+                ],
+                "id": "gpu",
+                "props": {
+                  "title": "Graphics card"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Game mode on"
+    },
+    {
+      "panels": [
+        {
+          "icon": "chart",
+          "id": "page",
+          "slot": "page",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "now-cpu-name",
+                        "props": {
+                          "text": "Processor"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-cpu-value",
+                        "props": {
+                          "name": "Processor, 23 percent busy",
+                          "tone": "neutral",
+                          "value": "23%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-cpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Processor, 23 percent busy",
+                          "value": 23.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-cpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-gpu-name",
+                        "props": {
+                          "text": "Graphics card"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-gpu-value",
+                        "props": {
+                          "name": "Graphics card, 87 percent busy",
+                          "tone": "neutral",
+                          "value": "87%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-gpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Graphics card, 87 percent busy",
+                          "value": 87.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-gpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-ram-name",
+                        "props": {
+                          "text": "Memory"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-ram-value",
+                        "props": {
+                          "name": "Memory, 62 percent used",
+                          "tone": "neutral",
+                          "value": "62% used"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-ram-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Memory, 62 percent used",
+                          "value": 62.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-ram",
+                    "type": "row"
+                  },
+                  {
+                    "id": "now-rate",
+                    "props": {
+                      "text": "Updates once a second while this page is open.",
+                      "tone": "neutral"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-temp-name",
+                        "props": {
+                          "text": "Temperature"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-temp-value",
+                        "props": {
+                          "name": "Graphics card temperature, 64 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "64 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-clock-name",
+                        "props": {
+                          "text": "Speed"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-clock-value",
+                        "props": {
+                          "name": "Graphics card speed, 1845 megahertz",
+                          "tone": "neutral",
+                          "value": "1845 MHz"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-clock",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-power-name",
+                        "props": {
+                          "text": "Power"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-power-value",
+                        "props": {
+                          "name": "Graphics card power, 185 watts",
+                          "tone": "neutral",
+                          "value": "185 W"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-power",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-fan-name",
+                        "props": {
+                          "text": "Fan"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-fan-value",
+                        "props": {
+                          "name": "Graphics card fan, 45 percent of full speed",
+                          "tone": "neutral",
+                          "value": "45% of full speed"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-fan",
+                    "type": "row"
+                  }
+                ],
+                "id": "gpu",
+                "props": {
+                  "title": "Graphics card"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Fan as percent"
+    },
+    {
+      "panels": [
+        {
+          "icon": "chart",
+          "id": "page",
+          "slot": "page",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "now-cpu-name",
+                        "props": {
+                          "text": "Processor"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-cpu-value",
+                        "props": {
+                          "name": "Processor, 23 percent busy",
+                          "tone": "neutral",
+                          "value": "23%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-cpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Processor, 23 percent busy",
+                          "value": 23.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-cpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-gpu-name",
+                        "props": {
+                          "text": "Graphics card"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-gpu-value",
+                        "props": {
+                          "name": "Graphics card, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-gpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Graphics card, not reported",
+                          "value": 0.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-gpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-ram-name",
+                        "props": {
+                          "text": "Memory"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-ram-value",
+                        "props": {
+                          "name": "Memory, 62 percent used",
+                          "tone": "neutral",
+                          "value": "62% used"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-ram-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Memory, 62 percent used",
+                          "value": 62.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-ram",
+                    "type": "row"
+                  },
+                  {
+                    "id": "now-rate",
+                    "props": {
+                      "text": "Updates once a second while this page is open.",
+                      "tone": "neutral"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-temp-name",
+                        "props": {
+                          "text": "Temperature"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-temp-value",
+                        "props": {
+                          "name": "Graphics card temperature, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-clock-name",
+                        "props": {
+                          "text": "Speed"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-clock-value",
+                        "props": {
+                          "name": "Graphics card speed, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-clock",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-power-name",
+                        "props": {
+                          "text": "Power"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-power-value",
+                        "props": {
+                          "name": "Graphics card power, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-power",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-fan-name",
+                        "props": {
+                          "text": "Fan"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-fan-value",
+                        "props": {
+                          "name": "Graphics card fan, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-fan",
+                    "type": "row"
+                  },
+                  {
+                    "id": "gpu-note",
+                    "props": {
+                      "text": "This graphics card doesn't report these to Windows. Today only NVIDIA cards do.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "gpu",
+                "props": {
+                  "title": "Graphics card"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Graphics card details missing"
+    },
+    {
+      "panels": [
+        {
+          "icon": "chart",
+          "id": "page",
+          "slot": "page",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "now-cpu-name",
+                        "props": {
+                          "text": "Processor"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-cpu-value",
+                        "props": {
+                          "name": "Processor, 23 percent busy",
+                          "tone": "neutral",
+                          "value": "23%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-cpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Processor, 23 percent busy",
+                          "value": 23.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-cpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-gpu-name",
+                        "props": {
+                          "text": "Graphics card"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-gpu-value",
+                        "props": {
+                          "name": "Graphics card, 87 percent busy",
+                          "tone": "neutral",
+                          "value": "87%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-gpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Graphics card, 87 percent busy",
+                          "value": 87.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-gpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-ram-name",
+                        "props": {
+                          "text": "Memory"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-ram-value",
+                        "props": {
+                          "name": "Memory, 62 percent used",
+                          "tone": "neutral",
+                          "value": "62% used"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-ram-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Memory, 62 percent used",
+                          "value": 62.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-ram",
+                    "type": "row"
+                  },
+                  {
+                    "id": "now-rate",
+                    "props": {
+                      "text": "Updates once a second while this page is open.",
+                      "tone": "neutral"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-temp-name",
+                        "props": {
+                          "text": "Temperature"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-temp-value",
+                        "props": {
+                          "name": "Graphics card temperature, 64 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "64 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-clock-name",
+                        "props": {
+                          "text": "Speed"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-clock-value",
+                        "props": {
+                          "name": "Graphics card speed, 1845 megahertz",
+                          "tone": "neutral",
+                          "value": "1845 MHz"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-clock",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-power-name",
+                        "props": {
+                          "text": "Power"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-power-value",
+                        "props": {
+                          "name": "Graphics card power, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-power",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-fan-name",
+                        "props": {
+                          "text": "Fan"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-fan-value",
+                        "props": {
+                          "name": "Graphics card fan, 1450 revolutions per minute",
+                          "tone": "neutral",
+                          "value": "1450 RPM"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-fan",
+                    "type": "row"
+                  },
+                  {
+                    "id": "gpu-note",
+                    "props": {
+                      "text": "This graphics card doesn't report these to Windows.",
+                      "tone": "off"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "gpu",
+                "props": {
+                  "title": "Graphics card"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Some details missing"
+    },
+    {
+      "panels": [
+        {
+          "icon": "chart",
+          "id": "page",
+          "slot": "page",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-none",
+                    "props": {
+                      "text": "Windows isn't giving any readings right now.",
+                      "tone": "attention"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "retry",
+                    "props": {
+                      "label": "Try again"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-temp-name",
+                        "props": {
+                          "text": "Temperature"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-temp-value",
+                        "props": {
+                          "name": "Graphics card temperature, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-clock-name",
+                        "props": {
+                          "text": "Speed"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-clock-value",
+                        "props": {
+                          "name": "Graphics card speed, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-clock",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-power-name",
+                        "props": {
+                          "text": "Power"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-power-value",
+                        "props": {
+                          "name": "Graphics card power, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-power",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-fan-name",
+                        "props": {
+                          "text": "Fan"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-fan-value",
+                        "props": {
+                          "name": "Graphics card fan, not reported",
+                          "tone": "off",
+                          "value": "Not reported"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-fan",
+                    "type": "row"
+                  }
+                ],
+                "id": "gpu",
+                "props": {
+                  "title": "Graphics card"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "No sensors"
+    },
+    {
+      "panels": [
+        {
+          "icon": "chart",
+          "id": "page",
+          "slot": "page",
+          "title": "PC sensors",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "now-cpu-name",
+                        "props": {
+                          "text": "Processor"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-cpu-value",
+                        "props": {
+                          "name": "Processor, 23 percent busy",
+                          "tone": "neutral",
+                          "value": "23%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-cpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Processor, 23 percent busy",
+                          "value": 23.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-cpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-gpu-name",
+                        "props": {
+                          "text": "Graphics card"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-gpu-value",
+                        "props": {
+                          "name": "Graphics card, 87 percent busy",
+                          "tone": "neutral",
+                          "value": "87%"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-gpu-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Graphics card, 87 percent busy",
+                          "value": 87.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-gpu",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "now-ram-name",
+                        "props": {
+                          "text": "Memory"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "now-ram-value",
+                        "props": {
+                          "name": "Memory, 62 percent used",
+                          "tone": "neutral",
+                          "value": "62% used"
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "id": "now-ram-meter",
+                        "props": {
+                          "max": 100,
+                          "name": "Memory, 62 percent used",
+                          "value": 62.0
+                        },
+                        "type": "meter"
+                      }
+                    ],
+                    "id": "now-ram",
+                    "type": "row"
+                  },
+                  {
+                    "id": "now-rate",
+                    "props": {
+                      "text": "Updates once a second while this page is open.",
+                      "tone": "neutral"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-temp-name",
+                        "props": {
+                          "text": "Temperature"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-temp-value",
+                        "props": {
+                          "name": "Graphics card temperature, 64 degrees Celsius",
+                          "tone": "neutral",
+                          "value": "64 °C"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-temp",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-clock-name",
+                        "props": {
+                          "text": "Speed"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-clock-value",
+                        "props": {
+                          "name": "Graphics card speed, 1845 megahertz",
+                          "tone": "neutral",
+                          "value": "1845 MHz"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-clock",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-power-name",
+                        "props": {
+                          "text": "Power"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-power-value",
+                        "props": {
+                          "name": "Graphics card power, 185 watts",
+                          "tone": "neutral",
+                          "value": "185 W"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-power",
+                    "type": "row"
+                  },
+                  {
+                    "children": [
+                      {
+                        "id": "gpu-fan-name",
+                        "props": {
+                          "text": "Fan"
+                        },
+                        "type": "label"
+                      },
+                      {
+                        "id": "gpu-fan-value",
+                        "props": {
+                          "name": "Graphics card fan, 1450 revolutions per minute",
+                          "tone": "neutral",
+                          "value": "1450 RPM"
+                        },
+                        "type": "value"
+                      }
+                    ],
+                    "id": "gpu-fan",
+                    "type": "row"
+                  }
+                ],
+                "id": "gpu",
+                "props": {
+                  "title": "Graphics card"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver.\n\nPC sensors can't see when you're gaming, so it keeps updating once a second. To slow it down during games, allow \"see whether game mode is on\" on the Apps page."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Game mode not visible"
+    }
+  ]
+}

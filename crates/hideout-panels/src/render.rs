@@ -455,7 +455,22 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                     });
                 }
                 let text = RichText::new(value);
-                ui.label(toned(ui, &p, text.strong().size(18.0)));
+                let text = toned(ui, &p, text.strong().size(18.0));
+                // A named value is reachable by a screen reader (focusable, not clickable);
+                // an unnamed one stays plain text.
+                let r = if s(&p, "name").is_some() {
+                    ui.add(egui::Label::new(text).sense(egui::Sense::focusable_noninteractive()))
+                } else {
+                    ui.label(text)
+                };
+                // A declared accessible name beats the visible words ("Graphics card
+                // temperature, 64 degrees Celsius" for "64 °C").
+                if let Some(name) = s(&p, "name") {
+                    let (enabled, name) = (ui.is_enabled(), name.to_string());
+                    r.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Label, enabled, &name)
+                    });
+                }
             });
         }
         "button" => {
@@ -640,7 +655,15 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 d.texts.push(label.clone());
                 bar = bar.text(&label);
             }
-            ui.add(bar);
+            let r = ui.add(bar);
+            // With no words to draw, `name` is the meter's screen-reader-only name: the value
+            // beside it already says the number.
+            if let (true, Some(name)) = (label.is_empty(), s(&p, "name")) {
+                let (enabled, name) = (ui.is_enabled(), name.to_string());
+                r.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::ProgressIndicator, enabled, &name)
+                });
+            }
         }
         "image" | "gallery" => {
             let hashes: Vec<String> = match n.kind.as_str() {
@@ -1063,5 +1086,47 @@ mod tests {
             egui::accesskit::Role::ComboBox,
             "Chat profile, daily"
         ));
+    }
+
+    #[test]
+    fn a_value_and_a_meter_keep_their_declared_name_for_screen_readers() {
+        let Some(fonts) = crate::render::test_fonts() else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        let mut host = PanelHost::default();
+        let tree = json!({"type": "column", "id": "c", "children": [
+            {"type": "value", "id": "v", "props": {
+                "value": "64 \u{b0}C", "name": "Graphics card temperature, 64 degrees Celsius"}},
+            {"type": "meter", "id": "m", "props": {
+                "value": 23, "max": 100, "name": "Processor, 23 percent busy"}}]});
+        let params: Register = serde_json::from_value(json!({"instance": "i1", "panels": [
+            {"id": "p", "slot": "page", "title": "P", "icon": "x", "tree": tree}]}))
+        .unwrap();
+        assert!(host.register("m", "Example", None, &params).is_empty());
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts);
+        ctx.enable_accesskit();
+        let key = PanelKey::new("m", "p");
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                panel_ui(&mut host, ui, &key);
+            });
+        });
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        // A label's words are its AccessKit value; every other role's are its label.
+        let named = |name: &str| {
+            nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some(name) || n.value() == Some(name))
+        };
+        assert!(named("Graphics card temperature, 64 degrees Celsius"));
+        assert!(named("Processor, 23 percent busy"));
+        // The meter draws no words of its own: the name is not printed in the bar.
+        let drawn = out
+            .shapes
+            .iter()
+            .any(|s| format!("{:?}", s.shape).contains("Processor, 23"));
+        assert!(!drawn, "the meter's name is not drawn");
     }
 }

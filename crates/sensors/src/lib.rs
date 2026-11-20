@@ -17,6 +17,7 @@ mod engine;
 pub mod host;
 pub mod nvml;
 pub mod pdh;
+pub mod ui;
 
 pub use engine::{Config, Engine, GuardedSink, Sink, SourceFactory, SubId, ValueOut};
 
