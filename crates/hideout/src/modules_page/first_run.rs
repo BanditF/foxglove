@@ -494,8 +494,8 @@ fn first_run_with_a_generic_keyboard_app_costs_exactly_the_bound() {
 fn first_run_with_the_shipped_foxglove_manifest_costs_the_same() {
     let mut fx = Fx::new("foxglove", "foxglove", foxglove_manifest);
     let r = run_first_run(&mut fx);
-    // 21 plus Foxglove's optional `facts.read:sensor.*` (the Temperature effect's readings).
-    assert_eq!(r.allowed, 22);
+    // 21 plus Foxglove's optional `facts.read:sensor.*` (Temperature readings) and its 3 scene/lights provides.
+    assert_eq!(r.allowed, 25);
     assert_eq!(r.app, BOUND_APP);
     assert_eq!(r.clicks.len(), BOUND_TOTAL);
     assert!(fx.view().pending.is_empty());
@@ -566,8 +566,9 @@ fn the_first_run_dialog_shows_what_the_app_can_do_and_what_needs_ok() {
             "foxglove",
             foxglove_manifest as fn(&Path) -> String,
             "Foxglove can: use your keyboard and PC lights",
-            // Plus the optional read of the PC sensors' readings.
-            EVERYDAY + 1,
+            // Plus the optional read of the PC sensors' readings and the three scene/lights
+            // methods the app serves (lights.status, scene.status, scene.start).
+            EVERYDAY + 4,
         ),
     ] {
         let mut fx = Fx::new(tag, id, manifest);
