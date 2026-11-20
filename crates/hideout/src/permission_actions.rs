@@ -634,9 +634,10 @@ impl PermUi {
                 let went = work(s.as_ref(), &app);
                 let started = if went { starter.map(|f| f(&app)) } else { None };
                 let _ = tx.send(Handed { went, started });
-                // The page draws again at once (an event, no timer).
+                // The hub runs a frame at once, even with its window hidden in the tray, so
+                // `background` settles the result (an event, no timer).
                 if let Some(c) = ctx {
-                    c.request_repaint();
+                    hideout_shell::wake_for_background(&c);
                 }
             })
             .is_ok();

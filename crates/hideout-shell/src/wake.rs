@@ -211,6 +211,29 @@ pub fn hidden_pass(flow: ControlFlow, drawable: bool, side_live: bool, kicked: b
     (flow == ControlFlow::Poll || kicked) && !drawable && side_live
 }
 
+/// A frame owed to the hidden hub by work that finished off the UI thread (a hand-over's
+/// result): set by [`owe_frame`], taken once per wake.
+static OWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Asks for one frame of the hub even while its window is hidden, and wakes the loop for it.
+/// For an event that needs the pages' `background` step (a worker finished); never a timer, so
+/// a hidden idle hub still sleeps. Any thread.
+pub fn wake_for_background(ctx: &eframe::egui::Context) {
+    OWED.store(true, std::sync::atomic::Ordering::Release);
+    ctx.request_repaint();
+}
+
+/// Takes the owed frame (one wake, one frame).
+pub fn take_owed() -> bool {
+    OWED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+/// Whether the hidden main window runs a frame for an owed one: only while it is hidden (a
+/// shown window repaints by itself), and once, since [`take_owed`] clears it.
+pub fn owed_pass(owed: bool, drawable: bool) -> bool {
+    owed && !drawable
+}
+
 /// Whether the side window still gets hidden frames: it is up, and fewer than [`HIDDEN_STREAK`]
 /// hidden frames ran back to back since the last event (`streak`).
 pub fn side_frames(side_live: bool, streak: u32) -> bool {
@@ -596,7 +619,13 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
             self.streak = 0;
         }
         let side = side_frames((self.side_live)(), self.streak);
-        if hidden_pass(event_loop.control_flow(), drawable, side, kicked) {
+        let owed = take_owed();
+        if owed {
+            self.streak = 0;
+        }
+        if hidden_pass(event_loop.control_flow(), drawable, side, kicked)
+            || owed_pass(owed, drawable)
+        {
             if let Some(root) = (self.root)() {
                 // eframe's own frame path, as Windows would run it for a shown window.
                 self.streak += 1;
@@ -704,6 +733,20 @@ mod tests {
             assert!(!hidden_pass(flow, true, true, true));
             assert!(!hidden_pass(flow, false, false, true));
         }
+    }
+
+    /// A hand-over's result while the window is hidden: its waker owes one frame, the wake runs
+    /// exactly one hidden frame, and nothing is owed afterwards (no polling).
+    #[test]
+    fn a_hidden_hub_runs_one_frame_for_a_finished_hand_over() {
+        let ctx = eframe::egui::Context::default();
+        assert!(!take_owed(), "nothing owed at rest");
+        wake_for_background(&ctx);
+        let owed = take_owed();
+        assert!(owed_pass(owed, false), "hidden + result pending: one frame");
+        assert!(!owed_pass(owed, true), "a shown window repaints itself");
+        assert!(!take_owed(), "taken once: the hidden hub waits again");
+        assert!(!owed_pass(take_owed(), false));
     }
 
     #[test]
