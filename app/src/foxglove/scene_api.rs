@@ -48,6 +48,7 @@ fn bad(message: impl Into<String>) -> Error {
 }
 
 /// The look a `scene.start` asks for, or the reason it is refused. Pure.
+#[cfg(test)]
 pub fn parse_start(raw: Value) -> Result<Look, Error> {
     parse_start_on(raw, &Look::default())
 }
