@@ -400,3 +400,111 @@ fn install_after_remove_keeps_data_and_settings() {
     assert!(new.join("settings").join("s.json").is_file());
     assert!(!base.join("0.1.0").exists());
 }
+
+fn read(p: &Path) -> String {
+    std::fs::read_to_string(p).unwrap()
+}
+
+/// An archive that ships its own `data` never replaces the app's data, and two older versions
+/// that both hold settings are carried, the newest under the plain name, the other beside it.
+#[test]
+fn collisions_keep_every_copy_and_the_newest_takes_the_name() {
+    let home = temp("coll-home");
+    let src = temp("coll-src");
+    let mut reg = hub_copy(&home, &src, "example.rm.coll");
+    // The archive itself ships a data folder.
+    put(&src.join("example.rm.coll"), "data/shipped.txt", "shipped");
+    let base = home.join("modules").join("example.rm.coll");
+    put(&base.join("0.0.8"), "settings/s.json", "v8");
+    put(&base.join("0.0.9"), "settings/s.json", "v9");
+    put(&base.join("0.1.0"), "data/d.txt", "mine");
+    reg.remove("example.rm.coll").unwrap();
+
+    reg.install(&src.join("example.rm.coll"), NOW).unwrap();
+    let cur = base.join("0.1.0");
+    assert_eq!(read(&cur.join("data").join("d.txt")), "mine");
+    assert!(!cur.join("data").join("shipped.txt").exists());
+    assert_eq!(read(&cur.join("settings").join("s.json")), "v9");
+    assert_eq!(read(&cur.join("settings.from-0.0.8").join("s.json")), "v8");
+    assert!(!base.join("0.0.8").exists() && !base.join("0.0.9").exists());
+}
+
+/// A swap that died half way: the original comes back, and neither `.old` nor `.partial` is
+/// wiped before what they hold is in the live folder.
+#[test]
+fn an_interrupted_install_loses_no_data() {
+    let home = temp("crash-home");
+    let src = temp("crash-src");
+    let mut reg = hub_copy(&home, &src, "example.rm.crash");
+    let base = home.join("modules").join("example.rm.crash");
+    reg.remove("example.rm.crash").unwrap();
+    // dir gone; the original is `.old`, a copy-in-progress is `.partial`.
+    put(&base.join("0.1.0.old"), "data/d.txt", "orig");
+    put(&base.join("0.1.0.old"), "a.exe", "x");
+    put(&base.join("0.1.0.partial"), "data/d.txt", "partial copy");
+
+    reg.install(&src.join("example.rm.crash"), NOW).unwrap();
+    let cur = base.join("0.1.0");
+    assert_eq!(read(&cur.join("data").join("d.txt")), "orig");
+    assert_eq!(
+        read(&cur.join("data.from-0.1.0.partial").join("d.txt")),
+        "partial copy"
+    );
+    assert!(!base.join("0.1.0.old").exists() && !base.join("0.1.0.partial").exists());
+
+    // A leftover that holds data with no live folder to carry it to is never deleted.
+    reg.remove("example.rm.crash").unwrap();
+    std::fs::remove_dir_all(base.join("0.1.0").join("a.exe")).ok();
+    std::fs::remove_dir_all(&cur).unwrap();
+    put(&base.join("0.1.0.partial"), "data/keep.txt", "k");
+    // Not restorable (no .old) and no live folder: the install proceeds only after carrying
+    // into a live folder, which does not exist yet, so it must fail closed and keep the data.
+    let r = reg.install(&src.join("example.rm.crash"), NOW);
+    assert!(r.is_err());
+    assert_eq!(
+        read(&base.join("0.1.0.partial").join("data").join("keep.txt")),
+        "k"
+    );
+}
+
+/// Carried settings do not fail the launch file check (data and settings* in any case).
+#[test]
+fn carried_settings_pass_the_launch_check() {
+    let home = temp("launch-home");
+    let src = temp("launch-src");
+    let mut reg = hub_copy(&home, &src, "example.rm.launch");
+    let base = home.join("modules").join("example.rm.launch");
+    put(&base.join("0.1.0"), "Settings/s.json", "s");
+    put(&base.join("0.1.0"), "settings.bad-1/s.json", "b");
+    put(&base.join("0.1.0"), "data/d.txt", "d");
+    reg.remove("example.rm.launch").unwrap();
+    reg.install(&src.join("example.rm.launch"), NOW).unwrap();
+    reg.set_enabled("example.rm.launch", true).unwrap();
+    if let Err(e) = reg.pre_launch("example.rm.launch") {
+        let text = format!("{e:?}");
+        assert!(
+            !text.contains("signed file") && !text.contains("TrustFiles"),
+            "{text}"
+        );
+    }
+}
+
+/// `modules\<id>\<ver>` a junction at install time: only the link goes; nothing behind it is
+/// read, moved or deleted.
+#[test]
+fn a_version_level_junction_is_not_followed_by_install() {
+    let home = temp("vjunc-home");
+    let src = temp("vjunc-src");
+    let decoy = temp("vjunc-decoy");
+    put(&decoy, "data/precious.txt", "keep");
+    let mut reg = hub_copy(&home, &src, "example.rm.vjunc");
+    let ver = home.join("modules").join("example.rm.vjunc").join("0.1.0");
+    std::fs::remove_dir_all(&ver).unwrap();
+    junction(&ver, &decoy);
+
+    reg.install(&src.join("example.rm.vjunc"), NOW).unwrap();
+
+    assert_eq!(read(&decoy.join("data").join("precious.txt")), "keep");
+    assert!(!ver.join("data").exists());
+    assert!(ver.join("a.exe").is_file());
+}
