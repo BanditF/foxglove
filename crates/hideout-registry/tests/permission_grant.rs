@@ -368,7 +368,7 @@ fn every_foxglove_permission_has_a_line_and_a_group() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(perms.len(), 22);
+    assert_eq!(perms.len(), 25);
     let (mut share, mut changes, mut answers, mut red) = (0, 0, 0, 0);
     for p in perms {
         let (g, line, sensitive) = describe(p);
@@ -386,7 +386,7 @@ fn every_foxglove_permission_has_a_line_and_a_group() {
             other => panic!("{p}: {other:?}"),
         }
     }
-    assert_eq!((share, answers, changes, red), (3, 8, 7, 4));
+    assert_eq!((share, answers, changes, red), (3, 10, 8, 4));
 }
 
 fn allow_all(f: &mut Fx) {
