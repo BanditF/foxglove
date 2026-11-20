@@ -668,3 +668,58 @@ fn hand_edited_histories_give_no_move() {
         m["bound"]["at"] = "2099-01-01T00:00:00Z".into()
     });
 }
+
+#[test]
+fn removing_a_folder_and_adding_it_back_needs_an_allow_again() {
+    let mut f = fx("readd");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    let out = f.out.display().to_string();
+    assert!(f.reg.dev_folder_of(ID).is_some());
+    f.reg.remove_dev_folder(&out).unwrap();
+    assert!(f.reg.inventory.modules[ID].identity.is_none());
+    f.reg.add_dev_folder(&out).unwrap();
+    // Re-read from disk: the identity is gone there too, not only in memory.
+    let again = Registry::open(&f.home, true).unwrap();
+    assert!(again.inventory.modules[ID].identity.is_none());
+    assert!(again.dev_folder_of(ID).is_none());
+    rebuild(&f, b"build 2");
+    assert_eq!(again.binding_void(ID), Some(VoidReason::Changed));
+    assert!(again.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn turning_dev_mode_off_and_on_needs_an_allow_again() {
+    let mut f = fx("offon");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    assert!(f.reg.inventory.modules[ID].identity.is_some());
+    // A launch with dev mode off ends the enrolment, on disk.
+    let shipped = Registry::open(&f.home, false).unwrap();
+    assert!(shipped.inventory.modules[ID].identity.is_none());
+    // Dev mode on again: the folder is still listed, but nothing is enrolled.
+    let back = Registry::open(&f.home, true).unwrap();
+    assert!(!back.dev_folders().is_empty());
+    assert!(back.inventory.modules[ID].identity.is_none());
+    assert!(back.dev_folder_of(ID).is_none());
+    rebuild(&f, b"build 2");
+    assert_eq!(back.binding_void(ID), Some(VoidReason::Changed));
+    // A new Allow in the window enrols it again.
+    f.reg = back;
+    f.reg.void_if_changed(ID, LATER).unwrap();
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    assert!(f.reg.inventory.modules[ID].identity.is_some());
+}
+
+#[test]
+fn a_hand_edited_removal_ends_the_enrolment_and_re_listing_needs_an_allow() {
+    let mut f = fx("handremove");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    let out = canonical_path(&f.out).unwrap();
+    hand_edit(&f, &[]);
+    let gone = Registry::open(&f.home, true).unwrap();
+    assert!(gone.inventory.modules[ID].identity.is_none());
+    hand_edit(&f, &[&out]);
+    let back = Registry::open(&f.home, true).unwrap();
+    assert!(back.dev_folder_of(ID).is_none());
+    rebuild(&f, b"build 2");
+    assert_eq!(back.binding_void(ID), Some(VoidReason::Changed));
+}
