@@ -31,6 +31,8 @@ serde_json = "1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_Time"] }
 
 [dev-dependencies]
+# The Settings > Developer tests swap the disk and cloud-sync probes for fakes.
+hideout-registry = { path = "../hideout-registry", features = ["test-probes"] }
 # The catalog fetch tests sign their own catalogs with keys made per run (minisign, MIT).
 foxglove-plugin-trust = { path = "../plugin-trust", features = ["sign"] }
 # The hand-over test talks to the app's real connection handler, not a canned reply.

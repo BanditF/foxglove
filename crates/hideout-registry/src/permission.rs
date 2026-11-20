@@ -304,15 +304,7 @@ pub fn on_local_fixed_drive(path: &str) -> bool {
 /// drive must be fixed *and* on an internal bus ([`crate::drive::BusType::is_internal`]), so a
 /// USB disk that reports `DRIVE_FIXED` is refused, and so is a bus that can't be read.
 pub fn on_local_fixed_drive_with(path: &str, probe: &dyn crate::drive::DriveProbe) -> bool {
-    let p = crate::keyboard::strip_verbatim(path).replace('/', "\\");
-    if crate::keyboard::is_unc(&p) || p.starts_with("\\\\") {
-        return false;
-    }
-    let b = p.as_bytes();
-    if b.len() < 4 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
-        return false;
-    }
-    crate::drive::is_internal_fixed(probe, &p[..3])
+    crate::drive::not_local_kind(path, probe).is_none()
 }
 
 /// Folder and file name of a canonical path (`\\?\` stripped, backslashes).

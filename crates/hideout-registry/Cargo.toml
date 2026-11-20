@@ -20,11 +20,19 @@ toml = "0.9"
 # drive on an internal bus (never a USB disk that reports "fixed").
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Storage_CloudFilters",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Ioctl",
 ] }
 
+[features]
+# Lets a test swap the dev-folder disk and cloud-sync probes for fakes. Off by default and only
+# turned on by dev-dependencies, so no shipped build can switch those checks off.
+test-probes = []
+
 [dev-dependencies]
+# Turns the feature on for this crate's own integration tests.
+hideout-registry = { path = ".", features = ["test-probes"] }
 # The catalog store tests sign their own catalogs with keys made per run (minisign, MIT).
 foxglove-plugin-trust = { path = "../plugin-trust", features = ["sign"] }

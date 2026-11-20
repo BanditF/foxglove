@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use hideout_registry::dev_folder::{path_within, DevFolderRefusal, FolderProblem, RowProblem};
+use hideout_registry::drive::NotLocalKind;
 use hideout_registry::inventory::{IdentityClass, ADOPTED};
 use hideout_registry::keyboard::same_path;
 use hideout_registry::{DevFlags, Registry};
@@ -33,6 +34,9 @@ const NOTE_LIFE: Duration = Duration::from_secs(30);
 pub struct RegistryDev {
     home: PathBuf,
     pick: Pick,
+    /// Tests: the drive and sync answers the registry is opened with (none: the real ones).
+    #[cfg(test)]
+    probes: Option<hideout_registry::dev_folder::DevProbes>,
     /// Tests: open the registry with dev mode forced to this instead of reading the environment.
     mode: Option<DevFlags>,
     /// The line after the last click, and when it was said.
@@ -52,6 +56,8 @@ impl RegistryDev {
             home,
             pick,
             mode: None,
+            #[cfg(test)]
+            probes: None,
             note: None,
             shown: None,
             kept: BTreeMap::new(),
@@ -78,13 +84,26 @@ impl RegistryDev {
         self
     }
 
+    #[cfg(test)]
+    fn with_probes(mut self, p: hideout_registry::dev_folder::DevProbes) -> Self {
+        self.probes = Some(p);
+        self
+    }
+
     fn open(&self) -> Option<Registry> {
         let r = match self.mode {
             Some(flags) => Registry::open_with(&self.home, flags),
             None => Registry::open_from_env(&self.home),
         };
         match r {
-            Ok(r) => Some(r),
+            Ok(r) => {
+                #[cfg(test)]
+                let r = match &self.probes {
+                    Some(p) => r.with_dev_probes(p.clone()),
+                    None => r,
+                };
+                Some(r)
+            }
             Err(e) => {
                 log::warn!("dev folders: registry not read ({e:?})");
                 None
@@ -102,6 +121,7 @@ impl RegistryDev {
                     path: r.path,
                     apps,
                     problem: r.problem.map(row_problem),
+                    also_inside: r.inside,
                 }
             })
             .collect()
@@ -124,6 +144,7 @@ impl RegistryDev {
                         path,
                         apps: Vec::new(),
                         problem: None,
+                        also_inside: None,
                     })
                     .collect(),
                 ..DevView::default()
@@ -148,8 +169,9 @@ impl RegistryDev {
             self.say(words::FAILED, true);
             return;
         };
+        // A name that isn't valid text can't be stored or checked: say so, plainly.
         let Some(path) = picked.to_str() else {
-            self.say(Problem::Missing.line(), true);
+            self.say(Problem::NameUnreadable.line(), true);
             return;
         };
         match reg.try_add_dev_folder(path) {
@@ -175,7 +197,12 @@ impl RegistryDev {
         match e {
             DevFolderRefusal::ModeOff => self.say(words::MODE_OFF, true),
             DevFolderRefusal::NotAFolder => self.say(Problem::Missing.line(), true),
-            DevFolderRefusal::NotLocal => self.say(Problem::NotLocal.line(), true),
+            DevFolderRefusal::NotLocal(k) => self.say(not_local(k).line(), true),
+            DevFolderRefusal::Cloud => self.say(Problem::Cloud.line(), true),
+            DevFolderRefusal::CloudUnknown => self.say(Problem::CloudUnknown.line(), true),
+            DevFolderRefusal::NameUnreadable => self.say(Problem::NameUnreadable.line(), true),
+            // Plain news, not an error: nothing is wrong, the folder is already covered.
+            DevFolderRefusal::InsideListed(parent) => self.say(&words::inside_line(&parent), false),
             DevFolderRefusal::Problem(p) => self.say(folder_problem(p).line(), true),
             DevFolderRefusal::Failed(f) => {
                 log::warn!("dev folders: not added: {f:?}");
@@ -382,10 +409,20 @@ fn folder_problem(p: FolderProblem) -> Problem {
     }
 }
 
+fn not_local(k: NotLocalKind) -> Problem {
+    match k {
+        NotLocalKind::PlugIn => Problem::PlugIn,
+        NotLocalKind::VirtualOrUnknown => Problem::VirtualDrive,
+        NotLocalKind::Network => Problem::NetworkDrive,
+    }
+}
+
 fn row_problem(p: RowProblem) -> Problem {
     match p {
         RowProblem::Missing => Problem::Missing,
-        RowProblem::NotLocal => Problem::NotLocal,
+        RowProblem::NotLocal(k) => not_local(k),
+        RowProblem::Cloud => Problem::Cloud,
+        RowProblem::CloudUnknown => Problem::CloudUnknown,
         RowProblem::Folder(f) => folder_problem(f),
     }
 }
@@ -434,6 +471,7 @@ impl DevControl for RegistryDev {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hideout_registry::dev_folder::DevProbes;
     use std::cell::RefCell;
     use std::path::Path;
     use std::rc::Rc;
@@ -646,6 +684,7 @@ mod tests {
                 path: "C:\\d".into(),
                 apps: vec![app("vulpes", AppState::Off), app("idle", AppState::Off)],
                 problem: None,
+                also_inside: None,
             }],
             ..DevView::default()
         };
@@ -681,6 +720,7 @@ mod tests {
                     app("run", AppState::Running),
                 ],
                 problem: None,
+                also_inside: None,
             }],
             ..DevView::default()
         };
@@ -733,6 +773,144 @@ mod tests {
             folders: false,
         });
         assert_eq!(c2.view(), DevView::default());
+    }
+
+    // ---- DF3 / DF4: the words follow the registry's refusals ------------------------------------
+
+    use hideout_registry::drive::{BusType, DriveProbe};
+    use hideout_registry::sync_root::{SyncAnswer, SyncProbe};
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::sync::Arc;
+
+    struct Drive {
+        bus: Option<BusType>,
+        remote: bool,
+    }
+    impl DriveProbe for Drive {
+        fn is_fixed(&self, _: &str) -> bool {
+            !self.remote
+        }
+        fn bus_type(&self, _: &str) -> Option<BusType> {
+            self.bus
+        }
+        fn is_remote(&self, _: &str) -> bool {
+            self.remote
+        }
+    }
+
+    /// 0 local, 1 synced, 2 unknown: changeable while the control is open.
+    struct Cloud(Arc<AtomicU8>);
+    impl SyncProbe for Cloud {
+        fn check(&self, _: &str) -> SyncAnswer {
+            match self.0.load(Ordering::SeqCst) {
+                0 => SyncAnswer::Local,
+                1 => SyncAnswer::Synced,
+                _ => SyncAnswer::Unknown,
+            }
+        }
+    }
+
+    fn probes(bus: Option<BusType>, remote: bool, cloud: &Arc<AtomicU8>) -> DevProbes {
+        DevProbes {
+            drives: Arc::new(Drive { bus, remote }),
+            sync: Arc::new(Cloud(cloud.clone())),
+        }
+    }
+
+    #[test]
+    fn each_drive_kind_and_the_cloud_say_their_own_line_and_write_nothing() {
+        let cases = [
+            (Some(BusType::Usb), false, 0, Problem::PlugIn),
+            (Some(BusType::Virtual), false, 0, Problem::VirtualDrive),
+            (None, false, 0, Problem::VirtualDrive),
+            (None, true, 0, Problem::NetworkDrive),
+            (Some(BusType::Nvme), false, 1, Problem::Cloud),
+            (Some(BusType::Nvme), false, 2, Problem::CloudUnknown),
+        ];
+        for (i, (bus, remote, cloud, want)) in cases.into_iter().enumerate() {
+            let (c, next, home) = ctl(&format!("df-{i}"), true);
+            let cl = Arc::new(AtomicU8::new(cloud));
+            let mut c = c.with_probes(probes(bus, remote, &cl));
+            *next.borrow_mut() = Some(temp(&format!("df-{i}-dir")));
+            c.click(DevClick::Add);
+            let note = c.view().note.expect("a refusal says why");
+            assert!(note.error, "case {i}");
+            assert_eq!(note.text, want.line(), "case {i}");
+            assert!(listed(&home).is_empty(), "case {i}");
+        }
+    }
+
+    #[test]
+    fn a_listed_folder_that_starts_syncing_or_moves_shows_its_row_line() {
+        let (c, next, _home) = ctl("df-rows", true);
+        let cl = Arc::new(AtomicU8::new(0));
+        let mut c = c.with_probes(probes(Some(BusType::Nvme), false, &cl));
+        *next.borrow_mut() = Some(temp("df-rows-dir"));
+        c.click(DevClick::Add);
+        assert_eq!(c.view().folders[0].problem, None);
+        for (n, want) in [(1, Problem::Cloud), (2, Problem::CloudUnknown)] {
+            cl.store(n, Ordering::SeqCst);
+            c.shown = None;
+            assert_eq!(c.view().folders[0].problem, Some(want));
+        }
+        cl.store(0, Ordering::SeqCst);
+        c.probes = Some(probes(Some(BusType::Usb), false, &cl));
+        c.shown = None;
+        assert_eq!(c.view().folders[0].problem, Some(Problem::PlugIn));
+    }
+
+    #[test]
+    fn a_folder_inside_a_listed_one_is_plain_news_and_a_parent_gets_an_also_inside_line() {
+        let (c, next, home) = ctl("df-nest", true);
+        let cl = Arc::new(AtomicU8::new(0));
+        let mut c = c.with_probes(probes(Some(BusType::Nvme), false, &cl));
+        let parent = temp("df-nest-parent");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        *next.borrow_mut() = Some(parent.clone());
+        c.click(DevClick::Add);
+        let listed_parent = listed(&home)[0].clone();
+        *next.borrow_mut() = Some(child.clone());
+        c.click(DevClick::Add);
+        let note = c.view().note.unwrap();
+        assert!(!note.error, "nothing is wrong: it is already covered");
+        assert_eq!(note.text, words::inside_line(&listed_parent));
+        assert_eq!(listed(&home), vec![listed_parent.clone()]);
+        // Other order, in a second home: the child row says where it is also held.
+        let (c2, next2, home2) = ctl("df-nest2", true);
+        let mut c2 = c2.with_probes(probes(Some(BusType::Nvme), false, &cl));
+        *next2.borrow_mut() = Some(child);
+        c2.click(DevClick::Add);
+        *next2.borrow_mut() = Some(parent);
+        c2.click(DevClick::Add);
+        let v = c2.view();
+        assert_eq!(v.folders.len(), 2);
+        let parent_path = listed(&home2)
+            .into_iter()
+            .find(|p| {
+                v.folders
+                    .iter()
+                    .any(|r| r.path == *p && r.also_inside.is_none())
+            })
+            .unwrap();
+        let kid = v.folders.iter().find(|r| r.also_inside.is_some()).unwrap();
+        assert_eq!(kid.also_inside.as_deref(), Some(parent_path.as_str()));
+    }
+
+    /// A pick whose name is not valid text can't be checked: its own line, nothing written.
+    #[cfg(windows)]
+    #[test]
+    fn a_pick_that_is_not_valid_text_says_so_and_writes_nothing() {
+        use std::os::windows::ffi::OsStringExt;
+        let (mut c, next, home) = ctl("df-utf", true);
+        *next.borrow_mut() = Some(PathBuf::from(std::ffi::OsString::from_wide(&[
+            0x43, 0x3A, 0x5C, 0xD800,
+        ])));
+        c.click(DevClick::Add);
+        let note = c.view().note.unwrap();
+        assert!(note.error);
+        assert_eq!(note.text, Problem::NameUnreadable.line());
+        assert!(listed(&home).is_empty());
     }
 
     #[test]

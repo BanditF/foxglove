@@ -229,8 +229,18 @@ pub fn removed_line(apps: &[String]) -> String {
 pub enum Problem {
     /// Not a folder that exists.
     Missing,
-    /// Not on this PC's own drive.
-    NotLocal,
+    /// A USB, SD or other plug-in drive.
+    PlugIn,
+    /// A virtual disk, or a drive Hideout can't tell the kind of.
+    VirtualDrive,
+    /// A network share or mapped drive.
+    NetworkDrive,
+    /// Syncs with the cloud (OneDrive and others).
+    Cloud,
+    /// Hideout couldn't tell whether it syncs with the cloud.
+    CloudUnknown,
+    /// The folder's name isn't valid text (refusal only).
+    NameUnreadable,
     /// A whole drive.
     Drive,
     /// The whole profile folder.
@@ -251,7 +261,24 @@ impl Problem {
     pub fn line(self) -> &'static str {
         match self {
             Problem::Missing => "Hideout can't find that folder.",
-            Problem::NotLocal => "A dev folder must be on this PC's own drive.",
+            Problem::PlugIn => {
+                "Folders on a USB or other plug-in drive can't be dev folders. Choose one on this PC's own drive."
+            }
+            Problem::VirtualDrive => {
+                "Folders on a virtual or unknown drive can't be dev folders. Choose one on this PC's own drive."
+            }
+            Problem::NetworkDrive => {
+                "Network folders can't be dev folders. Choose one on this PC's own drive."
+            }
+            Problem::Cloud => {
+                "Folders that sync with the cloud can't be dev folders. Choose one that stays on this PC."
+            }
+            Problem::CloudUnknown => {
+                "Hideout couldn't check whether that folder syncs with the cloud. Try again."
+            }
+            Problem::NameUnreadable => {
+                "Hideout can't read that folder's name. Rename it or choose another."
+            }
             Problem::Drive => "A whole drive can't be a dev folder. Choose a folder inside it.",
             Problem::Profile => {
                 "Your whole profile folder can't be a dev folder. Choose a project folder inside it."
@@ -273,7 +300,16 @@ impl Problem {
     pub fn row_line(self) -> &'static str {
         match self {
             Problem::Missing => "Hideout can't find this folder, so it ignores it.",
-            Problem::NotLocal => "This folder is not on this PC's own drive, so Hideout ignores it.",
+            Problem::PlugIn => "This folder is on a plug-in drive, so Hideout ignores it.",
+            Problem::VirtualDrive => {
+                "This folder is on a virtual or unknown drive, so Hideout ignores it."
+            }
+            Problem::NetworkDrive => "This folder is on a network drive, so Hideout ignores it.",
+            Problem::Cloud => "This folder syncs with the cloud, so Hideout ignores it.",
+            Problem::CloudUnknown => {
+                "Hideout couldn't check whether this folder syncs with the cloud, so Hideout ignores it for now."
+            }
+            Problem::NameUnreadable => "Hideout can't read this folder's name, so it ignores it.",
             Problem::Drive | Problem::Profile | Problem::DropZone | Problem::System => {
                 "This folder can't be a dev folder any more, so Hideout ignores it."
             }
@@ -300,6 +336,18 @@ pub struct DevRow {
     pub apps: Vec<DevApp>,
     /// Set when the folder no longer qualifies (its apps are not carried).
     pub problem: Option<Problem>,
+    /// Another listed folder that holds this one ("Also inside {parent}.").
+    pub also_inside: Option<String>,
+}
+
+/// The note when a picked folder sits inside one that is already a dev folder.
+pub fn inside_line(parent: &str) -> String {
+    format!("That folder is inside {parent}, which is already a dev folder.")
+}
+
+/// The muted line on a row whose folder is held by another listed folder.
+pub fn also_inside_line(parent: &str) -> String {
+    format!("Also inside {parent}.")
 }
 
 /// The line after an action: a refusal in the problem colour, news in the plain one.
@@ -548,9 +596,14 @@ mod tests {
         }
     }
 
-    const ALL: [Problem; 9] = [
+    const ALL: [Problem; 14] = [
         Problem::Missing,
-        Problem::NotLocal,
+        Problem::PlugIn,
+        Problem::VirtualDrive,
+        Problem::NetworkDrive,
+        Problem::Cloud,
+        Problem::CloudUnknown,
+        Problem::NameUnreadable,
         Problem::Drive,
         Problem::Profile,
         Problem::DropZone,
@@ -562,23 +615,38 @@ mod tests {
 
     #[test]
     fn every_problem_has_its_own_plain_line() {
-        let all = [
-            Problem::Missing,
-            Problem::NotLocal,
-            Problem::Drive,
-            Problem::Profile,
-            Problem::DropZone,
-            Problem::System,
-            Problem::WhoUnknown,
-            Problem::FolderOpen,
-            Problem::ParentOpen,
-        ];
+        let all = ALL;
         let mut lines: Vec<_> = all.iter().map(|p| p.line()).collect();
         lines.sort();
         lines.dedup();
         assert_eq!(lines.len(), all.len());
         for l in lines {
             assert!(l.ends_with('.'), "{l}");
+        }
+    }
+
+    #[test]
+    fn the_new_refusal_words_are_exact_and_plain() {
+        assert_eq!(
+            inside_line(r"C:\Dev"),
+            r"That folder is inside C:\Dev, which is already a dev folder."
+        );
+        assert_eq!(also_inside_line(r"C:\Dev"), r"Also inside C:\Dev.");
+        let mut all: Vec<String> = ALL
+            .iter()
+            .flat_map(|p| [p.line().to_string(), p.row_line().to_string()])
+            .collect();
+        all.push(inside_line("X"));
+        all.push(also_inside_line("X"));
+        for l in all {
+            let l = l.to_lowercase();
+            // One noun "app"; no internal words and no vendor names in the words.
+            for bad in [
+                "module", "hash", "enrol", "grant", "program", "onedrive", "dropbox", "icloud",
+                "hresult", "cfapi",
+            ] {
+                assert!(!l.contains(bad), "{l}");
+            }
         }
     }
 }
