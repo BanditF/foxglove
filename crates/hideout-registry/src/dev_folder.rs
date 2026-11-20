@@ -4,7 +4,7 @@
 //! app whose program canonically sits inside one keeps its grants over a rebuild (a new file hash,
 //! even another file in the folder) with no new Allow. Guard rails:
 //!
-//! - dev mode is off unless the process says so ([`crate::dev_mode_from_env`]); with it off the
+//! - dev mode is off unless the process says so ([`crate::dev_folders_from_env`]); with it off the
 //!   folder list is kept but counts for nothing;
 //! - a folder is accepted only as a canonical directory on this PC's local fixed drive, never a
 //!   drive root, UNC, removable or network path; the program path is canonical too (a junction,
@@ -224,11 +224,11 @@ impl Registry {
             .unwrap_or_default()
     }
 
-    /// Developer mode is on, and not only through the legacy Foxglove plugin variable: a plugin
-    /// developer who set `FOXGLOVE_DEV_UNSIGNED_PLUGINS` did not ask for dev-folder trust.
-    pub(crate) fn dev_folders_on(&self) -> bool {
-        let var = |n: &str| std::env::var(n).is_ok_and(|s| s == "1");
-        self.dev_mode && !(var("FOXGLOVE_DEV_UNSIGNED_PLUGINS") && !var("HIDEOUT_DEV_UNSIGNED"))
+    /// The dev-folder path is on: `HIDEOUT_DEV_MODE` only. Unsigned sideload
+    /// (`HIDEOUT_DEV_UNSIGNED`, the legacy Foxglove variable) is a different switch and never
+    /// turns this on.
+    pub fn dev_folders_on(&self) -> bool {
+        self.dev_folders
     }
 
     /// Marks `path` as a dev folder. Needs developer mode; the folder must exist, be a directory,

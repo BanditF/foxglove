@@ -576,7 +576,8 @@ plug-ins** (no dylibs, no scripts in the hub).
   `HKCU\Software\Hideout\Modules\<id>`; the hub also reads a bundled `products.json`. Found apps
   show on a Found card, and **Add an app...** takes a folder. Adding opens the same first-run OK;
   nothing is allowed or started before it.
-- **Dev folders (#1297).** With dev mode on, an adopted app inside a folder the user marked keeps
+- **Dev folders (#1297).** With dev mode on (`HIDEOUT_DEV_MODE=1`, and only that: it is a separate
+  switch from unsigned sideload, §12.6), an adopted app inside a folder the user marked keeps
   its grants across a rebuild; sensitive growth and leaving the folder still ask again.
 - **Remove from Hideout (#1293).** Stops the app and forgets its grants; an adopted app keeps its
   own install and settings.
@@ -2703,9 +2704,16 @@ NOT go on.
 
 ### 12.6 Developer mode (unsigned sideload)
 
-- Outside any catalog, a module installs only in developer mode (`FOXGLOVE_DEV_UNSIGNED_PLUGINS`,
-  `HIDEOUT_DEV_UNSIGNED=1`). Source id `sideload`. Without developer mode the install is refused
-  (`install.dev-mode-required`, v1.1).
+Two switches, kept apart; neither implies the other, and each is on only for exactly `1`:
+
+| Variable | Turns on | Never turns on |
+|---|---|---|
+| `HIDEOUT_DEV_UNSIGNED=1` (or the legacy `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1`) | unsigned sideload: install and launch of a module in no catalog | dev folders |
+| `HIDEOUT_DEV_MODE=1` | the dev-folder path: an app run from a dev folder, its carry over a rebuild, the dev chip, the rebuild watch | unsigned sideload |
+
+- Outside any catalog, a module installs only with unsigned sideload on (`HIDEOUT_DEV_UNSIGNED=1`,
+  or the legacy `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1`). Source id `sideload`. Without it the install is
+  refused (`install.dev-mode-required`, v1.1).
 - Its shallow verify compares against the inventory's hashes.
 - It MUST NOT use an id in a first-party scope (`trust.sideload-scope`).
 

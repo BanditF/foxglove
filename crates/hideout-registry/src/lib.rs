@@ -47,11 +47,53 @@ pub const DATA_DIR: &str = "data";
 /// At most this many versions of a module are kept (§7.2).
 pub const MAX_VERSIONS: usize = 2;
 
-/// Whether developer mode (unsigned sideload, §12.6) is on in this process's environment.
-pub fn dev_mode_from_env() -> bool {
+/// Whether unsigned sideload (§12.6) is on in this process's environment: `HIDEOUT_DEV_UNSIGNED=1`
+/// or the legacy `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1`. This gates only installing and launching a
+/// module that is in no catalog; it never turns on the dev-folder path ([`dev_folders_from_env`]).
+pub fn dev_unsigned_from_env() -> bool {
     ["HIDEOUT_DEV_UNSIGNED", "FOXGLOVE_DEV_UNSIGNED_PLUGINS"]
         .iter()
         .any(|v| std::env::var(v).is_ok_and(|s| s == "1"))
+}
+
+/// Whether the dev-folder path (running a module from a dev folder, the dev chip) is on in this
+/// process's environment: `HIDEOUT_DEV_MODE=1` and nothing else. `HIDEOUT_DEV_UNSIGNED` and the
+/// legacy Foxglove variable never turn it on. Anything but exactly `1` is off (fail closed).
+pub fn dev_folders_from_env() -> bool {
+    std::env::var("HIDEOUT_DEV_MODE").is_ok_and(|s| s == "1")
+}
+
+/// The two developer switches, kept apart on purpose: neither implies the other.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DevFlags {
+    /// Unsigned sideload: a module in no catalog may install and run (§12.6).
+    pub unsigned: bool,
+    /// Dev folders: a module run from a folder the user marked vouches for itself (dev_folder).
+    pub folders: bool,
+}
+
+impl DevFlags {
+    /// Both switches off.
+    pub const OFF: DevFlags = DevFlags {
+        unsigned: false,
+        folders: false,
+    };
+
+    /// What this process's environment says: what the hub and the supervisor use.
+    pub fn from_env() -> DevFlags {
+        DevFlags {
+            unsigned: dev_unsigned_from_env(),
+            folders: dev_folders_from_env(),
+        }
+    }
+
+    /// Both switches set to `on`. For tests; production reads [`DevFlags::from_env`].
+    pub fn both(on: bool) -> DevFlags {
+        DevFlags {
+            unsigned: on,
+            folders: on,
+        }
+    }
 }
 
 /// Why a registry step failed: a §15 check, or the file system.
@@ -144,7 +186,10 @@ pub struct Registry {
     pub trust: TrustSet,
     /// id to the running version.
     running: BTreeMap<String, String>,
-    pub dev_mode: bool,
+    /// Unsigned sideload is on (`HIDEOUT_DEV_UNSIGNED`): gates sideload install and launch only.
+    pub dev_unsigned: bool,
+    /// The dev-folder path is on (`HIDEOUT_DEV_MODE`): gates dev folders only, never sideload.
+    pub dev_folders: bool,
     /// The API a legacy `plugin.toml` is checked against (§4.10): the Foxglove plugin API
     /// (`foxglove_plugin_api::API_VERSION`, what `plugin-host` serves), not the hub's version.
     pub legacy_api: Version,
@@ -280,14 +325,22 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
 impl Registry {
     /// Opens the registry in `home` (it holds `inventory.json`, `hideout.toml` and `modules\`)
     /// and loads each source's stored catalog ([`Registry::load_catalogs`], #1049).
+    ///
+    /// `dev_mode` sets both developer switches at once ([`DevFlags::both`]); it is for tests.
+    /// The hub and the supervisor use [`Registry::open_from_env`] or [`Registry::open_with`].
     pub fn open(home: &Path, dev_mode: bool) -> Result<Registry, Failure> {
-        let mut reg = Registry::open_bare(home, dev_mode)?;
+        Registry::open_with(home, DevFlags::both(dev_mode))
+    }
+
+    /// [`Registry::open`] with each developer switch given on its own.
+    pub fn open_with(home: &Path, dev: DevFlags) -> Result<Registry, Failure> {
+        let mut reg = Registry::open_bare(home, dev)?;
         // Dev mode off ends every dev-folder enrolment (trust model §4: leaving dev mode is a
         // full re-ask), and so does a folder that is no longer listed (a hand edit of
         // hideout.toml is the only way to remove one today). Turning it back on or re-listing
         // the folder then carries nothing until a new Allow. Fail closed: the identity is gone
         // in memory even if the write fails (logged), and an unreadable list ends them all.
-        let ended = if !reg.dev_folders_on() {
+        let ended = if !reg.dev_folders {
             reg.end_dev_enrolments(|_| true)
         } else {
             let listed = reg.dev_folders();
@@ -303,7 +356,7 @@ impl Registry {
     }
 
     /// [`Registry::open`] without the stored catalogs (a lab hub reads no trust).
-    fn open_bare(home: &Path, dev_mode: bool) -> Result<Registry, Failure> {
+    fn open_bare(home: &Path, dev: DevFlags) -> Result<Registry, Failure> {
         let mut inventory = Inventory::load(&home.join("inventory.json"))?;
         // A lab entry is never on disk; one written there by hand is not a lab module.
         inventory.modules.retain(|_, m| m.source != LAB);
@@ -314,7 +367,8 @@ impl Registry {
             hub,
             trust: TrustSet::default(),
             running: BTreeMap::new(),
-            dev_mode,
+            dev_unsigned: dev.unsigned,
+            dev_folders: dev.folders,
             legacy_api: foxglove_plugin_api::API_VERSION,
             lab: false,
             lab_report: Vec::new(),
@@ -333,9 +387,9 @@ impl Registry {
         let lab = lab::lab_mode_from_env(home) == LabMode::On;
         // A lab hub reads no trust (docs/hideout-lab.md), so no stored catalog either.
         let mut reg = if lab {
-            Registry::open_bare(home, dev_mode_from_env())?
+            Registry::open_bare(home, DevFlags::from_env())?
         } else {
-            Registry::open(home, dev_mode_from_env())?
+            Registry::open_with(home, DevFlags::from_env())?
         };
         if lab {
             reg.load_lab();
@@ -755,7 +809,7 @@ impl Registry {
     /// A module outside every catalog: developer mode on, and an id outside every first-party
     /// scope (§12.6).
     fn sideload_ok(&self, m: &Module) -> Result<(), Error> {
-        if !self.dev_mode {
+        if !self.dev_unsigned {
             return Err(Error::new(
                 ErrorId::InstallDevModeRequired,
                 format!("{} is in no catalog and developer mode is off", m.id),
@@ -1263,7 +1317,7 @@ impl Registry {
             }
             trust::check_files(&found, &m.files)?;
         } else if m.source == SIDELOAD {
-            if !self.dev_mode {
+            if !self.dev_unsigned {
                 return Err(Error::new(
                     ErrorId::InstallDevModeRequired,
                     format!("{id} is a sideload and developer mode is off"),
