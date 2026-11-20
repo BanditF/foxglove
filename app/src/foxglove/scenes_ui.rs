@@ -856,14 +856,15 @@ fn take_look(name: &str, look: &Look, room: &RoomMap) {
     super::scene_run::set_look(name, look.effect(room), look.temperature());
 }
 
-/// "Open Apps page": asks Hideout to show the PC sensors app's page, else its own; off the page's
-/// thread, since the hub may take its time. Under Foxglove alone there is no Hideout to ask.
+/// "Open Apps page": asks Hideout to show its Apps page (where the PC sensors app is turned on
+/// and Foxglove's grant is given), else Foxglove's own page; off the page's thread, since the
+/// hub may take its time. Under Foxglove alone there is no Hideout to ask.
 fn open_apps() {
     #[cfg(windows)]
     super::services::spawn_named("open-apps", || {
         use super::hub_fact::{show, show_module, HubPipe, LIMIT};
         let pipe = std::sync::Arc::new(HubPipe);
-        if !show_module(pipe.clone(), "org.foxglove.sensors", LIMIT) {
+        if !show_module(pipe.clone(), super::hub_fact::APPS_PAGE, LIMIT) {
             show(pipe, LIMIT);
         }
     });
@@ -1287,10 +1288,25 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 let screen = v.look.kind.reads_screen();
                 let no_screen =
                     screen && !v.room.devices.iter().any(|d| d.kind == DeviceKind::Monitor);
+                // Temperature the gates refuse (no sensors app, no permission, no Hideout) is
+                // disabled too, with the reason as its hover.
+                let refused = v
+                    .look
+                    .kind
+                    .reads_temperature()
+                    .then(|| v.temperature.gate())
+                    .flatten();
+                let why_not = match refused {
+                    Some(g) => g.words().0,
+                    None => glow::NO_SCREEN,
+                };
                 let start = ui
-                    .add_enabled(!no_screen, theme::primary_button(ui, "Start"))
+                    .add_enabled(
+                        !no_screen && refused.is_none(),
+                        theme::primary_button(ui, "Start"),
+                    )
                     .on_hover_text("Run this scene on the lights")
-                    .on_disabled_hover_text(glow::NO_SCREEN);
+                    .on_disabled_hover_text(why_not);
                 if start.clicked() {
                     if start_allowed(v.look.kind, v.screen.allowed) {
                         out.push(Intent::Start);
@@ -2479,7 +2495,7 @@ pub(crate) mod tests {
         v.temperature.status = Status::AppOff;
         assert_eq!(
             status(&v).0,
-            "Temperature needs the PC sensors app. Turn it on on Hideout's Apps page."
+            "Temperature needs the PC sensors app. Turn it on in Hideout's Apps page."
         );
         v.temperature.status = Status::NotAllowed;
         assert_eq!(status(&v).1, Tone::Warn);
@@ -2918,6 +2934,64 @@ pub(crate) mod tests {
         };
         assert!(!repaint_primary(&after) && stop_primary(&after));
         assert!(!stop_primary(&H::default()));
+    }
+
+    /// Whether the page's Start button is disabled, and what its disabled hover says it is.
+    fn start_disabled(v: &View) -> bool {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut fonts = egui::FontDefinitions::default();
+        crate::platform::add_phosphor_to_fonts(&mut fonts);
+        theme::add_fonts(&mut fonts);
+        ctx.set_fonts(fonts);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(900.0, 1100.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| {
+            draw(ui, v, &mut Draft::default());
+        });
+        out.textures_delta.clear();
+        let tree = out.platform_output.accesskit_update.expect("a tree");
+        tree.nodes
+            .iter()
+            .map(|(_, n)| n)
+            .find(|n| n.label() == Some("Start"))
+            .expect("the Start button")
+            .is_disabled()
+    }
+
+    #[test]
+    fn start_is_disabled_for_a_temperature_the_gates_refuse() {
+        use crate::foxglove::temperature_card::TempView;
+        use crate::foxglove::temperature_feed::Status;
+        let look = Look {
+            kind: Kind::Temperature,
+            ..Look::default()
+        };
+        let with = |status, hosted| View {
+            look: look.clone(),
+            running: None,
+            temperature: TempView {
+                status,
+                hosted,
+                live: false,
+            },
+            ..sample_none()
+        };
+        assert!(start_disabled(&with(Status::AppOff, true)), "app off");
+        assert!(
+            start_disabled(&with(Status::NotAllowed, true)),
+            "not allowed"
+        );
+        assert!(start_disabled(&with(Status::Reading, false)), "standalone");
+        assert!(
+            !start_disabled(&with(Status::Reading, true)),
+            "nothing wrong"
+        );
     }
 
     /// Whether the page draws `label`.

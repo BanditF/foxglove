@@ -2,6 +2,7 @@
 //! pulling from srwi/keypeek stays easy (docs/keypeek-sync.md).
 
 pub mod accent;
+pub mod announce;
 pub mod api;
 // Foxglove (#981): an app's icon from its program file.
 pub mod app_icon;
