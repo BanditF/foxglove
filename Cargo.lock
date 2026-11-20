@@ -1391,6 +1391,7 @@ dependencies = [
  "chrono",
  "embedded-graphics",
  "foxglove-link",
+ "foxglove-sensors",
  "serde",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -1502,6 +1503,13 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "foxglove-sensors"
+version = "0.1.0"
+dependencies = [
+ "windows 0.62.2",
 ]
 
 [[package]]

@@ -1670,6 +1670,7 @@ dependencies = [
  "chrono",
  "embedded-graphics",
  "foxglove-link",
+ "foxglove-sensors",
  "serde",
  "windows 0.62.2",
  "windows-core",
@@ -1753,6 +1754,13 @@ dependencies = [
  "noise",
  "palette",
  "serde",
+]
+
+[[package]]
+name = "foxglove-sensors"
+version = "0.1.0"
+dependencies = [
+ "windows 0.62.2",
 ]
 
 [[package]]
