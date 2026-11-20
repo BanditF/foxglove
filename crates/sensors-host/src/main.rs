@@ -130,6 +130,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(|| nvml::source_or_unavailable("nvml.dll")),
     ];
     let mut host = Host::new(factories, Config::default());
+    host.on_release(foxglove_sensors::trim_memory);
     let start = Instant::now();
     let mut game_mode = None;
     let mut logged = std::collections::HashSet::new();
@@ -168,16 +169,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             host.game_mode(on, now);
         }
         for (method, p) in std::mem::take(&mut inbox.notes) {
-            match method.as_str() {
-                "facts.demand" => {
-                    let n = p["subscribers"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
-                    host.demand(p["pattern"].as_str().unwrap_or(""), n, now);
-                }
-                "facts.changed" if p["key"] == GAME_MODE_FACT => {
-                    host.game_mode(is_on(&p["value"]), now)
-                }
-                _ => {}
-            }
+            host.notify(&method, &p, now);
         }
         host.tick(now);
         for w in host.take_writes() {

@@ -5,6 +5,9 @@ edition = "2021"
 description = "Read-only PC sensors as facts: PDH load counters and NVML GPU readings behind a Source trait, sampled only while something subscribes"
 license = "MIT"
 
+[dependencies]
+serde_json = "1"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
@@ -13,6 +16,9 @@ windows = { version = "0.62", features = [
     "Win32_System_SystemInformation",
     # nvml.dll is loaded at run time, never linked.
     "Win32_System_LibraryLoader",
+    # After the last source is dropped: give the heap's free pages back and trim the working set.
+    "Win32_System_Memory",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

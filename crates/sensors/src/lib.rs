@@ -165,6 +165,24 @@ pub trait Source {
     fn read(&mut self) -> Result<Reading, SourceError>;
 }
 
+/// After every source is dropped: returns the heap's free pages to Windows and trims the working
+/// set, so the idle process is as small as it can be. Without this the allocator keeps the
+/// pages the PDH buffers used (freed, but still resident). It cannot release what Windows
+/// itself keeps for the process (PDH's loaded performance providers and their handles).
+pub fn trim_memory() {
+    #[cfg(windows)]
+    // SAFETY: both calls take the process's own pseudo-handle or default heap; failure only
+    // means nothing was trimmed.
+    unsafe {
+        use windows::Win32::System::Memory::{GetProcessHeap, HeapCompact, HEAP_FLAGS};
+        use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+        if let Ok(heap) = GetProcessHeap() {
+            HeapCompact(heap, HEAP_FLAGS(0));
+        }
+        let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+}
+
 /// Whether a facts pattern (`facts.subscribe`) hears this namespace: the subtree, a key or
 /// subtree inside it, or every key. Same pattern rules as the facts store.
 pub fn pattern_wants(pattern: &str) -> bool {
