@@ -1309,7 +1309,10 @@ impl GlutinWindowContext {
         // empty UI Automation tree. The root is started in `run`, once the proxy exists.
         #[cfg(feature = "accesskit")]
         if fresh_egui_winit && viewport_id != ViewportId::ROOT {
-            if let (Some(proxy), Some(egui_winit)) =
+            // accesskit_winit panics when the window is already visible; skip with a log line.
+            if window.is_visible() == Some(true) {
+                log::warn!("viewport {viewport_id:?} was created visible: no screen reader tree");
+            } else if let (Some(proxy), Some(egui_winit)) =
                 (self.accesskit_proxy.clone(), viewport.egui_winit.as_mut())
             {
                 egui_winit.init_accesskit(event_loop, window, proxy);

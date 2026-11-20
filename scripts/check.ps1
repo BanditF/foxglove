@@ -119,6 +119,20 @@ try {
         Step 'plugin-trust signer' { cargo clippy -p foxglove-plugin-trust --features sign --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p foxglove-plugin-trust --features sign } }
         Step 'foxglove-link without hidapi' { cargo build -p foxglove-link --no-default-features }
         Step 'foxglove-link Devices device' { cargo clippy -p foxglove-link --features devices --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p foxglove-link --features devices } }
+        # The runtime accesskit_windows and eframe must be the vendored, patched copies (#1376): a
+        # dependency bump to another accesskit_windows would silently drop the [patch] and bring the
+        # atom-table crash back.
+        Step 'app: vendored patches are the ones built' {
+            foreach ($c in 'accesskit_windows', 'eframe') {
+                $t = @(cargo tree --manifest-path app/Cargo.toml --locked --offline -e normal --target x86_64-pc-windows-msvc -i $c)
+                if ($LASTEXITCODE) { throw "cargo tree -i $c failed" }
+                $heads = @($t | Where-Object { $_ -match '^[a-z_0-9-]+ v[0-9]' })
+                if ($heads.Count -ne 1 -or $heads[0] -notmatch ('app.vendor.' + $c)) {
+                    Write-Host "$c is not the single vendored copy: $($heads -join ' | ')"
+                    throw "$c is not the vendored copy"
+                }
+            }
+        }
         Step 'app: clippy' { cargo clippy --manifest-path app/Cargo.toml --all-targets -- -D warnings }
         Step 'app: tests' { cargo test --manifest-path app/Cargo.toml }
     }

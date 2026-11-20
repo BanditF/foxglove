@@ -137,7 +137,7 @@ fn a_failed_subclass_install_is_an_error_not_a_panic() {
     impl ActionHandler for Quiet {
         fn do_action(&mut self, _: ActionRequest) {}
     }
-    let hwnd = windows::Win32::Foundation::HWND(0x10 as *mut core::ffi::c_void);
+    let hwnd = windows::Win32::Foundation::HWND(0x7FFF_FFF0 as *mut core::ffi::c_void);
     match accesskit_windows::SubclassingAdapter::try_new(hwnd, Quiet, Quiet) {
         Ok(_) => panic!("an invalid window cannot be subclassed"),
         Err((mut inert, _err)) => {

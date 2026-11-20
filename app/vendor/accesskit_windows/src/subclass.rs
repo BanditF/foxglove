@@ -7,7 +7,7 @@ use accesskit::{ActionHandler, ActivationHandler, TreeUpdate};
 use std::{
     cell::{Cell, RefCell},
     ffi::c_void,
-    mem::transmute,
+    mem::{transmute, ManuallyDrop},
 };
 use windows::{
     core::*,
@@ -133,9 +133,18 @@ impl SubclassImpl {
         }
     }
 
-    fn uninstall(&self) {
+    /// FOXGLOVE PATCH: returns false when the handler must stay alive (see below).
+    fn uninstall(&self) -> bool {
         if self.window_destroyed.get() || !self.installed.get() {
-            return;
+            return true;
+        }
+        // Someone else subclassed the window after us (Foxglove's settings_window.rs hook).
+        // Writing the original proc back would cut them out of the chain and they would never see
+        // WM_NCDESTROY. Leave our handler chained (the caller leaks it, so it stays valid) and
+        // inert; the window is being destroyed right after.
+        let current = unsafe { GetWindowLongPtrW(self.hwnd, GWLP_WNDPROC) };
+        if current != wnd_proc as *const c_void as LongPtr {
+            return false;
         }
         let result = unsafe {
             SetWindowLongPtrW(
@@ -149,6 +158,7 @@ impl SubclassImpl {
         }
         // FOXGLOVE PATCH: a failed removal is not worth a panic during teardown.
         let _ = unsafe { RemovePropW(self.hwnd, PROP_NAME) };
+        true
     }
 }
 
@@ -156,7 +166,7 @@ impl SubclassImpl {
 /// that provides no other way of adding custom message handlers.
 ///
 /// [Win32 subclassing]: https://docs.microsoft.com/en-us/windows/win32/controls/subclassing-overview
-pub struct SubclassingAdapter(Box<SubclassImpl>);
+pub struct SubclassingAdapter(ManuallyDrop<Box<SubclassImpl>>);
 
 impl SubclassingAdapter {
     /// Creates a new Windows platform adapter using window subclassing.
@@ -203,8 +213,8 @@ impl SubclassingAdapter {
 
         let mut r#impl = SubclassImpl::new(hwnd, activation_handler, action_handler);
         match r#impl.install() {
-            Ok(()) => Ok(Self(r#impl)),
-            Err(err) => Err((Self(r#impl), err)),
+            Ok(()) => Ok(Self(ManuallyDrop::new(r#impl))),
+            Err(err) => Err((Self(ManuallyDrop::new(r#impl)), err)),
         }
     }
 
@@ -232,6 +242,10 @@ impl SubclassingAdapter {
 
 impl Drop for SubclassingAdapter {
     fn drop(&mut self) {
-        self.0.uninstall();
+        // FOXGLOVE PATCH: when we could not unhook, the Box is leaked on purpose (the window's
+        // procedure chain still points at it).
+        if self.0.uninstall() {
+            unsafe { ManuallyDrop::drop(&mut self.0) };
+        }
     }
 }

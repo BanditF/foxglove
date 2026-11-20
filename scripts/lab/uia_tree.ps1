@@ -17,8 +17,12 @@
 # -Expect items are Role:Name or Role:Name:state. Role is a UIA control type (Button, RadioButton,
 # Group, Text, ...), Name the exact accessible name, state `on` (selected or toggled on) or `off`.
 #
+# The process must belong to you (same user and Windows session). If several windows of it carry
+# the title (the overlay is titled "Foxglove" too) the script refuses and lists them; pick one with
+# -Handle (decimal or 0x hex native window handle from that list).
+#
 # Exit codes: 0 all expectations met (or none given), 2 an expectation is missing, 3 refused or
-# window not found, 4 timed out. Nothing is clicked, typed or focused; the tree is only read.
+# window not found or ambiguous, 4 timed out (a hard limit: a hung window cannot block it). Nothing is clicked, typed or focused; the tree is only read.
 param(
     [int]$ProcessId = 0,
     [string]$Title = 'Foxglove',
@@ -26,6 +30,7 @@ param(
     [int]$TimeoutSec = 20,
     [int]$MaxNodes = 4000,
     [string]$OutFile = '',
+    [string]$Handle = '',
     [switch]$SelfTest
 )
 $ErrorActionPreference = 'Stop'
@@ -120,61 +125,105 @@ if (-not $proc -or $proc.ProcessName -cne 'foxglove') {
     Write-Host "refused: process $ProcessId is not a running process named exactly 'foxglove'"
     exit 3
 }
-
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
-$script:count = 0
-$script:timedOut = $false
-$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
-
-function Get-State($el) {
-    try {
-        $p = $null
-        if ($el.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$p)) {
-            return $(if ($p.Current.IsSelected) { 'on' } else { 'off' })
-        }
-        if ($el.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$p)) {
-            return $(if ($p.Current.ToggleState -eq 'On') { 'on' } else { 'off' })
-        }
-    } catch { }
-    return $null
-}
-
-function Read-Node($el, [int]$depth) {
-    $script:count++
-    if ([DateTime]::UtcNow -gt $deadline -or $script:count -gt $MaxNodes) { $script:timedOut = $true }
-    $c = $el.Current
-    $b = $c.BoundingRectangle
-    $rect = [ordered]@{ x = 0; y = 0; w = 0; h = 0 }
-    if (-not $b.IsEmpty) {
-        $rect = [ordered]@{ x = [int]$b.X; y = [int]$b.Y; w = [int]$b.Width; h = [int]$b.Height }
-    }
-    $kids = @()
-    if (-not $script:timedOut -and $depth -lt 40) {
-        $k = $walker.GetFirstChild($el)
-        while ($null -ne $k -and -not $script:timedOut) {
-            $kids += , (Read-Node $k ($depth + 1))
-            $k = $walker.GetNextSibling($k)
-        }
-    }
-    $role = $c.ControlType.ProgrammaticName -replace '^ControlType\.', ''
-    New-NodeRecord $role $c.Name $c.AutomationId $c.IsEnabled (Get-State $el) $rect $kids
-}
-
-$cond = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::ProcessIdProperty), $ProcessId
-$wins = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
-$win = $null
-foreach ($w in $wins) { if ($w.Current.Name -ceq $Title) { $win = $w; break } }
-if (-not $win) {
-    $names = @($wins | ForEach-Object { "'" + $_.Current.Name + "'" }) -join ', '
-    Write-Host "no window named '$Title' in process $ProcessId (windows: $names)"
+# Same Windows session and, when Windows tells us the owner, the same user.
+if ($proc.SessionId -ne (Get-Process -Id $PID).SessionId) {
+    Write-Host "refused: process $ProcessId runs in another Windows session"
     exit 3
 }
+try {
+    $owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId") -MethodName GetOwner
+    if ($owner.ReturnValue -eq 0 -and ($owner.User -cne $env:USERNAME -or $owner.Domain -cne $env:USERDOMAIN)) {
+        Write-Host "refused: process $ProcessId belongs to $($owner.Domain)\$($owner.User), not to you"
+        exit 3
+    }
+} catch { }
 
-$tree = Read-Node $win 0
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+
+# The walk runs in its own runspace so a hung window cannot block this script: the wait below is a
+# hard limit, and leaving the process ends the stuck thread.
+$walk = {
+    param($pid_, $title, $handle, $maxNodes, $deadlineTicks, $recordFn)
+    $ErrorActionPreference = 'Stop'
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Set-Item -Path function:New-NodeRecord -Value ([scriptblock]::Create($recordFn))
+    $script:count = 0
+    $script:timedOut = $false
+    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+
+    function Get-State($el) {
+        try {
+            $p = $null
+            if ($el.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$p)) {
+                return $(if ($p.Current.IsSelected) { 'on' } else { 'off' })
+            }
+            if ($el.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$p)) {
+                return $(if ($p.Current.ToggleState -eq 'On') { 'on' } else { 'off' })
+            }
+        } catch { }
+        return $null
+    }
+
+    function Read-Node($el, [int]$depth) {
+        $script:count++
+        if ([DateTime]::UtcNow.Ticks -gt $deadlineTicks -or $script:count -gt $maxNodes) { $script:timedOut = $true }
+        $c = $el.Current
+        $b = $c.BoundingRectangle
+        $rect = [ordered]@{ x = 0; y = 0; w = 0; h = 0 }
+        if (-not $b.IsEmpty) {
+            $rect = [ordered]@{ x = [int]$b.X; y = [int]$b.Y; w = [int]$b.Width; h = [int]$b.Height }
+        }
+        $kids = @()
+        if (-not $script:timedOut -and $depth -lt 40) {
+            $k = $walker.GetFirstChild($el)
+            while ($null -ne $k -and -not $script:timedOut) {
+                $kids += , (Read-Node $k ($depth + 1))
+                $k = $walker.GetNextSibling($k)
+            }
+        }
+        $role = $c.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+        New-NodeRecord $role $c.Name $c.AutomationId $c.IsEnabled (Get-State $el) $rect $kids
+    }
+
+    $cond = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::ProcessIdProperty), $pid_
+    $wins = @([System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond))
+    $hits = @($wins | Where-Object {
+        if ($handle) { $_.Current.NativeWindowHandle -eq [int]$handle } else { $_.Current.Name -ceq $title }
+    })
+    if ($hits.Count -ne 1) {
+        $list = @($wins | ForEach-Object {
+            $r = $_.Current.BoundingRectangle
+            "handle $($_.Current.NativeWindowHandle) (0x$('{0:X}' -f $_.Current.NativeWindowHandle)) '$($_.Current.Name)' class '$($_.Current.ClassName)' $([int]$r.Width)x$([int]$r.Height)"
+        }) -join '; '
+        return @{ error = "$($hits.Count) windows match (want exactly 1; pick one with -Handle). Windows of the process: $list" }
+    }
+    $tree = Read-Node $hits[0] 0
+    @{ tree = $tree; timedOut = $script:timedOut; count = $script:count }
+}
+
+$handleNum = ''
+if ($Handle) {
+    try { $handleNum = [string][Convert]::ToInt32($Handle, $(if ($Handle -match '^0x') { 16 } else { 10 })) }
+    catch { Write-Host "bad -Handle '$Handle'"; exit 3 }
+}
+$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+$ps = [powershell]::Create()
+[void]$ps.AddScript($walk.ToString()).AddArgument($ProcessId).AddArgument($Title).AddArgument($handleNum).AddArgument($MaxNodes).AddArgument($deadline.Ticks).AddArgument(${function:New-NodeRecord}.ToString())
+$async = $ps.BeginInvoke()
+if (-not $async.AsyncWaitHandle.WaitOne(($TimeoutSec + 5) * 1000)) {
+    Write-Host "timed out: the window did not answer within $TimeoutSec s (hung?)"
+    exit 4
+}
+$out = $ps.EndInvoke($async)
+if ($ps.Streams.Error.Count) { Write-Host "UIA error: $($ps.Streams.Error[0])"; exit 3 }
+$res = $out | Where-Object { $_ -is [hashtable] } | Select-Object -First 1
+if (-not $res) { Write-Host 'no result from the UIA walk'; exit 3 }
+if ($res.error) { Write-Host $res.error; exit 3 }
+
+$tree = $res.tree
 $json = $tree | ConvertTo-Json -Depth 60
 if ($OutFile) { [System.IO.File]::WriteAllText($OutFile, $json, (New-Object System.Text.UTF8Encoding($false))) } else { $json }
-if ($script:timedOut) { Write-Host "timed out after $script:count nodes (-TimeoutSec / -MaxNodes)"; exit 4 }
+if ($res.timedOut) { Write-Host "timed out after $($res.count) nodes (-TimeoutSec / -MaxNodes)"; exit 4 }
 
 $missing = @(Find-Missing $tree $Expect)
 if ($missing.Count) {

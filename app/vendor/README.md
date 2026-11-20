@@ -11,7 +11,7 @@ accesskit_windows: MIT OR Apache-2.0), the same as upstream; see LICENSING.md.
   name; when another program has filled Windows' atom table the upstream `.unwrap()` panicked at
   window creation. Now `install` returns the error, the window stays un-subclassed (inert adapter,
   one line on stderr) and `RemovePropW` failures are ignored. `SubclassingAdapter::try_new` exposes
-  the error (used by the test in `app/src/a11y_tree.rs`).
+  the error (used by the test in `app/src/foxglove/a11y_tree_tests.rs`).
 - `eframe` 0.36.1, `src/native/glow_integration.rs`: upstream calls `init_accesskit` for the root
   viewport only, so a second window (the Settings window is an immediate viewport) had an empty
   tree. `initialize_window` now starts the adapter for every non-root viewport as well.
