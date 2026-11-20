@@ -22,12 +22,16 @@ pub type Pick = Box<dyn Fn() -> Option<PathBuf>>;
 /// read afresh (there is no on-show hook, and no timer).
 const REOPENED: Duration = Duration::from_secs(1);
 
+/// A note older than this is gone when the page is opened again.
+const NOTE_LIFE: Duration = Duration::from_secs(30);
+
 pub struct RegistryDev {
     home: PathBuf,
     pick: Pick,
     /// Tests: open the registry with dev mode forced to this instead of reading the environment.
     mode: Option<bool>,
-    note: Option<Note>,
+    /// The line after the last click, and when it was said.
+    note: Option<(Note, Instant)>,
     shown: Option<(DevView, Instant)>,
 }
 
@@ -68,7 +72,20 @@ impl RegistryDev {
             return DevView::default();
         };
         if !reg.dev_folders_on() {
-            return DevView::default();
+            // Off: the page shows nothing unless folders are still listed, and then only their
+            // paths.
+            return DevView {
+                folders: reg
+                    .dev_folders()
+                    .into_iter()
+                    .map(|path| DevRow {
+                        path,
+                        apps: Vec::new(),
+                        problem: None,
+                    })
+                    .collect(),
+                ..DevView::default()
+            };
         }
         DevView {
             on: true,
@@ -134,7 +151,8 @@ impl RegistryDev {
             .find(|r| r.path == path)
             .map(|r| r.apps);
         let Some(apps) = apps else {
-            self.say(words::REMOVED, false);
+            // Not on the list: nothing was removed, so nothing is claimed.
+            self.note = None;
             return;
         };
         match reg.remove_dev_folder(path) {
@@ -165,10 +183,13 @@ impl RegistryDev {
     }
 
     fn say(&mut self, text: &str, error: bool) {
-        self.note = Some(Note {
-            text: text.to_string(),
-            error,
-        });
+        self.note = Some((
+            Note {
+                text: text.to_string(),
+                error,
+            },
+            Instant::now(),
+        ));
     }
 }
 
@@ -206,10 +227,20 @@ impl DevControl for RegistryDev {
         // closed and opened again; the frames of one visit reuse the read.
         let mut v = match &self.shown {
             Some((v, at)) if at.elapsed() <= REOPENED => v.clone(),
-            _ => self.read(),
+            _ => {
+                // Opened again: an old note belongs to an earlier visit.
+                if self
+                    .note
+                    .as_ref()
+                    .is_some_and(|(_, at)| at.elapsed() > NOTE_LIFE)
+                {
+                    self.note = None;
+                }
+                self.read()
+            }
         };
         self.shown = Some((v.clone(), Instant::now()));
-        v.note = self.note.clone();
+        v.note = self.note.as_ref().map(|(n, _)| n.clone());
         v
     }
 
@@ -360,8 +391,43 @@ mod tests {
 
     #[test]
     fn remove_only_takes_a_listed_folder() {
-        let (mut c, _next, home) = ctl("rmstray", true);
+        let (mut c, next, home) = ctl("rmstray", true);
+        // An earlier note must not be left standing as if this had worked either.
+        *next.borrow_mut() = Some(temp("rmstray-dir"));
+        c.click(DevClick::Add);
+        let kept = listed(&home);
         c.click(DevClick::Remove(r"C:\not\listed".into()));
-        assert!(listed(&home).is_empty());
+        assert_eq!(listed(&home), kept);
+        assert!(c.view().note.is_none(), "a no-op must not say Removed.");
+    }
+
+    #[test]
+    fn a_note_does_not_outlive_the_visit() {
+        let (mut c, next, _home) = ctl("oldnote", true);
+        *next.borrow_mut() = Some(temp("oldnote-dir"));
+        c.click(DevClick::Add);
+        assert!(c.view().note.is_some());
+        // Same visit, frames close together: still there even when the note is old.
+        c.note.as_mut().unwrap().1 = Instant::now() - NOTE_LIFE * 2;
+        assert!(c.view().note.is_some());
+        // The page is opened again (last frame long ago): the old note is gone.
+        c.shown.as_mut().unwrap().1 = Instant::now() - REOPENED * 5;
+        assert!(c.view().note.is_none());
+        // A fresh click sets a fresh note.
+        c.click(DevClick::Add);
+        assert!(c.view().note.is_some());
+    }
+
+    #[test]
+    fn dev_mode_off_with_folders_listed_shows_only_their_paths() {
+        let (mut c, _next, home) = ctl("offlisted", true);
+        let dir = temp("offlisted-dir");
+        let mut reg = Registry::open(&home, true).unwrap();
+        reg.add_dev_folder(&dir.display().to_string()).unwrap();
+        c.mode = Some(false);
+        let v = c.view();
+        assert!(!v.on);
+        assert_eq!(v.folders.len(), 1);
+        assert!(v.folders[0].problem.is_none());
     }
 }

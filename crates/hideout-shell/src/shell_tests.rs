@@ -4826,6 +4826,15 @@ fn dev_view(case: &str) -> crate::dev_settings::DevView {
     };
     match case {
         "off" => DevView::default(),
+        "off-listed" => DevView {
+            on: false,
+            folders: vec![DevRow {
+                path: r"D:\dev\foxglove".into(),
+                apps: vec![],
+                problem: None,
+            }],
+            ..Default::default()
+        },
         "empty" => DevView {
             on: true,
             restart: true,
@@ -4911,8 +4920,8 @@ fn renders_the_developer_settings_for_review() {
             1400,
             "r5-developer-problem-narrow-light.png",
         ),
-        ("off", true, 720, 520, "r5-developer-off-dark.png"),
-        ("off", false, 720, 520, "r5-developer-off-light.png"),
+        ("off-listed", true, 720, 520, "r5-developer-off-dark.png"),
+        ("off-listed", false, 720, 520, "r5-developer-off-light.png"),
     ] {
         let view = dev_view(case);
         let choice = if dark {
@@ -4985,16 +4994,31 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
         }),
         "the note is a live region: {on:?}"
     );
-    // Dev off: the one line, and none of this section's controls.
-    let off = accesskit_nodes(&dev_view("off"));
+    // Dev off with folders listed: the off line and the paths, none of this section's controls.
+    let off = accesskit_nodes(&dev_view("off-listed"));
     assert!(off
         .iter()
         .any(|(_, l, _)| l.as_deref() == Some(crate::dev_settings::MODE_OFF)));
-    assert!(!off.iter().any(|(_, l, _)| l.as_deref().is_some_and(|l| {
-        l.contains("dev folder")
-            || l == crate::dev_settings::ADD
-            || l == crate::dev_settings::RESTART_SWITCH
-    }) && l.as_deref() != Some(crate::dev_settings::MODE_OFF)));
+    assert!(off
+        .iter()
+        .any(|(_, l, _)| l.as_deref() == Some(r"D:\dev\foxglove")));
+    let no_controls = |nodes: &Seen| {
+        !nodes.iter().any(|(_, l, _)| {
+            l.as_deref().is_some_and(|l| {
+                (l.contains("dev folder") && l != crate::dev_settings::MODE_OFF)
+                    || l == crate::dev_settings::ADD
+                    || l == crate::dev_settings::RESTART_SWITCH
+            })
+        })
+    };
+    assert!(no_controls(&off), "{off:?}");
+    // Dev off and nothing listed: the section is not there at all.
+    let hidden = accesskit_nodes(&dev_view("off"));
+    assert!(hidden.iter().all(|(_, l, _)| {
+        l.as_deref() != Some(crate::dev_settings::HEADING)
+            && l.as_deref() != Some(crate::dev_settings::MODE_OFF)
+    }));
+    assert!(no_controls(&hidden), "{hidden:?}");
 }
 
 /// Each click the section makes: Add carries no path (the hub opens the picker itself).

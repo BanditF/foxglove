@@ -18,7 +18,7 @@ pub const EMPTY: &str = "No dev folders yet.";
 pub const ADD: &str = "Add a folder\u{2026}";
 pub const NO_APPS: &str = "No apps from here yet";
 pub const RESTART_SWITCH: &str = "Restart apps after a rebuild";
-pub const RESTART_SUB: &str = "When off, Hideout waits for you to click Restart.";
+pub const RESTART_SUB: &str = "When off, the new build starts the next time you start the app.";
 pub const FOOTNOTE: &str = "Developer mode is on for this PC. Hideout as shipped keeps it off.";
 pub const MODE_OFF: &str = "Developer mode is off on this PC, so dev folders do nothing.";
 
@@ -97,6 +97,27 @@ impl Problem {
             }
         }
     }
+
+    /// The same problem on a folder already listed: says what Hideout does about it, not what
+    /// to choose.
+    pub fn row_line(self) -> &'static str {
+        match self {
+            Problem::Missing => "Hideout can't find this folder, so it ignores it.",
+            Problem::NotLocal => "This folder is not on this PC's own drive, so Hideout ignores it.",
+            Problem::Drive | Problem::Profile | Problem::DropZone | Problem::System => {
+                "This folder can't be a dev folder any more, so Hideout ignores it."
+            }
+            Problem::WhoUnknown => {
+                "Hideout couldn't check who can change this folder, so it ignores it for now."
+            }
+            Problem::FolderOpen => {
+                "Other accounts on this PC can change files in this folder, so Hideout ignores it."
+            }
+            Problem::ParentOpen => {
+                "Other accounts on this PC can change a folder above this one, so Hideout ignores it."
+            }
+        }
+    }
 }
 
 // ---- What the page draws -------------------------------------------------------------------
@@ -120,7 +141,8 @@ pub struct Note {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct DevView {
-    /// Developer mode is on for this PC. Off: only [`MODE_OFF`] is drawn.
+    /// Developer mode is on for this PC. Off with no folders listed: nothing is drawn. Off
+    /// with folders listed: [`MODE_OFF`] and the paths, with nothing to act on.
     pub on: bool,
     pub folders: Vec<DevRow>,
     /// The restart switch.
@@ -171,10 +193,36 @@ mod tests {
             "Removed. The next rebuild of A, B and C asks for your OK again."
         );
         assert_eq!(
+            RESTART_SUB,
+            "When off, the new build starts the next time you start the app."
+        );
+        assert_eq!(
             Problem::Drive.line(),
             "A whole drive can't be a dev folder. Choose a folder inside it."
         );
     }
+
+    #[test]
+    fn a_listed_row_says_what_hideout_does_not_what_to_choose() {
+        for p in ALL {
+            let l = p.row_line();
+            assert!(l.ends_with("ignores it.") || l.ends_with("for now."), "{l}");
+            assert_ne!(l, p.line());
+            assert!(!l.contains("Choose"), "{l}");
+        }
+    }
+
+    const ALL: [Problem; 9] = [
+        Problem::Missing,
+        Problem::NotLocal,
+        Problem::Drive,
+        Problem::Profile,
+        Problem::DropZone,
+        Problem::System,
+        Problem::WhoUnknown,
+        Problem::FolderOpen,
+        Problem::ParentOpen,
+    ];
 
     #[test]
     fn every_problem_has_its_own_plain_line() {

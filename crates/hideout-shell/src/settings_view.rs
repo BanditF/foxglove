@@ -140,9 +140,17 @@ fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
 /// The Developer section (R5). Dev mode off: one line and nothing to click.
 fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
     let mut click = None;
+    if !v.on && v.folders.is_empty() {
+        // Developer mode is off and nothing is listed: the page stays as it ships.
+        return None;
+    }
     heading(ui, t, dev_settings::HEADING);
     if !v.on {
         ui.add(egui::Label::new(RichText::new(dev_settings::MODE_OFF).color(c(t.text))).wrap());
+        ui.add_space(6.0);
+        for row in &v.folders {
+            ui.add(egui::Label::new(RichText::new(&row.path).color(c(t.text_muted))).wrap());
+        }
         ui.add_space(20.0);
         return None;
     }
@@ -167,7 +175,9 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
                 ui.add(egui::Label::new(RichText::new(&row.path).strong().color(c(t.text))).wrap());
                 match row.problem {
                     Some(p) => {
-                        ui.add(egui::Label::new(RichText::new(p.line()).color(c(t.danger))).wrap());
+                        ui.add(
+                            egui::Label::new(RichText::new(p.row_line()).color(c(t.danger))).wrap(),
+                        );
                     }
                     None => {
                         ui.add(
@@ -207,10 +217,16 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
     });
     ui.add_space(10.0);
     let mut restart = v.restart;
-    if ui
-        .checkbox(&mut restart, dev_settings::RESTART_SWITCH)
-        .changed()
-    {
+    // The empty box must read against the page (3:1): the border at full strength.
+    let changed = ui
+        .scope(|ui| {
+            ui.visuals_mut().widgets.inactive.bg_stroke =
+                egui::Stroke::new(1.5_f32, c(t.text_muted));
+            ui.checkbox(&mut restart, dev_settings::RESTART_SWITCH)
+                .changed()
+        })
+        .inner;
+    if changed {
         click = Some(DevClick::Restart(restart));
     }
     ui.label(RichText::new(dev_settings::RESTART_SUB).color(c(t.text_muted)));
