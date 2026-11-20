@@ -4422,11 +4422,11 @@ fn the_first_run_dialog_collapses_the_everyday_items_on_a_720_px_window() {
                 ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
             });
         }
-        // 4 sensitive boxes, the group I understand, the everyday box, [Hide|Show], [17 items],
-        // Allow, Not now.
+        // The group I understand (the 4 sensitive boxes are greyed and out of Tab order until
+        // it is ticked), the everyday box, [Hide|Show], [17 items], Allow, Not now.
         assert_eq!(
             ids.len(),
-            4 + 1 + 1 + 1 + if open { 17 } else { 0 } + 2,
+            1 + 1 + 1 + if open { 17 } else { 0 } + 2,
             "open={open}"
         );
         for id in &ids[ids.len() - 2..] {
@@ -4490,7 +4490,7 @@ fn show_and_hide_open_the_everyday_items() {
             ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
         });
     }
-    let show = ids[6];
+    let show = ids[2];
     let r = ctx.read_response(show).expect("drawn").rect;
     let click = |p: egui::Pos2| {
         vec![
@@ -4536,6 +4536,12 @@ fn the_group_i_understand_confirms_every_sensitive_item_and_each_stays_untickabl
         });
     }
     assert_eq!(d.count(), 17, "nothing sensitive counts before the click");
+    // Greyed until the click: only the group box, the everyday box, Show, Allow, Not now.
+    assert_eq!(
+        ids.len(),
+        5,
+        "the sensitive boxes are not tabbable before the click"
+    );
     let click = |p: egui::Pos2| {
         let b = |pressed| Event::PointerButton {
             pos: p,
@@ -4545,7 +4551,7 @@ fn the_group_i_understand_confirms_every_sensitive_item_and_each_stays_untickabl
         };
         vec![Event::PointerMoved(p), b(true), b(false)]
     };
-    let ack = ctx.read_response(ids[4]).expect("drawn").rect;
+    let ack = ctx.read_response(ids[0]).expect("drawn").rect;
     let _ = ctx.run(input(900.0, 900.0, click(ack.center())), |c| {
         ids = perm_dialog_ids(c, &t, &mut d, false).1;
     });
@@ -4556,28 +4562,87 @@ fn the_group_i_understand_confirms_every_sensitive_item_and_each_stays_untickabl
         .iter()
         .filter(|i| i.sensitive)
         .all(|i| i.checked && i.confirmed));
+    // The next frame draws the four boxes live: 4 items, the group box, everyday, Show, 2.
+    let _ = ctx.run(input(900.0, 900.0, vec![]), |c| {
+        ids = perm_dialog_ids(c, &t, &mut d, false).1;
+    });
+    assert_eq!(ids.len(), 4 + 5);
     // One item off by itself: it stops counting, the rest stay.
     d.set_checked("net", false);
     assert_eq!(d.count(), 20);
     assert_eq!(d.allow_label(), "Allow 20");
     // The same item ticked again by hand (the UI marks it covered while the box is on).
+    let _ = ctx.run(input(900.0, 900.0, vec![]), |c| {
+        ids = perm_dialog_ids(c, &t, &mut d, false).1;
+    });
     let net = ctx.read_response(ids[3]).expect("drawn").rect;
     let _ = ctx.run(input(900.0, 900.0, click(net.center())), |c| {
         ids = perm_dialog_ids(c, &t, &mut d, false).1;
     });
     assert_eq!(d.count(), 21);
-    // Clearing the box takes all four back.
-    let ack = ctx.read_response(ids[4]).expect("drawn").rect;
-    let _ = ctx.run(input(900.0, 900.0, click(ack.center())), |c| {
-        let _ = perm_dialog_ids(c, &t, &mut d, false);
+    // Unticking all four one by one clears the group box by itself.
+    for raw in SENSITIVE_RAWS {
+        d.set_checked(raw, false);
+    }
+    let _ = ctx.run(input(900.0, 900.0, vec![]), |c| {
+        ids = perm_dialog_ids(c, &t, &mut d, false).1;
     });
-    assert!(!d.group_understood());
+    assert!(!d.group_understood(), "no item ticked, no I understand");
     assert_eq!(d.count(), 17);
+    // Ticking the box again, then clearing it, takes all four back.
+    d.set_group_ack(true);
+    d.set_group_ack(false);
     assert!(d
         .items
         .iter()
         .filter(|i| i.sensitive)
         .all(|i| !i.checked && !i.confirmed));
+}
+
+const SENSITIVE_RAWS: [&str; 4] = [
+    "device.hid:keyboard",
+    "device.hid:lighting",
+    "device.hid:vendor",
+    "net",
+];
+
+/// In the group form the risk sentence of every item the group note does not say stays on
+/// screen: every key press, the GPU manager, AI requests, stored secrets. Devices and the
+/// network are in the note, so they add no line.
+#[test]
+fn the_group_form_keeps_the_risk_sentence_of_items_the_note_does_not_say() {
+    use crate::permission_dialog::{Group, ListItem};
+    let mk = |raw: &str| ListItem {
+        raw: raw.into(),
+        line: "line".into(),
+        group: Group::Sensitive,
+        allowable: true,
+        sensitive: true,
+        reason: None,
+        checked: false,
+        confirmed: false,
+        new: false,
+        before: false,
+    };
+    for raw in SENSITIVE_RAWS {
+        assert_eq!(mk(raw).group_risk_line("Gizmo Keys"), None, "{raw}");
+    }
+    for (raw, says) in [
+        ("key.events", "see every key you press"),
+        ("provide:gpu.broker", "see every AI request from every app"),
+        ("ai.ask:chat", "send questions to an AI service"),
+        ("secrets.ref:token", "use a secret you stored"),
+        (
+            "something.new",
+            "do something Hideout can't describe in a line",
+        ),
+    ] {
+        let line = mk(raw).group_risk_line("Gizmo Keys").expect(raw);
+        assert!(
+            line.starts_with("This lets Gizmo Keys ") && line.contains(says),
+            "{raw}: {line}"
+        );
+    }
 }
 
 /// A re-ask or any dialog without the group box keeps one "I understand" per sensitive item.

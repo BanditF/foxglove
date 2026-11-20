@@ -392,7 +392,12 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                         } else {
                             text
                         };
-                        let r = check(ui, t, &mut item.checked, text);
+                        // Until the group "I understand" is ticked the sensitive boxes are
+                        // greyed: a tick would show as on and count for nothing.
+                        let waits = item.sensitive && grouped == Some(false);
+                        let r = ui
+                            .add_enabled_ui(!waits, |ui| check(ui, t, &mut item.checked, text))
+                            .inner;
                         if item.new {
                             ui.label(fine(ui, "New").strong().color(c(t.attention)));
                         }
@@ -405,7 +410,12 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                         r
                     })
                     .inner;
-                let said = item.said();
+                let waits = item.sensitive && grouped == Some(false);
+                let said = if waits {
+                    format!("{}, tick I understand first", item.said())
+                } else {
+                    item.said()
+                };
                 ui.ctx().accesskit_node_builder(r.id, |n| n.set_label(said));
                 if r.changed() && !item.checked {
                     item.confirmed = false;
@@ -413,12 +423,22 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                     // The group "I understand" is on: a ticked item is covered by it.
                     item.confirmed = true;
                 }
-                ids.push(r.id);
+                if !waits {
+                    ids.push(r.id);
+                }
                 if let Some(s) = item.sub_line() {
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
                         ui.label(fine(ui, s).color(c(t.text_muted)));
                     });
+                }
+                if grouped.is_some() {
+                    if let Some(risk) = item.group_risk_line(&name) {
+                        ui.horizontal(|ui| {
+                            ui.add_space(24.0);
+                            ui.label(fine(ui, risk).color(c(t.text_muted)));
+                        });
+                    }
                 }
                 if item.sensitive && item.checked && grouped.is_none() {
                     ui.horizontal(|ui| {
@@ -433,6 +453,7 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                     });
                 }
             }
+            d.sync_group_ack();
             if let Some(note) = note {
                 ui.add_space(2.0);
                 ui.label(fine(ui, note).color(c(t.text_muted)));
