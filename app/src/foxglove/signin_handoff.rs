@@ -239,10 +239,9 @@ pub fn at_startup() -> bool {
         let settings = super::store::section("core", "signin")
             .try_load::<super::signin_flag::SigninSettings>()
             .unwrap_or_default();
-        let exe_present = settings
-            .hideout_exe
-            .as_deref()
-            .is_some_and(|p| super::signin_flag::usable_exe(p, |p| p.try_exists().unwrap_or(false)));
+        let exe_present = settings.hideout_exe.as_deref().is_some_and(|p| {
+            super::signin_flag::usable_exe(p, |p| p.try_exists().unwrap_or(false))
+        });
         let waited = match wait_plan(launch, settings.hideout_starts_me, exe_present) {
             Wait::No => None,
             Wait::ForgetAndStart => {
@@ -408,10 +407,16 @@ mod tests {
     #[test]
     fn the_wait_is_bounded_at_30_seconds() {
         assert_eq!(WAIT_LIMIT, std::time::Duration::from_secs(30));
-        let ev = Fake { answers: false, asked: Default::default() };
+        let ev = Fake {
+            answers: false,
+            asked: Default::default(),
+        };
         assert_eq!(wait_for(&ev, std::time::Instant::now), Waited::TimedOut);
         assert_eq!(ev.asked.get(), Some(WAIT_LIMIT));
-        let ev = Fake { answers: true, asked: Default::default() };
+        let ev = Fake {
+            answers: true,
+            asked: Default::default(),
+        };
         assert!(matches!(
             wait_for(&ev, std::time::Instant::now),
             Waited::Answered(_)
@@ -441,7 +446,10 @@ mod tests {
         let sandbox = body.find("test_sandbox()").expect("sandbox guard");
         let wait = body.find("wait_for(").expect("wait");
         let check = body.find("let start = handoff(").expect("check");
-        assert!(sandbox < wait && wait < check, "guard, then wait, then the check");
+        assert!(
+            sandbox < wait && wait < check,
+            "guard, then wait, then the check"
+        );
     }
 
     use super::super::hub_fact::{Connect, Ends, Refused};
