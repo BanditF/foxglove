@@ -142,7 +142,7 @@ fn the_supervisor_facts_drive_the_tile_frame() {
         .unwrap();
     assert_eq!(
         restart_words(r.in_s, r.crash, r.of),
-        "Restarting in 3 s (2 of 5)"
+        "Restarting in 3 s, try 2 of 5"
     );
     assert!(host.last_seen("m.one", Instant::now()).is_some());
     assert_eq!(

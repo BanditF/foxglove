@@ -47,7 +47,7 @@ Surfaces: **S** sidebar module list, **T** its tab (#953), **P** the page area (
 |---|---|---|---|---|---|
 | Running (`running`) | nothing | the page | "On" | nothing | — |
 | Starting (`starting`) | orange ring | cached page, header "Starting…" | "Starting…" | nothing | — |
-| Crashed, restarting (`restarting`) | orange ring; tooltip "Restarting… (2 of 5)" (once per crash; the countdown is the bar's) | **crash bar** (below) over the greyed last page | "Restarting in 4 s (2 of 5)" | nothing | — |
+| Crashed, restarting (`restarting`) | orange ring; tooltip "Restarting, try 2 of 5" (once per crash; the countdown is the bar's) | **crash bar** (below) over the greyed last page | "Restarting in 4 s, try 2 of 5" | nothing | — |
 | Stopped after 5 crashes (`crash-stopped`) | red warning mark | **stopped card** (below) over the greyed last page | "Stopped after 5 crashes" + **Start again** | red dot on the icon; menu line "Art stopped" / "Open Art to start it again" | once per module per sign-in |
 | Updating (`updating`) | orange ring; tooltip "Updating…" | header line "Updating… Your place on this page is kept." | "Updating…" | nothing | — |
 | Off (`off`) | muted label, no mark | "Off" + **Turn on** | "Off" + Turn on | nothing | — |
@@ -69,12 +69,12 @@ Rules shared by all rows:
 
 Amber bar at the top of the module's page and of its pop-out, only while `restarting`:
 
-> **Art stopped unexpectedly. Restarting in 4 s (2 of 5).**
+> **Art stopped unexpectedly. Restarting in 4 s, try 2 of 5.**
 > Your place on this page is kept. · Open log
 
 - The seconds are the §7.7 backoff step (1, 2, 4 … 60 s); the bar shows the deadline as a
   countdown, repainted once a second only while the page is visible, and never past 60 s.
-- "(2 of 5)" counts crashes in the current ten-minute window (§7.7's crash bar).
+- "try 2 of 5" counts crashes in the current ten-minute window (§7.7's crash bar).
 - When the module is back the bar goes without a message. A crash caused by an oversized message
   (`rpc.frame-too-large`, v1.2) reads exactly the same; the id is only in the log.
 - One link, **Open log**. No "Restart now": the backoff exists so a crashing module can't spin.
@@ -142,7 +142,7 @@ as `install-failed`: "Couldn't start Art" / "Its files don't match what was inst
 
 | Where | Text |
 |---|---|
-| Crash bar | "<Module> stopped unexpectedly. Restarting in <n> s (<k> of 5)." / "Your place on this page is kept." / Open log |
+| Crash bar | "<Module> stopped unexpectedly. Restarting in <n> s, try <k> of 5." / "Your place on this page is kept." / Open log |
 | Stopped card | "Stopped after 5 crashes" / "<Module> crashed 5 times in 10 minutes." |
 | Ladder lines | "Starting again didn't help last time." / "<Module> <version> worked before." |
 | Tray menu | "<Module> stopped" / "Open <Module> to start it again" |

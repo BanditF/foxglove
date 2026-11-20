@@ -1469,7 +1469,7 @@ impl Hub {
         if let Some(s) = self.state_look(&key.module) {
             look.state = s;
         }
-        // Restarting: "Restarting… (2 of 5)", which changes once per crash and so
+        // Restarting: "Restarting, try 2 of 5", which changes once per crash and so
         // needs no repaint (the live countdown is the crash bar's).
         if self.panels.module_state(&key.module) == Some("restarting") {
             let crash = self

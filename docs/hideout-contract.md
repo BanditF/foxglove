@@ -1848,7 +1848,7 @@ Values outside these shapes are a hub bug, not a module's.
 | `updating` | Updating… | "Your place on this page is kept" | — |
 | `update-busy` | Update ready | "Waits until you finish <reason>" | **Force**, Not now |
 | `update-waiting` | Update waiting for you | the new permission, in plain words | **Review**, Not now (keeps the old version) |
-| `restarting` | Restarting (n of 5) | when it stopped | Open log |
+| `restarting` | Restarting, try n of 5 | when it stopped | Open log |
 | `crash-stopped` | Stopped after 5 crashes | "crashed 5 times in 10 minutes" | **Start again**, **Start with default settings**, **Go back to <previous>**, Copy diagnostics |
 | `waiting` | Waiting for <module> | the root cause, named once | **Go to <module>** |
 | `needs-hub` | Needs a newer Hideout | — | **Update Hideout**, Go back to <previous> |

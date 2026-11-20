@@ -475,8 +475,10 @@ impl Look {
         let mut parts: Vec<String> = Vec::new();
         match &self.state {
             TabState::Live => {}
-            // "Restarting… (2 of 5)" already has its ellipsis.
-            TabState::Busy(w) if w.contains('\u{2026}') => parts.push(w.clone()),
+            // "Restarting, try 2 of 5" and "Updating\u2026" are already whole lines.
+            TabState::Busy(w) if w.contains('\u{2026}') || w.contains(", try ") => {
+                parts.push(w.clone())
+            }
             TabState::Busy(w) => parts.push(format!("{w}\u{2026}")),
             TabState::Waiting(w) => parts.push(w.clone()),
             TabState::Stopped(w) => parts.push(w.clone()),

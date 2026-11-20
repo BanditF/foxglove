@@ -137,7 +137,7 @@ The pop-out shows exactly what the page would show, in the same words (superviso
 |---|---|---|
 | Starting | Page from the cache, header "Starting…", controls off until ready | orange ring |
 | Updating (hot swap, §7.6) | One header line "Updating… Your place on this page is kept." | orange ring |
-| Restarting | The amber crash bar: "Chat stopped unexpectedly. Restarting in 4 s (2 of 5)." / "Your place on this page is kept. · Open log" | orange ring |
+| Restarting | The amber crash bar: "Chat stopped unexpectedly. Restarting in 4 s, try 2 of 5." / "Your place on this page is kept. · Open log" | orange ring |
 | Stopped (crash-stopped, needs-hub, …) | The stopped card with its ladder, the last page greyed below | red warning mark |
 | Off | "Off" + **Turn on** | muted |
 | Removed | The window closes with its tab. Hideout's status strip: "Art was removed; its window was closed." | tab gone |

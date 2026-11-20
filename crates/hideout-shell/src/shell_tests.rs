@@ -1431,7 +1431,7 @@ fn restarting(dir: &std::path::Path, delay: u64, crash: u64, ago: Duration) -> (
             // The frozen reason: never drawn for `restarting`.
             (
                 "reason",
-                serde_json::json!("Art stopped unexpectedly. Restarting in 4 s (1 of 5)."),
+                serde_json::json!("Art stopped unexpectedly. Restarting in 4 s, try 1 of 5."),
             ),
             ("state", serde_json::json!("restarting")),
         ],
@@ -1562,14 +1562,14 @@ fn the_crash_bar_counts_down_from_the_restart_fact() {
     let t = drawn(&out);
     assert!(
         t.iter()
-            .any(|s| s == "Art stopped unexpectedly. Restarting in 6 s (2 of 5)."),
+            .any(|s| s == "Art stopped unexpectedly. Restarting in 6 s, try 2 of 5."),
         "{t:?}"
     );
     assert!(t.iter().any(|s| s == words::PLACE_KEPT));
     assert!(t.iter().any(|s| s == words::OPEN_LOG));
     assert!(!t.iter().any(|s| s.contains("Restart now")));
     // Neither the frozen reason nor the greyed banner is drawn.
-    assert!(!t.iter().any(|s| s.contains("in 4 s (1 of 5)")), "{t:?}");
+    assert!(!t.iter().any(|s| s.contains("in 4 s, try 1 of 5")), "{t:?}");
     assert!(!t.iter().any(|s| s.starts_with("Art: ")), "{t:?}");
     // Repainted once a second while shown.
     assert!(repaint_delay(&out) <= Duration::from_secs(1));
@@ -1580,7 +1580,7 @@ fn the_crash_bar_counts_down_from_the_restart_fact() {
     assert!(
         drawn(&out)
             .iter()
-            .any(|s| s == "Art stopped unexpectedly. Restarting\u{2026} (3 of 5)."),
+            .any(|s| s == "Art stopped unexpectedly. Restarting, try 3 of 5."),
         "{:?}",
         drawn(&out)
     );
@@ -2214,7 +2214,7 @@ fn the_restarting_tab_says_which_crash_and_the_sidebar_marks_a_stopped_one() {
     let dir = temp_dir("tab-words");
     let (hub, _) = restarting(&dir, 8, 2, Duration::ZERO);
     let i = hub.tabs.position(&TabId::panel(SUP, "art")).unwrap();
-    assert_eq!(hub.look(i).tooltip(), "Art\nRestarting\u{2026} (2 of 5)");
+    assert_eq!(hub.look(i).tooltip(), "Art\nRestarting, try 2 of 5");
     // The sidebar entry of a stopped module carries the red mark and its words.
     ctx.enable_accesskit();
     let (mut hub, _) = stopped(&dir, "start-again", None);

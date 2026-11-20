@@ -950,7 +950,7 @@ mod tests {
                 true,
                 vec![("module.m.art.state", json!("restarting"))],
                 Some((4, 2)),
-                "Restarting in 4 s (2 of 5)",
+                "Restarting in 4 s, try 2 of 5",
                 false,
             ),
             (
@@ -964,7 +964,7 @@ mod tests {
                 true,
                 vec![("module.m.art.state", json!("restarting"))],
                 Some((0, 2)),
-                "Restarting\u{2026} (2 of 5)",
+                "Restarting, try 2 of 5",
                 false,
             ),
             (
