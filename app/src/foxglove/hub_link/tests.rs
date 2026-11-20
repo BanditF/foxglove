@@ -149,6 +149,46 @@ fn the_embedded_manifest_is_a_valid_adopted_module() {
 }
 
 #[test]
+fn the_manifest_declares_identify_with_its_hint() {
+    let m = Module::parse(&manifest(r"C:\x\foxglove.exe"), &Context::default()).unwrap();
+    let a = m
+        .actions
+        .iter()
+        .find(|a| a.decl.id == IDENTIFY)
+        .expect("identify");
+    assert_eq!(a.decl.name, "Identify");
+    assert_eq!(
+        a.hint.as_deref(),
+        Some("Press a layer key to see the layer overlay.")
+    );
+    assert_eq!(m.actions.len(), 1);
+}
+
+#[test]
+fn identify_shows_the_layer_overlay_and_nothing_else_is_an_action() {
+    use hideout_contract::messages::{ActionInvoke, ActionSource};
+    let counting = std::sync::Arc::new(Counting::default());
+    let invoke = |id: &str| ActionInvoke {
+        action: id.into(),
+        source: ActionSource::Panel,
+    };
+    let mut hub = Hub {
+        devices: Some(counting.clone()),
+        ..Hub::default()
+    };
+    // Not live: refused, the app is never asked.
+    assert!(hub.action(invoke(IDENTIFY)).is_err());
+    hub.live = true;
+    assert!(hub.action(invoke("nope")).is_err());
+    assert!(counting.seen.lock().unwrap().is_empty());
+    assert_eq!(hub.action(invoke(IDENTIFY)).unwrap(), json!({}));
+    assert_eq!(
+        *counting.seen.lock().unwrap(),
+        vec![("overlay.set_shown".to_string(), json!({"on": true}))]
+    );
+}
+
+#[test]
 fn the_module_serves_the_plugin_apis_real_version_in_code_and_manifest() {
     // A client built for the SDK's version (1.16) must not get code 7 from this module's hub.
     assert_eq!(API, foxglove_plugin_api::API_VERSION.to_string());
