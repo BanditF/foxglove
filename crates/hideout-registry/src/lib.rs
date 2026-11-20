@@ -754,6 +754,9 @@ impl Registry {
             return Err(Error::new(ErrorId::TrustFiles, "the folder changed while copying").into());
         }
         if dir.exists() {
+            // What Remove kept (data, settings) is the app's: carried into the new copy, over
+            // anything the archive itself ships under those names.
+            carry_kept(&dir, &partial, true)?;
             std::fs::remove_dir_all(&dir)?;
         }
         std::fs::rename(&partial, &dir)?;
@@ -765,6 +768,13 @@ impl Registry {
             .get(&m.id)
             .filter(|o| o.source != LAB)
             .cloned();
+        // Added again after Remove (no entry, so `prune` would delete the leftovers): what
+        // Remove kept under another version folder moves into this one, never over its own.
+        if old.is_none() && !self.is_lab(&m.id) {
+            if let Some(base) = dir.parent() {
+                carry_from_siblings(base, &m.version, &dir);
+            }
+        }
         let previous = old
             .as_ref()
             .map(|o| o.version.clone())
@@ -1060,7 +1070,11 @@ impl Registry {
         self.change_hub(|h| h.set_enabled(id, on))
     }
 
-    /// Removes a module that isn't running: its folders, inventory entry and hub table.
+    /// Removes a module that isn't running: its inventory entry and hub table, and the hub's own
+    /// install payload under `modules\<id>`. The app's `data` and `settings*` folders in each
+    /// version folder stay (also an archive's own `data` folder), and a later install carries
+    /// them into the new copy. The entry goes first; if deleting the payload then fails, the
+    /// error is returned and the leftover is cleaned by the next install.
     pub fn remove(&mut self, id: &str) -> Result<(), Failure> {
         if self.running.contains_key(id) {
             return Err(Failure::Running(id.into()));
@@ -1070,6 +1084,7 @@ impl Registry {
         };
         let modules = self.home.join("modules");
         let dir = modules.join(id);
+        let mut own = None;
         // Only ever the hub's own `modules\<id>`: an id outside the inventory's charset never
         // reaches a delete (the entry is still forgotten below).
         if !plain_id(id) {
@@ -1088,10 +1103,14 @@ impl Registry {
                 let _ = std::fs::remove_dir(&dir);
             }
         } else {
-            remove_own_dir(&modules, &dir)?;
+            own = Some(&dir);
         }
         self.save_inventory()?;
-        self.change_hub(|h| h.forget(id))
+        self.change_hub(|h| h.forget(id))?;
+        if let Some(dir) = own {
+            remove_own_dir(&modules, dir)?;
+        }
+        Ok(())
     }
 
     /// The check before every launch (§12.5, §12.6): installed and enabled; a catalog module's
@@ -1387,17 +1406,57 @@ fn remove_own_dir(modules: &Path, dir: &Path) -> io::Result<()> {
         }
         for item in std::fs::read_dir(&version)? {
             let item = item?;
-            let name = item.file_name().to_string_lossy().to_lowercase();
-            if name == DATA_DIR || name == "settings" || name.starts_with("settings.bad-") {
-                continue;
+            if !is_kept(&item.file_name()) {
+                remove_entry(&item.path())?;
             }
-            remove_entry(&item.path())?;
         }
         // Empty now unless it holds the app's data or settings.
         let _ = std::fs::remove_dir(&version);
     }
     let _ = std::fs::remove_dir(dir);
     Ok(())
+}
+
+/// The app's own folders in a version folder, which Remove and an update leave alone: `data`,
+/// `settings` and the supervisor's `settings.bad-<time>`, in any letter case.
+fn is_kept(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_lowercase();
+    name == DATA_DIR || name == "settings" || name.starts_with("settings.bad-")
+}
+
+/// Moves the kept entries of version folder `from` into `to` (a link is moved as the link, never
+/// followed). A name already in `to` is replaced when `over`, else the source stays.
+fn carry_kept(from: &Path, to: &Path, over: bool) -> io::Result<()> {
+    for item in std::fs::read_dir(from)? {
+        let item = item?;
+        if !is_kept(&item.file_name()) {
+            continue;
+        }
+        let target = to.join(item.file_name());
+        if std::fs::symlink_metadata(&target).is_ok() {
+            if !over {
+                continue;
+            }
+            remove_entry(&target)?;
+        }
+        std::fs::rename(item.path(), target)?;
+    }
+    Ok(())
+}
+
+/// Best effort: kept entries of the other version folders of `base` move into `dir`.
+fn carry_from_siblings(base: &Path, version: &str, dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(base) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let path = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name == version || !plain_version(&name) || is_link(&path) || !path.is_dir() {
+            continue;
+        }
+        let _ = carry_kept(&path, dir, false);
+    }
 }
 
 /// Removes one entry: a link is unlinked, a folder removed with its contents, a file deleted.

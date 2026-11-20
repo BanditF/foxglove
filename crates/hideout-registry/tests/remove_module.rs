@@ -317,3 +317,86 @@ fn an_adopted_version_that_is_a_path_deletes_nothing() {
     f.reg.remove(ID).unwrap();
     assert!(outside.join("module.toml").is_file());
 }
+
+fn put(dir: &Path, rel: &str, body: &str) {
+    let p = dir.join(rel);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, body).unwrap();
+}
+
+/// Two version folders, `settings.bad-*` and other-case names all keep their app folders; the
+/// payload goes; a junction named `data` is kept and never followed.
+#[test]
+fn remove_keeps_every_versions_app_folders_in_any_case_and_follows_no_link() {
+    let home = temp("multi-home");
+    let src = temp("multi-src");
+    let decoy = temp("multi-decoy");
+    std::fs::write(decoy.join("precious.txt"), b"keep").unwrap();
+    let mut reg = hub_copy(&home, &src, "example.rm.multi");
+    let base = home.join("modules").join("example.rm.multi");
+    let old = base.join("0.0.9");
+    put(&old, "a.exe", "old payload");
+    put(&old, "Settings/s.json", "old s");
+    put(&old, "settings.bad-123/s.json", "bad");
+    let cur = base.join("0.1.0");
+    put(&cur, "Data/d.txt", "d");
+    put(&cur, "settings.BAD-9/x.txt", "bad9");
+    put(&cur, "sub/payload.bin", "p");
+
+    reg.remove("example.rm.multi").unwrap();
+
+    assert!(!old.join("a.exe").exists() && !cur.join("a.exe").exists());
+    assert!(!cur.join("sub").exists() && !cur.join("module.toml").exists());
+    assert!(old.join("Settings").join("s.json").is_file());
+    assert!(old.join("settings.bad-123").join("s.json").is_file());
+    assert!(cur.join("Data").join("d.txt").is_file());
+    assert!(cur.join("settings.BAD-9").join("x.txt").is_file());
+
+    // A junction named `data`: kept as a link, the decoy untouched.
+    let mut reg = hub_copy(&home, &src, "example.rm.multi");
+    let cur = base.join("0.1.0");
+    std::fs::remove_dir_all(cur.join("data")).ok();
+    junction(&cur.join("data"), &decoy);
+    reg.remove("example.rm.multi").unwrap();
+    assert!(decoy.join("precious.txt").is_file());
+    assert!(cur.join("data").join("precious.txt").is_file());
+}
+
+/// Remove, then install again: the same version keeps its data and settings (not wiped by the
+/// swap), and another version's leftovers move into the new copy instead of being pruned.
+#[test]
+fn install_after_remove_keeps_data_and_settings() {
+    let home = temp("readd-home");
+    let src = temp("readd-src");
+    let mut reg = hub_copy(&home, &src, "example.rm.readd");
+    let base = home.join("modules").join("example.rm.readd");
+    put(&base.join("0.1.0"), "data/d.txt", "d1");
+    put(&base.join("0.1.0"), "settings/s.json", "s1");
+    put(&base.join("0.1.0"), "settings.bad-5/s.json", "b1");
+    reg.remove("example.rm.readd").unwrap();
+
+    // Same version again.
+    reg.install(&src.join("example.rm.readd"), NOW).unwrap();
+    let cur = base.join("0.1.0");
+    assert!(cur.join("a.exe").is_file());
+    assert_eq!(
+        std::fs::read(cur.join("data").join("d.txt")).unwrap(),
+        b"d1"
+    );
+    assert!(cur.join("settings").join("s.json").is_file());
+    assert!(cur.join("settings.bad-5").join("s.json").is_file());
+
+    // Remove, then a newer version: the old folder's data moves over.
+    reg.remove("example.rm.readd").unwrap();
+    let manifest = src.join("example.rm.readd").join("module.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, text.replace("0.1.0", "0.2.0")).unwrap();
+    reg.install(&src.join("example.rm.readd"), NOW).unwrap();
+    let new = base.join("0.2.0");
+    assert_eq!(
+        std::fs::read(new.join("data").join("d.txt")).unwrap(),
+        b"d1"
+    );
+    assert!(new.join("settings").join("s.json").is_file());
+    assert!(!base.join("0.1.0").exists());
+}
