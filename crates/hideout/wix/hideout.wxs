@@ -69,8 +69,8 @@
     </InstallExecuteSequence>
 
     <!-- FR6 (review/ux-plan-first-run.md, Q1): a one-page install and a finish page. No accept box
-         (MIT needs no acceptance): the license is a "Read the license" button that opens it on its
-         own page. The finish page has "Open Hideout now" ticked, which starts the hub as the user
+         (Hub/user choice, overriding the Q1 recommendation): an "I accept" box gates Install, next to a
+         "Read the license" button that opens the license on its own page. The finish page has "Open Hideout now" ticked, which starts the hub as the user
          with no arguments (never the tray flag, nothing at sign-in), and the line that apps already
          on the PC stay as they are. -->
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
@@ -102,9 +102,13 @@
         <Control Id="ReadLicense" Type="PushButton" X="20" Y="130" Width="100" Height="17" Text="Read the license">
           <Publish Event="NewDialog" Value="HideoutLicenseDlg">1</Publish>
         </Control>
+        <Control Id="LicenseAccepted" Type="CheckBox" X="20" Y="160" Width="330" Height="18" CheckBoxValue="1"
+                 Property="LicenseAccepted" Text="I accept the terms of the license" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Install" Type="PushButton" ElevationShield="no" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Install">
-          <Publish Event="EndDialog" Value="Return">1</Publish>
+          <Publish Event="EndDialog" Value="Return">LicenseAccepted = "1"</Publish>
+          <Condition Action="disable">NOT LicenseAccepted</Condition>
+          <Condition Action="enable">LicenseAccepted</Condition>
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
           <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>

@@ -140,14 +140,21 @@ class InstallerDialogs(unittest.TestCase):
     def test_sequence_is_install_page_then_progress_then_finish(self):
         shows = [(s.get('Dialog'), s.get('Before'), s.get('OnExit')) for s in self.ui.iter('{%s}Show' % NS['w'])]
         self.assertEqual(shows, [('HideoutInstallDlg', 'ProgressDlg', None), ('ExitDialog', None, 'success')])
-        for gone in ('WixUI_Minimal', 'WelcomeEulaDlg', 'LicenseAccepted'):
+        for gone in ('WixUI_Minimal', 'WelcomeEulaDlg'):
             self.assertNotIn(gone, self.text)
 
-    def test_install_page_is_one_click_without_an_accept_box(self):
+    def test_install_page_has_an_accept_box_that_gates_install(self):
         c = self.controls('HideoutInstallDlg')
-        self.assertFalse([x for x in c.values() if x.get('Type') == 'CheckBox'], 'no accept box (Q1)')
+        boxes = [x for x in c.values() if x.get('Type') == 'CheckBox']
+        self.assertEqual([b.get('Id') for b in boxes], ['LicenseAccepted'])  # Hub: keep the accept box
+        self.assertEqual(boxes[0].get('Property'), 'LicenseAccepted')
+        self.assertNotIn('LicenseAccepted', self.props)  # not pre-ticked
         self.assertEqual(c['Install'].get('Default'), 'yes')
-        self.assertEqual(self.publishes(c['Install']), [('EndDialog', 'Return', '1')])
+        self.assertEqual(self.publishes(c['Install']), [('EndDialog', 'Return', 'LicenseAccepted = "1"')])
+        conds = {(x.get('Action'), x.text.strip()) for x in c['Install'].findall('w:Condition', NS)}
+        self.assertIn(('disable', 'NOT LicenseAccepted'), conds)
+        # still two pages: install page, then the finish page (the license page is optional reading)
+        self.assertEqual(len(self.ui.findall('w:InstallUISequence/w:Show', NS)), 2)
         self.assertEqual(self.publishes(c['ReadLicense']), [('NewDialog', 'HideoutLicenseDlg', '1')])
         txt = self.all_text('HideoutInstallDlg')
         for s in ('It installs for you only, in your user folder.', 'MIT license', 'Read the license'):

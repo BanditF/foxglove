@@ -145,8 +145,9 @@ What it contains (Hideout only, MIT; no Foxglove file, firmware or art):
 - A new UpgradeCode (`0A0A820B-B3AE-427A-91A7-E7FF56509254`, pinned by a test, different from
   Foxglove's), a downgrade refusal, and a launch condition against a UNC profile.
 - **Two pages (FR6).** A one-page "Install Hideout" (what it is, per user, "Free under the MIT
-  license" and a "Read the license" button that opens the license on its own page; no accept box,
-  MIT needs none) and a finish page "Hideout is installed" with "Open Hideout now" ticked and the
+  license", a "Read the license" button that opens the license on its own page, and an unticked
+  "I accept the terms of the license" box that must be ticked before Install is enabled; the
+  user chose to keep it) and a finish page "Hideout is installed" with "Open Hideout now" ticked and the
   line that apps already on the PC stay as they are. The ticked box starts `hideout.exe` as the
   user with no arguments (WixShellExec, needs `-ext WixUtilExtension`); never `--tray`.
   Opening the MSI again shows the finish page without the box, and there is no Repair or Remove
