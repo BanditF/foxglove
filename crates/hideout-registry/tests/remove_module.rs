@@ -178,9 +178,20 @@ fn a_hub_installed_module_loses_only_its_own_folder_under_modules() {
     )
     .unwrap();
 
+    // The app's own data and settings under its version folder (module_dir\data, \settings).
+    let ver = home.join("modules").join("example.rm.one").join("0.1.0");
+    for sub in ["data", "settings"] {
+        std::fs::create_dir_all(ver.join(sub)).unwrap();
+        std::fs::write(ver.join(sub).join("keep.txt"), sub).unwrap();
+    }
+
     reg.remove("example.rm.one").unwrap();
 
-    assert!(!home.join("modules").join("example.rm.one").exists());
+    // The payload is gone; data and settings survive.
+    assert!(!ver.join("a.exe").exists() && !ver.join("module.toml").exists());
+    assert!(ver.join("data").join("keep.txt").is_file());
+    assert!(ver.join("settings").join("keep.txt").is_file());
+    assert!(!reg.inventory.modules.contains_key("example.rm.one"));
     assert!(home
         .join("modules")
         .join("example.rm.two")

@@ -1359,9 +1359,10 @@ fn is_link(p: &Path) -> bool {
     }
 }
 
-/// Deletes the hub's own copy `dir` (`modules\<id>`) and nothing else: a link there is only
-/// unlinked, the folder's real path must be inside `modules`, and no link inside it is
-/// followed (each is unlinked, its target stays).
+/// Deletes the hub's own install payload under `dir` (`modules\<id>`) and nothing else: each
+/// version's `data` and `settings*` folders are the app's and stay (Remove says "its settings
+/// stay"). A link there is only unlinked, the folder's real path must be inside `modules`, and
+/// no link inside it is followed (each is unlinked, its target stays). Folders left empty go.
 fn remove_own_dir(modules: &Path, dir: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(dir) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -1378,7 +1379,42 @@ fn remove_own_dir(modules: &Path, dir: &Path) -> io::Result<()> {
             dir.display()
         )));
     }
-    remove_tree(dir)
+    for entry in std::fs::read_dir(dir)? {
+        let version = entry?.path();
+        if is_link(&version) || !std::fs::symlink_metadata(&version)?.is_dir() {
+            remove_entry(&version)?;
+            continue;
+        }
+        for item in std::fs::read_dir(&version)? {
+            let item = item?;
+            let name = item.file_name().to_string_lossy().to_lowercase();
+            if name == DATA_DIR || name == "settings" || name.starts_with("settings.bad-") {
+                continue;
+            }
+            remove_entry(&item.path())?;
+        }
+        // Empty now unless it holds the app's data or settings.
+        let _ = std::fs::remove_dir(&version);
+    }
+    let _ = std::fs::remove_dir(dir);
+    Ok(())
+}
+
+/// Removes one entry: a link is unlinked, a folder removed with its contents, a file deleted.
+fn remove_entry(p: &Path) -> io::Result<()> {
+    if is_link(p) {
+        unlink(p)
+    } else if std::fs::symlink_metadata(p)?.is_dir() {
+        remove_tree(p)
+    } else {
+        std::fs::remove_file(p).or_else(|_| {
+            let mut perm = std::fs::metadata(p)?.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perm.set_readonly(false);
+            std::fs::set_permissions(p, perm)?;
+            std::fs::remove_file(p)
+        })
+    }
 }
 
 /// Removes a link itself (a junction or directory link by `remove_dir`, a file link by
