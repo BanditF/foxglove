@@ -591,30 +591,46 @@ fn gate(s: &LiveSettings) -> Option<std::collections::BTreeSet<String>> {
 /// it fed before the switches existed. Runs once, on the first look at the monitors; a fresh
 /// install, or a user who already has allowed wallpapers, only gets the marker.
 #[cfg_attr(test, allow(dead_code))]
-pub fn seed_allowed(on_screen: &[String]) {
-    let _ = seed_with(on_screen, update_settings);
+/// Returns whether the seed is used up: only a look with a wallpaper on screen while the feed is
+/// on counts, so an empty look (Wallpaper Engine not running yet) or a feed that is off leaves it
+/// for the next look.
+pub fn seed_allowed(on_screen: &[String]) -> bool {
+    let s = settings();
+    if s.allow_seeded {
+        return true;
+    }
+    if on_screen.is_empty() || !s.enabled {
+        return false;
+    }
+    seed_with(on_screen, update_settings).unwrap_or(false)
 }
 
+/// `Ok(true)` when the seed is used up (the marker is saved).
 fn seed_with(on_screen: &[String], update: impl Updater) -> Result<bool, String> {
-    let mut seeded = false;
+    let (mut used, mut added) = (false, false);
     let s = update(&mut |s| {
-        seeded = false;
+        (used, added) = (false, false);
         if s.allow_seeded {
+            used = true;
             return;
         }
+        if on_screen.is_empty() || !s.enabled {
+            return;
+        }
+        used = true;
         s.allow_seeded = true;
-        if s.allowed.is_empty() && s.enabled && (s.ticket_verified || !s.token.is_empty()) {
+        if s.allowed.is_empty() && (s.ticket_verified || !s.token.is_empty()) {
             let mut set = allowed_set(s);
             set.extend(on_screen.iter().take(MAX_ALLOWED).cloned());
             s.allowed = set.into_iter().collect();
-            seeded = !s.allowed.is_empty();
+            added = true;
         }
     })?;
-    if seeded {
+    if added {
         apply_allowed(&s);
         super::we_panel::changed();
     }
-    Ok(seeded)
+    Ok(used)
 }
 
 /// Most wallpapers the allow list keeps.
@@ -3460,58 +3476,71 @@ mod tests {
         assert!(!e.contains("secret"));
     }
 
-    /// The one-time seed (S5b): a feed that worked keeps the wallpapers on screen, once.
+    /// The one-time seed (S5b): a feed that worked keeps the wallpapers on screen, once, and only
+    /// a look with something on screen (feed on) uses it up.
     #[test]
     fn the_seed_keeps_what_worked_once_and_widens_nothing() {
         use std::cell::RefCell;
-        let on_screen = vec!["d:/w/hud".to_string()];
-        let run = |start: LiveSettings, keys: &[String]| {
-            let saved = RefCell::new(start);
-            let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
-                let mut s = saved.borrow_mut();
-                f(&mut s);
-                Ok(s.clone())
-            };
-            let seeded = seed_with(keys, upd).unwrap();
-            let again = seed_with(&["d:/w/other".to_string()], upd).unwrap();
-            assert!(!again, "runs once");
-            (seeded, saved.into_inner())
-        };
-        // A verified feed that is on: the wallpapers on screen stay allowed.
+        let hud = vec!["d:/w/hud".to_string()];
         let worked = LiveSettings {
             enabled: true,
             ticket_verified: true,
             ..LiveSettings::default()
         };
-        let (seeded, s) = run(worked.clone(), &on_screen);
-        assert!(seeded && s.allow_seeded);
-        assert_eq!(s.allowed, on_screen);
-        // Nothing on screen: nothing is allowed, and the marker is still set.
-        let (seeded, s) = run(worked, &[]);
-        assert!(!seeded && s.allow_seeded && s.allowed.is_empty());
-        // A fresh install, or a feed that is off: only the marker.
-        for fresh in [
-            LiveSettings::default(),
-            LiveSettings {
-                ticket_verified: true,
-                ..LiveSettings::default()
-            },
-        ] {
-            let (seeded, s) = run(fresh, &on_screen);
-            assert!(!seeded && s.allow_seeded && s.allowed.is_empty());
-        }
+        let saved = RefCell::new(worked.clone());
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        // An empty look (Wallpaper Engine not running yet) uses nothing up.
+        assert!(!seed_with(&[], upd).unwrap());
+        assert!(!saved.borrow().allow_seeded && saved.borrow().allowed.is_empty());
+        // The look with the HUD on screen keeps it allowed, once.
+        assert!(seed_with(&hud, upd).unwrap());
+        assert_eq!(saved.borrow().allowed, hud);
+        assert!(saved.borrow().allow_seeded);
+        assert!(seed_with(&["d:/w/other".to_string()], upd).unwrap());
+        assert_eq!(saved.borrow().allowed, hud, "runs once");
+        // A feed that is off at the first look: no marker; the feed-on look still seeds.
+        let saved = RefCell::new(LiveSettings {
+            enabled: false,
+            ..worked.clone()
+        });
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        assert!(!seed_with(&hud, upd).unwrap());
+        assert!(!saved.borrow().allow_seeded && saved.borrow().allowed.is_empty());
+        saved.borrow_mut().enabled = true;
+        assert!(seed_with(&hud, upd).unwrap());
+        assert_eq!(saved.borrow().allowed, hud);
+        // A fresh feed (no token, no ticket): only the marker.
+        let saved = RefCell::new(LiveSettings {
+            enabled: true,
+            ..LiveSettings::default()
+        });
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        assert!(seed_with(&hud, upd).unwrap());
+        assert!(saved.borrow().allow_seeded && saved.borrow().allowed.is_empty());
         // A list the user already made is left alone.
-        let (seeded, s) = run(
-            LiveSettings {
-                enabled: true,
-                ticket_verified: true,
-                allowed: vec!["d:/w/mine".into()],
-                ..LiveSettings::default()
-            },
-            &on_screen,
-        );
-        assert!(!seeded);
-        assert_eq!(s.allowed, ["d:/w/mine"]);
+        let saved = RefCell::new(LiveSettings {
+            allowed: vec!["d:/w/mine".into()],
+            ..worked
+        });
+        let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
+            let mut s = saved.borrow_mut();
+            f(&mut s);
+            Ok(s.clone())
+        };
+        assert!(seed_with(&hud, upd).unwrap());
+        assert_eq!(saved.borrow().allowed, ["d:/w/mine"]);
     }
 
     /// With the switches in the panel (S5b), an empty saved list allows nothing.

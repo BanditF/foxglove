@@ -889,7 +889,7 @@ pub fn scene_stopped() {
     changed(Reason::Scene, |s| s.state.scene = None);
 }
 
-/// Whether the first look at the monitors has seeded the allow list.
+/// Whether a look with a wallpaper on screen has used up the allow list.
 #[cfg(not(test))]
 static SEEDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -900,15 +900,18 @@ static SEEDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 /// the worker.
 pub fn wallpapers(targets: Vec<Target>, reloads: bool) {
     stale_pause();
-    // The first look at the monitors seeds the allow list (a feed that worked keeps its wallpapers).
+    // The first look with a wallpaper on screen seeds the allow list (a feed that worked keeps its
+    // wallpapers); an empty look or a feed that is off leaves the seed for the next one.
     #[cfg(not(test))]
-    if !SEEDED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    if !SEEDED.load(std::sync::atomic::Ordering::SeqCst) {
         let keys: Vec<String> = targets
             .iter()
             .filter(|t| t.supports.live)
             .map(|t| super::wallpaper_manifest::key_of_file(&t.file))
             .collect();
-        super::live_feed::seed_allowed(&keys);
+        if super::live_feed::seed_allowed(&keys) {
+            SEEDED.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
     let start = with(|s| s.wake.is_none() && !s.quitting && !targets.is_empty());
     if start {
