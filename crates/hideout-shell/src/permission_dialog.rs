@@ -1081,7 +1081,10 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
         HeaderKind::MoreBuild => {
             let (n, _) = cli.unwrap_or((0, ""));
             (
-                hideout_supervisor::words::build_asks_for_more(name, n),
+                // TODO(S2): once the registry diff counts only the build's new items, switch
+                // back to `build_asks_for_more(name, new_only)`, and keep this wording when
+                // `new_only == 0` and leftovers remain. Until then the origin is unknown.
+                hideout_supervisor::words::waiting_for_ok(name, n),
                 hideout_supervisor::words::RUNS_WITH_WHAT_YOU_ALLOWED.into(),
                 NOT_NOW,
             )

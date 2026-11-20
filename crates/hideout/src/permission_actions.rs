@@ -358,8 +358,9 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
                     }
                     if a.by == hideout_registry::dev_folder::DEV_ATTESTED_BY {
                         use hideout_supervisor::words::{new_build_line, NewBuild};
+                        // TODO(S2): with the diff, `AsksMore(new_only)` when the build grew.
                         let what = if grew > 0 {
-                            NewBuild::AsksMore(grew)
+                            NewBuild::KeptWaiting(grew)
                         } else {
                             NewBuild::Kept
                         };
@@ -2017,20 +2018,69 @@ mod tests {
             "Vulpes",
             Some((p.len(), &p[0].line)),
         );
-        assert_eq!(h.title, "Vulpes's new build asks for 2 more things");
+        assert_eq!(h.title, "Vulpes has 2 things waiting for your OK");
         assert_eq!(h.body, "It runs with what you allowed until then.");
         assert_eq!(h.review, "Review\u{2026}");
         let one = header(HeaderKind::MoreBuild, ID, "Vulpes", Some((1, "x")));
-        assert_eq!(one.title, "Vulpes's new build asks for 1 more thing");
+        assert_eq!(one.title, "Vulpes has 1 thing waiting for your OK");
+        assert!(!one.title.contains("new build asks"));
         // The history says what the plan's Details line says.
         let s = section_for(ID, &v).unwrap();
         let last = s.history.last().unwrap();
         assert!(
             last.starts_with("New build on ")
-                && last.ends_with("It asks for 2 more things; those wait for you."),
+                && last.ends_with("What you allowed stayed; 2 things still wait for you."),
             "{:?}",
             s.history
         );
+    }
+
+    /// An item left unanswered earlier plus a plain rebuild (no growth) must not read as growth.
+    #[test]
+    fn a_dev_rebuild_with_only_leftover_pending_items_does_not_claim_growth() {
+        // Allow only `hub.notify`; `ui.window` stays pending (neither chosen nor declined).
+        let mut f = fx("leftover-dev", &["hub.notify", "ui.window"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        let mut reg = Registry::open(&f.home, false).unwrap();
+        let _ = &mut reg;
+        f.ui.refresh();
+        let mut v = view(&f);
+        // Leave one item pending, as an earlier partial Allow would have.
+        // Leave one item unanswered, as an earlier partial Allow would have.
+        let mut left = v.granted.remove(0);
+        left.state = ItemState::Asked;
+        let item = left.raw.clone();
+        v.listing.items.push(left);
+        v.pending = vec![item];
+        let at = v.bound.as_ref().unwrap().at.clone();
+        v.bound
+            .as_mut()
+            .unwrap()
+            .attested
+            .push(hideout_registry::inventory::Attestation {
+                from_sha256: "a".into(),
+                to_sha256: "b".into(),
+                from_path: String::new(),
+                to_path: String::new(),
+                version: "1.0.0".into(),
+                at,
+                by: hideout_registry::dev_folder::DEV_ATTESTED_BY.into(),
+            });
+        assert_eq!(header_kind(&v, true, true), Some(HeaderKind::MoreBuild));
+        let p = asked_pending(&v);
+        assert_eq!(p.len(), 1);
+        let h = header(
+            HeaderKind::MoreBuild,
+            ID,
+            "Vulpes",
+            Some((p.len(), &p[0].line)),
+        );
+        assert_eq!(h.title, "Vulpes has 1 thing waiting for your OK");
+        assert!(!h.title.contains("new build asks"));
+        let s = section_for(ID, &v).unwrap();
+        let last = s.history.last().unwrap();
+        assert!(last.ends_with("1 thing still waits for you."), "{last}");
+        assert!(!last.contains("asks for"), "{last}");
     }
 
     #[test]
