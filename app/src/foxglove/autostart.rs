@@ -841,15 +841,17 @@ pub fn start() {
         };
         // Unreadable settings (#741): the switch's saved state is unknown, so the startup entry
         // isn't repaired or changed on defaults.
-        let before = match super::store::section(STORE_OWNER, "autostart")
-            .load::<AutostartSettings>()
-        {
-            Ok(s) => s.unwrap_or_default(),
-            Err(e) => {
-                eprintln!("Foxglove: Start with Windows: settings unreadable ({e}); nothing done");
-                return;
-            }
-        };
+        let before =
+            match super::store::section(STORE_OWNER, "autostart").load::<AutostartSettings>() {
+                Ok(s) => s.unwrap_or_default(),
+                Err(e) => {
+                    eprintln!(
+                        "Foxglove: Start with Windows: settings unreadable ({}); nothing done",
+                        super::store::error_summary(&e)
+                    );
+                    return;
+                }
+            };
         let mut s = before.clone();
         let dev = dev_build(&exe, cfg!(debug_assertions));
         let result = reconcile(&mut s, &exe, dev, &owned.places(), &|p| p.is_file());

@@ -78,16 +78,21 @@ fn read(path: &Path) -> Result<Table, String> {
         match read_once(path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                 let Some(wait) = waits.next() else {
-                    return Err(format!("{}: {e}", path.display()));
+                    return Err(format!(
+                        "{}: {}",
+                        path.display(),
+                        error_summary(&e.to_string())
+                    ));
                 };
                 std::thread::sleep(*wait);
             }
             Err(_) => return Ok(Table::new()),
             Ok(text) => {
-                return text
-                    .parse::<Table>()
-                    .map(renamed)
-                    .map_err(|e| format!("{}: {e}", path.display()))
+                return text.parse::<Table>().map(renamed).map_err(|e| {
+                    // First line only: the rest quotes the bad line of the file, which can be
+                    // the token line. Covers every caller, log line and rewrite at once.
+                    format!("{}: {}", path.display(), error_summary(&e.to_string()))
+                });
             }
         }
     }
@@ -168,6 +173,12 @@ pub fn rows_for_test(path: &Path) -> Vec<super::health::HealthRow> {
     rows_for(&unread_at(path))
 }
 
+/// A store error for a status line, the log or a result: its first line only. A TOML parse error
+/// goes on to quote the bad line of the file, which can be the pairing token's.
+pub(super) fn error_summary(e: &str) -> &str {
+    e.lines().next().unwrap_or("").trim()
+}
+
 fn rows_for(unread: &[(String, String)]) -> Vec<super::health::HealthRow> {
     let Some((_, why)) = unread.last() else {
         return vec![];
@@ -178,7 +189,8 @@ fn rows_for(unread: &[(String, String)]) -> Vec<super::health::HealthRow> {
         "Settings",
         super::health::Level::Warn,
         format!(
-            "settings unreadable: {why} (not saved until read: {})",
+            "settings unreadable: {} (not saved until read: {})",
+            error_summary(why),
             sections.join(", ")
         ),
     )]
@@ -1432,5 +1444,53 @@ n = 7
         );
         assert_eq!(by_handle.try_load::<Demo>(), Some(Demo { on: true, n: 5 }));
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod error_summary_tests {
+    use super::error_summary;
+
+    #[test]
+    fn a_real_toml_parse_error_loses_the_quoted_line() {
+        let err = "[live_wallpaper]
+token = \"SECRET-TOKEN\" oops
+"
+        .parse::<toml::Table>()
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("SECRET-TOKEN"),
+            "the raw error quotes it: {err}"
+        );
+        let s = error_summary(&err);
+        assert!(s.contains("line 2"), "{s}");
+        assert!(
+            !s.contains("SECRET-TOKEN") && !s.contains(char::is_control),
+            "{s}"
+        );
+        assert_eq!(error_summary(""), "");
+    }
+
+    /// The store itself: a broken file's error, as every caller and the log see it, has no
+    /// quoted line.
+    #[test]
+    fn a_broken_settings_file_gives_an_error_without_the_token_line() {
+        let dir = super::test_sandbox().unwrap().join("redact-read");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("foxglove.toml");
+        std::fs::write(
+            &path,
+            "[live_wallpaper]
+token = \"SECRET-TOKEN\" oops
+",
+        )
+        .unwrap();
+        let err = super::try_load_at::<toml::Table>(&path, "live_wallpaper").unwrap_err();
+        assert!(
+            !err.contains("SECRET-TOKEN") && !err.contains(char::is_control),
+            "{err}"
+        );
+        assert!(err.contains("line 2"), "{err}");
     }
 }

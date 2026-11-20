@@ -320,6 +320,11 @@ impl Registry {
         if !self.dev_folders_on() || path.is_empty() || !on_local_fixed_drive(path) {
             return None;
         }
+        // The caller's path must already be the canonical one: a spelling through a junction or
+        // 8.3 name that is textually inside a folder but leads elsewhere never matches.
+        if !canonical_path(std::path::Path::new(path)).is_ok_and(|c| same_path(&c, path)) {
+            return None;
+        }
         let folders = self.dev_folders();
         static WARNED: std::sync::Once = std::sync::Once::new();
         if !folders.is_empty() {
