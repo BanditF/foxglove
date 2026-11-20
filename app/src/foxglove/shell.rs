@@ -228,13 +228,18 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
     }
     let mut go = None;
     let strip = strip_state(ui.ctx());
+    say_changes(ui.ctx(), &strip);
     egui::Panel::top("foxglove-status")
         .frame(
             egui::Frame::new()
                 .fill(p.ground)
                 .inner_margin(Margin::symmetric(18, 10)),
         )
-        .show(ui, |ui| status_strip(ui, &strip));
+        .show(ui, |ui| {
+            status_strip(ui, &strip);
+            // The window's live region (#1376): no size, no looks.
+            super::announce::app(ui);
+        });
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(p.ground).inner_margin(Margin {
             left: 22,
@@ -756,6 +761,26 @@ fn status_strip(ui: &mut egui::Ui, s: &StripState) {
         });
     });
 }
+
+/// Says, to a screen reader, what changes by itself while the window is open: the keyboard
+/// coming or going, the app's update line, the firmware update's state (#1376). Plain words.
+fn say_changes(ctx: &egui::Context, s: &StripState) {
+    use super::announce::watch;
+    watch(ctx, "keyboard", s.keyboard, |_, now| {
+        Some(if *now { KEYBOARD_ON } else { KEYBOARD_OFF }.into())
+    });
+    watch(ctx, "update", super::update::spoken(), |_, now| now.clone());
+    watch(
+        ctx,
+        "firmware",
+        super::firmware_update::spoken(&super::firmware_update::view()),
+        |_, now| now.clone(),
+    );
+}
+
+/// What a screen reader hears when the keyboard answers again, or stops answering.
+pub const KEYBOARD_ON: &str = "Keyboard connected";
+pub const KEYBOARD_OFF: &str = "Keyboard disconnected";
 
 /// One chip, sized before it's placed so the strip can wrap it to the next row.
 fn chip(ui: &mut egui::Ui, c: &Chip) -> egui::Rect {

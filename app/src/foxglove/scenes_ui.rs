@@ -1034,11 +1034,13 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             if st.saved.save(&name, &st.chosen.look) {
                 looks::save_saved(&st.saved);
                 draft.name.clear();
+                super::announce::notice(ctx, format!("Saved look {name}"));
             }
         }
         Intent::RemovePreset(name) => {
             st.saved.remove(&name);
             looks::save_saved(&st.saved);
+            super::announce::notice(ctx, format!("Removed look {name}"));
         }
         Intent::Move { id, by } => {
             let mut layout = super::scene_room::layout();
@@ -1049,6 +1051,7 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             let mut layout = super::scene_room::layout();
             layout.offsets.clear();
             save_layout(st, &layout);
+            super::announce::notice(ctx, "Devices back where the app placed them");
         }
     }
 }
@@ -1138,6 +1141,7 @@ fn animate(ctx: &egui::Context, v: &View) {
 
 /// Paints the page; returns what was asked for this frame.
 pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
+    say_changes(ui.ctx(), v);
     let mut out = Vec::new();
     let gap = 16.0;
     let width = ui.available_width();
@@ -1180,6 +1184,50 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     ui.add_space(6.0);
     out
 }
+
+/// What a screen reader hears when the scene's state changes (#1376): started, stopped, a start
+/// the app refused, paused or back. The words of the status line; a changing suffix or reading
+/// is not part of the state, so a moving value never repeats it.
+fn say_changes(ctx: &egui::Context, v: &View) {
+    /// The state worth a notice: what runs, and why not.
+    #[derive(Clone, Debug, PartialEq)]
+    enum Now {
+        Stopping,
+        Running(String),
+        Paused(String),
+        Refused,
+        Stopped,
+    }
+    let screen = v.screen.status.filter(|s| s.on);
+    let now = match (&v.running, v.stopping, v.yielded_to) {
+        (_, true, _) => Now::Stopping,
+        (Some(name), false, who) => match screen.and_then(|s| s.hold) {
+            Some(h) => Now::Paused(h.words(who)),
+            None if who.is_some() => Now::Paused(format!("Paused for {}", who.unwrap_or_default())),
+            None => Now::Running(name.clone()),
+        },
+        (None, false, _) if v.screen.refused && v.look.kind.reads_screen() => Now::Refused,
+        (None, false, _) => Now::Stopped,
+    };
+    super::announce::watch(ctx, "scene", now, |was, now| match now {
+        Now::Stopping => None,
+        Now::Running(name) if name == glow::NAME => Some(SAID_GLOW_ON.into()),
+        Now::Running(name) => Some(format!("Scene started: {name}")),
+        Now::Paused(words) => Some(words.clone()),
+        Now::Refused => Some(SAID_REFUSED.into()),
+        // Stopped after a stop (or a run that ended): not after a refusal clearing.
+        Now::Stopped if matches!(was, Now::Refused) => None,
+        Now::Stopped => Some(SAID_STOPPED.into()),
+    });
+}
+
+/// Screen glow started and is reading the screen.
+pub const SAID_GLOW_ON: &str = "Screen glow on: reading your screen for the lights";
+/// A start was refused until the user says yes to Screen glow.
+pub const SAID_REFUSED: &str =
+    "Screen glow did not start: it needs your yes. Pick it and press Start.";
+/// The scene stopped and the lights are back.
+pub const SAID_STOPPED: &str = "Scene stopped: lights put back";
 
 /// What starts the scene or draws over it (#489): the active profile's three boxes.
 fn triggers_card(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {

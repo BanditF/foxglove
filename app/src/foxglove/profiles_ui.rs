@@ -113,6 +113,9 @@ fn share(ui: &mut egui::Ui, names: &[String], active: Option<&str>) {
                         Ok(()) => format!("Saved {}", path.display()),
                         Err(e) => format!("Can't export: {e}"),
                     });
+                    if let Some(m) = &state.message {
+                        super::announce::notice(ui.ctx(), m.clone());
+                    }
                 }
                 None => {
                     state.importing = None;
