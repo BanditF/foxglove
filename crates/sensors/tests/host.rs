@@ -94,3 +94,119 @@ fn stop_withdraws_everything() {
     let w = h.take_writes();
     assert!(w.iter().any(|w| w.value.is_none()));
 }
+
+/// A source that counts the times it was opened (made by the factory) and closed (dropped), as a
+/// PDH query or an NVML load does.
+struct Handle {
+    #[allow(dead_code)]
+    open: Rc<Cell<u32>>,
+    close: Rc<Cell<u32>>,
+}
+
+impl Source for Handle {
+    fn read(&mut self) -> Result<Reading, SourceError> {
+        Ok(Reading::new().with(Metric::CpuLoad, 1))
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        self.close.set(self.close.get() + 1);
+    }
+}
+
+/// The same path the binary's loop takes: the hub's `facts.demand` through [`Host::notify`],
+/// `tick`, and the release hook.
+#[test]
+fn every_open_is_closed_when_demand_returns_to_zero_and_a_resubscribe_opens_again() {
+    use serde_json::json;
+    let (open, close, trims) = (
+        Rc::new(Cell::new(0)),
+        Rc::new(Cell::new(0)),
+        Rc::new(Cell::new(0)),
+    );
+    let (o, c) = (open.clone(), close.clone());
+    // Two factories, like the PDH query and the NVML load.
+    let factories: Vec<SourceFactory> = (0..2)
+        .map(|_| {
+            let (o, c) = (o.clone(), c.clone());
+            Box::new(move || {
+                o.set(o.get() + 1);
+                Box::new(Handle {
+                    open: o.clone(),
+                    close: c.clone(),
+                }) as Box<dyn Source>
+            }) as SourceFactory
+        })
+        .collect();
+    let mut h = Host::new(factories, Config::default());
+    let (t, c2) = (trims.clone(), close.clone());
+    // The hook runs after the drops: nothing is open any more.
+    h.on_release(move || {
+        assert_eq!(c2.get() % 2, 0);
+        t.set(t.get() + 1);
+    });
+    let demand = |n: u32| json!({"pattern": registered_pattern(), "subscribers": n});
+    assert_eq!((open.get(), close.get()), (0, 0));
+
+    h.notify("facts.demand", &demand(1), s(0));
+    h.tick(s(0));
+    h.tick(s(1));
+    assert_eq!((open.get(), close.get()), (2, 0));
+    h.notify("facts.demand", &demand(0), s(2));
+    assert_eq!((open.get(), close.get()), (2, 2));
+    assert_eq!(trims.get(), 1);
+    assert!(!h.sampling() && h.next_due().is_none());
+
+    // Nothing opens while nobody listens, however long the loop ticks.
+    h.tick(s(60));
+    h.notify("facts.demand", &demand(0), s(61));
+    assert_eq!((open.get(), close.get(), trims.get()), (2, 2, 1));
+
+    h.notify("facts.demand", &demand(3), s(70));
+    h.tick(s(70));
+    assert_eq!((open.get(), close.get()), (4, 2));
+    h.notify("facts.demand", &demand(0), s(80));
+    assert_eq!((open.get(), close.get(), trims.get()), (4, 4, 2));
+
+    // The program's end with something listening closes too.
+    h.notify("facts.demand", &demand(1), s(90));
+    h.stop(s(91));
+    assert_eq!((open.get(), close.get(), trims.get()), (6, 6, 3));
+}
+
+#[test]
+fn a_game_that_stops_sampling_closes_and_the_end_of_it_opens_again() {
+    use serde_json::json;
+    let (open, close) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let (o, c) = (open.clone(), close.clone());
+    let f: SourceFactory = Box::new(move || {
+        o.set(o.get() + 1);
+        Box::new(Handle {
+            open: o.clone(),
+            close: c.clone(),
+        }) as Box<dyn Source>
+    });
+    let config = Config {
+        game_interval: None,
+        ..Config::default()
+    };
+    let mut h = Host::new(vec![f], config);
+    h.notify(
+        "facts.demand",
+        &json!({"pattern": registered_pattern(), "subscribers": 1}),
+        s(0),
+    );
+    h.notify(
+        "facts.changed",
+        &json!({"key": "keyboard.game_mode", "value": true}),
+        s(1),
+    );
+    assert_eq!((open.get(), close.get()), (1, 1));
+    h.notify(
+        "facts.changed",
+        &json!({"key": "keyboard.game_mode", "value": false}),
+        s(2),
+    );
+    assert_eq!((open.get(), close.get()), (2, 1));
+}

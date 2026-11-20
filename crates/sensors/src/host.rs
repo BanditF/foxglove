@@ -48,6 +48,8 @@ pub struct Host {
     engine: Engine<GuardedSink<Outbox>>,
     out: Outbox,
     sub: Option<SubId>,
+    /// Called each time sampling ends and every source is dropped (the binary trims memory).
+    on_release: Option<Box<dyn FnMut()>>,
 }
 
 impl Host {
@@ -57,6 +59,42 @@ impl Host {
             engine: Engine::new(factories, GuardedSink::new(out.clone()), config),
             out,
             sub: None,
+            on_release: None,
+        }
+    }
+
+    /// `f` runs right after sampling ends and every source has been dropped (demand 0, a game
+    /// that stops sampling, the program's end), never while a source is open.
+    pub fn on_release(&mut self, f: impl FnMut() + 'static) {
+        self.on_release = Some(Box::new(f));
+    }
+
+    /// Runs `change`, then the release hook if it ended sampling.
+    fn watching(&mut self, change: impl FnOnce(&mut Self)) {
+        let was = self.engine.sampling();
+        change(self);
+        if was && !self.engine.sampling() {
+            if let Some(f) = self.on_release.as_mut() {
+                f();
+            }
+        }
+    }
+
+    /// A notification from the hub, as the binary's loop receives it: `facts.demand` and
+    /// `facts.changed` of [`GAME_MODE_FACT`]. Anything else changes nothing.
+    pub fn notify(&mut self, method: &str, params: &serde_json::Value, now: Duration) {
+        match method {
+            "facts.demand" => {
+                let n = params["subscribers"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .min(u32::MAX as u64) as u32;
+                self.demand(params["pattern"].as_str().unwrap_or(""), n, now);
+            }
+            "facts.changed" if params["key"] == GAME_MODE_FACT => {
+                self.game_mode(params["value"].as_bool() == Some(true), now)
+            }
+            _ => {}
         }
     }
 
@@ -86,19 +124,19 @@ impl Host {
         if !pattern_wants(pattern) {
             return;
         }
-        match (subscribers > 0, self.sub) {
-            (true, None) => self.sub = self.engine.subscribe(pattern, now),
+        self.watching(|h| match (subscribers > 0, h.sub) {
+            (true, None) => h.sub = h.engine.subscribe(pattern, now),
             (false, Some(id)) => {
-                self.engine.unsubscribe(id, now);
-                self.sub = None;
+                h.engine.unsubscribe(id, now);
+                h.sub = None;
             }
             _ => {}
-        }
+        });
     }
 
     /// `keyboard.game_mode` changed (`false` when it is missing or not on).
     pub fn game_mode(&mut self, on: bool, now: Duration) {
-        self.engine.set_game_mode(on, now);
+        self.watching(|h| h.engine.set_game_mode(on, now));
     }
 
     /// The program ends: nothing stays published.
