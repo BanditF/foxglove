@@ -1,6 +1,8 @@
 //! Foxglove's additions to the KeyPeek code. They live here, apart from upstream's files, so
 //! pulling from srwi/keypeek stays easy (docs/keypeek-sync.md).
 
+#[cfg(test)]
+mod a11y_tree_tests;
 pub mod accent;
 pub mod announce;
 pub mod api;
@@ -159,6 +161,7 @@ pub mod scene_triggers;
 pub mod scenes_ui;
 pub mod screen_capture;
 pub mod screen_glow;
+pub mod screen_reader;
 pub mod screen_roles;
 pub mod screens;
 mod screens_settings;

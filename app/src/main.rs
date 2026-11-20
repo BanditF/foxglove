@@ -31,6 +31,7 @@ fn main() {
     let module = foxglove::hub_link::enter();
     // Foxglove (#370): stderr and panics to logs\foxglove.log, first, so an early exit is seen.
     foxglove::app_log::start();
+    foxglove::screen_reader::start(); // Foxglove (#1376): hold the AccessKit atom for the run
     if let Err(why) = module {
         // Never a fallback to the user's own pipe or a tray: say why and stop.
         foxglove::app_log::early(&why);

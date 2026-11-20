@@ -56,6 +56,11 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained macro crate, via image -> ravif -> rav1e" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained, Linux-only via sctk-adwaita window decorations" },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, unmaintained: only via glib-macros in Linux-only gtk 0.18 (tray-icon)" },
+    # AccessKit (#1376): zbus 5 is reached only through accesskit_unix (AT-SPI on Linux), never compiled on Windows.
+    # Unmaintained notices (merged into zbus 6); no fixed release for accesskit_unix yet.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained, only via accesskit_unix (Linux AT-SPI), not built on Windows" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained, only via accesskit_unix (Linux AT-SPI), not built on Windows" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained, only via accesskit_unix (Linux AT-SPI), not built on Windows" },
 ]
 
 [bans]
