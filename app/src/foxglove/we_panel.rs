@@ -307,11 +307,6 @@ pub fn view(i: &Inputs) -> View {
                         r.status = say("Connected", "ok");
                         r.help = i.hold.map(|h| h.words().to_string());
                     }
-                    Link::Shared => {
-                        r.status = say("Connected", "ok");
-                        r.help = Some(format!("Another app is using {t}'s connection."));
-                        r.reconnect = true;
-                    }
                     Link::Reconnecting => r.status = say("Reconnecting\u{2026}", "active"),
                     Link::Capped => {
                         r.status = say("Not connected", "attention");
@@ -332,7 +327,7 @@ pub fn view(i: &Inputs) -> View {
             && !a.needs_update
             && matches!(
                 link(a),
-                Link::Connected | Link::Shared | Link::Connecting | Link::Reconnecting
+                Link::Connected | Link::Connecting | Link::Reconnecting
             )
     });
     let line = if !i.feed_on {
@@ -722,14 +717,6 @@ mod tests {
         );
         assert!(v.rows[0].reconnect);
         assert!(!v.disconnect_all, "nothing is connected");
-
-        let v = one(Link::Shared, true);
-        assert_eq!(status(&v), Some(("Connected", "ok")));
-        assert_eq!(
-            v.rows[0].help.as_deref(),
-            Some("Another app is using Bandit HUD's connection.")
-        );
-        assert!(v.rows[0].reconnect && v.disconnect_all);
 
         let v = one(Link::Idle, false);
         assert_eq!(status(&v), Some(("Not on screen", "off")));

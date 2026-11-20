@@ -4129,13 +4129,6 @@ fn live_wallpaper_card_allow_list_renders() {
         hold: None,
         ..list.clone()
     };
-    let mut shared_links = Links::default();
-    shared_links.by_dir.insert("hud".into(), Link::Shared);
-    let shared = Inputs {
-        links: shared_links,
-        hold: None,
-        ..list.clone()
-    };
     let refused = "Couldn't change this. Try again.";
     // Following the focus, as the real card's keyboard row does.
     let follow = crate::foxglove::focus_pins::PinView {
@@ -4156,7 +4149,6 @@ fn live_wallpaper_card_allow_list_renders() {
         for (width, size) in [(720.0f32, "wide"), (360.0, "narrow")] {
             for (case, inputs, hub, error) in [
                 ("list", &list, false, None),
-                ("shared", &shared, false, None),
                 ("held", &held, false, None),
                 ("none", &none, false, None),
                 ("engine-off", &engine_off, false, None),
