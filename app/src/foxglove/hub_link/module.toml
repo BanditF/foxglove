@@ -86,3 +86,11 @@ id = "page"
 slot = "page"
 title = "Foxglove"
 icon = "keyboard"
+
+# Identify (hub card): shows the layer overlay, the Keyboard page's "Show layer overlay" setting
+# (`overlay.set_shown`, handled in hub_link.rs `Hub::action`). No permission beyond the method
+# the module already serves.
+[[actions]]
+id = "identify"
+name = "Identify"
+hint = "Press a layer key to see the layer overlay."

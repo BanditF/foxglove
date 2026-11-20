@@ -169,6 +169,12 @@ pub trait Source {
 /// set, so the idle process is as small as it can be. Without this the allocator keeps the
 /// pages the PDH buffers used (freed, but still resident). It cannot release what Windows
 /// itself keeps for the process (PDH's loaded performance providers and their handles).
+///
+/// What to expect (test plan A22, measured on the lab PC): after demand drops to 0 the working set
+/// falls (36 MB while sampling, about 2 MB after) but about 54 extra handles remain (143 against
+/// 89 before the first demand), flat: they do not grow with later demand cycles. Hypothesis: state
+/// that the PDH and NVML DLLs keep once loaded. Accepted; there is no fallback (no unloading the
+/// DLLs, no restarting the process), and a change that makes the count grow is a bug.
 pub fn trim_memory() {
     #[cfg(windows)]
     // SAFETY: both calls take the process's own pseudo-handle or default heap; failure only

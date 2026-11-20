@@ -66,8 +66,9 @@ use std::time::{Duration, Instant};
 
 use foxglove_devices::facts::{Change, Value as Fact};
 use foxglove_plugin::hideout::{
-    code, DrainResult, Handler, Incoming, InitializeModule, ModuleDrain, ModuleRegister, PatchOp,
-    Register, RegisterResult, RpcError, Session, SessionError, UiEvent, UiPatch,
+    code, ActionInvoke, DrainResult, Handler, Incoming, InitializeModule, ModuleDrain,
+    ModuleRegister, PatchOp, Register, RegisterResult, RpcError, Session, SessionError, UiEvent,
+    UiPatch,
 };
 use serde_json::{json, Value};
 
@@ -360,6 +361,9 @@ fn holders_key() -> String {
     format!("module.{ID}.lease_holders")
 }
 
+/// The manifest's one action: Identify shows the layer overlay.
+const IDENTIFY: &str = "identify";
+
 /// The lease family Wallpaper Engine's pause belongs to.
 const WE_FAMILY: &str = "wallpaper-engine";
 
@@ -454,6 +458,25 @@ impl Handler for Hub {
                 }
             }
         }
+        Ok(json!({}))
+    }
+    /// `action.invoke` for the manifest's `identify` (the hub's Identify): shows the layer
+    /// overlay, the same setting as the Keyboard page's checkbox (`overlay.set_shown`). Only
+    /// while the hub has the module; any other id is not an action of this module.
+    fn action(&mut self, action: ActionInvoke) -> Result<Value, RpcError> {
+        if !self.live {
+            return Err(RpcError::new(code::DISCONNECTED, "disconnected"));
+        }
+        if action.action != IDENTIFY {
+            return Err(RpcError::new(
+                code::METHOD_NOT_FOUND,
+                format!("no action {}", action.action),
+            ));
+        }
+        let Some(devices) = self.devices.as_ref() else {
+            return Err(RpcError::new(code::DISCONNECTED, "disconnected"));
+        };
+        run_handler(devices.as_ref(), "overlay.set_shown", json!({"on": true}))?;
         Ok(json!({}))
     }
     /// A routed v1 call. The router has already checked the caller's permission; the name is
