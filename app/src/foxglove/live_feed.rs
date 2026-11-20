@@ -555,6 +555,17 @@ fn allowed_set(s: &LiveSettings) -> std::collections::BTreeSet<String> {
     s.allowed.iter().cloned().collect()
 }
 
+/// Whether the allow list gates the feed. Off until S5b ships the switch: with it on and no way
+/// to flip a wallpaper on, a wallpaper that works today would silently lose its ticket (UX review
+/// of #1316). While off, every wallpaper that asks is allowed, as before; the list is still
+/// saved so S5b starts from the user's choices. S5b turns this on.
+const ALLOW_GATE: bool = false;
+
+/// What the pairing store is told: the saved list when the gate is on, else no restriction.
+fn gate(s: &LiveSettings) -> Option<std::collections::BTreeSet<String>> {
+    ALLOW_GATE.then(|| allowed_set(s))
+}
+
 /// Most wallpapers the allow list keeps.
 const MAX_ALLOWED: usize = 256;
 
@@ -601,7 +612,7 @@ fn apply_allowed(s: &LiveSettings) {
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .map_or_else(pairing::store, |r| r.store);
-    let close = pairing::allow(store, Some(allowed_set(s)));
+    let close = pairing::allow(store, gate(s));
     if !close.is_empty() {
         send(Msg::Close(close));
     }
@@ -775,7 +786,7 @@ fn listen_in(s: &LiveSettings, store: Store) -> Result<(), String> {
         s.token.clone()
     };
     locked(store).set_old_token_off(s.ticket_verified);
-    pairing::allow(store, Some(allowed_set(s)));
+    pairing::allow(store, gate(s));
     let (accept_tx, accept_stop) = (tx.clone(), stop.clone());
     // Both supervised (#587). The hub's queue outlives a panicking attempt, so the accept
     // thread, the clients and `send` keep a good sender.
@@ -3380,6 +3391,17 @@ mod tests {
         })
         .unwrap_err();
         assert!(!e.contains("secret"));
+    }
+
+    /// Until S5b ships the switch, an empty saved list must not cut a working wallpaper off.
+    #[test]
+    fn an_empty_allow_list_gates_nothing_until_s5b() {
+        let s = LiveSettings::default();
+        assert!(s.allowed.is_empty());
+        assert_eq!(gate(&s), None);
+        let mut p = pairing::Pairing::new();
+        p.set_allowed(gate(&s));
+        assert!(p.mint("//?/DISPLAY#A", "hud/index.html", Instant::now()).is_some());
     }
 
     #[test]

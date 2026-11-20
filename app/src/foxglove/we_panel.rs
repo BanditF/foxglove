@@ -272,9 +272,9 @@ pub fn nodes(v: &View) -> Vec<Value> {
     if let Some(l) = &v.line {
         out.push(ui::label("we-line", &l.text));
         if l.reconnect {
-            out.push(ui::event_button(
-                &format!("{RECONNECT}:all"),
-                RECONNECT_LABEL,
+            out.push(ui::named(
+                ui::event_button(&format!("{RECONNECT}:all"), RECONNECT_LABEL),
+                "Reconnect all wallpapers",
             ));
         }
     }
@@ -288,19 +288,27 @@ pub fn nodes(v: &View) -> Vec<Value> {
                 if let Some((word, tone)) = &r.status {
                     head.push(ui::value(&format!("we-status:{n}"), word, tone));
                 }
-                head.push(ui::toggle(&format!("{ALLOW}:{n}"), ALLOW_LABEL, r.allowed));
-                let mut kids = vec![
-                    ui::row(&format!("we-head:{n}"), head),
-                    ui::label(&format!("we-cap:{n}"), &r.capability),
-                ];
-                if let Some(h) = &r.help {
-                    kids.push(ui::label(&format!("we-help:{n}"), h));
-                }
+                head.push(ui::named(
+                    ui::toggle(&format!("{ALLOW}:{n}"), ALLOW_LABEL, r.allowed),
+                    &format!("Let {} use your keyboard", r.title),
+                ));
+                let help = r.help.as_ref().map(|h| ui::label(&format!("we-help:{n}"), h));
+                let button = r.reconnect.then(|| {
+                    ui::named(
+                        ui::event_button(&format!("{RECONNECT}:{n}"), RECONNECT_LABEL),
+                        &format!("Reconnect {}", r.title),
+                    )
+                });
+                let cap = ui::label(&format!("we-cap:{n}"), &r.capability);
+                let mut kids = vec![ui::row(&format!("we-head:{n}"), head)];
                 if r.reconnect {
-                    kids.push(ui::event_button(
-                        &format!("{RECONNECT}:{n}"),
-                        RECONNECT_LABEL,
-                    ));
+                    // The line that needs the user comes before the boilerplate.
+                    kids.extend(help);
+                    kids.extend(button);
+                    kids.push(cap);
+                } else {
+                    kids.push(cap);
+                    kids.extend(help);
                 }
                 ui::column(&format!("we-row:{n}"), kids)
             })
@@ -602,6 +610,32 @@ mod tests {
             "the second row has no button"
         );
         assert!(!tree.contains(DISCONNECT_ALL_NODE), "nothing is connected");
+
+        // Each switch and button has its own accessible name.
+        let named: Vec<(String, String)> = {
+            let mut acc = Vec::new();
+            fn walk(n: &Value, v: &mut Vec<(String, String)>) {
+                if let Some(name) = n["props"]["name"].as_str() {
+                    v.push((n["id"].as_str().unwrap().into(), name.into()));
+                }
+                for c in n["children"].as_array().into_iter().flatten() {
+                    walk(c, v);
+                }
+            }
+            for n in nodes(&v) {
+                walk(&n, &mut acc);
+            }
+            acc
+        };
+        let has = |id: &str, name: &str| named.iter().any(|(i, n)| i == id && n == name);
+        assert!(has("we-allow:0", "Let Bandit HUD use your keyboard"));
+        assert!(has("we-allow:1", "Let Courier use your keyboard"));
+        assert!(has("we-reconnect:0", "Reconnect Bandit HUD"));
+        let mut all = view(&base(vec![], Links::default()));
+        all.line = Some(Line { text: "x".into(), reconnect: true });
+        assert!(nodes(&all)
+            .iter()
+            .any(|n| n["props"]["name"] == "Reconnect all wallpapers"));
 
         assert_eq!(event("we-allow:3", Some(true)), Some(Event::Allow(3, true)));
         assert_eq!(event("we-allow:3", None), None, "a switch without a value");

@@ -132,6 +132,13 @@ pub fn event_button(id: &str, label: &str) -> Value {
     json!({"type": "button", "id": id, "props": {"label": label}})
 }
 
+/// Gives a node an accessible name apart from its visible text ("Let Bandit HUD use your
+/// keyboard" for a switch that reads "Allow"). The hub draws `label` and announces `name`.
+pub fn named(mut node: Value, name: &str) -> Value {
+    node["props"]["name"] = Value::String(name.to_string());
+    node
+}
+
 /// A `row` node.
 pub fn row(id: &str, children: Vec<Value>) -> Value {
     json!({"type": "row", "id": id, "children": children})
