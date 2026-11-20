@@ -44,12 +44,12 @@ pub const PLANNED_EXIT_CODE: i32 = 75;
 /// The contract version this crate reads (`hub` in a manifest, §8.7). 1.1 since spec v1.4 (a
 /// `file` setting kind and its `filter` key); 1.2 since spec v1.10 (`[limits]`); 1.3 since spec
 /// v1.12 (the host services' messages, §8.10, §8.11).
-/// 1.4 since spec v1.19 (`hub.show`, section 8.8).
-pub const HUB_VERSION: Version = Version { major: 1, minor: 4 };
+/// 1.4 since spec v1.19 (`hub.show`, section 8.8); 1.5 since spec v1.20 (`facts.demand`).
+pub const HUB_VERSION: Version = Version { major: 1, minor: 5 };
 
 /// The spec version this crate implements (docs/hideout-contract.md's status line, the test
 /// vectors' `index.json` and README). A drift test keeps them equal.
-pub const SPEC_VERSION: &str = "1.19";
+pub const SPEC_VERSION: &str = "1.20";
 
 /// Crash-restart delays in seconds (§7.7, spec v1.1): the last step repeats.
 pub const BACKOFF_STEPS_S: &[u64] = &[1, 2, 4, 8, 16, 32, 60];
@@ -166,6 +166,7 @@ pub fn schema() -> serde_json::Value {
         messages::SettingsSet,
         messages::HubNotify,
         messages::HubShow,
+        messages::FactsDemand,
         messages::ChannelOpen,
         messages::ChannelOpened,
         messages::ChannelCreate,
@@ -348,7 +349,8 @@ mod tests {
 
     #[test]
     fn versions() {
-        assert_eq!(Version::parse("1.4"), Some(HUB_VERSION));
+        assert_eq!(Version::parse("1.5"), Some(HUB_VERSION));
+        assert!(Version::parse("1.4").unwrap().served_by(HUB_VERSION));
         assert!(Version::parse("1.3").unwrap().served_by(HUB_VERSION));
         assert!(Version::parse("1.2").unwrap().served_by(HUB_VERSION));
         assert!(Version::parse("1.1").unwrap().served_by(HUB_VERSION));

@@ -84,7 +84,7 @@ fn error_code(out: &[Out], c: ConnId) -> i64 {
 }
 
 #[test]
-fn the_hub_says_it_serves_1_4() {
+fn the_hub_says_it_serves_1_5() {
     let mut r = router();
     let c = r.connect(Origin::Pipe);
     let out = call(
@@ -94,7 +94,7 @@ fn the_hub_says_it_serves_1_4() {
         "initialize",
         json!({"client":{"name":"t","version":"1"},"api":{}}),
     );
-    assert_eq!(sends(&out, c)[0]["result"]["hub"], "1.4");
+    assert_eq!(sends(&out, c)[0]["result"]["hub"], "1.5");
 }
 
 #[test]

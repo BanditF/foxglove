@@ -647,7 +647,7 @@ fn setup(name: &str) -> Replay {
             r.tool("tool", "example-cli", &["facts.read:*"]);
             r
         }
-        "set-subscribe-changed" => {
+        "set-subscribe-changed" | "demand" => {
             let mut r = Replay::new(vec![]);
             r.module(
                 "module",
@@ -655,6 +655,7 @@ fn setup(name: &str) -> Replay {
                 Some(json!({"methods":[],"facts":["example.art.*"],"channels":[],"apis":{}})),
             );
             r.tool("tool", "example-cli", &["facts.read:example.art.*"]);
+            r.tool("other", "second-cli", &["facts.read:example.art.*"]);
             // §8.8: `facts.set` needs `facts.write:` or `facts:` in `provides` (#1150); this
             // module's manifest provides the facts it sets.
             let text = format!(

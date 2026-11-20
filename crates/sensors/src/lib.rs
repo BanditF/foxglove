@@ -8,9 +8,13 @@
 //! - A value that can't be read is withdrawn, never published as 0, and its group's
 //!   `sensor.<group>.state` says `unavailable`.
 //!
+//! - [`host`] is what the program does with the hub's demand and game mode: it starts and stops
+//!   the engine, and hands back its writes.
+//!
 //! No kernel driver, no device, no key events, no control: it only reads.
 
 mod engine;
+pub mod host;
 pub mod nvml;
 pub mod pdh;
 

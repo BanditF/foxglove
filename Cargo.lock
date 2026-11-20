@@ -1514,6 +1514,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove-sensors-host"
+version = "0.1.0"
+dependencies = [
+ "foxglove-plugin",
+ "foxglove-sensors",
+ "serde_json",
+]
+
+[[package]]
 name = "foxglove-update"
 version = "0.3.0"
 dependencies = [

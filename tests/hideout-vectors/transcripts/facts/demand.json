@@ -1,0 +1,123 @@
+{
+  "name": "demand",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.3",
+    "8.8"
+  ],
+  "description": "The hub tells the module that owns a fact pattern when subscribers to it appear and when the last one leaves: facts.demand {pattern, subscribers} on the 0 to non-zero and non-zero to 0 edges only, to the owner only, never to a subscriber. A second subscriber and one of two leaving send nothing (v1.20).",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "facts.subscribe",
+        "params": {
+          "pattern": "example.art.*"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "subscription": 7
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.demand",
+        "params": {
+          "pattern": "example.art.*",
+          "subscribers": 1
+        }
+      }
+    },
+    {
+      "from": "other",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "facts.subscribe",
+        "params": {
+          "pattern": "example.art.current"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "other",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "subscription": 8
+        }
+      }
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "facts.unsubscribe",
+        "params": {
+          "subscription": 7
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {}
+      }
+    },
+    {
+      "from": "other",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "facts.unsubscribe",
+        "params": {
+          "subscription": 8
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "other",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.demand",
+        "params": {
+          "pattern": "example.art.*",
+          "subscribers": 0
+        }
+      }
+    }
+  ]
+}

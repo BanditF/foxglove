@@ -380,6 +380,8 @@ pub struct Router {
     apis: BTreeMap<String, String>,
     facts: BTreeMap<String, Value>,
     subs: BTreeMap<u64, (ConnId, String)>,
+    /// What `facts.demand` last told each owner: (module, owned pattern) -> had subscribers (§8.8, v1.20).
+    demand_sent: HashMap<(String, String), bool>,
     next_sub: u64,
     pending: HashMap<(ConnId, i64), Pending>,
     /// Counted calls per (provider, caller key) and per provider: the in-flight caps read these
@@ -515,6 +517,7 @@ impl Router {
             apis: BTreeMap::new(),
             facts: BTreeMap::new(),
             subs: BTreeMap::new(),
+            demand_sent: HashMap::new(),
             next_sub: 1,
             faults: HashMap::new(),
             leases: HashMap::new(),
@@ -1408,7 +1411,9 @@ impl Router {
         if !self.services.is_empty() {
             out.push(Out::ServiceGone(conn));
         }
+        let had_subs = self.subs.len();
         self.subs.retain(|_, (owner, _)| *owner != conn);
+        let lost_subs = self.subs.len() != had_subs;
         self.identities.remove(&conn);
         // Its app watches end with it (§8.12, v1.13).
         self.app_watches.remove(&conn);
@@ -1448,6 +1453,7 @@ impl Router {
             if self.module_conn(&id).is_none() {
                 self.routes.retain(|r| r.module != id);
                 self.fact_owners.retain(|r| r.module != id);
+                self.demand_sent.retain(|k, _| k.0 != id);
                 self.wanted.remove(&id);
                 // What this module held may go to one that was refused it as `taken` (#1135).
                 self.restore_wanted();
@@ -1457,8 +1463,43 @@ impl Router {
                 out.push(Out::ModuleGone(id));
             }
         }
+        // A closed connection counts as leaving (§8.8, v1.20).
+        if lost_subs {
+            self.demand_sync(&mut out);
+        }
         self.sync_lease_holders(&mut out);
         out
+    }
+
+    /// `facts.demand` (§8.8, v1.20): tell each fact owner when the live subscriptions that
+    /// overlap one of its registered patterns (its own excluded) go from none to some or back.
+    /// A count only, never who. `demand_sent` holds what each owner was last told.
+    fn demand_sync(&mut self, out: &mut Vec<Out>) {
+        let owners: Vec<(String, String)> = self
+            .fact_owners
+            .iter()
+            .map(|r| (r.module.clone(), r.pattern.clone()))
+            .collect();
+        for (module, pattern) in owners {
+            let Some(conn) = self.module_conn(&module) else {
+                continue;
+            };
+            let count = self
+                .subs
+                .values()
+                .filter(|(c, p)| *c != conn && overlap(p, &pattern))
+                .count();
+            let key = (module, pattern.clone());
+            let was = self.demand_sent.get(&key).copied().unwrap_or(false);
+            if (count > 0) != was {
+                self.demand_sent.insert(key, count > 0);
+                out.push(Out::Send(
+                    conn,
+                    json!({"jsonrpc": "2.0", "method": "facts.demand",
+                           "params": {"pattern": pattern, "subscribers": count}}),
+                ));
+            }
+        }
     }
 
     /// The hub ended `module`'s run because an accepted catalog revoked its `version` (§12.4;
@@ -1518,6 +1559,7 @@ impl Router {
         self.triggers.remove(id);
         self.routes.retain(|r| r.module != id);
         self.fact_owners.retain(|r| r.module != id);
+        self.demand_sent.retain(|k, _| k.0 != id);
         self.channels.remove(id);
         self.leases.retain(|k, _| k.0 != id);
         self.restart_closes.remove(id);
@@ -1890,6 +1932,9 @@ impl Router {
                 let reply =
                     self.facts_call(conn, &caps, module.as_deref(), &id, method, &params, out);
                 out.push(answer(reply));
+                if method == "facts.subscribe" || method == "facts.unsubscribe" {
+                    self.demand_sync(out);
+                }
             }
             "module.register" => {
                 let reply = match &module {
@@ -1897,6 +1942,11 @@ impl Router {
                     None => denied(&id, Some("only modules register")),
                 };
                 out.push(answer(reply));
+                if let Some(m) = &module {
+                    // A (re)registration tells the owner once more (§8.8, v1.20).
+                    self.demand_sent.retain(|k, _| k.0 != *m);
+                    self.demand_sync(out);
+                }
             }
             // (v1.17) A provider ends the live leases it handed out of one family, on the user's
             // word in its own page (a Resume): each closes `revoked`, as the hub's own Resume.

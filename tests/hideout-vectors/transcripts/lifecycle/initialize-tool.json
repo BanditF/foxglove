@@ -42,7 +42,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "hub": "1.4",
+          "hub": "1.5",
           "app": "hideout",
           "api": {
             "foxglove": "1.13"
