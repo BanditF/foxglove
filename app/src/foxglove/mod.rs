@@ -97,6 +97,7 @@ pub mod led_map_ui;
 pub mod light_zones;
 pub mod lighting_leases;
 pub mod lighting_sources;
+pub mod lights_draft;
 pub mod lights_heal;
 pub mod lights_live;
 pub mod lights_live_ui;

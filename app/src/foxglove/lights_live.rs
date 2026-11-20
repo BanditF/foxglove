@@ -37,6 +37,9 @@ pub struct Report {
     /// Windows holds the lights and Foxglove draws through it: the card's pick. `None` with a
     /// Windows owner means another app draws.
     pub windows: Option<CardLook>,
+    /// "Right half's lights follow the left" is off: with no report from the right half, it is
+    /// not drawn (its lights are not the left's).
+    pub right_apart: bool,
 }
 
 /// A scene that runs: its effect over its room (the keyboard's parts are `keyboard`, or
@@ -53,6 +56,9 @@ pub struct SceneRun {
 pub struct Draft {
     pub left: Option<RgbHalf>,
     pub right: Option<RgbHalf>,
+    /// The change was sent and the keyboard hasn't answered (the line says "Sending…"); else it
+    /// is a pick not applied yet.
+    pub sent: bool,
 }
 
 /// Which source drew the frame, for the line under the drawing.
@@ -77,6 +83,8 @@ pub enum State {
 enum HalfPaint {
     Dark,
     Still(Color32),
+    /// Nothing known of this half: outlines only.
+    Unknown,
     Moving(SceneLook),
 }
 
@@ -163,14 +171,19 @@ fn own(report: &Report, rgb: RgbState, draft: Option<&Draft>) -> Look {
     let reported = rgb.right.map_or(left, |(h, _)| h);
     let right = draft.and_then(|d| d.right).unwrap_or(reported);
     let ce = rgb.colour_effects;
-    let halves = [(left, 0), (right, 1)].map(|(h, i)| half_paint(&h, report.dim[i], ce));
-    let cannot = [left, right]
-        .iter()
-        .find(|h| h.on && h.effect > 3)
-        .map(|h| h.effect);
+    // With the right half's lights apart from the left's and no word from it, nothing is known.
+    let right_unknown = report.right_apart && rgb.right.is_none();
+    let mut halves = [(left, 0), (right, 1)].map(|(h, i)| half_paint(&h, report.dim[i], ce));
+    let mut seen = vec![left];
+    if right_unknown {
+        halves[1] = HalfPaint::Unknown;
+    } else {
+        seen.push(right);
+    }
+    let cannot = seen.iter().find(|h| h.on && h.effect > 3).map(|h| h.effect);
     Look {
         state: cannot.map_or(State::Keyboard, State::CannotDraw),
-        sending: draft.is_some(),
+        sending: draft.is_some_and(|d| d.sent),
         paint: Paint::Halves(halves),
     }
 }
@@ -238,6 +251,7 @@ impl Look {
             Paint::Outline => vec![None; keys.len()],
             Paint::Halves(h) => match &h[p.min(1)] {
                 HalfPaint::Dark => vec![Some(Color32::BLACK); keys.len()],
+                HalfPaint::Unknown => vec![None; keys.len()],
                 HalfPaint::Still(c) => vec![Some(*c); keys.len()],
                 HalfPaint::Moving(l) => moving(l, keys, id, t),
             },
@@ -342,6 +356,7 @@ mod tests {
             }),
             dim: [100, 100],
             windows: None,
+            right_apart: false,
         }
     }
 
@@ -567,12 +582,41 @@ mod tests {
         let d = Draft {
             left: Some(half(0, 200, 90)),
             right: None,
+            sent: true,
         };
         let l = look(&r, None, None, None, Some(&d));
         assert!(l.sending);
         let keys = l.colours(&split_layout(), at(0));
         assert_eq!(keys[0][0], Some(shown_color(200, 100, 90)));
         assert!(!look(&r, None, None, None, None).sending);
+    }
+
+    #[test]
+    fn an_unapplied_pick_is_drawn_but_not_called_sending() {
+        let r = report(half(0, 30, 60), None);
+        let d = Draft {
+            left: Some(half(0, 200, 90)),
+            ..Draft::default()
+        };
+        let l = look(&r, None, None, None, Some(&d));
+        assert!(!l.sending);
+        let keys = l.colours(&split_layout(), at(0));
+        assert_eq!(keys[0][0], Some(shown_color(200, 100, 90)));
+    }
+
+    #[test]
+    fn the_right_half_is_not_drawn_lit_when_apart_and_unheard() {
+        let mut r = report(half(0, 30, 60), None);
+        let both = look(&r, None, None, None, None).colours(&split_layout(), at(0));
+        assert!(both[1].iter().all(Option::is_some), "it follows the left");
+        r.right_apart = true;
+        let apart = look(&r, None, None, None, None).colours(&split_layout(), at(0));
+        assert!(apart[0].iter().all(Option::is_some));
+        assert!(apart[1].iter().all(Option::is_none), "outlines only");
+        // Once the right half has answered, it is drawn as it says.
+        r.rgb.as_mut().unwrap().right = Some((half(0, 200, 50), 0));
+        let heard = look(&r, None, None, None, None).colours(&split_layout(), at(0));
+        assert_eq!(heard[1][0], Some(shown_color(200, 100, 50)));
     }
 
     #[test]

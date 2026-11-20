@@ -175,6 +175,11 @@ static RGB_POLLING: AtomicBool = AtomicBool::new(false);
 /// The last read's keyboard sends the right half's changes as events (HELLO bit 20, #543).
 static RIGHT_LIVE: AtomicBool = AtomicBool::new(false);
 
+/// When the keyboard's lights were last read: a report newer than a change means it answered.
+pub fn last_read() -> Option<std::time::Instant> {
+    *RGB_READ_AT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Both halves' lights as last read, without asking the keyboard.
 pub fn cached_rgb_state() -> Option<RgbState> {
     *RGB_STATE.lock().unwrap_or_else(|e| e.into_inner())
