@@ -2352,10 +2352,14 @@ fn an_unreadable_hub_image_counts_as_present() {
     assert!(!super::image_present(&nowhere));
 }
 
+/// The tests that write the allow list share one saved settings store: they take turns.
+static ALLOW_STORE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// S5b: a switch means the row the hub was last shown, by index; an index the hub was never shown
 /// is refused with the fixed words, and nothing is saved.
 #[test]
 fn a_switch_the_hub_was_never_shown_is_refused_in_fixed_words() {
+    let _one = ALLOW_STORE.lock().unwrap_or_else(|e| e.into_inner());
     fn probe(_: &[String]) -> Option<super::super::hub_panels::Wallpaper> {
         Some(super::super::hub_panels::Wallpaper {
             running: true,
@@ -2404,6 +2408,7 @@ fn a_switch_the_hub_was_never_shown_is_refused_in_fixed_words() {
 /// drawn on, never whichever row has that number now (review of #1327).
 #[test]
 fn a_stale_click_lands_on_its_own_wallpaper() {
+    let _one = ALLOW_STORE.lock().unwrap_or_else(|e| e.into_inner());
     use super::super::we_panel::{Ask, Inputs};
     use std::sync::atomic::{AtomicBool, Ordering};
     static LATER: AtomicBool = AtomicBool::new(false);
