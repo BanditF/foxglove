@@ -447,6 +447,10 @@ pub struct View {
     pub starts: bool,
     /// The everyday items are listed (they start collapsed, still ticked).
     pub everyday_open: bool,
+    /// One "I understand" for the whole sensitive group (first run): `None` when it is not
+    /// offered (each sensitive item then has its own), else whether it is ticked. Ticking it
+    /// ticks and confirms every sensitive item; each item can still be unticked by itself.
+    pub group_ack: Option<bool>,
 }
 
 /// What Allow sends back.
@@ -554,7 +558,11 @@ impl PermDialog {
     pub fn binding_lines(&self) -> [String; 3] {
         let keeping = self.keep.as_ref().is_some_and(|k| !k.is_refused() && k.on);
         [
-            format!("Only for this copy of {}:", self.name),
+            if self.path.is_empty() {
+                format!("Only for this copy of {}:", self.name)
+            } else {
+                format!("Only for this copy of {} (the file above):", self.name)
+            },
             if keeping {
                 KEEP_BINDING.into()
             } else {
@@ -601,13 +609,31 @@ impl PermDialog {
         }
     }
 
-    /// Whether every sensitive item the user can allow is ticked. Until then Allow says how
+    /// Ticks or clears the group "I understand": every sensitive item the user can allow is
+    /// ticked and confirmed, or cleared. A no-op when the group box is not offered.
+    pub fn set_group_ack(&mut self, on: bool) {
+        if self.view.group_ack.is_none() {
+            return;
+        }
+        self.view.group_ack = Some(on);
+        for i in self.items.iter_mut().filter(|i| i.allowable && i.sensitive) {
+            i.checked = on;
+            i.confirmed = on;
+        }
+    }
+
+    /// Whether the group "I understand" is offered and ticked.
+    pub fn group_understood(&self) -> bool {
+        self.view.group_ack == Some(true)
+    }
+
+    /// Whether every sensitive item the user can allow counts (ticked and understood). Until then Allow says how
     /// many it grants: a button that says "and start" would imply the app starts limited.
     pub fn sensitive_decided(&self) -> bool {
         self.items
             .iter()
             .filter(|i| i.allowable && i.sensitive)
-            .all(|i| i.checked)
+            .all(|i| i.counts())
     }
 
     /// How many everyday items there are: can be allowed and not sensitive (what the All box
@@ -1726,6 +1752,7 @@ mod tests {
         );
         for i in d.items.iter_mut().filter(|i| i.sensitive) {
             i.checked = true;
+            i.confirmed = true;
         }
         assert_eq!(d.allow_label(), "Allow and start");
         for i in d.items.iter_mut() {

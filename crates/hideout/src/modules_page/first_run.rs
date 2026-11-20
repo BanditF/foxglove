@@ -32,8 +32,8 @@ use std::sync::mpsc;
 /// Today's measured bound (main 614f3c78). Lower these, never raise them.
 const BOUND_INSTALLER: usize = 3;
 const BOUND_LAUNCH: usize = 1;
-const BOUND_APP: usize = 10;
-const BOUND_TOTAL: usize = 14;
+const BOUND_APP: usize = 3;
+const BOUND_TOTAL: usize = 7;
 
 const NOW: &str = "2026-11-19T08:00:00Z";
 const HUB_WXS: &str = include_str!("../../wix/hideout.wxs");
@@ -335,30 +335,23 @@ impl Fx {
         assert!(self.asked.0.borrow().is_empty(), "Add starts nothing");
     }
 
-    /// Ticks every sensitive item and its I understand (2 clicks each), as today's dialog asks.
+    /// The one **I understand** for the sensitive group: it ticks and confirms every sensitive
+    /// item. Nothing counts before it.
     fn tick_sensitive(&mut self, clicks: &mut Clicks) {
         let dlg = self.page.perm.as_mut().unwrap().dialog.as_mut().unwrap();
-        let raws: Vec<String> = dlg
-            .items
-            .iter()
-            .filter(|i| i.allowable && i.sensitive)
-            .map(|i| i.raw.clone())
-            .collect();
-        for raw in raws {
-            // Ticked, not yet understood: the item does not count.
-            clicks.click(format!("dialog: tick {raw}"));
-            dlg.set_checked(&raw, true);
+        assert_eq!(
+            dlg.view.group_ack,
+            Some(false),
+            "first run offers one I understand for the sensitive group"
+        );
+        for raw in SENSITIVE {
             assert!(
-                !dlg.allowed().chosen.contains(&raw),
-                "{raw} counts before its I understand"
+                !dlg.allowed().chosen.contains(&raw.to_string()),
+                "{raw} counts before the I understand"
             );
-            clicks.click(format!("dialog: I understand ({raw})"));
-            dlg.items
-                .iter_mut()
-                .find(|i| i.raw == raw)
-                .unwrap()
-                .confirmed = true;
         }
+        clicks.click("dialog: I understand (the sensitive group)");
+        dlg.set_group_ack(true);
     }
 
     /// **Allow**: records the shown list, then the page turns the app on. Returns how many

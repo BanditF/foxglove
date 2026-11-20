@@ -3887,6 +3887,7 @@ fn keep_test_dialog(
         view: crate::permission_dialog::View {
             starts: false,
             everyday_open: true,
+            group_ack: None,
         },
         error: None,
     }
@@ -4398,6 +4399,7 @@ fn fr2_test_dialog() -> crate::permission_dialog::PermDialog {
         view: View {
             starts: true,
             everyday_open: false,
+            group_ack: Some(false),
         },
         error: None,
     }
@@ -4420,10 +4422,11 @@ fn the_first_run_dialog_collapses_the_everyday_items_on_a_720_px_window() {
                 ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
             });
         }
-        // 4 sensitive boxes, the everyday box, [Hide|Show], [17 items], Allow, Not now.
+        // 4 sensitive boxes, the group I understand, the everyday box, [Hide|Show], [17 items],
+        // Allow, Not now.
         assert_eq!(
             ids.len(),
-            4 + 1 + 1 + if open { 17 } else { 0 } + 2,
+            4 + 1 + 1 + 1 + if open { 17 } else { 0 } + 2,
             "open={open}"
         );
         for id in &ids[ids.len() - 2..] {
@@ -4432,13 +4435,9 @@ fn the_first_run_dialog_collapses_the_everyday_items_on_a_720_px_window() {
         }
         // Not "and start" while the sensitive items are unticked: the app is not limited.
         assert_eq!(d.allow_label(), "Allow 17");
-        for i in d.items.iter_mut().filter(|i| i.sensitive) {
-            i.checked = true;
-        }
+        d.set_group_ack(true);
         assert_eq!(d.allow_label(), "Allow and start");
-        for i in d.items.iter_mut().filter(|i| i.sensitive) {
-            i.checked = false;
-        }
+        d.set_group_ack(false);
         assert_eq!(
             d.count(),
             17,
@@ -4446,10 +4445,13 @@ fn the_first_run_dialog_collapses_the_everyday_items_on_a_720_px_window() {
         );
         let tag = if open { "shown" } else { "collapsed" };
         // Dark 760 px as before, plus light, and a narrow 480 px window where lines wrap.
-        for (suffix, dark, w) in [
-            ("", true, 760),
-            ("-light", false, 760),
-            ("-narrow", true, 480),
+        for (suffix, dark, w, understood) in [
+            ("", true, 760, false),
+            ("-light", false, 760, false),
+            ("-narrow", true, 480, false),
+            ("-understood", true, 760, true),
+            ("-understood-light", false, 760, true),
+            ("-understood-narrow", true, 480, true),
         ] {
             let tk = crate::theme::tokens(dark);
             let Some(rgba) = rasterise(w, 720, |ctx| {
@@ -4464,11 +4466,12 @@ fn the_first_run_dialog_collapses_the_everyday_items_on_a_720_px_window() {
                 ctx.style_mut(|s| s.animation_time = 0.0);
                 let mut d = fr2_test_dialog();
                 d.view.everyday_open = open;
+                d.set_group_ack(understood);
                 crate::permission_dialog_ui::perm_dialog_ui(ctx, &tk, &mut d, true);
             }) else {
                 continue;
             };
-            save_png(&format!("first-run-fr2-{tag}{suffix}.png"), w, 720, rgba);
+            save_png(&format!("first-run-fr3-{tag}{suffix}.png"), w, 720, rgba);
         }
     }
 }
@@ -4487,7 +4490,7 @@ fn show_and_hide_open_the_everyday_items() {
             ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
         });
     }
-    let show = ids[5];
+    let show = ids[6];
     let r = ctx.read_response(show).expect("drawn").rect;
     let click = |p: egui::Pos2| {
         vec![
@@ -4515,4 +4518,74 @@ fn show_and_hide_open_the_everyday_items() {
     assert_eq!(d.count(), 0);
     d.toggle_all();
     assert_eq!(d.count(), 17);
+}
+
+/// The group "I understand": one click ticks and confirms the four sensitive items (nothing
+/// counts before it), each item can still be unticked by itself, an item ticked again while the
+/// box is on is covered by it, and clearing the box takes all four back.
+#[test]
+fn the_group_i_understand_confirms_every_sensitive_item_and_each_stays_untickable() {
+    use crate::permission_dialog_ui::perm_dialog_ids;
+    let t = crate::theme::tokens(true);
+    let mut d = fr2_test_dialog();
+    let ctx = egui::Context::default();
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let _ = ctx.run(input(900.0, 900.0, vec![]), |c| {
+            ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
+        });
+    }
+    assert_eq!(d.count(), 17, "nothing sensitive counts before the click");
+    let click = |p: egui::Pos2| {
+        let b = |pressed| Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        vec![Event::PointerMoved(p), b(true), b(false)]
+    };
+    let ack = ctx.read_response(ids[4]).expect("drawn").rect;
+    let _ = ctx.run(input(900.0, 900.0, click(ack.center())), |c| {
+        ids = perm_dialog_ids(c, &t, &mut d, false).1;
+    });
+    assert!(d.group_understood());
+    assert_eq!(d.count(), 21, "one click confirms the four");
+    assert!(d
+        .items
+        .iter()
+        .filter(|i| i.sensitive)
+        .all(|i| i.checked && i.confirmed));
+    // One item off by itself: it stops counting, the rest stay.
+    d.set_checked("net", false);
+    assert_eq!(d.count(), 20);
+    assert_eq!(d.allow_label(), "Allow 20");
+    // The same item ticked again by hand (the UI marks it covered while the box is on).
+    let net = ctx.read_response(ids[3]).expect("drawn").rect;
+    let _ = ctx.run(input(900.0, 900.0, click(net.center())), |c| {
+        ids = perm_dialog_ids(c, &t, &mut d, false).1;
+    });
+    assert_eq!(d.count(), 21);
+    // Clearing the box takes all four back.
+    let ack = ctx.read_response(ids[4]).expect("drawn").rect;
+    let _ = ctx.run(input(900.0, 900.0, click(ack.center())), |c| {
+        let _ = perm_dialog_ids(c, &t, &mut d, false);
+    });
+    assert!(!d.group_understood());
+    assert_eq!(d.count(), 17);
+    assert!(d
+        .items
+        .iter()
+        .filter(|i| i.sensitive)
+        .all(|i| !i.checked && !i.confirmed));
+}
+
+/// A re-ask or any dialog without the group box keeps one "I understand" per sensitive item.
+#[test]
+fn without_the_group_box_each_sensitive_item_keeps_its_own_i_understand() {
+    let mut d = fr2_test_dialog();
+    d.view.group_ack = None;
+    d.set_group_ack(true);
+    assert_eq!(d.count(), 17, "no group box, no group confirm");
+    assert!(!d.group_understood());
 }

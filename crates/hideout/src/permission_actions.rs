@@ -172,6 +172,10 @@ fn present_first_run(d: &mut PermDialog, how: Opener) {
     if how.then() == Then::TurnOn {
         d.view.starts = true;
         d.keyboard = None;
+        if d.reason.is_none() && d.sensitive_count() > 0 {
+            // One "I understand" for the whole sensitive group.
+            d.view.group_ack = Some(false);
+        }
     }
 }
 

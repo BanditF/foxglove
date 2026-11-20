@@ -370,6 +370,7 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                     .color(group_colour(t, g)),
             );
             let name = d.name.clone();
+            let grouped = d.view.group_ack;
             for item in d.items.iter_mut().filter(|i| i.group == g) {
                 if !item.allowable {
                     ui.horizontal(|ui| {
@@ -408,6 +409,9 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                 ui.ctx().accesskit_node_builder(r.id, |n| n.set_label(said));
                 if r.changed() && !item.checked {
                     item.confirmed = false;
+                } else if r.changed() && item.sensitive && grouped == Some(true) {
+                    // The group "I understand" is on: a ticked item is covered by it.
+                    item.confirmed = true;
                 }
                 ids.push(r.id);
                 if let Some(s) = item.sub_line() {
@@ -416,7 +420,7 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                         ui.label(fine(ui, s).color(c(t.text_muted)));
                     });
                 }
-                if item.sensitive && item.checked {
+                if item.sensitive && item.checked && grouped.is_none() {
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
                         ui.vertical(|ui| {
@@ -432,6 +436,17 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
             if let Some(note) = note {
                 ui.add_space(2.0);
                 ui.label(fine(ui, note).color(c(t.text_muted)));
+            }
+            if g == Group::Sensitive && d.view.group_ack.is_some() {
+                ui.add_space(4.0);
+                let mut on = d.group_understood();
+                let u = check(ui, t, &mut on, UNDERSTAND);
+                let said = format!("{UNDERSTAND}: {}", d.sensitive_note());
+                ui.ctx().accesskit_node_builder(u.id, |n| n.set_label(said));
+                if u.changed() {
+                    d.set_group_ack(on);
+                }
+                ids.push(u.id);
             }
         });
         ui.ctx().accesskit_node_builder(grp.response.id, |n| {
