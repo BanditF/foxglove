@@ -105,18 +105,20 @@ pub fn row_label(module: &str, state: &str) -> String {
     format!("{module}, {state}")
 }
 
-/// The crash retry line: "Restarting in <n> s, try <k> of 5", or "Restarting, try <k> of 5" once
-/// the countdown is at 0. Plain words: the app is starting again, and this is try k of the 5 it
-/// gets before it is stopped.
-fn restarting_try(secs: u64, k: usize) -> String {
+/// The crash retry line: "Restarting in <n> s, try <t> of 5", or "Restarting, try <t> of 5" once
+/// the countdown is at 0. `k` is the crashes so far, so the run that follows is try k + 1 (the
+/// first start was try 1). The app stops at the fifth crash, so the line reads "try 2 of 5" to
+/// "try 5 of 5" and the next thing after "try 5 of 5" failing is "Stopped after 5 crashes".
+pub fn restarting_try(secs: u64, k: usize) -> String {
+    let t = k + 1;
     match secs.min(60) {
-        0 => format!("Restarting, try {k} of 5"),
-        n => format!("Restarting in {n} s, try {k} of 5"),
+        0 => format!("Restarting, try {t} of 5"),
+        n => format!("Restarting in {n} s, try {t} of 5"),
     }
 }
 
 /// The crash bar while `restarting`: (first line, second line). `secs` is the backoff step's
-/// remaining seconds (never past 60; 0 reads "Restarting…"), `k` the crashes in the current
+/// remaining seconds (never past 60; 0 reads "Restarting, try t of 5"), `k` the crashes in the current
 /// ten-minute window.
 pub fn crash_bar(module: &str, secs: u64, k: usize) -> (String, String) {
     (
@@ -791,7 +793,7 @@ mod tests {
     fn wording_matches_the_ux_plan() {
         assert_eq!(
             crash_bar("Art", 4, 2).0,
-            "Art stopped unexpectedly. Restarting in 4 s, try 2 of 5."
+            "Art stopped unexpectedly. Restarting in 4 s, try 3 of 5."
         );
         assert!(crash_bar("Art", 300, 1).0.contains("60 s"));
         assert_eq!(
@@ -825,13 +827,14 @@ mod tests {
     fn restart_lines_say_what_is_happening_in_plain_words() {
         let mut all = vec![RESTARTING_PLANNED.to_string()];
         for secs in [0, 4, 90] {
-            for k in 1..=5 {
+            // The crash counts that can show: the fifth crash stops the app instead.
+            for k in 1..=4 {
                 all.push(restarting_row(secs, k));
                 all.push(crash_bar("Art", secs, k).0);
             }
         }
         for s in &all {
-            // No bare "(2 of 5)": say "try 2 of 5". A planned restart has no count at all.
+            // No bare "(2 of 5)": say "try 3 of 5". A planned restart has no count at all.
             assert!(
                 !s.contains('(') && !s.contains(')'),
                 "bracket count in {s:?}"
@@ -843,7 +846,12 @@ mod tests {
             assert!(!s.to_lowercase().contains("module"), "module in {s:?}");
         }
         assert_eq!(RESTARTING_PLANNED, "Restarting\u{2026}");
-        assert_eq!(restarting_row(0, 1), "Restarting, try 1 of 5");
+        assert_eq!(restarting_row(0, 1), "Restarting, try 2 of 5");
+        assert_eq!(restarting_row(4, 4), "Restarting in 4 s, try 5 of 5");
+        assert_eq!(
+            row_label("Art", &restarting_row(4, 2)),
+            "Art, restarting in 4 s, try 3 of 5"
+        );
     }
 
     #[test]
@@ -937,10 +945,10 @@ mod tests {
     fn the_countdown_never_reads_0_s() {
         assert_eq!(
             crash_bar("Art", 0, 2).0,
-            "Art stopped unexpectedly. Restarting, try 2 of 5."
+            "Art stopped unexpectedly. Restarting, try 3 of 5."
         );
-        assert_eq!(restarting_row(0, 2), "Restarting, try 2 of 5");
-        assert_eq!(restarting_row(90, 2), "Restarting in 60 s, try 2 of 5");
+        assert_eq!(restarting_row(0, 2), "Restarting, try 3 of 5");
+        assert_eq!(restarting_row(90, 2), "Restarting in 60 s, try 3 of 5");
         for secs in 0..200 {
             assert!(!crash_bar("Art", secs, 1).0.contains(" 0 s"));
         }

@@ -430,10 +430,15 @@ pub fn last_seen_words(age: Duration) -> String {
     }
 }
 
-/// The restart strip's words (§7.8): "Restarting in 4 s, try 2 of 5". No module name: the tile's
-/// title already says it.
+/// The restart strip's words (§7.8): "Restarting in 4 s, try 3 of 5" (`crash` crashes so far, so
+/// the next run is try `crash + 1`), or "Restarting, try 3 of 5" at 0 s. No module name: the
+/// tile's title already says it.
 pub fn restart_words(in_s: u64, crash: u64, of: u64) -> String {
-    format!("Restarting in {in_s} s, try {crash} of {of}")
+    let t = crash + 1;
+    match in_s {
+        0 => format!("Restarting, try {t} of {of}"),
+        n => format!("Restarting in {n} s, try {t} of {of}"),
+    }
 }
 
 fn rgb(c: (u8, u8, u8)) -> Color32 {
@@ -448,7 +453,7 @@ pub fn tile_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> TileReport 
 /// Draws the tile `key` at `now` (§5.1 v1.4, §7.8): icon, title and ··· menu from the manifest;
 /// then by the module's state:
 /// - running: the module's body;
-/// - restarting: the amber strip "Restarting in <n> s, try <k> of 5", the body greyed, "Last seen";
+/// - restarting: the amber strip "Restarting in <n> s, try <t> of 5", the body greyed, "Last seen";
 /// - stopped after its crashes: red outline and mark, "Stopped after 5 crashes", **Open** only;
 /// - needs a newer hub: red mark, "Needs a newer Hideout", **Update Hideout**;
 /// - a tile that couldn't be shown: "Its tile couldn't be shown", **Open**;

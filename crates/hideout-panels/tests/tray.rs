@@ -142,7 +142,7 @@ fn the_supervisor_facts_drive_the_tile_frame() {
         .unwrap();
     assert_eq!(
         restart_words(r.in_s, r.crash, r.of),
-        "Restarting in 3 s, try 2 of 5"
+        "Restarting in 3 s, try 3 of 5"
     );
     assert!(host.last_seen("m.one", Instant::now()).is_some());
     assert_eq!(
@@ -325,4 +325,19 @@ fn choose_file_uses_the_hubs_picker_with_the_filter_and_secrets_never_echo() {
     );
     host.secret_refused("m.six", "Hideout couldn't save it.".into());
     assert!(host.settings_notice.contains_key("m.six"));
+}
+
+#[test]
+fn the_restart_strip_never_reads_zero_seconds_or_brackets() {
+    // Crash counts that can show (the fifth crash stops the app), every second of the countdown.
+    for crash in 1..=4u64 {
+        for in_s in 0..=60u64 {
+            let w = restart_words(in_s, crash, 5);
+            assert!(w.starts_with("Restarting"), "{w:?}");
+            assert!(!w.contains("in 0 s"), "{w:?}");
+            assert!(!w.contains('(') && !w.contains(')'), "{w:?}");
+            assert!(w.ends_with(&format!("try {} of 5", crash + 1)), "{w:?}");
+        }
+    }
+    assert_eq!(restart_words(0, 2, 5), "Restarting, try 3 of 5");
 }

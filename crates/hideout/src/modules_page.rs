@@ -1005,7 +1005,7 @@ mod tests {
             words,
             [
                 "Stopped after 5 crashes",
-                "Restarting in 4 s, try 2 of 5",
+                "Restarting in 4 s, try 3 of 5",
                 "On"
             ]
         );

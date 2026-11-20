@@ -38,7 +38,7 @@
     },
     {
       "expect": {
-        "ui_name": "Restarting, try 2 of 5",
+        "ui_name": "Restarting, try 3 of 5",
         "ways_out": [
           "Open log"
         ],

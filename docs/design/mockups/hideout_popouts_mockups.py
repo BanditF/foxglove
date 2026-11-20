@@ -245,7 +245,7 @@ def states():
     rr(d, [px + 10, py + 10, px + 468, py + 76], fill=AMBER_BG, r=6)
     d.text((px + 22, py + 26), G["sync"], fill=AMBER, font=ICON)
     PAIRS.append(("crash bar icon", AMBER, AMBER_BG))
-    text(d, (px + 46, py + 16), "Chat stopped unexpectedly. Restarting in 4 s (2 of 5).", TEXT, F_S, AMBER_BG, "crash bar title")
+    text(d, (px + 46, py + 16), "Chat stopped unexpectedly. Restarting in 4 s, try 3 of 5.", TEXT, F_S, AMBER_BG, "crash bar title")
     text(d, (px + 46, py + 42), "Your place on this page is kept. · ", TEXT, F_S, AMBER_BG, "crash bar line")
     text(d, (px + 46 + d.textlength("Your place on this page is kept. · ", font=F_S), py + 42), "Open log", AMBER, F_S, AMBER_BG, "crash bar link")
     # stopped card

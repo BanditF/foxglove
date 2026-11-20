@@ -241,7 +241,7 @@ def page(im, d, x0, y0, restarting=False, t=0):
         rr(d, [px, py, x0 + W - 20, py + 58], fill=AMBER_BG, r=6)
         d.text((px + 14, py + 10), GL["warn"], fill=AMBER, font=ICON)
         PAIRS.append(("crash bar icon", AMBER, AMBER_BG))
-        text(d, (px + 40, py + 6), "Lights stopped unexpectedly. Restarting in 4 s (2 of 5).", TEXT, F_B, AMBER_BG, "crash bar title")
+        text(d, (px + 40, py + 6), "Lights stopped unexpectedly. Restarting in 4 s, try 3 of 5.", TEXT, F_B, AMBER_BG, "crash bar title")
         text(d, (px + 40, py + 30), "Your place on this page is kept.", TEXT, F, AMBER_BG, "crash bar line")
         text(d, (x0 + W - 100, py + 30), "Open log", AMBER, F, AMBER_BG, "crash bar link")
         py += 70

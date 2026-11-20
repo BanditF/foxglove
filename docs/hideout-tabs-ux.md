@@ -57,7 +57,7 @@ editors keep their own windows).
 | Attention | Orange dot on the tab's icon, and on its sidebar entry. Cleared by the module (it knows when the thing was seen). |
 | Count | Orange pill with the number, "99+" above 99. |
 | Unsaved (dirty) | A dot in the close slot; × on hover. Closing asks (below). |
-| Starting, updating, restarting | A thin orange ring round the icon. Tooltip "Updating…" / "Restarting, try 2 of 5"; the page header has the §7.8 line ("Your place on this page is kept"). |
+| Starting, updating, restarting | A thin orange ring round the icon. Tooltip "Updating…" / "Restarting, try 3 of 5"; the page header has the §7.8 line ("Your place on this page is kept"). |
 | Stopped (crash-stopped, install-failed, needs-hub, quarantined) | Red warning mark replaces the icon. The page shows a card with the §7.8 name, reason and ways out (**Start again**, Start with default settings, Go back to <previous>, Copy diagnostics); the last page drawn stays below, greyed. |
 | Module off (disabled) | Tab stays, label muted, page shows "Off" with **Turn on**. |
 | Popped out | Tab stays in place, muted, with a ↗ mark; clicking it brings the window forward. Order and Ctrl+numbers don't shift. |

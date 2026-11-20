@@ -1469,7 +1469,7 @@ impl Hub {
         if let Some(s) = self.state_look(&key.module) {
             look.state = s;
         }
-        // Restarting: "Restarting, try 2 of 5", which changes once per crash and so
+        // Restarting: "Restarting, try 3 of 5", which changes once per crash and so
         // needs no repaint (the live countdown is the crash bar's).
         if self.panels.module_state(&key.module) == Some("restarting") {
             let crash = self
@@ -1477,10 +1477,10 @@ impl Hub {
                 .fact(&format!("module.{}.restart", key.module))
                 .and_then(|f| f.get("crash"))
                 .and_then(|v| v.as_u64());
-            look.state = TabState::Busy(match crash {
-                Some(k) => words::restarting_row(0, k as usize),
-                None => words::RESTARTING_PLANNED.into(),
-            });
+            look.state = match crash {
+                Some(k) => TabState::Retrying(words::restarting_row(0, k as usize)),
+                None => TabState::Busy(words::RESTARTING_PLANNED.into()),
+            };
         }
         look
     }
@@ -2535,6 +2535,15 @@ impl Hub {
                         ui.label(
                             egui::RichText::new(format!(
                                 "{words}\u{2026} Your place on this page is kept."
+                            ))
+                            .color(c(t.text_muted)),
+                        );
+                        ui.add_space(8.0);
+                    }
+                    TabState::Retrying(words) => {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{words}. Your place on this page is kept."
                             ))
                             .color(c(t.text_muted)),
                         );
