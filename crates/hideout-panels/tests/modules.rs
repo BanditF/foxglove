@@ -85,11 +85,11 @@ fn every_module_state_registers_within_the_tile_rules() {
             let rejected =
                 host.register_with(module, name, Some(&declared), Some(&actions), &params);
             assert!(rejected.is_empty(), "{what}: {rejected:?}");
-            // At least one tile, then one page (a module may show several tiles).
+            // Tiles (a module may show several, or none), then one page.
             let slots: Vec<Slot> = host.panels().iter().map(|p| p.slot).collect();
             let tiles = slots.iter().filter(|s| **s == Slot::Tile).count();
             assert!(
-                tiles >= 1 && slots.len() == tiles + 1 && slots.last() == Some(&Slot::Page),
+                slots.len() == tiles + 1 && slots.last() == Some(&Slot::Page),
                 "{what}: tiles and one page: {slots:?}"
             );
             for p in host.panels() {

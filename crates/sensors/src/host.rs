@@ -6,10 +6,14 @@
 //! ([`GuardedSink`]).
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::{pattern_wants, Config, Engine, GuardedSink, Sink, SourceFactory, SubId, ValueOut};
+use crate::ui::{GroupState, PageInput};
+use crate::{
+    pattern_wants, Config, Engine, Group, GuardedSink, Metric, Sink, SourceFactory, SubId, ValueOut,
+};
 
 /// The fact that says a game runs (Foxglove's keyboard module).
 pub const GAME_MODE_FACT: &str = "keyboard.game_mode";
@@ -56,6 +60,12 @@ pub struct Host {
     external: bool,
     /// The module's page is on screen (`ui.visibility visible`).
     page_visible: bool,
+    /// What the engine last wrote, for the page (cleared by the withdrawals at release).
+    values: BTreeMap<Metric, i64>,
+    states: BTreeMap<Group, GroupState>,
+    game_mode_on: bool,
+    /// The module may read `keyboard.game_mode` (its optional grant): unknown until told.
+    game_mode_visible: bool,
     /// Called each time sampling ends and every source is dropped (the binary trims memory).
     on_release: Option<Box<dyn FnMut()>>,
 }
@@ -69,6 +79,10 @@ impl Host {
             sub: None,
             external: false,
             page_visible: false,
+            values: BTreeMap::new(),
+            states: BTreeMap::new(),
+            game_mode_on: false,
+            game_mode_visible: true,
             on_release: None,
         }
     }
@@ -125,7 +139,70 @@ impl Host {
 
     /// The writes since the last call, in order.
     pub fn take_writes(&mut self) -> Vec<Write> {
-        std::mem::take(&mut *self.out.0.borrow_mut())
+        let writes = std::mem::take(&mut *self.out.0.borrow_mut());
+        for w in &writes {
+            self.remember(w);
+        }
+        writes
+    }
+
+    /// Keeps what the page shows in step with what was published.
+    fn remember(&mut self, w: &Write) {
+        if let Some(m) = Metric::ALL.iter().find(|m| m.key() == w.key) {
+            match &w.value {
+                Some(ValueOut::Int(v)) => {
+                    self.values.insert(*m, *v);
+                }
+                _ => {
+                    self.values.remove(m);
+                }
+            }
+        } else if let Some(g) = Group::ALL.iter().find(|g| g.state_key() == w.key) {
+            match &w.value {
+                Some(ValueOut::Text(t)) => {
+                    self.states.insert(*g, GroupState::from_text(t));
+                }
+                _ => {
+                    self.states.remove(g);
+                }
+            }
+        }
+    }
+
+    /// Whether the page is on screen.
+    pub fn page_visible(&self) -> bool {
+        self.page_visible
+    }
+
+    /// Whether the module can read `keyboard.game_mode` (its optional grant): without it the
+    /// page says so and sampling stays at the normal rate.
+    pub fn set_game_mode_visible(&mut self, visible: bool) {
+        self.game_mode_visible = visible;
+    }
+
+    /// The page's tree now. A page that isn't on screen shows "Reading…" everywhere, so the
+    /// hub's cached copy never holds a number that a later start would draw as current.
+    pub fn page_tree(&self) -> serde_json::Value {
+        let mut input = PageInput {
+            game_mode: self.game_mode_on && self.page_visible,
+            game_mode_visible: self.game_mode_visible,
+            ..PageInput::default()
+        };
+        if self.page_visible {
+            input.values = self.values.clone();
+            input.states = self.states.clone();
+        }
+        crate::ui::page(&input)
+    }
+
+    /// Try again (`ui.event` on the page's button): the sources are dropped and opened once more.
+    pub fn retry(&mut self, now: Duration) {
+        self.watching(|h| {
+            if let Some(id) = h.sub.take() {
+                h.engine.unsubscribe(id, now);
+            }
+            h.reconcile(now);
+        });
     }
 
     /// Reads when a read is due.
@@ -178,6 +255,7 @@ impl Host {
 
     /// `keyboard.game_mode` changed (`false` when it is missing or not on).
     pub fn game_mode(&mut self, on: bool, now: Duration) {
+        self.game_mode_on = on;
         self.watching(|h| h.engine.set_game_mode(on, now));
     }
 

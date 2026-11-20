@@ -38,7 +38,13 @@ fn permissions_are_the_sensor_namespace_and_the_game_flag() {
 fn manifest_is_valid() {
     let m = Module::parse(&read("module.toml"), &Context::default()).unwrap();
     assert_eq!(m.id, "org.foxglove.sensors");
-    assert!(m.panels.is_empty() && m.actions.is_empty() && m.secrets.is_empty());
+    let panels: Vec<(&str, String)> = m
+        .panels
+        .iter()
+        .map(|p| (p.id.as_str(), format!("{:?}", p.slot)))
+        .collect();
+    assert_eq!(panels, [("page", "Page".to_string())]);
+    assert!(m.actions.is_empty() && m.secrets.is_empty());
     assert_eq!(m.run.as_deref(), Some(&["sensors.exe".to_string()][..]));
     assert_eq!(m.hub, "1.5");
 }

@@ -12,9 +12,11 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Instant;
 
 use foxglove_plugin::hideout::{
-    connect_pipe, Handler, Incoming, InitializeModule, Launch, ModulePipe, ModuleRegister, Session,
+    connect_pipe, Handler, Incoming, InitializeModule, Launch, ModulePipe, ModuleRegister, PatchOp,
+    Register, RpcError, Session, UiEvent, UiPatch,
 };
 use foxglove_sensors::host::{registered_pattern, Host, Write, GAME_MODE_FACT};
+use foxglove_sensors::ui::{self, PageInput, PageOut, PageView};
 use foxglove_sensors::{nvml, pdh, Config, Source, SourceFactory};
 use serde_json::{json, Value};
 
@@ -42,11 +44,19 @@ const HUB: &str = "1.5";
 struct Inbox {
     notes: Vec<(String, Value)>,
     exit: bool,
+    /// Try again was clicked on the page.
+    retry: bool,
 }
 
 impl Handler for Inbox {
     fn notification(&mut self, method: &str, params: Value) {
         self.notes.push((method.into(), params));
+    }
+    fn ui_event(&mut self, event: UiEvent) -> Result<Value, RpcError> {
+        if event.node == ui::RETRY {
+            self.retry = true;
+        }
+        Ok(json!({}))
     }
     fn exit(&mut self) {
         self.exit = true;
@@ -118,6 +128,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if result["rejected"].as_array().is_some_and(|r| !r.is_empty()) {
         return Err(format!("the hub refused {}", result["rejected"]).into());
     }
+    // The page (contract order: module.register, ui.register, module.ready). It starts as all
+    // "Reading…": nothing has been asked of the sensors yet.
+    let mut view = PageView::default();
+    let first = ui::page(&PageInput {
+        game_mode_visible: true,
+        ..PageInput::default()
+    });
+    if let Some(PageOut::Register(panel)) = view.next(first) {
+        let id = session.ui_register(&Register {
+            instance: launch.instance.clone(),
+            panels: vec![panel],
+        })?;
+        let result = answer(&mut session, &lines, &mut inbox, id)?;
+        if result["rejected"].as_array().is_some_and(|r| !r.is_empty()) {
+            return Err(format!("the hub refused the page {}", result["rejected"]).into());
+        }
+    }
     session.ready(&launch.instance)?;
 
     // Game mode is optional: without the grant the module reads at the normal rate.
@@ -153,6 +180,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(_) => {}
                         // Without the game-mode grant the module reads at the normal rate.
                         Err(e) => {
+                            if id == game_mode_get {
+                                host.set_game_mode_visible(false);
+                            }
                             // Once per method: a revoked grant must not flood the log.
                             if logged.insert(method.clone()) {
                                 eprintln!("{ID}: {method}: {} ({})", e.message, e.code);
@@ -171,15 +201,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for (method, p) in std::mem::take(&mut inbox.notes) {
             host.notify(&method, &p, now);
         }
+        if std::mem::take(&mut inbox.retry) {
+            host.retry(now);
+        }
         host.tick(now);
         for w in host.take_writes() {
             session.set_fact(params(&w))?;
+        }
+        match view.next(host.page_tree()) {
+            Some(PageOut::Register(panel)) => {
+                session.ui_register(&Register {
+                    instance: launch.instance.clone(),
+                    panels: vec![panel],
+                })?;
+            }
+            Some(PageOut::Patch(ops)) => {
+                let ops: Vec<PatchOp> = ops
+                    .into_iter()
+                    .filter_map(|o| serde_json::from_value(o).ok())
+                    .collect();
+                session.ui_patch(&UiPatch {
+                    panel: ui::PANEL.into(),
+                    ops,
+                })?;
+            }
+            None => {}
         }
         if inbox.exit {
             break;
         }
     }
     host.stop(start.elapsed());
+    if let Some(PageOut::Patch(ops)) = view.next(host.page_tree()) {
+        let ops: Vec<PatchOp> = ops
+            .into_iter()
+            .filter_map(|o| serde_json::from_value(o).ok())
+            .collect();
+        let _ = session.ui_patch(&UiPatch {
+            panel: ui::PANEL.into(),
+            ops,
+        });
+    }
     for w in host.take_writes() {
         // The hub is going or gone: a failed write ends nothing more.
         let _ = session.set_fact(params(&w));

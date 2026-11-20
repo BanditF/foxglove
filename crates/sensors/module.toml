@@ -11,3 +11,9 @@ run = ["sensors.exe"]
 permissions = ["facts.write:sensor.*", "facts.read:keyboard.game_mode"]
 provides = ["facts:sensor.*"]
 description = "Publishes the PC's CPU, GPU and memory load and the GPU's temperature, clock, power and fan as facts, only while something is listening. It reads; it never controls anything."
+
+[[ui.panels]]
+id = "page"
+slot = "page"
+title = "PC sensors"
+icon = "chart"
