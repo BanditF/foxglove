@@ -186,6 +186,7 @@ pub mod taskbar;
 pub mod temperature;
 pub mod temperature_card;
 pub mod temperature_feed;
+pub mod scene_api;
 pub mod temperature_out;
 pub mod theme;
 #[cfg(test)]

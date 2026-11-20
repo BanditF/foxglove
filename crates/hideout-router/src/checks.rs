@@ -64,7 +64,7 @@ pub const FIRST_PARTY_AREAS: &[&str] = &[
     "app.*",
 ];
 
-/// The 14 v1 methods the legacy adopted module `foxglove` serves through the router today
+/// The 17 v1 methods the legacy adopted module `foxglove` serves through the router today
 /// (#1143 P6; the `wallpaper-engine.*` three since #1120, whose leases follow §8.5's rules).
 /// TEMPORARY (#1155): until the user can grant the legacy module its first-party
 /// areas explicitly, [`legacy_foxglove_ok`] lets exactly these names through the reserved
@@ -74,6 +74,9 @@ pub const LEGACY_FOXGLOVE_METHODS: &[&str] = &[
     "health.read",
     "lights.page",
     "scenes.page",
+    "lights.status",
+    "scene.status",
+    "scene.start",
     "overlay.window",
     "overlay.restore",
     "overlay.shown",

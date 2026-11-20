@@ -11,13 +11,16 @@ kind = "adopted"
 family = "foxglove"
 hub = "1.0"
 description = "The keyboard and its lights, until they are modules of their own."
-api = { foxglove = "1.17" }
+api = { foxglove = "1.18" }
 run = ["@EXE@", "--module"]
 provides = [
   "facts:keyboard.*",
   "method:health.read",
   "method:lights.page",
   "method:scenes.page",
+  "method:lights.status",
+  "method:scene.status",
+  "method:scene.start",
   "method:overlay.window",
   "method:overlay.restore",
   "method:overlay.shown",
@@ -40,6 +43,9 @@ permissions = [
   "provide:health.read",
   "provide:lights.page",
   "provide:scenes.page",
+  "provide:lights.status",
+  "provide:scene.status",
+  "provide:scene.start",
   "provide:overlay.window",
   "provide:overlay.restore",
   "provide:overlay.shown",

@@ -61,6 +61,32 @@ enum Shows {
     Fallback,
 }
 
+/// What the lights were last told to show: the reading it came from and the colour (`None`
+/// for the fallback). Read by `lights.status` (#1377); a plain copy, nothing here drives the lights.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LastTarget {
+    pub reading: Option<f32>,
+    pub colour: Option<[u8; 3]>,
+}
+
+static LAST: std::sync::Mutex<Option<LastTarget>> = std::sync::Mutex::new(None);
+
+/// The last target change, `None` before the first of a run.
+pub fn last_target() -> Option<LastTarget> {
+    *LAST.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn remember(reading: Option<f32>, to: Shows) {
+    let colour = match (to, reading) {
+        (Shows::Colour(c), Some(_)) => Some(c.0),
+        _ => None,
+    };
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some(LastTarget {
+        reading: reading.filter(|_| colour.is_some()),
+        colour,
+    });
+}
+
 /// The log line for a target change (#1378): `Foxglove: lights: temperature 63 C -> #E8821F
 /// (warm)`. The fallback is `... temperature fallback (no reading)`: a missing reading is never
 /// written as a number, 0 included.
@@ -136,6 +162,7 @@ impl Driver {
         if d.target == Shows::Fallback {
             // No change from the fallback it starts in, so `take_if_due` said nothing.
             eprintln!("{}", change_line(None, d.target, &d.look));
+            remember(None, d.target);
         }
         d
     }
@@ -205,6 +232,7 @@ impl Driver {
             // One line per accepted target change (already rate-limited above), so a check
             // can read the lamp's target back from foxglove.log (#1378).
             eprintln!("{}", change_line(self.reading, want, &self.look));
+            remember(self.reading, want);
         }
     }
 
