@@ -312,6 +312,17 @@ fn rasterise(w: u32, h: u32, draw: impl FnMut(&egui::Context)) -> Option<Vec<u8>
 fn rasterise_events(
     w: u32,
     h: u32,
+    events: Vec<Vec<Event>>,
+    draw: impl FnMut(&egui::Context),
+) -> Option<Vec<u8>> {
+    rasterise_in(ThemeChoice::Dark, w, h, events, draw)
+}
+
+/// [`rasterise_events`] on the given theme.
+fn rasterise_in(
+    theme: ThemeChoice,
+    w: u32,
+    h: u32,
     mut events: Vec<Vec<Event>>,
     mut draw: impl FnMut(&egui::Context),
 ) -> Option<Vec<u8>> {
@@ -319,7 +330,7 @@ fn rasterise_events(
     let ctx = egui::Context::default();
     // The shell's own fonts (Segoe UI plus Segoe UI Symbol for the marks), as the hub draws.
     install_fonts(&ctx);
-    set_theme(&ctx, ThemeChoice::Dark);
+    set_theme(&ctx, theme);
     let mut textures: HashMap<TextureId, epaint::ColorImage> = HashMap::new();
     let mut last = None;
     let n = events.len().max(3);
@@ -4801,5 +4812,244 @@ fn renders_the_consent_copy_for_review() {
             };
             save_png(&format!("built-consent-{size}-{name}.png"), w, h, rgba);
         }
+    }
+}
+
+// ---- R5: Settings > Developer ---------------------------------------------------------------
+
+fn dev_view(case: &str) -> crate::dev_settings::DevView {
+    use crate::dev_settings::{DevRow, DevView, Note, Problem};
+    let ok = DevRow {
+        path: r"D:\dev\foxglove".into(),
+        apps: vec!["Foxglove".into(), "Vulpes".into()],
+        problem: None,
+    };
+    match case {
+        "off" => DevView::default(),
+        "empty" => DevView {
+            on: true,
+            restart: true,
+            ..Default::default()
+        },
+        "problem" => DevView {
+            on: true,
+            restart: false,
+            folders: vec![
+                ok,
+                DevRow {
+                    path: r"D:\shared\tools".into(),
+                    apps: vec![],
+                    problem: Some(Problem::FolderOpen),
+                },
+                DevRow {
+                    path: r"D:\dev\new-app".into(),
+                    apps: vec![],
+                    problem: None,
+                },
+            ],
+            note: Some(Note {
+                text: Problem::Profile.line().into(),
+                error: true,
+            }),
+        },
+        _ => DevView {
+            on: true,
+            restart: true,
+            folders: vec![ok],
+            note: Some(Note {
+                text: crate::dev_settings::ADDED.into(),
+                error: false,
+            }),
+        },
+    }
+}
+
+fn draw_settings_with_dev(
+    c: &egui::Context,
+    dark: bool,
+    view: &crate::dev_settings::DevView,
+) -> crate::settings_view::Actions {
+    let t = theme::tokens(dark);
+    let mut acts = None;
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(t.bg.0, t.bg.1, t.bg.2))
+                .inner_margin(egui::Margin::same(24)),
+        )
+        .show(c, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                acts = Some(crate::settings_view::settings_ui_full(
+                    ui,
+                    &t,
+                    "0.3.0",
+                    false,
+                    None,
+                    Some(view),
+                ));
+            });
+        });
+    acts.unwrap()
+}
+
+/// The Developer section, light, dark and narrow, dev on with a problem row and dev off, for the
+/// UX review. Images go to `HIDEOUT_REVIEW_DIR`.
+#[test]
+fn renders_the_developer_settings_for_review() {
+    for (case, dark, w, h, file) in [
+        ("ok", true, 720u32, 760u32, "r5-developer-dark.png"),
+        ("ok", false, 720, 760, "r5-developer-light.png"),
+        ("problem", true, 720, 980, "r5-developer-problem-dark.png"),
+        ("problem", false, 720, 980, "r5-developer-problem-light.png"),
+        ("empty", false, 720, 640, "r5-developer-empty-light.png"),
+        ("ok", true, 360, 1100, "r5-developer-narrow-dark.png"),
+        ("ok", false, 360, 1100, "r5-developer-narrow-light.png"),
+        (
+            "problem",
+            false,
+            360,
+            1400,
+            "r5-developer-problem-narrow-light.png",
+        ),
+        ("off", true, 720, 520, "r5-developer-off-dark.png"),
+        ("off", false, 720, 520, "r5-developer-off-light.png"),
+    ] {
+        let view = dev_view(case);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        let Some(rgba) = rasterise_in(choice, w, h, Vec::new(), |c| {
+            draw_settings_with_dev(c, dark, &view);
+        }) else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        save_png(file, w, h, rgba);
+    }
+}
+
+type Seen = Vec<(
+    egui::accesskit::Role,
+    Option<String>,
+    Option<egui::accesskit::Live>,
+)>;
+
+fn accesskit_nodes(view: &crate::dev_settings::DevView) -> Seen {
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let mut last = None;
+    for _ in 0..3 {
+        last = Some(ctx.run(input(720.0, 900.0, vec![]), |c| {
+            draw_settings_with_dev(c, true, view);
+        }));
+    }
+    last.unwrap()
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|u| u.nodes.iter())
+        .map(|(_, n)| {
+            (
+                n.role(),
+                n.label().or(n.value()).map(String::from),
+                n.live(),
+            )
+        })
+        .collect()
+}
+
+/// What a screen reader gets: the Remove buttons are named with their folder, the switch is a
+/// checkbox with its words, the note is a polite live region, and dev off has nothing to act on.
+#[test]
+fn the_developer_section_reads_well_to_a_screen_reader() {
+    use egui::accesskit::{Live, Role};
+    let on = accesskit_nodes(&dev_view("problem"));
+    let button = |name: &str| {
+        on.iter()
+            .any(|(r, l, _)| *r == Role::Button && l.as_deref() == Some(name))
+    };
+    assert!(button(r"Remove dev folder D:\dev\foxglove"), "{on:?}");
+    assert!(button(r"Remove dev folder D:\shared\tools"), "{on:?}");
+    assert!(button(crate::dev_settings::ADD), "{on:?}");
+    assert!(
+        on.iter().any(|(r, l, _)| *r == Role::CheckBox
+            && l.as_deref() == Some(crate::dev_settings::RESTART_SWITCH)),
+        "{on:?}"
+    );
+    assert!(
+        on.iter().any(|(_, l, live)| {
+            l.as_deref() == Some(crate::dev_settings::Problem::Profile.line())
+                && live.is_some_and(|x| x != Live::Off)
+        }),
+        "the note is a live region: {on:?}"
+    );
+    // Dev off: the one line, and none of this section's controls.
+    let off = accesskit_nodes(&dev_view("off"));
+    assert!(off
+        .iter()
+        .any(|(_, l, _)| l.as_deref() == Some(crate::dev_settings::MODE_OFF)));
+    assert!(!off.iter().any(|(_, l, _)| l.as_deref().is_some_and(|l| {
+        l.contains("dev folder")
+            || l == crate::dev_settings::ADD
+            || l == crate::dev_settings::RESTART_SWITCH
+    }) && l.as_deref() != Some(crate::dev_settings::MODE_OFF)));
+}
+
+/// Each click the section makes: Add carries no path (the hub opens the picker itself).
+#[test]
+fn the_developer_section_sends_its_clicks() {
+    use crate::dev_settings::DevClick;
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let view = dev_view("ok");
+    let find = |label: &str| -> egui::accesskit::NodeId {
+        let mut found = None;
+        for _ in 0..3 {
+            let out = ctx.run(input(720.0, 900.0, vec![]), |c| {
+                draw_settings_with_dev(c, true, &view);
+            });
+            found = out
+                .platform_output
+                .accesskit_update
+                .iter()
+                .flat_map(|u| u.nodes.iter())
+                .find(|(_, n)| n.label() == Some(label))
+                .map(|(id, _)| *id);
+        }
+        found.unwrap_or_else(|| panic!("no {label}"))
+    };
+    for (label, want) in [
+        (crate::dev_settings::ADD.to_string(), DevClick::Add),
+        (
+            crate::dev_settings::remove_name(r"D:\dev\foxglove"),
+            DevClick::Remove(r"D:\dev\foxglove".into()),
+        ),
+        (
+            crate::dev_settings::RESTART_SWITCH.to_string(),
+            DevClick::Restart(false),
+        ),
+    ] {
+        let id = find(&label);
+        let mut got = None;
+        let req = egui::accesskit::ActionRequest {
+            action: egui::accesskit::Action::Click,
+            target: id,
+            data: None,
+        };
+        for k in 0..3 {
+            let mut raw = input(720.0, 900.0, vec![]);
+            if k == 0 {
+                raw.events.push(Event::AccessKitActionRequest(req.clone()));
+            }
+            let _ = ctx.run(raw, |c| {
+                let a = draw_settings_with_dev(c, true, &view);
+                if a.dev.is_some() {
+                    got = a.dev;
+                }
+            });
+        }
+        assert_eq!(got, Some(want), "{label}");
     }
 }

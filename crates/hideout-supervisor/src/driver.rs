@@ -1153,7 +1153,15 @@ impl Supervisor {
         // build superseded it, its folder or trust changed).
         let pin = Registry::open_from_env(&self.0.home)
             .map_err(|e| format!("registry not read: {e:?}"))
-            .and_then(|reg| rebuild_preflight(&reg, id, running.as_deref(), exe_sha256));
+            .and_then(|reg| {
+                // Settings > Developer > Restart apps after a rebuild: off means Hideout does
+                // not stop or start anything for a rebuild; the new build is used at the next
+                // start, through the same checks.
+                if !reg.restart_after_rebuild() {
+                    return Err("restart after a rebuild is off".to_string());
+                }
+                rebuild_preflight(&reg, id, running.as_deref(), exe_sha256)
+            });
         let pin = match pin {
             Ok(p) => Arc::new(p),
             Err(why) => {

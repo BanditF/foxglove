@@ -2,8 +2,10 @@
 //! The hub's built-in **Settings** page (#991, the #1087 design review): the page the plans
 //! name beside Modules (`hideout-tabs-ux.md`), shown in safe mode too. Sections in order:
 //! **Privacy** (what the app watch keeps, and **Forget seen apps**), then **Start with Windows**
-//! (H5.2, only when the hub gives it a row), then **About** (the version). The hub binary owns the page and its action; this draws it.
+//! (H5.2, only when the hub gives it a row), then **Developer** (R5, only when the hub gives it
+//! a control), then **About** (the version). The hub binary owns the page and its action; this draws it.
 
+use crate::dev_settings::{self, DevClick, DevView};
 use crate::startup_switch::{self, Click, Row};
 use crate::theme::{Rgb, Tokens};
 use eframe::egui::{self, RichText};
@@ -42,6 +44,17 @@ pub fn settings_ui(ui: &mut egui::Ui, t: &Tokens, version: &str, forgotten: bool
     settings_ui_with(ui, t, version, forgotten, None).forget
 }
 
+/// Draws the page with a Start with Windows row and no Developer section.
+pub fn settings_ui_with(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    version: &str,
+    forgotten: bool,
+    startup: Option<&Row>,
+) -> Actions {
+    settings_ui_full(ui, t, version, forgotten, startup, None)
+}
+
 /// What a frame of the page did.
 #[derive(Default)]
 pub struct Actions {
@@ -49,6 +62,8 @@ pub struct Actions {
     /// Open log folder was pressed.
     pub logs: bool,
     pub startup: Option<Click>,
+    /// A Developer section click (R5).
+    pub dev: Option<DevClick>,
 }
 
 fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
@@ -122,15 +137,99 @@ fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
     click
 }
 
+/// The Developer section (R5). Dev mode off: one line and nothing to click.
+fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
+    let mut click = None;
+    heading(ui, t, dev_settings::HEADING);
+    if !v.on {
+        ui.add(egui::Label::new(RichText::new(dev_settings::MODE_OFF).color(c(t.text))).wrap());
+        ui.add_space(20.0);
+        return None;
+    }
+    ui.label(
+        RichText::new(dev_settings::FOLDERS_HEADING)
+            .strong()
+            .color(c(t.text)),
+    );
+    ui.add(egui::Label::new(RichText::new(dev_settings::BODY).color(c(t.text))).wrap());
+    ui.add_space(8.0);
+    if v.folders.is_empty() {
+        ui.label(RichText::new(dev_settings::EMPTY).color(c(t.text_muted)));
+    }
+    for row in &v.folders {
+        egui::Frame::new()
+            .fill(c(t.surface))
+            .stroke(egui::Stroke::new(1.0_f32, c(t.border)))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add(egui::Label::new(RichText::new(&row.path).strong().color(c(t.text))).wrap());
+                match row.problem {
+                    Some(p) => {
+                        ui.add(egui::Label::new(RichText::new(p.line()).color(c(t.danger))).wrap());
+                    }
+                    None => {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(dev_settings::apps_line(&row.apps))
+                                    .color(c(t.text_muted)),
+                            )
+                            .wrap(),
+                        );
+                    }
+                }
+                ui.add_space(4.0);
+                let b = ui.button("Remove");
+                let name = dev_settings::remove_name(&row.path);
+                ui.ctx().accesskit_node_builder(b.id, |n| {
+                    n.set_label(name);
+                });
+                if b.clicked() {
+                    click = Some(DevClick::Remove(row.path.clone()));
+                }
+            });
+        ui.add_space(6.0);
+    }
+    ui.add_space(2.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui.button(dev_settings::ADD).clicked() {
+            click = Some(DevClick::Add);
+        }
+        if let Some(n) = &v.note {
+            let colour = if n.error { c(t.danger) } else { c(t.text) };
+            let l = ui.add(egui::Label::new(RichText::new(&n.text).color(colour)).wrap());
+            // Announced politely, like the other pages' notes.
+            ui.ctx().accesskit_node_builder(l.id, |x| {
+                x.set_live(egui::accesskit::Live::Polite);
+            });
+        }
+    });
+    ui.add_space(10.0);
+    let mut restart = v.restart;
+    if ui
+        .checkbox(&mut restart, dev_settings::RESTART_SWITCH)
+        .changed()
+    {
+        click = Some(DevClick::Restart(restart));
+    }
+    ui.label(RichText::new(dev_settings::RESTART_SUB).color(c(t.text_muted)));
+    ui.add_space(8.0);
+    ui.add(egui::Label::new(RichText::new(dev_settings::FOOTNOTE).color(c(t.text_muted))).wrap());
+    ui.add_space(20.0);
+    click
+}
+
 /// Draws the page. `forgotten`: Forget seen apps was pressed (its line shows beside the button,
 /// which stays, so the focus stays on it). `startup`: the Start with Windows row, when the hub
-/// has one.
-pub fn settings_ui_with(
+/// has one. `dev`: the Developer section, when the hub has one.
+pub fn settings_ui_full(
     ui: &mut egui::Ui,
     t: &Tokens,
     version: &str,
     forgotten: bool,
     startup: Option<&Row>,
+    dev: Option<&DevView>,
 ) -> Actions {
     heading(ui, t, PRIVACY);
     ui.add(egui::Label::new(RichText::new(PRIVACY_LINE).color(c(t.text))).wrap());
@@ -146,6 +245,7 @@ pub fn settings_ui_with(
         .inner;
     ui.add_space(20.0);
     let startup = startup.and_then(|row| startup_section(ui, t, row));
+    let dev = dev.and_then(|v| dev_section(ui, t, v));
     heading(ui, t, ABOUT);
     ui.label(RichText::new(version_line(version)).color(c(t.text)));
     ui.add_space(8.0);
@@ -154,6 +254,7 @@ pub fn settings_ui_with(
         forget: pressed,
         logs,
         startup,
+        dev,
     }
 }
 

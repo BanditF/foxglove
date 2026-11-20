@@ -820,3 +820,90 @@ fn a_dotdot_path_inside_the_folder_text_never_matches() {
         .dev_folder_for(&canonical_path(&f.exe).unwrap())
         .is_some());
 }
+
+// ---- R5: Settings > Developer ---------------------------------------------------------------
+
+mod settings {
+    use super::*;
+    use hideout_registry::dev_folder::{DevFolderRefusal, FolderProblem, RowProblem};
+
+    #[test]
+    fn try_add_says_why_in_a_value_and_writes_nothing_when_refused() {
+        let home = temp("try-home");
+        let mut reg = Registry::open(&home, true).unwrap();
+        let gone = temp("try-gone").join("nope");
+        assert!(matches!(
+            reg.try_add_dev_folder(&gone.display().to_string()),
+            Err(DevFolderRefusal::NotAFolder)
+        ));
+        assert!(matches!(
+            reg.try_add_dev_folder(r"C:\"),
+            Err(DevFolderRefusal::Problem(FolderProblem::Drive))
+        ));
+        assert!(reg.dev_folders().is_empty());
+        let ok = temp("try-ok");
+        let a = reg.try_add_dev_folder(&ok.display().to_string()).unwrap();
+        assert!(!a.was_listed);
+        assert!(
+            reg.try_add_dev_folder(&ok.display().to_string())
+                .unwrap()
+                .was_listed
+        );
+        assert_eq!(reg.dev_folders(), vec![a.path]);
+        // Mode off: refused before anything else, nothing written.
+        let mut off = Registry::open(&temp("try-off"), false).unwrap();
+        assert!(matches!(
+            off.try_add_dev_folder(&ok.display().to_string()),
+            Err(DevFolderRefusal::ModeOff)
+        ));
+        assert!(off.dev_folders().is_empty());
+    }
+
+    #[test]
+    fn the_old_string_api_keeps_its_words() {
+        let mut reg = Registry::open(&temp("old-home"), true).unwrap();
+        let e = format!("{:?}", reg.add_dev_folder(r"C:\").unwrap_err());
+        assert!(
+            e.contains("a drive is too much to trust as a dev folder"),
+            "{e}"
+        );
+        assert_eq!(
+            hideout_registry::dev_folder::folder_problem(r"C:\"),
+            Some("a drive is too much to trust as a dev folder")
+        );
+    }
+
+    #[test]
+    fn rows_name_the_apps_and_the_folders_that_stopped_qualifying() {
+        let f = fx("rows");
+        let rows = f.reg.dev_folder_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].problem, None);
+        // Enrolment happens when the app is allowed from the folder.
+        let mut f = f;
+        allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+        let rows = f.reg.dev_folder_rows();
+        assert_eq!(rows[0].apps, vec!["Foxglove".to_string()]);
+        std::fs::remove_dir_all(&f.out).unwrap();
+        assert_eq!(
+            f.reg.dev_folder_rows()[0].problem,
+            Some(RowProblem::Missing)
+        );
+    }
+
+    #[test]
+    fn the_restart_switch_defaults_on_and_is_saved_in_hideout_toml() {
+        let home = temp("sw-home");
+        let mut reg = Registry::open(&home, true).unwrap();
+        assert!(reg.restart_after_rebuild());
+        reg.set_restart_after_rebuild(false).unwrap();
+        assert!(!reg.restart_after_rebuild());
+        let text = std::fs::read_to_string(home.join("hideout.toml")).unwrap();
+        assert!(text.contains("restart_after_rebuild = false"), "{text}");
+        assert!(!Registry::open(&home, true).unwrap().restart_after_rebuild());
+        reg.set_restart_after_rebuild(true).unwrap();
+        assert!(reg.restart_after_rebuild());
+        // The switch is not a grant: it never lists a folder.
+        assert!(reg.dev_folders().is_empty());
+    }
+}
