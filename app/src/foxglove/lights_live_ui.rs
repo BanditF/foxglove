@@ -14,7 +14,7 @@ use egui::{Color32, RichText, Sense, Stroke, Vec2};
 use foxglove_link::protocol::{RgbHalf, RgbState};
 use foxglove_scene::{Clock, SceneTime};
 
-use super::key_layout::KeyLayout;
+use super::key_layout::{KeyLayout, LayoutKey};
 use super::lights_live::{self, Keys, Look, Report, SceneRun, State};
 use super::parts::Parts;
 use super::pc_lights::KeyboardLights;
@@ -28,6 +28,12 @@ const PLATE: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x20);
 /// A lit key never shows darker than this share of full value: a dim key must still read as lit.
 const FLOOR: u8 = 96;
 
+pub const LAMP_LINE: &str = "The colours Foxglove last set through Windows Dynamic Lighting";
+pub const LAMP_OFF_LINE: &str = "Lights off · set through Windows Dynamic Lighting";
+pub const LAMP_ABOUT: &str = "What Foxglove last sent to this keyboard through Windows. The keyboard doesn't report its lights, so another app's changes don't show here.";
+pub const NOT_READ_ABOUT: &str =
+    "Foxglove doesn't read this keyboard's lights, so only its keys are drawn.";
+pub const NO_LAYOUT: &str = "Foxglove has no drawing of this keyboard's keys.";
 pub const LIGHTS_OFF: &str = "Lights off";
 pub const NOT_CONNECTED: &str = "Keyboard not connected. Its lights show here when it's back.";
 pub const READING: &str = "Reading the keyboard's lights…";
@@ -54,6 +60,8 @@ pub struct Live {
     pub name: String,
     /// Windows' animation effects are on (a moving look moves).
     pub animations: bool,
+    /// The keyboard has no layout: one block per part stands for its keys.
+    pub blocks: bool,
 }
 
 /// `part`'s lights as a card pick (what the keyboard's own firmware draws).
@@ -147,6 +155,18 @@ pub fn words_with(
                 format!("Keyboard lights: effect {n}, {colour}"),
             )
         }
+        State::Lamp => (
+            LAMP_LINE.into(),
+            "Keyboard lights: the colours last set through Windows".into(),
+        ),
+        State::LampOff => (
+            LAMP_OFF_LINE.into(),
+            "Keyboard lights off, set through Windows".into(),
+        ),
+        State::NotRead => (
+            super::lights_page::NOT_READ.into(),
+            "Keyboard lights: not read".into(),
+        ),
         State::Keyboard => match rgb {
             Some(rgb) => own_words(rgb, dim, parts, right_apart),
             None => (READING.into(), "Keyboard lights: reading".into()),
@@ -222,6 +242,53 @@ fn own_words(rgb: &RgbState, dim: [u8; 2], parts: &Parts, right_apart: bool) -> 
     )
 }
 
+/// A block standing for a half's keys gets a corner radius to match its size.
+fn rounded(mut shape: egui::Shape, block: bool) -> egui::Shape {
+    if let (true, egui::Shape::Rect(r)) = (block, &mut shape) {
+        r.corner_radius = egui::CornerRadius::same((r.rect.height() * 0.2).clamp(3.0, 40.0) as u8);
+    }
+    shape
+}
+
+/// A layout with no keys becomes one rounded block per part, so the drawing still has colour.
+fn with_blocks(mut layout: KeyLayout) -> (KeyLayout, bool) {
+    if layout.parts.iter().any(|p| !p.is_empty()) {
+        return (layout, false);
+    }
+    let n = layout.parts.len().clamp(1, 2);
+    let size = Vec2::new(if n == 2 { 4.0 } else { 8.0 }, 3.0);
+    let block = LayoutKey::new(egui::Rect::from_min_size(egui::Pos2::ZERO, size), 0.0, 0);
+    layout.parts = vec![vec![block]; n];
+    layout.origins = vec![Vec2::ZERO; n];
+    layout.size = size;
+    (layout, true)
+}
+
+/// The drawing of a keyboard Foxglove drives through Windows only (`tint`: its row's colours) or
+/// can't read at all (`None`), on its own keys (L4).
+pub fn live_not_read(tint: Option<super::device_thumb::Tint>, layout: KeyLayout) -> Live {
+    let look = lights_live::look_not_read(tint);
+    let animations = super::screen_glow::animations_on();
+    let (line, name) = words_with(
+        &look,
+        None,
+        [100, 100],
+        &Parts::current(),
+        animations,
+        false,
+    );
+    let (layout, blocks) = with_blocks(layout);
+    Live {
+        look,
+        layout,
+        clock: None,
+        line,
+        name,
+        animations,
+        blocks,
+    }
+}
+
 /// The line and name of a pick drawn but not applied: the drawing is not the keyboard's lights.
 pub fn not_applied(line: String, name: String) -> (String, String) {
     (
@@ -232,6 +299,11 @@ pub fn not_applied(line: String, name: String) -> (String, String) {
 
 /// The hover on the ⓘ.
 pub fn about(look: &Look) -> String {
+    match look.state {
+        State::Lamp | State::LampOff => return LAMP_ABOUT.into(),
+        State::NotRead => return NOT_READ_ABOUT.into(),
+        _ => {}
+    }
     if look.next_frame().is_some() {
         format!("{ABOUT}\n{ABOUT_MOVING}")
     } else {
@@ -347,6 +419,7 @@ pub fn live_with(
     {
         (line, name) = not_applied(line, name);
     }
+    let (layout, blocks) = with_blocks(layout);
     Live {
         look,
         layout,
@@ -354,6 +427,7 @@ pub fn live_with(
         line,
         name,
         animations,
+        blocks,
     }
 }
 
@@ -430,7 +504,14 @@ pub(crate) fn scene_time(live: &Live, now: i64) -> SceneTime {
 }
 
 /// The drawing, its line and the ⓘ.
+#[cfg(test)]
 pub fn show(ui: &mut egui::Ui, live: &Live) {
+    show_named(ui, live, None);
+}
+
+/// [`show`], with the name screen readers get held at `name` (a drag changes the drawing at every
+/// step, and the name must not follow it).
+pub fn show_named(ui: &mut egui::Ui, live: &Live, name: Option<&str>) {
     let p = theme::palette(ui);
     let ctx = ui.ctx().clone();
     let front = ctx.input(|i| i.focused);
@@ -445,7 +526,12 @@ pub fn show(ui: &mut egui::Ui, live: &Live) {
     let width = ui.available_width();
     let height = (width * 0.16).clamp(HEIGHT.0, HEIGHT.1);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-    let name = live.name.clone();
+    let name = name.unwrap_or(&live.name).to_string();
+    let response = if live.blocks {
+        response.on_hover_text(NO_LAYOUT)
+    } else {
+        response
+    };
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &name));
     let id = response.id;
     let t = scene_time(live, now_ms());
@@ -461,7 +547,7 @@ pub fn show(ui: &mut egui::Ui, live: &Live) {
             // on the dark plate, so white and yellow have something to show on.
             let outline = Stroke::new(1.0, p.muted);
             if !p.dark {
-                painter.add(g.key_shape(a, k, PLATE, outline));
+                painter.add(rounded(g.key_shape(a, k, PLATE, outline), live.blocks));
             }
             let shape = match colour {
                 None if p.dark => g.key_shape(a, k, Color32::TRANSPARENT, outline),
@@ -469,13 +555,17 @@ pub fn show(ui: &mut egui::Ui, live: &Live) {
                 Some(c) if c == Color32::BLACK => g.key_shape(a, k, PLATE, outline),
                 Some(c) => g.key_shape(a, k, lit(c), Stroke::new(1.0, p.line)),
             };
-            painter.add(shape);
+            painter.add(rounded(shape, live.blocks));
         }
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.add(egui::Label::new(RichText::new(&live.line).color(p.muted).size(12.5)).wrap());
-        theme::info_dot(ui, &about(&live.look));
+        let mut about = about(&live.look);
+        if live.blocks {
+            about = format!("{about}\n{NO_LAYOUT}");
+        }
+        theme::info_dot(ui, &about);
     });
     let away = super::away::away();
     if let Some(after) = frame_request(&live.look, front, minimised, away, live.animations) {

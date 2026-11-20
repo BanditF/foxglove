@@ -16,6 +16,7 @@ use foxglove_link::protocol::{RgbHalf, RgbState};
 use foxglove_scene::room::{Placed, PlacedLight};
 use foxglove_scene::{Effect, Point, Rect, Rgb, RoomMap, SceneTime};
 
+use super::device_thumb::Tint;
 use super::key_layout::{KeyLayout, LayoutKey};
 use super::lighting_leases::Lease;
 use super::lights_page::shown_color;
@@ -77,6 +78,12 @@ pub enum State {
     Keyboard,
     /// An effect Foxglove has no look for (its number); drawn as its colour, still.
     CannotDraw(u8),
+    /// A keyboard Foxglove drives through Windows only: the colours it last set (L4).
+    Lamp,
+    /// The same, with every light off.
+    LampOff,
+    /// A keyboard whose colour Foxglove doesn't read: outlines only (L4).
+    NotRead,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +98,8 @@ enum HalfPaint {
 #[derive(Clone, Debug, PartialEq)]
 enum Paint {
     Outline,
+    /// A Windows-lit keyboard's last colours, spread over its keys.
+    Tint(Tint),
     Halves([HalfPaint; 2]),
     Scene(Box<SceneRun>),
 }
@@ -142,6 +151,28 @@ pub fn look(
         Some(Owner::LampArrayUsb | Owner::LampArrayBle) => windows(report, rgb),
         Some(Owner::Other(_)) => made(State::AnotherApp, Paint::Outline),
         _ => own(report, rgb, draft),
+    }
+}
+
+/// A keyboard Foxglove can't read lights from (L4): a LampArray one shows the colours Foxglove
+/// last set through Windows (its row's tint), a read-only one, or one whose colours are unknown,
+/// shows outlines and says so.
+pub fn look_not_read(tint: Option<Tint>) -> Look {
+    match tint {
+        Some(t) if t != Tint::Unknown => Look {
+            state: if t == Tint::Off || t == Tint::Lit(Vec::new()) {
+                State::LampOff
+            } else {
+                State::Lamp
+            },
+            sending: false,
+            paint: Paint::Tint(t),
+        },
+        _ => Look {
+            state: State::NotRead,
+            sending: false,
+            paint: Paint::Outline,
+        },
     }
 }
 
@@ -221,7 +252,7 @@ impl Look {
     /// stops (minimised, away, not in front).
     pub fn next_frame(&self) -> Option<Duration> {
         let moves = match &self.paint {
-            Paint::Outline => false,
+            Paint::Outline | Paint::Tint(_) => false,
             Paint::Halves(h) => h.iter().any(|h| matches!(h, HalfPaint::Moving(_))),
             Paint::Scene(s) => !matches!(s.effect, Effect::Gradient { .. }),
         };
@@ -231,6 +262,23 @@ impl Look {
     /// One colour per key of every part of `layout` at scene time `t`.
     pub fn colours(&self, layout: &KeyLayout, t: SceneTime) -> Keys {
         let split = layout.parts.len() == 2;
+        if let Paint::Tint(tint) = &self.paint {
+            // One spread over all the keys, as the zones drawing spreads a row's tint.
+            let n: usize = layout.parts.iter().map(Vec::len).sum();
+            let mut i = 0;
+            return layout
+                .parts
+                .iter()
+                .map(|keys| {
+                    keys.iter()
+                        .map(|_| {
+                            i += 1;
+                            tint.colour(i - 1, n)
+                        })
+                        .collect()
+                })
+                .collect();
+        }
         layout
             .parts
             .iter()
@@ -248,7 +296,7 @@ impl Look {
     ) -> Vec<Option<Color32>> {
         let id = part_id(p, split);
         match &self.paint {
-            Paint::Outline => vec![None; keys.len()],
+            Paint::Outline | Paint::Tint(_) => vec![None; keys.len()],
             Paint::Halves(h) => match &h[p.min(1)] {
                 HalfPaint::Dark => vec![Some(Color32::BLACK); keys.len()],
                 HalfPaint::Unknown => vec![None; keys.len()],
