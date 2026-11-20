@@ -88,6 +88,7 @@ use super::scene_lamps::{LampStatus, LampWriter, Poster};
 use super::scene_output::{
     CaseTarget, Hsb, KeyboardEffect, KeyboardFrame, KeyboardLamps, LampTarget, Out, Outputs,
 };
+use super::temperature_out::TempLook;
 
 /// The lighting-lease connection a scene holds the keyboard under (no plugin has it: plugin
 /// connections count up from 1).
@@ -238,7 +239,7 @@ enum Ctl {
     /// Another look for the running scene, its name, and whether it reads the PC sensors'
     /// temperature (Temperature): said with the look, so a change between two looks that both
     /// read never ends and begins the listening.
-    Effect(String, Box<Effect>, bool),
+    Effect(String, Box<Effect>, Option<Box<TempLook>>),
     /// A key was pressed at this row and column (#489): a ring from it.
     KeyRipple(usize, usize),
     /// The top layer changed (#489): a sweep in this colour.
@@ -264,7 +265,9 @@ enum Ctl {
     HandedBack(u64),
     /// The running look reads the PC sensors' temperature (or no longer does): Foxglove listens
     /// to them only meanwhile, and only while nothing holds the scene (the listener rule).
-    Reads(bool),
+    TempLook(Box<TempLook>),
+    /// The PC sensors' reading changed: Temperature's colour follows.
+    Reading,
     Stop,
 }
 
@@ -527,9 +530,10 @@ pub fn running_look() -> Option<(String, Effect, Clock)> {
         .map(|r| (r.name.clone(), r.effect.clone(), r.clock))
 }
 
-/// Gives the running scene another look; `reads_temperature` says the look is Temperature, so
-/// the scene keeps (or starts) listening to the PC sensors, and any other look stops it.
-pub fn set_look(name: &str, effect: Effect, reads_temperature: bool) {
+/// Gives the running scene another look; `temperature` is the look's Temperature output when it
+/// is Temperature, so the scene keeps (or starts) listening to the PC sensors, and any other look
+/// stops it.
+pub fn set_look(name: &str, effect: Effect, temperature: Option<TempLook>) {
     if !may_run(&effect, super::screen_glow::allowed()) {
         eprintln!("Foxglove: look {name} not taken: Screen glow needs the user's yes");
         super::screen_glow::set_refused(true);
@@ -542,7 +546,7 @@ pub fn set_look(name: &str, effect: Effect, reads_temperature: bool) {
         let _ = r.tx.send(Ctl::Effect(
             name.to_string(),
             Box::new(effect),
-            reads_temperature,
+            temperature.map(Box::new),
         ));
         status().name = Some(name.to_string());
     }
@@ -596,12 +600,26 @@ pub fn layer_sweep(colour: Rgb) {
     tell(Ctl::LayerSweep(colour));
 }
 
-/// The running scene's look reads the temperature of the PC sensors, or no longer does (the
-/// Temperature effect); told right after a start. A look change says it with the look
-/// ([`set_look`]). A no-op when no scene runs; the scene's end ends
-/// the listening whatever was said.
-pub fn set_reads_temperature(on: bool) {
-    tell(Ctl::Reads(on));
+/// The running scene's look is Temperature: it listens to the PC sensors and draws their reading
+/// ([`super::temperature_out`]); told right after a start. A look change says it with the look
+/// ([`set_look`]). A no-op when no scene runs; the scene's end ends the listening whatever was
+/// said.
+pub fn set_temperature(look: TempLook) {
+    tell(Ctl::TempLook(Box::new(look)));
+}
+
+/// The PC sensors' reading changed (`temperature_feed::publish`): a running Temperature takes
+/// the new colour, rate-limited, and its frame thread wakes only for it. A no-op without a scene.
+pub fn reading_changed() {
+    tell(Ctl::Reading);
+}
+
+/// The reading Temperature draws now, and whether the sensors app is in game mode.
+fn reading_now() -> (Option<f32>, bool) {
+    match super::temperature_feed::latest() {
+        super::temperature_feed::Status::Working { temp_c, game } => (Some(temp_c), game),
+        _ => (None, false),
+    }
 }
 
 /// Foxglove paused or resumed (#404).
@@ -921,8 +939,8 @@ fn control(
                     .unwrap_or_else(|e| e.into_inner())
                     .burst(sweep);
             }
-            Ctl::Effect(name, effect, reads) => {
-                listener.set_reads(reads);
+            Ctl::Effect(name, effect, temperature) => {
+                listener.set_reads(temperature.is_some());
                 super::lights_owner::retry("the scene's look changed");
                 let screen = is_screen(&effect);
                 // The wallpapers draw the new look on the same clock (#493); Screen glow leaves
@@ -942,10 +960,20 @@ fn control(
                     watch = watch_for(screen);
                 }
                 super::keyboard_facts::scene_look(&name, &effect);
-                outputs
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .set_effect(*effect);
+                let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+                match temperature {
+                    Some(look) => {
+                        let (reading, game) = reading_now();
+                        o.set_effect_keeping_temperature(
+                            *effect,
+                            *look,
+                            reading,
+                            game,
+                            clock.now(),
+                        );
+                    }
+                    None => o.set_effect(*effect),
+                }
             }
             Ctl::KeyboardArrived => {
                 again.store(true, Ordering::Relaxed);
@@ -971,7 +999,21 @@ fn control(
                     lamp_writer.release();
                 }
             }
-            Ctl::Reads(on) => listener.set_reads(on),
+            Ctl::TempLook(look) => {
+                listener.set_reads(true);
+                let (reading, game) = reading_now();
+                outputs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_temperature(*look, reading, game, clock.now());
+            }
+            Ctl::Reading => {
+                let (reading, game) = reading_now();
+                outputs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_reading(reading, game, clock.now());
+            }
             Ctl::Stop => {}
         }
         // The sensors' listener follows the same gates as the frames.

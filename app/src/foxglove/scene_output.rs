@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use foxglove_devices::pc_lighting::rates::{self, Rates};
 
+use super::temperature_out::{Driver, TempLook};
 use foxglove_link::lamps::LampParts;
 use foxglove_link::protocol::MmRect;
 use foxglove_scene::scheduler::{Pace, Pacing};
@@ -616,6 +617,9 @@ pub struct Outputs {
     /// Each area light's colour as the last frame showed it (after its easing): a hand-back
     /// fades it on from there.
     areas_shown: BTreeMap<(String, String), Rgb>,
+    /// Temperature's light output while the look is Temperature: the colour for the reading,
+    /// drawn through `effect` each frame (the keyboard gets its target as its own effect).
+    temp: Option<Driver>,
 }
 
 /// A Screen glow look's own state, kept across a smoothing change.
@@ -664,6 +668,7 @@ impl Outputs {
             handed_at: None,
             hand_back_reported: false,
             areas_shown: BTreeMap::new(),
+            temp: None,
         };
         o.set_room(room, cases);
         o
@@ -681,6 +686,9 @@ impl Outputs {
     /// every device must get, or a fade. While capture failing holds the colours it waits for
     /// the fade; otherwise it sleeps until woken (a new picture, a control event).
     pub fn pace(&self, t: SceneTime) -> Pace {
+        if let Some(d) = &self.temp {
+            return self.temperature_pace(d, t);
+        }
         let Some(g) = &self.glow else {
             return Pace::Tick;
         };
@@ -700,6 +708,98 @@ impl Outputs {
         match g.fade_starts(t) {
             Some(at) => Pace::After(Duration::from_millis((at.ms() - t.ms()).max(1) as u64)),
             None => Pace::Idle,
+        }
+    }
+
+    /// Temperature's frames (the still-screen rule, #1085): they tick while the colour eases,
+    /// the fallback breathes, something changed outside them or a burst or the ambient easing
+    /// still moves; after that they sleep until the next reading, or until the rate limit lets a
+    /// waiting colour change through. Between readings nothing is sent.
+    fn temperature_pace(&self, d: &Driver, t: SceneTime) -> Pace {
+        if self.kick
+            || t.ms() < self.busy_until
+            || !self.bursts.is_empty()
+            || !self.ambient.settled()
+            || !d.eased(t.ms())
+        {
+            return Pace::Tick;
+        }
+        match d.next_change_at() {
+            Some(at) => Pace::After(Duration::from_millis((at - t.ms()).max(1) as u64)),
+            None => Pace::Idle,
+        }
+    }
+
+    /// Temperature runs with this look and reading (`None`: no reading) at scene time `t`. A
+    /// look already running takes the new ends and colours and eases to them; every device gets
+    /// the next frame in full.
+    pub fn set_temperature(
+        &mut self,
+        look: TempLook,
+        reading: Option<f32>,
+        game: bool,
+        t: SceneTime,
+    ) {
+        match self.temp.as_mut() {
+            Some(d) => {
+                d.set_look(look, t.ms());
+                d.set_reading(reading, game, t.ms());
+            }
+            None => self.temp = Some(Driver::new(look, reading, game, t.ms())),
+        }
+        self.glow = None;
+        self.sent_case.clear();
+        self.sent_lamps.clear();
+        self.sent_keyboard = None;
+        self.refresh_temperature(t);
+        self.kick = true;
+    }
+
+    /// Another look of the Temperature scene (its ends or colours were edited): the running
+    /// driver is kept, so the colour re-maps with no blink to the fallback and the rate limit
+    /// carries on.
+    pub fn set_effect_keeping_temperature(
+        &mut self,
+        effect: Effect,
+        look: TempLook,
+        reading: Option<f32>,
+        game: bool,
+        t: SceneTime,
+    ) {
+        let keep = self.temp.take();
+        let (was, was_sent) = (self.keyboard_effect.clone(), self.effect_sent);
+        self.set_effect(effect);
+        self.temp = keep;
+        self.set_temperature(look, reading, game, t);
+        // set_effect rebuilt the keyboard's effect from the look's fallback; it is the
+        // driver's colour that counts. Unchanged colour: nothing to send again.
+        if let Some(d) = &self.temp {
+            self.keyboard_effect =
+                keyboard_effect(&d.target_effect(), &self.room, &self.keyboard_parts);
+            self.effect_sent = was_sent && self.keyboard_effect == was;
+        }
+    }
+
+    /// Temperature's reading changed (or went): the colour follows, rate-limited. Nothing is
+    /// sent from here; the frames decide.
+    pub fn set_reading(&mut self, reading: Option<f32>, game: bool, t: SceneTime) {
+        if let Some(d) = self.temp.as_mut() {
+            d.set_reading(reading, game, t.ms());
+            self.kick = true;
+        }
+    }
+
+    /// Draws Temperature's colour for `t` as the scene's effect, and puts a changed target on
+    /// the keyboard's own effect (sent once, by [`Outputs::frame`]).
+    fn refresh_temperature(&mut self, t: SceneTime) {
+        let Some(d) = self.temp.as_mut() else {
+            return;
+        };
+        self.effect = d.effect_at(t.ms());
+        if d.take_changed() {
+            self.keyboard_effect =
+                keyboard_effect(&d.target_effect(), &self.room, &self.keyboard_parts);
+            self.effect_sent = false;
         }
     }
 
@@ -785,6 +885,15 @@ impl Outputs {
         &self.room
     }
 
+    /// What the keyboard draws itself: the scene's effect, or for Temperature its target colour
+    /// (no ease: the keyboard's frames, when it needs them, draw the eased one).
+    fn keyboard_source(&self) -> Effect {
+        match &self.temp {
+            Some(d) => d.target_effect(),
+            None => self.effect.clone(),
+        }
+    }
+
     /// The scene's effect now.
     pub fn effect(&self) -> &Effect {
         &self.effect
@@ -825,7 +934,8 @@ impl Outputs {
         self.cases = cases;
         self.repace();
         // Placed again: a drag or a monitor change moves the effect too.
-        self.keyboard_effect = keyboard_effect(&self.effect, &self.room, &self.keyboard_parts);
+        self.keyboard_effect =
+            keyboard_effect(&self.keyboard_source(), &self.room, &self.keyboard_parts);
         self.effect_sent = false;
         self.kick = true;
     }
@@ -838,7 +948,8 @@ impl Outputs {
         }
         self.keyboard_parts = parts;
         self.sent_keyboard = None;
-        self.keyboard_effect = keyboard_effect(&self.effect, &self.room, &self.keyboard_parts);
+        self.keyboard_effect =
+            keyboard_effect(&self.keyboard_source(), &self.room, &self.keyboard_parts);
         self.effect_sent = false;
         self.kick = true;
     }
@@ -899,11 +1010,13 @@ impl Outputs {
     /// the case is written at its own rate until they settle, a few seconds).
     pub fn set_effect(&mut self, effect: Effect) {
         self.glow = glow_for(&effect, self.glow.take());
+        self.temp = None;
         self.effect = effect;
         self.sent_case.clear();
         self.sent_lamps.clear();
         self.sent_keyboard = None;
-        self.keyboard_effect = keyboard_effect(&self.effect, &self.room, &self.keyboard_parts);
+        self.keyboard_effect =
+            keyboard_effect(&self.keyboard_source(), &self.room, &self.keyboard_parts);
         self.effect_sent = false;
         self.kick = true;
     }
@@ -920,6 +1033,7 @@ impl Outputs {
             self.held_seen = held;
             self.kick = true;
         }
+        self.refresh_temperature(t);
         if std::mem::take(&mut self.kick) {
             self.busy_until = self.busy_until.max(t.ms() + self.linger_ms());
         }
@@ -2474,6 +2588,225 @@ mod tests {
         let e = keyboard_effect(&scanline(), &one, &plank()).unwrap();
         assert_eq!(e.parts, [[0, 500, 300, 90]]);
         assert_eq!(e.place(), ([0, 500, 300, 90], [0, 500, 300, 90]));
+    }
+
+    // ---- Temperature's light output (slice 4) ----
+
+    fn temp_look() -> TempLook {
+        use crate::foxglove::temperature::{fallback, ramp, Colours};
+        TempLook {
+            cool_c: 40,
+            hot_c: 80,
+            ramp: ramp(Colours::CoolToHot, "Bandit"),
+            fallback: fallback(Colours::CoolToHot, "Bandit"),
+            background: Rgb::BLACK,
+            calm: false,
+        }
+    }
+
+    /// What one run of frames sent, by kind.
+    #[derive(Default, Debug)]
+    struct Sent {
+        effects: Vec<Vec<[u8; 3]>>,
+        keyboard_frames: usize,
+        case: usize,
+        lamps: usize,
+    }
+
+    impl Sent {
+        fn add(&mut self, outs: Vec<Out>) {
+            for out in outs {
+                match out {
+                    Out::KeyboardEffect(e) => self.effects.push(e.effect.colours.clone()),
+                    Out::Keyboard(_) => self.keyboard_frames += 1,
+                    Out::Case { .. } => self.case += 1,
+                    Out::Lamps { .. } => self.lamps += 1,
+                }
+            }
+        }
+    }
+
+    /// The scene's frame thread at 30 a second over `from..to` ms, sleeping when the output
+    /// says it may; returns the time it went to sleep, or `to` if it never did.
+    fn run_frames(o: &mut Outputs, from: i64, to: i64, sent: &mut Sent) -> i64 {
+        let mut ms = from;
+        while ms < to {
+            sent.add(o.frame(SceneTime(ms)));
+            ms += match o.pace(SceneTime(ms)) {
+                Pace::Tick => 33,
+                Pace::After(d) => (d.as_millis() as i64).max(33),
+                Pace::Idle => return ms,
+            };
+        }
+        to
+    }
+
+    #[test]
+    fn temperature_sends_the_keyboard_one_steady_colour_per_change_and_then_sleeps() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        o.set_temperature(temp_look(), Some(60.0), false, SceneTime(0));
+        let mut sent = Sent::default();
+        // The ease takes 2 s and the case's ambient light a few more: asleep inside 15 s.
+        let asleep = run_frames(&mut o, 0, 30_000, &mut sent);
+        assert!((2_000..15_000).contains(&asleep), "asleep at {asleep}");
+        // One effect: Breathe with both colours the same (the existing SET_EFFECT, no frames).
+        assert_eq!(sent.effects.len(), 1, "{sent:?}");
+        assert_eq!(sent.effects[0].len(), 2);
+        assert_eq!(sent.effects[0][0], sent.effects[0][1]);
+        assert_eq!(sent.keyboard_frames, 0);
+        assert!(sent.case > 0, "the case eased in");
+        // The ease is over and the frame thread sleeps: nothing is due, and nothing is sent
+        // however long it waits.
+        assert_eq!(o.pace(SceneTime(asleep)), Pace::Idle);
+        let before = (sent.case, sent.lamps, sent.effects.len());
+        for ms in (asleep..60_000).step_by(33) {
+            sent.add(o.frame(SceneTime(ms)));
+        }
+        assert_eq!((sent.case, sent.lamps, sent.effects.len()), before);
+        // A new reading: one more effect, the case eases, then it sleeps again.
+        o.set_reading(Some(75.0), false, SceneTime(60_000));
+        assert_ne!(o.pace(SceneTime(60_000)), Pace::Idle, "a reading wakes it");
+        let asleep = run_frames(&mut o, 60_000, 90_000, &mut sent);
+        assert!(asleep < 75_000, "asleep at {asleep}");
+        assert_eq!(sent.effects.len(), 2, "{sent:?}");
+        assert_ne!(sent.effects[1], sent.effects[0]);
+        assert!(sent.case > before.0);
+        // The same reading again: nothing.
+        let n = sent.effects.len();
+        o.set_reading(Some(75.0), false, SceneTime(100_000));
+        run_frames(&mut o, 100_000, 103_000, &mut sent);
+        assert_eq!(sent.effects.len(), n);
+    }
+
+    #[test]
+    fn editing_the_look_keeps_the_driver_and_never_shows_the_fallback() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        o.set_temperature(temp_look(), Some(60.0), false, SceneTime(0));
+        let mut sent = Sent::default();
+        run_frames(&mut o, 0, 30_000, &mut sent);
+        let shown = sent.effects[0][0];
+        // An edit that leaves the colour as it was (60 is half way in 30-90 too): nothing
+        // goes to the keyboard, and the fallback never shows.
+        let same = TempLook {
+            cool_c: 30,
+            hot_c: 90,
+            ..temp_look()
+        };
+        o.set_effect_keeping_temperature(scanline(), same, Some(60.0), false, SceneTime(40_000));
+        let mut quiet = Sent::default();
+        run_frames(&mut o, 40_000, 45_000, &mut quiet);
+        assert!(quiet.effects.is_empty(), "{quiet:?}");
+        // An edit that moves it: one steady colour, never the breathing fallback or dark.
+        let moved = TempLook {
+            cool_c: 40,
+            hot_c: 100,
+            ..temp_look()
+        };
+        o.set_effect_keeping_temperature(scanline(), moved, Some(60.0), false, SceneTime(50_000));
+        let mut after = Sent::default();
+        run_frames(&mut o, 50_000, 80_000, &mut after);
+        assert_eq!(after.effects.len(), 1, "{after:?}");
+        for e in &after.effects {
+            assert_eq!(e[0], e[1], "steady");
+            assert_ne!(e[0], [0, 0, 0]);
+            assert_ne!(e[0], shown);
+        }
+    }
+
+    #[test]
+    fn temperature_draws_frames_for_a_keyboard_without_effects_and_dedupes_them() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(false, Ordering::Relaxed);
+        o.set_temperature(temp_look(), Some(60.0), false, SceneTime(0));
+        let mut sent = Sent::default();
+        let asleep = run_frames(&mut o, 0, 30_000, &mut sent);
+        assert!(asleep < 15_000, "asleep at {asleep}");
+        assert!(sent.effects.is_empty());
+        let frames = sent.keyboard_frames;
+        assert!(frames > 0);
+        // The 2 s ease at the keyboard's interval: not a frame per tick for ever.
+        assert!(frames <= 15_000 / 33, "{frames}");
+    }
+
+    #[test]
+    fn a_missing_reading_breathes_the_fallback_never_the_cool_colour() {
+        use crate::foxglove::temperature::COOL_TO_HOT;
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        o.set_temperature(temp_look(), None, false, SceneTime(0));
+        let mut sent = Sent::default();
+        run_frames(&mut o, 0, 3_000, &mut sent);
+        assert_eq!(sent.effects.len(), 1, "{sent:?}");
+        let e = &sent.effects[0];
+        assert_ne!(e[0], e[1], "a slow breathe, not a steady colour");
+        assert!(!e.contains(&COOL_TO_HOT[0]), "never cool");
+        assert!(e.iter().any(|c| *c != [0, 0, 0]), "never dark");
+        assert_ne!(o.pace(SceneTime(3_000)), Pace::Idle, "the breathe moves");
+        // A reading, then it goes: back to the fallback, not the last colour.
+        o.set_reading(Some(85.0), false, SceneTime(4_000));
+        run_frames(&mut o, 4_000, 9_000, &mut sent);
+        assert_eq!(sent.effects.len(), 2);
+        assert_eq!(sent.effects[1][0], sent.effects[1][1]);
+        o.set_reading(None, false, SceneTime(20_000));
+        run_frames(&mut o, 20_000, 22_000, &mut sent);
+        assert_eq!(sent.effects.len(), 3);
+        assert_eq!(sent.effects[2], sent.effects[0]);
+    }
+
+    /// Security note A2 (#1358): a writer flipping ok/hot against ok/cool every 20 ms moves the
+    /// keyboard's colour once a second at the most, and the case far less than once a flip.
+    #[test]
+    fn a_spoofing_writer_cannot_flicker_the_keyboard_or_the_case() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        o.set_temperature(temp_look(), Some(40.0), false, SceneTime(0));
+        let mut sent = Sent::default();
+        let mut next_frame = 0;
+        for ms in 0..20_000i64 {
+            if ms % 20 == 0 {
+                let hot = (ms / 20) % 2 == 0;
+                o.set_reading(Some(if hot { 90.0 } else { 20.0 }), false, SceneTime(ms));
+            }
+            if ms >= next_frame {
+                sent.add(o.frame(SceneTime(ms)));
+                next_frame = ms
+                    + match o.pace(SceneTime(ms)) {
+                        Pace::Tick => 33,
+                        Pace::After(d) => (d.as_millis() as i64).max(33),
+                        Pace::Idle => 1_000,
+                    };
+            }
+        }
+        // One colour a second, plus the first.
+        assert!(
+            sent.effects.len() <= 21,
+            "{} keyboard effects",
+            sent.effects.len()
+        );
+        // The case: its own interval, never per flip.
+        assert!(sent.case <= 20_000 / 60, "{} case writes", sent.case);
+    }
+
+    #[test]
+    fn another_look_takes_temperature_off_the_lights() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.set_temperature(temp_look(), Some(60.0), false, SceneTime(0));
+        assert!(o.temp.is_some());
+        o.set_effect(scanline());
+        assert!(o.temp.is_none());
+        assert_eq!(o.effect(), &scanline());
+        // A reading that arrives now changes nothing.
+        o.set_reading(Some(90.0), false, SceneTime(1_000));
+        assert_eq!(o.effect(), &scanline());
+        assert_eq!(o.pace(SceneTime(1_000)), Pace::Tick);
     }
 
     #[test]

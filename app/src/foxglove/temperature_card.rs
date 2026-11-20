@@ -4,7 +4,7 @@
 //!
 //! Words and rules are plain functions of the look and a [`TempView`], so tests and the review
 //! images draw them with no device and no hub. Nothing here reads a sensor or sends a colour:
-//! the reading comes from [`super::temperature_feed`], the light output is slice 4.
+//! the reading comes from [`super::temperature_feed`], the light output is [`super::temperature_out`].
 //!
 //! The plan's never-shown list holds: no `sensor.*` keys, "fact", "subscribe", "demand",
 //! "module", "plugin", "NVML", "GPU", "CPU", "unavailable", "unknown", and never "0 °C" for a
