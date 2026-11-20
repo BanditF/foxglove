@@ -499,7 +499,7 @@ impl Registry {
         if !folders.is_empty() {
             WARNED.call_once(|| {
                 log::warn!(
-                    "developer mode is on and {} dev folder(s) are listed: apps inside them keep                      their grants over a rebuild",
+                    "developer mode is on and {} dev folder(s) are listed: apps inside them keep their grants over a rebuild",
                     folders.len()
                 );
             });
