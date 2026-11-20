@@ -137,6 +137,111 @@ fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
     click
 }
 
+/// Where focus goes on the frame after the Remove confirm closes: the row's own **Remove...**
+/// first (Cancel, Esc, or a save that failed and left the row), then the fallback row (the next
+/// one, else the previous one), else **Add a folder...**.
+#[derive(Clone, Default)]
+struct DevFocus {
+    primary: String,
+    fallback: Option<String>,
+}
+
+/// What the Developer section keeps between frames (egui temp memory, so the hub holds none).
+#[derive(Clone, Default)]
+struct DevUi {
+    /// The folder the Remove confirm is open for.
+    ask: Option<String>,
+    /// The confirm was just opened: Cancel takes the focus once.
+    fresh: bool,
+    focus: Option<DevFocus>,
+}
+
+/// The Remove confirm (DF1). Cancel is first, filled and focused; Esc and a click outside are
+/// Cancel. Returns `Some(true)` for Remove folder, `Some(false)` for Cancel.
+fn remove_confirm(
+    ctx: &egui::Context,
+    t: &Tokens,
+    path: &str,
+    apps: &[String],
+    fresh: bool,
+) -> Option<bool> {
+    let body = dev_settings::confirm_body(apps);
+    let mut answer = None;
+    let mut ids: Vec<egui::Id> = Vec::new();
+    let modal = egui::Modal::new(egui::Id::new("hideout.dev.remove-confirm")).show(ctx, |ui| {
+        ui.set_width(440.0_f32.min(ui.available_width()));
+        ui.label(
+            RichText::new(dev_settings::CONFIRM_TITLE)
+                .heading()
+                .color(c(t.text)),
+        );
+        ui.add_space(6.0);
+        ui.add(egui::Label::new(RichText::new(path).strong().color(c(t.text))).wrap());
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(RichText::new(&body).color(c(t.text))).wrap());
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            let cancel = ui.add(
+                egui::Button::new(
+                    RichText::new(dev_settings::CONFIRM_CANCEL).color(c(t.on_accent)),
+                )
+                .fill(c(t.accent)),
+            );
+            if fresh {
+                cancel.request_focus();
+            }
+            if cancel.clicked() {
+                answer = Some(false);
+            }
+            let go = ui.add(
+                egui::Button::new(RichText::new(dev_settings::CONFIRM_OK).color(c(t.danger)))
+                    .stroke(egui::Stroke::new(1.0_f32, c(t.danger))),
+            );
+            if go.clicked() {
+                answer = Some(true);
+            }
+            ids.push(cancel.id);
+            ids.push(go.id);
+        });
+    });
+    // Tab stays inside the dialog.
+    let (tab, shift) = ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
+    if tab
+        && !ctx
+            .memory(|m| m.focused())
+            .is_some_and(|f| ids.contains(&f))
+    {
+        let to = if shift { ids.last() } else { ids.first() };
+        if let Some(to) = to {
+            ctx.memory_mut(|m| m.request_focus(*to));
+        }
+    }
+    ctx.accesskit_node_builder(modal.response.id, |n| {
+        n.set_role(egui::accesskit::Role::Dialog);
+        n.set_label(dev_settings::CONFIRM_TITLE);
+        n.set_description(format!("{path}. {body}"));
+    });
+    if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        answer = answer.or(Some(false));
+    }
+    answer
+}
+
+/// Tests: opens the Remove confirm for `path` the way a click on its **Remove...** does.
+#[cfg(test)]
+pub(crate) fn open_remove_confirm(ctx: &egui::Context, path: &str) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new("hub.dev.ui"),
+            DevUi {
+                ask: Some(path.into()),
+                fresh: true,
+                focus: None,
+            },
+        )
+    });
+}
+
 /// The Developer section (R5). Dev mode off: one line and nothing to click.
 fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
     let mut click = None;
@@ -154,6 +259,19 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
         ui.add_space(20.0);
         return None;
     }
+    let sid = egui::Id::new("hub.dev.ui");
+    let mut st: DevUi = ui.data(|d| d.get_temp(sid)).unwrap_or_default();
+    // Taken now, applied at the end of this frame: it was set by a click on the frame before.
+    let pending_focus = st.focus.take();
+    // The folder went (removed elsewhere, or the view changed): its confirm goes with it.
+    if st
+        .ask
+        .as_ref()
+        .is_some_and(|p| !v.folders.iter().any(|r| &r.path == p))
+    {
+        st.ask = None;
+    }
+    let mut remove_ids: Vec<(String, egui::Id)> = Vec::new();
     ui.label(
         RichText::new(dev_settings::FOLDERS_HEADING)
             .strong()
@@ -190,20 +308,26 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
                     }
                 }
                 ui.add_space(4.0);
-                let b = ui.button("Remove");
+                let b = ui.button(dev_settings::REMOVE_BUTTON);
                 let name = dev_settings::remove_name(&row.path);
                 ui.ctx().accesskit_node_builder(b.id, |n| {
                     n.set_label(name);
                 });
+                remove_ids.push((row.path.clone(), b.id));
+                // Only asks: nothing is sent until Remove folder.
                 if b.clicked() {
-                    click = Some(DevClick::Remove(row.path.clone()));
+                    st.ask = Some(row.path.clone());
+                    st.fresh = true;
                 }
             });
         ui.add_space(6.0);
     }
     ui.add_space(2.0);
+    let mut add_id = None;
     ui.horizontal_wrapped(|ui| {
-        if ui.button(dev_settings::ADD).clicked() {
+        let add = ui.button(dev_settings::ADD);
+        add_id = Some(add.id);
+        if add.clicked() {
             click = Some(DevClick::Add);
         }
         if let Some(n) = &v.note {
@@ -233,6 +357,52 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
     ui.add_space(8.0);
     ui.add(egui::Label::new(RichText::new(dev_settings::FOOTNOTE).color(c(t.text_muted))).wrap());
     ui.add_space(20.0);
+    if let Some(path) = st.ask.clone() {
+        let apps = v
+            .folders
+            .iter()
+            .find(|r| r.path == path)
+            .map(|r| r.apps.clone())
+            .unwrap_or_default();
+        let fresh = std::mem::take(&mut st.fresh);
+        match remove_confirm(ui.ctx(), t, &path, &apps, fresh) {
+            Some(true) => {
+                let at = v.folders.iter().position(|r| r.path == path);
+                let fallback = at.and_then(|i| {
+                    v.folders
+                        .get(i + 1)
+                        .or_else(|| i.checked_sub(1).and_then(|j| v.folders.get(j)))
+                        .map(|r| r.path.clone())
+                });
+                st.focus = Some(DevFocus {
+                    primary: path.clone(),
+                    fallback,
+                });
+                st.ask = None;
+                click = Some(DevClick::Remove(path));
+                ui.ctx().request_repaint();
+            }
+            Some(false) => {
+                st.focus = Some(DevFocus {
+                    primary: path,
+                    fallback: None,
+                });
+                st.ask = None;
+                ui.ctx().request_repaint();
+            }
+            None => {}
+        }
+    }
+    if let Some(f) = pending_focus {
+        let row = |p: &str| remove_ids.iter().find(|(x, _)| x == p).map(|(_, id)| *id);
+        let to = row(&f.primary)
+            .or_else(|| f.fallback.as_deref().and_then(row))
+            .or(add_id);
+        if let Some(to) = to {
+            ui.ctx().memory_mut(|m| m.request_focus(to));
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(sid, st));
     click
 }
 

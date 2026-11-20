@@ -25,7 +25,14 @@ pub const MODE_OFF: &str = "Developer mode is off on this PC, so dev folders do 
 pub const ADDED: &str = "Added. Apps you allow from here keep what you allowed over rebuilds.";
 pub const ALREADY: &str = "That folder is already on the list.";
 pub const REMOVED: &str = "Removed.";
-pub const FAILED: &str = "That did not work. Try again.";
+pub const FAILED: &str = "Hideout couldn't save that. Nothing changed.";
+
+// The Remove confirm (DF1): one click to ask, one to remove. Cancel is the default.
+pub const REMOVE_BUTTON: &str = "Remove\u{2026}";
+pub const CONFIRM_TITLE: &str = "Remove this dev folder?";
+pub const CONFIRM_CANCEL: &str = "Cancel";
+pub const CONFIRM_OK: &str = "Remove folder";
+pub const CONFIRM_NO_APPS: &str = "No apps from here. Nothing else changes.";
 
 /// The button's accessible name: "Remove dev folder C:\Dev\app".
 pub fn remove_name(path: &str) -> String {
@@ -39,6 +46,28 @@ pub fn apps_line(apps: &[String]) -> String {
     } else {
         apps.join(", ")
     }
+}
+
+/// The confirm's second line: the apps stay as they are (a running copy is not stopped) and
+/// their next build asks again.
+pub fn confirm_body(apps: &[String]) -> String {
+    let (who, stays, its) = match apps {
+        [] => return CONFIRM_NO_APPS.to_string(),
+        [one] => (one.clone(), "stays", "Its"),
+        [init @ .., last] if init.len() == 1 => {
+            (format!("{} and {last}", init[0]), "stay", "Their")
+        }
+        [init @ .., last] => (format!("{} and {last}", init.join(", ")), "stay", "Their"),
+    };
+    let run = if apps.len() == 1 {
+        "a copy that is running keeps running"
+    } else {
+        "copies that are running keep running"
+    };
+    format!(
+        "{who} {stays} as {} now, and {run}. {its} next build asks for your OK again.",
+        if apps.len() == 1 { "it is" } else { "they are" }
+    )
 }
 
 /// The line after a removal: names the apps that will ask again.
@@ -209,6 +238,48 @@ mod tests {
             assert!(l.ends_with("ignores it.") || l.ends_with("for now."), "{l}");
             assert_ne!(l, p.line());
             assert!(!l.contains("Choose"), "{l}");
+        }
+    }
+
+    #[test]
+    fn the_remove_confirm_says_the_running_copy_stays_and_the_next_build_asks() {
+        assert_eq!(CONFIRM_TITLE, "Remove this dev folder?");
+        assert_eq!((CONFIRM_CANCEL, CONFIRM_OK), ("Cancel", "Remove folder"));
+        assert_eq!(REMOVE_BUTTON, "Remove\u{2026}");
+        assert_eq!(FAILED, "Hideout couldn't save that. Nothing changed.");
+        assert_eq!(
+            confirm_body(&[]),
+            "No apps from here. Nothing else changes."
+        );
+        assert_eq!(
+            confirm_body(&["Foxglove".into()]),
+            "Foxglove stays as it is now, and a copy that is running keeps running. Its next build asks for your OK again."
+        );
+        assert_eq!(
+            confirm_body(&["A".into(), "B".into()]),
+            "A and B stay as they are now, and copies that are running keep running. Their next build asks for your OK again."
+        );
+        assert_eq!(
+            confirm_body(&["A".into(), "B".into(), "C".into()]),
+            "A, B and C stay as they are now, and copies that are running keep running. Their next build asks for your OK again."
+        );
+        // No internal words in anything the dialog or the failure says.
+        let mut all = vec![
+            CONFIRM_TITLE.to_string(),
+            CONFIRM_NO_APPS.to_string(),
+            FAILED.to_string(),
+            REMOVED.to_string(),
+        ];
+        for n in 0..4 {
+            let apps: Vec<String> = (0..n).map(|i| format!("App{i}")).collect();
+            all.push(confirm_body(&apps));
+            all.push(removed_line(&apps));
+        }
+        for l in all {
+            let l = l.to_lowercase();
+            for bad in ["module", "hash", "enrol", "grant", "program"] {
+                assert!(!l.contains(bad), "{l}");
+            }
         }
     }
 
