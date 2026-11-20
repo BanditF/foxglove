@@ -690,6 +690,9 @@ pub fn named(r: egui::Response, name: &str) -> egui::Response {
     r
 }
 
+/// A swatch row: the frame it was last drawn in, last frame's tiles and this frame's.
+type SwatchRow = (u64, Vec<(egui::Id, bool)>, Vec<(egui::Id, bool)>);
+
 /// Names a custom pick-one tile (a colour swatch) for a reader: a radio button called `name`,
 /// on when `selected`, in a radio group "Colour" shared by the tiles of the Ui whose
 /// `unique_id` is `parent`. Nothing is drawn.
@@ -702,10 +705,30 @@ pub fn named_choice(
     let ctx = r.ctx.clone();
     ctx.accesskit_node_builder(parent, |_| ());
     let group = parent.with("swatch-group");
-    ctx.accesskit_node_builder(group, |n| {
-        n.set_role(egui::accesskit::Role::RadioGroup);
-        n.set_label("Colour");
-    });
+    let made = ctx
+        .accesskit_node_builder(group, |n| {
+            n.set_role(egui::accesskit::Role::RadioGroup);
+            n.set_label("Colour");
+        })
+        .is_some();
+    // A node made without a Ui lands under the root: move it under this Ui, as pill_group does.
+    if made {
+        adopt(&ctx, egui::accesskit_root_id(), parent, group);
+    }
+    // Arrow keys, Home and End move between the swatches like a pill row's: the tiles seen
+    // last frame are the row, this frame's are collected for the next.
+    let frame = ctx.cumulative_frame_nr();
+    let (seen, mut last, mut this): SwatchRow =
+        ctx.data(|d| d.get_temp(group))
+            .unwrap_or((frame, Vec::new(), Vec::new()));
+    if seen != frame {
+        last = std::mem::take(&mut this);
+    }
+    if this.is_empty() {
+        pill_keys(&ctx, &last);
+    }
+    this.push((r.id, r.enabled()));
+    ctx.data_mut(|d| d.insert_temp(group, (frame, last, this)));
     ctx.accesskit_node_builder(r.id, |n| {
         n.set_role(egui::accesskit::Role::RadioButton);
         n.set_label(name);

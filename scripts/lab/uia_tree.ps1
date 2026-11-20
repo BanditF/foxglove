@@ -27,7 +27,7 @@
 # -Handle (decimal or 0x hex native window handle from that list).
 #
 # Exit codes: 0 all expectations met (or none given), 2 an expectation is missing, 3 refused or
-# window not found or ambiguous or the -Page entry not found, 4 timed out (a hard limit: a hung window cannot block it). Nothing is clicked, typed or focused; the tree is only read.
+# window not found or ambiguous or the -Page entry not found, 4 timed out (a hard limit: a hung window cannot block it). Nothing is clicked, typed or focused, and the tree is only read, except that -Page selects or invokes one sidebar entry through UIA.
 param(
     [int]$ProcessId = 0,
     [string]$Title = 'Foxglove',

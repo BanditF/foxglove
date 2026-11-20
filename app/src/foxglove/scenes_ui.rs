@@ -1556,6 +1556,10 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, height), Sense::click_and_drag());
     let response = theme::named(response, "Room map");
+    ui.ctx().accesskit_node_builder(response.id, |n| {
+        n.set_role(egui::accesskit::Role::Group);
+        n.set_description("The list below changes the same lights.");
+    });
     let map = Map::new(rect.shrink(12.0), b);
     handle_drag(&response, v, &map, draft, out);
     let room = dragged_room(&v.room, draft.drag.as_ref());

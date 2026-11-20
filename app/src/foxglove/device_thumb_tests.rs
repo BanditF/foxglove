@@ -451,7 +451,7 @@ fn a_thumbnail_holds_its_colours_behind_the_window() {
             let mut o = fresh.run_ui(egui::RawInput::default(), |ui| {
                 let thumb = Thumb::bluetooth(BtCategory::Mouse);
                 if clickable {
-                    row_thumb(ui, ROW, "k", thumb, true);
+                    row_thumb(ui, ROW, "k", "Desk keyboard", thumb, true);
                 } else {
                     show(ui, ROW, &thumb);
                 }

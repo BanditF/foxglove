@@ -961,6 +961,7 @@ fn device(
                     ui,
                     size,
                     &row.key,
+                    &row.name,
                     Thumb::of_row(row, lamps),
                     identify && !busy,
                 );

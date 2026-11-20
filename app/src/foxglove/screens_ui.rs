@@ -593,7 +593,7 @@ pub fn group(ui: &mut egui::Ui) {
             }
             ui.horizontal_wrapped(|ui| {
                 let r = ui.add(egui::TextEdit::singleline(&mut state.new_exe).hint_text("game.exe").desired_width(110.0));
-                super::theme::named(r, "Game program name");
+                super::theme::named(r, "Game app name");
                 let r = ui.add(egui::TextEdit::singleline(&mut state.new_hint).hint_text("hint").desired_width(140.0));
                 super::theme::named(r, "Hint for the new game");
                 let exe = state.new_exe.trim().to_lowercase();

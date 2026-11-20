@@ -993,6 +993,7 @@ pub fn row_thumb(
     ui: &mut egui::Ui,
     size: Vec2,
     key: &str,
+    device: &str,
     thumb: Thumb,
     identify: bool,
 ) -> egui::Response {
@@ -1007,7 +1008,7 @@ pub fn row_thumb(
     let response = super::theme::named(
         response,
         &if identify {
-            format!("Identify {label}")
+            format!("Identify {device}")
         } else {
             label.to_string()
         },

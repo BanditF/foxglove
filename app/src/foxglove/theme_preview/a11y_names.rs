@@ -86,6 +86,32 @@ fn every_focusable_control_has_a_name() {
     );
 }
 
+/// A swatch row's "Colour" radio group sits in its card, not at the end of the window, and its
+/// swatches are its children.
+#[test]
+fn a_swatch_group_is_in_its_row_with_its_swatches() {
+    let t = super::pill_groups::page_tree(Page::Lights, &Samples::full(), 1400.0);
+    let root = egui::accesskit_root_id().accesskit_id();
+    let group = t
+        .nodes
+        .iter()
+        .find(|(_, n)| n.role() == Role::RadioGroup && n.label() == Some("Colour"))
+        .expect("a colour group on the Lights page");
+    let parents = |id: NodeId| {
+        t.nodes
+            .iter()
+            .filter(|(_, n)| n.children().contains(&id))
+            .count()
+    };
+    assert_eq!(parents(group.0), 1, "one parent");
+    let under_root = t
+        .nodes
+        .iter()
+        .any(|(id, n)| *id == root && n.children().contains(&group.0));
+    assert!(!under_root, "the group is not a direct child of the window");
+    assert!(group.1.children().len() >= 2, "the swatches are in it");
+}
+
 /// The text of the label drawn closest to the left of or above `n`, for the failure message.
 fn near_text(n: &Node, all: &std::collections::HashMap<NodeId, &Node>) -> String {
     let Some(b) = n.bounds() else {
@@ -125,16 +151,6 @@ fn a_control_after_its_label_takes_it_as_its_name() {
     });
     out.textures_delta.clear();
     let t = out.platform_output.accesskit_update.expect("tree");
-    for (id, n) in &t.nodes {
-        eprintln!(
-            "{id:?} {:?} label={:?} value={:?} by={:?} kids={:?}",
-            n.role(),
-            n.label(),
-            n.value(),
-            n.labelled_by(),
-            n.children()
-        );
-    }
     let all: std::collections::HashMap<NodeId, &Node> =
         t.nodes.iter().map(|(i, n)| (*i, n)).collect();
     let spin = t
