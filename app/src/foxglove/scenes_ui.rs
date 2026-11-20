@@ -1209,11 +1209,15 @@ fn say_changes(ctx: &egui::Context, v: &View) {
         (None, false, _) if v.screen.refused && v.look.kind.reads_screen() => Now::Refused,
         (None, false, _) => Now::Stopped,
     };
+    // Running and paused can alternate by themselves (a display that keeps changing): the same
+    // words are not said again within half a minute.
+    let calm = |words: String| (!super::announce::recent(ctx, &words, 30.0)).then_some(words);
     super::announce::watch(ctx, "scene", now, |was, now| match now {
         Now::Stopping => None,
-        Now::Running(name) if name == glow::NAME => Some(SAID_GLOW_ON.into()),
-        Now::Running(name) => Some(format!("Scene started: {name}")),
-        Now::Paused(words) => Some(words.clone()),
+        Now::Running(name) if name == glow::NAME => calm(SAID_GLOW_ON.into()),
+        Now::Running(name) => calm(format!("Scene started: {name}")),
+        // The status line's words, with the one noun the app uses for itself.
+        Now::Paused(words) => calm(words.replace("Foxglove", "the app")),
         Now::Refused => Some(SAID_REFUSED.into()),
         // Stopped after a stop (or a run that ended): not after a refusal clearing.
         Now::Stopped if matches!(was, Now::Refused) => None,
@@ -1225,7 +1229,7 @@ fn say_changes(ctx: &egui::Context, v: &View) {
 pub const SAID_GLOW_ON: &str = "Screen glow on: reading your screen for the lights";
 /// A start was refused until the user says yes to Screen glow.
 pub const SAID_REFUSED: &str =
-    "Screen glow did not start: it needs your yes. Pick it and press Start.";
+    "Screen glow did not start: it needs your OK first. Pick it and press Start.";
 /// The scene stopped and the lights are back.
 pub const SAID_STOPPED: &str = "Scene stopped: lights put back";
 

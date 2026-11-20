@@ -222,7 +222,12 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
             top: 16,
             bottom: 12,
         }))
-        .show(ui, |ui| sidebar(ui, &mut page));
+        .show(ui, |ui| {
+            sidebar(ui, &mut page);
+            // The window's live region (#1376): no size, no looks. Here, in the one panel whose
+            // size does not depend on its content, so it can not make a strip taller.
+            super::announce::app(ui);
+        });
     if page != current() {
         set_page(page);
     }
@@ -235,11 +240,7 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
                 .fill(p.ground)
                 .inner_margin(Margin::symmetric(18, 10)),
         )
-        .show(ui, |ui| {
-            status_strip(ui, &strip);
-            // The window's live region (#1376): no size, no looks.
-            super::announce::app(ui);
-        });
+        .show(ui, |ui| status_strip(ui, &strip));
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(p.ground).inner_margin(Margin {
             left: 22,

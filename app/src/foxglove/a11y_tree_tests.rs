@@ -155,6 +155,10 @@ fn a_failed_subclass_install_is_an_error_not_a_panic() {
 fn live_words(ctx: &egui::Context, mut add: impl FnMut(&mut egui::Ui), time: f64) -> Vec<String> {
     let raw = egui::RawInput {
         time: Some(time),
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1100.0, 1200.0),
+        )),
         ..Default::default()
     };
     let mut out = ctx.run_ui(raw, |ui| add(ui));
@@ -224,7 +228,8 @@ fn scenes_say_start_refusal_and_stop() {
     let mut t = 0.0;
     let mut show = |v: &scenes_ui::View| -> Option<String> {
         t += 10.0;
-        live_words(
+        // What the tree holds (not the memory): the one polite node's name.
+        let words = live_words(
             &ctx,
             |ui| {
                 scenes_ui::draw(ui, v, &mut Draft::default());
@@ -232,7 +237,8 @@ fn scenes_say_start_refusal_and_stop() {
             },
             t,
         );
-        announce::said(&ctx, announce::app_id())
+        assert_eq!(words.len(), 1, "one polite node: {words:?}");
+        words.into_iter().next().filter(|w| !w.is_empty())
     };
     assert_eq!(show(&idle), None, "opening the page says nothing");
     assert_eq!(show(&running).as_deref(), Some("Scene started: Breathe"));
@@ -258,4 +264,64 @@ fn the_firmware_update_is_spoken_by_state_not_by_progress() {
     })
     .unwrap()
     .ends_with("no drive"));
+}
+
+/// A context with AccessKit on and the app's fonts, as the tree tests above set one up.
+fn ctx_with_tree() -> egui::Context {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut fonts = egui::FontDefinitions::default();
+    crate::platform::add_phosphor_to_fonts(&mut fonts);
+    theme::add_fonts(&mut fonts);
+    ctx.set_fonts(fonts);
+    ctx
+}
+
+/// The Settings shell itself carries the window's live region: one polite node, whose name is
+/// the last notice. Fails if the shell stops drawing it.
+#[test]
+fn the_settings_shell_carries_the_live_region() {
+    use super::announce;
+    super::store::test_config_dir();
+    shell::preview_page(Page::Settings);
+    let ctx = ctx_with_tree();
+    let frame = |t: f64| live_words(&ctx, |ui| shell::frame(ui, |_| {}), t);
+    assert_eq!(
+        frame(1.0),
+        vec![String::new()],
+        "one polite node, nothing said"
+    );
+    announce::notice_at(&ctx, shell::KEYBOARD_ON, 5.0);
+    assert_eq!(frame(5.1), vec![shell::KEYBOARD_ON.to_string()]);
+}
+
+/// A state that changed while its page (or window) was out of sight is not announced when it
+/// comes back: it was not seen in the frame before.
+#[test]
+fn a_change_made_out_of_sight_is_not_said_on_return() {
+    use super::announce;
+    let ctx = ctx_with_tree();
+    let seen = |on: bool, t: f64| {
+        live_words(
+            &ctx,
+            |ui| {
+                announce::watch(ui.ctx(), "probe", on, |_, n| {
+                    Some(if *n { "Back" } else { "Gone" }.to_string())
+                });
+                announce::app(ui);
+            },
+            t,
+        )
+    };
+    assert_eq!(seen(true, 1.0), vec![String::new()]);
+    // Seen in the next frame too: a change is said.
+    assert_eq!(seen(false, 10.0), vec!["Gone".to_string()]);
+    // Frames pass without the watch (another page, the window closed), the value changes, and
+    // the watch comes back: silent.
+    for t in [20.0, 21.0] {
+        live_words(&ctx, announce::app, t);
+    }
+    live_words(&ctx, |_| {}, 22.0);
+    // The region starts blank too (the window was not drawn in the frame before).
+    assert_eq!(seen(true, 30.0), vec![String::new()], "nothing said");
 }

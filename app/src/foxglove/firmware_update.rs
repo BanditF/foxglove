@@ -82,10 +82,13 @@ pub fn spoken(v: &View) -> Option<String> {
         View::Idle => None,
         View::Checking => Some("Checking the firmware folder".into()),
         View::Confirm { .. } => Some("Firmware update ready: check it and confirm".into()),
-        View::Refused(why) => Some(why.clone()),
+        View::Refused(why) => Some(super::announce::brief(why)),
         View::Running(_) => Some("Updating the keyboard firmware".into()),
         View::Done(_) => Some("Keyboard firmware update finished".into()),
-        View::Failed { message, .. } => Some(format!("Keyboard firmware update failed: {message}")),
+        View::Failed { message, .. } => Some(format!(
+            "Keyboard firmware update failed: {}",
+            super::announce::brief(message)
+        )),
     }
 }
 
