@@ -648,6 +648,20 @@ impl Glow {
         areas: BTreeMap<LightKey, Rgb>,
         t: SceneTime,
     ) {
+        self.hand_back_with(why, own, areas, t, true);
+    }
+
+    /// [`Glow::hand_back`], with `animate` false for reduced motion (Windows' animation effects
+    /// off): the hold stays, the fade becomes a cut (the lights go to their own colours in one
+    /// frame, flash-limited as ever).
+    pub fn hand_back_with(
+        &mut self,
+        why: HandBack,
+        own: BTreeMap<LightKey, Rgb>,
+        areas: BTreeMap<LightKey, Rgb>,
+        t: SceneTime,
+        animate: bool,
+    ) {
         if self.fade.is_some() {
             return;
         }
@@ -655,7 +669,7 @@ impl Glow {
             |m: BTreeMap<LightKey, Rgb>| m.into_iter().map(|(k, c)| (k, c.linear())).collect();
         self.fade = Some(Fade {
             start: t.ms() + why.hold_ms(),
-            ms: why.fade_ms(),
+            ms: if animate { why.fade_ms() } else { 0 },
             to: linear(own),
             from: BTreeMap::new(),
             areas: linear(areas),
