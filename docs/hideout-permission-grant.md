@@ -23,7 +23,7 @@ and Permissions section are **not built yet**; this page records what they must 
   while permissions are pending or the binding is void.
 - `Supervisor::review_approved(id, code, chosen, declined, by)` grants for the list the user saw.
 
-## Built in the Modules page
+## Built in the Apps page
 
 - `crates/hideout/src/permission_actions.rs` (`PermUi`) opens the dialog from Turn on, the row's
   Review button, the Permissions header line and Change... Allow calls `grant_listed_in` (router
@@ -45,7 +45,7 @@ and answers exit 3 with "Queued ... Nothing is allowed yet". A stale code, an it
 the list and `--keyboard` (which has its own window) are not queued. A newer request for the same
 module replaces the older one; restarting the hub drops them all.
 
-The Modules page shows a header line "A command asked to allow N permissions for X" with Review
+The Apps page shows a header line "A command asked to allow N permissions for X" with Review
 and Not now. Review opens the normal dialog (`PermUi::open_queued`) with exactly the named items
 ticked and everything else unticked; only the user's Allow writes the grant, for the list code
 the dialog shows (the same `grant_listed_in` as any Allow, recorded as `by = "dialog"`). If the
