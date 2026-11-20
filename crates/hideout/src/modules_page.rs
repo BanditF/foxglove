@@ -714,6 +714,17 @@ impl hideout_shell::Page for ModulesPage {
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
         use hideout_shell::modules_list::{page_ui_with_head, Banner, Click, Find, Top};
         let (rows, counting) = self.rows();
+        // Review... / Set up... pressed on Settings > Developer: open that app's dialog (the
+        // user's own click made the request; Allow is still theirs).
+        let asked = crate::review_ask::take();
+        if let (Some(p), Some((id, set_up))) = (self.perm.as_mut(), asked.last()) {
+            let how = if *set_up {
+                crate::permission_actions::Opener::Header
+            } else {
+                p.review_opener(id)
+            };
+            p.open(id, how);
+        }
         let state = self
             .facts
             .as_ref()

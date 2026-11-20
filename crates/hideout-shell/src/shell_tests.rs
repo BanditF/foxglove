@@ -4900,10 +4900,20 @@ fn renders_the_consent_copy_for_review() {
 // ---- R5: Settings > Developer ---------------------------------------------------------------
 
 fn dev_view(case: &str) -> crate::dev_settings::DevView {
-    use crate::dev_settings::{DevRow, DevView, Note, Problem};
+    use crate::dev_settings::{AppState, DevApp, DevRow, DevView, Note, Problem};
+    let app = |name: &str, state| DevApp {
+        id: name.to_lowercase().replace(' ', "-"),
+        name: name.into(),
+        state,
+    };
     let ok = DevRow {
         path: r"D:\dev\foxglove".into(),
-        apps: vec!["Foxglove".into(), "Vulpes".into()],
+        apps: vec![
+            app("Foxglove", AppState::Running),
+            app("Vulpes", AppState::NeedsOk),
+            app("Gizmo Keys", AppState::NotKept),
+            app("Tally", AppState::NotAllowed),
+        ],
         problem: None,
     };
     match case {
@@ -4929,18 +4939,34 @@ fn dev_view(case: &str) -> crate::dev_settings::DevView {
                 ok,
                 DevRow {
                     path: r"D:\shared\tools".into(),
-                    apps: vec![],
+                    apps: vec![
+                        app("Relay", AppState::Ignored),
+                        app("Probe", AppState::Ignored),
+                    ],
                     problem: Some(Problem::FolderOpen),
                 },
                 DevRow {
                     path: r"D:\dev\new-app".into(),
-                    apps: vec![],
+                    apps: vec![
+                        app("Sensor Hub", AppState::Off),
+                        app("Beacon", AppState::Restarting),
+                        app("Lamp", AppState::Stopped),
+                    ],
                     problem: None,
                 },
             ],
             note: Some(Note {
                 text: Problem::Profile.line().into(),
                 error: true,
+            }),
+        },
+        "added" => DevView {
+            on: true,
+            restart: true,
+            folders: vec![ok],
+            note: Some(Note {
+                text: crate::dev_settings::added_line(&["Vulpes".into(), "Gizmo Keys".into()]),
+                error: false,
             }),
         },
         _ => DevView {
@@ -5004,6 +5030,15 @@ fn renders_the_developer_settings_for_review() {
         ),
         ("off-listed", true, 720, 520, "r5-developer-off-dark.png"),
         ("off-listed", false, 720, 520, "r5-developer-off-light.png"),
+        ("ok", false, 720, 760, "df2-apps-light.png"),
+        ("added", false, 720, 760, "df2-added-light.png"),
+        ("added", true, 720, 760, "df2-added-dark.png"),
+        ("added", false, 360, 1200, "df2-added-narrow-light.png"),
+        ("ok", true, 720, 760, "df2-apps-dark.png"),
+        ("ok", false, 360, 1200, "df2-apps-narrow-light.png"),
+        ("problem", false, 720, 1100, "df2-states-light.png"),
+        ("problem", true, 720, 1100, "df2-states-dark.png"),
+        ("problem", false, 360, 1500, "df2-states-narrow-light.png"),
     ] {
         let view = dev_view(case);
         let choice = if dark {
@@ -5175,6 +5210,7 @@ impl DevDriver {
         let id = self
             .id_of(egui::accesskit::Role::Button, label)
             .or_else(|| self.id_of(egui::accesskit::Role::CheckBox, label))
+            .or_else(|| self.id_of(egui::accesskit::Role::Link, label))
             .unwrap_or_else(|| panic!("no button {label}"));
         let req = egui::accesskit::ActionRequest {
             action: egui::accesskit::Action::Click,
@@ -5209,6 +5245,61 @@ impl DevDriver {
 }
 
 const FOX: &str = r"D:\dev\foxglove";
+
+/// DF2: each app is one line with its state in words, a screen reader hears it as one label,
+/// the link names its app, and a row Hideout ignores still lists what was stored.
+#[test]
+fn app_lines_say_their_state_in_words() {
+    let d = DevDriver::new("problem");
+    let has = |label: &str| d.names.values().any(|(_, l, _)| l == label);
+    for l in [
+        "Foxglove, running",
+        "Vulpes, needs your OK",
+        "Gizmo Keys, not kept over rebuilds yet",
+        "Tally, not allowed yet",
+        "Relay, not kept while Hideout ignores this folder",
+        "Sensor Hub, off",
+        "Beacon, restarting",
+        "Lamp, stopped",
+    ] {
+        assert!(has(l), "{l}: {:?}", d.names.values().collect::<Vec<_>>());
+    }
+    for (role, l) in [
+        (egui::accesskit::Role::Link, "Review Vulpes"),
+        (egui::accesskit::Role::Link, "Review Gizmo Keys"),
+        (egui::accesskit::Role::Link, "Set up Tally"),
+    ] {
+        assert!(d.id_of(role, l).is_some(), "{l}");
+    }
+    // No link for a running, off, restarting, stopped or ignored app.
+    for l in [
+        "Review Foxglove",
+        "Review Relay",
+        "Review Beacon",
+        "Set up Lamp",
+    ] {
+        assert!(d.id_of(egui::accesskit::Role::Link, l).is_none(), "{l}");
+    }
+    // A row with apps does not also say there are none.
+    assert!(!has(crate::dev_settings::NO_APPS) || d.view.folders.iter().any(|r| r.apps.is_empty()));
+}
+
+/// DF2: Review... and Set up... send the app's id, once, and nothing else.
+#[test]
+fn review_and_set_up_send_their_app() {
+    use crate::dev_settings::DevClick;
+    let mut d = DevDriver::new("ok");
+    d.press("Review Vulpes");
+    assert_eq!(d.sent, vec![DevClick::Review("vulpes".into())]);
+    d.sent.clear();
+    d.press("Review Gizmo Keys");
+    assert_eq!(d.sent, vec![DevClick::Review("gizmo-keys".into())]);
+    d.sent.clear();
+    d.press("Set up Tally");
+    assert_eq!(d.sent, vec![DevClick::SetUp("tally".into())]);
+    d.frames(3, vec![]);
+    assert_eq!(d.sent.len(), 1);
+}
 
 /// Each click the section makes. Add carries no path (the hub opens the picker itself). Remove
 /// sends nothing until the confirm is answered: a count of two clicks.
@@ -5364,7 +5455,7 @@ fn the_remove_confirm_reads_well_to_a_screen_reader() {
         .expect("a dialog");
     assert_eq!(label, w::CONFIRM_TITLE);
     assert!(desc.contains(FOX), "{desc}");
-    assert!(desc.contains("keep running"), "{desc}");
+    assert!(desc.contains("keeps running"), "{desc}");
     assert!(desc.contains("next build asks for your OK again"), "{desc}");
     assert!(d.has_button(w::CONFIRM_CANCEL));
     assert!(d.has_button(w::CONFIRM_OK));

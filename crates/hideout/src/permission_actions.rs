@@ -761,6 +761,22 @@ impl PermUi {
     }
 
     /// Opens the dialog for `id` (only from the user's click).
+    /// The opener the header line of `id` would use (More when it asks for more, Header when it
+    /// waits for its first or a voided OK), else the Modules page's own Review...: Settings >
+    /// Developer's Review... then has the same Allow as the Modules page for that app.
+    pub fn review_opener(&self, id: &str) -> Opener {
+        let kind = self
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| header_kind(&e.view, e.enabled, false));
+        match kind {
+            Some(HeaderKind::More | HeaderKind::MoreBuild) => Opener::More,
+            Some(_) => Opener::Header,
+            None => Opener::Review,
+        }
+    }
+
     pub fn open(&mut self, id: &str, how: Opener) {
         self.open_with(id, how, None, None);
     }
