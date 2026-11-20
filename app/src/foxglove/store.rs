@@ -168,6 +168,12 @@ pub fn rows_for_test(path: &Path) -> Vec<super::health::HealthRow> {
     rows_for(&unread_at(path))
 }
 
+/// A store error for a status line, the log or a result: its first line only. A TOML parse error
+/// goes on to quote the bad line of the file, which can be the pairing token's.
+pub(super) fn error_summary(e: &str) -> &str {
+    e.lines().next().unwrap_or("").trim()
+}
+
 fn rows_for(unread: &[(String, String)]) -> Vec<super::health::HealthRow> {
     let Some((_, why)) = unread.last() else {
         return vec![];
@@ -178,7 +184,8 @@ fn rows_for(unread: &[(String, String)]) -> Vec<super::health::HealthRow> {
         "Settings",
         super::health::Level::Warn,
         format!(
-            "settings unreadable: {why} (not saved until read: {})",
+            "settings unreadable: {} (not saved until read: {})",
+            error_summary(why),
             sections.join(", ")
         ),
     )]
@@ -1432,5 +1439,19 @@ n = 7
         );
         assert_eq!(by_handle.try_load::<Demo>(), Some(Demo { on: true, n: 5 }));
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod error_summary_tests {
+    use super::error_summary;
+
+    #[test]
+    fn a_toml_error_loses_the_quoted_line() {
+        let e = "foxglove.toml: TOML parse error at line 3, column 9\n  |\n3 | token = \"SECRET\" oops\n  |         ^\nexpected newline";
+        let s = error_summary(e);
+        assert!(s.contains("line 3, column 9"), "{s}");
+        assert!(!s.contains("SECRET") && !s.contains('\n'), "{s}");
+        assert_eq!(error_summary(""), "");
     }
 }

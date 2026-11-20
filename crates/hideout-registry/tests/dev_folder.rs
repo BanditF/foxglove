@@ -723,3 +723,85 @@ fn a_hand_edited_removal_ends_the_enrolment_and_re_listing_needs_an_allow() {
     rebuild(&f, b"build 2");
     assert_eq!(back.binding_void(ID), Some(VoidReason::Changed));
 }
+
+/// `mklink /J link target` (a junction needs no admin rights). cmd reads `/` as a switch, so the
+/// paths go in with backslashes only.
+fn junction(link: &std::path::Path, target: &std::path::Path) {
+    let plain = |p: &std::path::Path| {
+        p.display()
+            .to_string()
+            .replace('/', "\\")
+            .trim_start_matches("\\?\\")
+            .to_string()
+    };
+    let st = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(plain(link))
+        .arg(plain(target))
+        .output()
+        .unwrap();
+    assert!(
+        st.status.success(),
+        "mklink failed: {} {}",
+        String::from_utf8_lossy(&st.stdout),
+        String::from_utf8_lossy(&st.stderr)
+    );
+}
+
+#[test]
+fn a_junction_out_of_the_folder_or_an_alias_into_it_never_matches_by_spelling() {
+    let f = fx("junction");
+    let canon_exe = canonical_path(&f.exe).unwrap();
+    assert!(f.reg.dev_folder_for(&canon_exe).is_some());
+    // A junction inside the folder that leads outside: the program behind it canonicalizes to
+    // the outside place, which is in no dev folder.
+    let outside = temp("junction-outside");
+    std::fs::write(outside.join("foxglove.exe"), b"evil").unwrap();
+    let link = f.out.join("escape");
+    junction(&link, &outside);
+    let behind = canonical_path(&link.join("foxglove.exe")).unwrap();
+    assert!(
+        !path_within(&canonical_path(&f.out).unwrap(), &behind),
+        "{behind}"
+    );
+    assert!(f.reg.dev_folder_for(&behind).is_none());
+    // The uncanonical spelling through the junction is not inside the folder either as text:
+    // only canonical paths are ever asked, and a raw alias never matches.
+    let spelled = link.join("foxglove.exe").display().to_string();
+    assert!(f.reg.dev_folder_for(&spelled).is_none());
+    // A junction to the folder from elsewhere: its raw spelling is another path and never
+    // matches; its canonical form is the folder's own.
+    let alias = temp("junction-alias").join("in");
+    junction(&alias, &f.out);
+    let raw = alias.join("foxglove.exe").display().to_string();
+    assert!(f.reg.dev_folder_for(&raw).is_none());
+    assert_eq!(
+        f.reg
+            .dev_folder_for(&canonical_path(&alias.join("foxglove.exe")).unwrap()),
+        f.reg.dev_folder_for(&canon_exe)
+    );
+}
+
+#[test]
+fn an_8_3_short_name_or_other_case_is_the_same_folder_not_another_one() {
+    let f = fx("short-name-folder-with-a-long-name");
+    let canon_exe = canonical_path(&f.exe).unwrap();
+    // Case variants compare equal.
+    assert!(f.reg.dev_folder_for(&canon_exe.to_uppercase()).is_some());
+    // The short spelling (when the volume makes one) canonicalizes back to the long one; a raw
+    // short spelling never matches by text.
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "for", "%I", "in"])
+        .arg(format!("({})", f.exe.display()))
+        .args(["do", "@echo", "%~sI"])
+        .output()
+        .unwrap();
+    let short = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !short.is_empty() && short.to_lowercase() != f.exe.display().to_string().to_lowercase() {
+        assert!(f.reg.dev_folder_for(&short).is_none(), "{short}");
+        assert!(f
+            .reg
+            .dev_folder_for(&canonical_path(std::path::Path::new(&short)).unwrap())
+            .is_some());
+    }
+}

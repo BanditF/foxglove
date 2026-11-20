@@ -169,19 +169,34 @@ impl DriveProbe for SystemDrives {
 mod tests {
     use super::*;
 
-    struct Fake(bool, Option<BusType>);
-    impl DriveProbe for Fake {
-        fn is_fixed(&self, _: &str) -> bool {
-            self.0
+    /// Answers for one drive letter only (`'E'`, say); any other drive is not fixed and has no
+    /// readable bus, so a check that asks about the wrong root fails.
+    struct Fake(bool, Option<BusType>, char);
+    impl Fake {
+        fn on(letter: char, fixed: bool, bus: Option<BusType>) -> Fake {
+            Fake(fixed, bus, letter)
         }
-        fn bus_type(&self, _: &str) -> Option<BusType> {
-            self.1
+        fn mine(&self, root: &str) -> bool {
+            root.chars()
+                .next()
+                .is_some_and(|c| c.eq_ignore_ascii_case(&self.2))
+        }
+    }
+    impl DriveProbe for Fake {
+        fn is_fixed(&self, root: &str) -> bool {
+            self.mine(root) && self.0
+        }
+        fn bus_type(&self, root: &str) -> Option<BusType> {
+            self.mine(root).then_some(self.1).flatten()
         }
     }
 
     #[test]
     fn a_usb_disk_that_reports_fixed_is_refused() {
-        assert!(!is_internal_fixed(&Fake(true, Some(BusType::Usb)), r"E:\"));
+        assert!(!is_internal_fixed(
+            &Fake::on('E', true, Some(BusType::Usb)),
+            r"E:\"
+        ));
     }
 
     #[test]
@@ -194,7 +209,10 @@ mod tests {
             BusType::Sas,
             BusType::Raid,
         ] {
-            assert!(is_internal_fixed(&Fake(true, Some(b)), r"C:\"), "{b:?}");
+            assert!(
+                is_internal_fixed(&Fake::on('C', true, Some(b)), r"C:\"),
+                "{b:?}"
+            );
         }
     }
 
@@ -210,19 +228,22 @@ mod tests {
             BusType::Unknown,
             BusType::from_raw(99),
         ] {
-            assert!(!is_internal_fixed(&Fake(true, Some(b)), r"E:\"), "{b:?}");
+            assert!(
+                !is_internal_fixed(&Fake::on('E', true, Some(b)), r"E:\"),
+                "{b:?}"
+            );
         }
     }
 
     #[test]
     fn a_bus_type_that_cannot_be_read_is_refused() {
-        assert!(!is_internal_fixed(&Fake(true, None), r"C:\"));
+        assert!(!is_internal_fixed(&Fake::on('C', true, None), r"C:\"));
     }
 
     #[test]
     fn a_drive_that_is_not_fixed_is_refused_whatever_the_bus() {
         assert!(!is_internal_fixed(
-            &Fake(false, Some(BusType::Sata)),
+            &Fake::on('C', false, Some(BusType::Sata)),
             r"C:\"
         ));
     }
@@ -230,11 +251,23 @@ mod tests {
     #[test]
     fn the_path_check_uses_the_bus_for_the_drive_in_the_path() {
         use crate::permission::on_local_fixed_drive_with as local;
-        assert!(!local(r"E:\devpp.exe", &Fake(true, Some(BusType::Usb))));
-        assert!(local(r"C:\devpp.exe", &Fake(true, Some(BusType::Nvme))));
-        assert!(!local(r"C:\devpp.exe", &Fake(true, None)));
-        // UNC and device paths never reach the probe's yes.
-        assert!(!local(r"\srv\share.exe", &Fake(true, Some(BusType::Sata))));
+        assert!(!local(
+            r"E:\dev\app.exe",
+            &Fake::on('E', true, Some(BusType::Usb))
+        ));
+        assert!(local(
+            r"C:\dev\app.exe",
+            &Fake::on('C', true, Some(BusType::Nvme))
+        ));
+        assert!(!local(r"C:\dev\app.exe", &Fake::on('C', true, None)));
+        // The probe is asked about the drive in the path: C: is internal, E: (USB) is not.
+        let two = Fake::on('C', true, Some(BusType::Nvme));
+        assert!(local(r"C:\dev\app.exe", &two));
+        assert!(!local(r"E:\dev\app.exe", &two));
+        // A UNC path is refused before the probe is asked, whatever it would say.
+        let any = Fake::on('S', true, Some(BusType::Sata));
+        assert!(!local(r"\srv\share\a.exe", &any));
+        assert!(!local(r"\?\UNC\srv\share\a.exe", &any));
     }
 
     #[test]

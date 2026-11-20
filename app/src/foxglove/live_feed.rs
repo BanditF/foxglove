@@ -711,6 +711,7 @@ pub fn start() {
                     Err(e) => last = e,
                 }
             }
+            let last = super::store::error_summary(&last);
             eprintln!("Foxglove: live feed: settings unreadable ({last}); not started");
             set_status(format!("settings unreadable: {last}"));
         });
@@ -1830,7 +1831,12 @@ fn change(
             Err(e) => why = Err(e),
         }
     })
-    .map_err(|e| format!("settings unreadable: {e}; try again in a moment"))?;
+    .map_err(|e| {
+        format!(
+            "settings unreadable: {}; try again in a moment",
+            super::store::error_summary(&e)
+        )
+    })?;
     why.map(|w| (s, w))
 }
 
