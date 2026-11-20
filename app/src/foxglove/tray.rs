@@ -114,7 +114,37 @@ pub struct Controls {
     status: String,
     /// Whether a keyboard is connected, for the tray icon's connected/disconnected glyph.
     connected: bool,
+    /// The menu, to add and drop the standalone Resume item (#1142).
+    menu: Menu,
+    /// "Resume wallpapers, paused by Arete" while something holds the wallpapers paused and no
+    /// hub is there to show it; its text is the menu item's accessible name.
+    we_resume: Option<(String, MenuItem)>,
+    /// The line after a Resume or a stop, for the tooltip (the hub page's words).
+    we_after: super::we_after::Tracker,
+    /// Whether something held the wallpapers at the last update (for the stop line).
+    we_held: bool,
 }
+
+/// The standalone Resume item's id.
+const WE_RESUME: &str = "fox-resume-we";
+/// Where it goes: right after Pause Foxglove.
+const WE_RESUME_AT: usize = 3;
+
+/// The standalone tray's Resume text, from who holds the wallpapers paused: `None` when nothing
+/// does (or the pause is stale: Wallpaper Engine restarted and plays). The words are the hub
+/// panel's, so the item's text (its accessible name) says whose pause it ends.
+pub fn we_resume_label(names: &[String], reasons: &[String], stale: bool) -> Option<String> {
+    if stale || (names.is_empty() && reasons.is_empty()) {
+        return None;
+    }
+    Some(super::hub_panels::resume_name(
+        &super::hub_panels::holder_words(names),
+    ))
+}
+
+/// The holders at the moment of a click on Resume, for the "Resumed. ..." line.
+static WE_PRESSED: std::sync::Mutex<Option<(Vec<String>, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
 
 /// The menu's labels, in order (`None` = a separator); Quit is added by `tray.rs`.
 pub fn labels(paused: bool) -> [Option<&'static str>; 6] {
@@ -177,7 +207,59 @@ impl Controls {
             profiles_shown: (vec!["-".into()], None),
             status: status_line(false, "", paused),
             connected: false,
+            menu: menu.clone(),
+            we_resume: None,
+            we_after: Default::default(),
+            we_held: false,
         }
+    }
+
+    /// Standalone only (a hub shows this on its page): the Resume item while something holds
+    /// the wallpapers paused, and the line after a Resume or a stop. Nothing else is read here.
+    fn we_update(&mut self) -> Option<String> {
+        if super::hub_link::module_mode() {
+            return None;
+        }
+        let stale = super::wallpaper_sync::pause_stale_now();
+        let names = if stale {
+            Vec::new()
+        } else {
+            super::wallpaper_sync::local_holders_now()
+        };
+        let reasons = if stale {
+            Vec::new()
+        } else {
+            super::wallpaper_sync::reasons_now()
+        };
+        let label = we_resume_label(&names, &reasons, stale);
+        let held = label.is_some();
+        let shown = self.we_resume.as_ref().map(|(t, _)| t.as_str());
+        if shown != label.as_deref() {
+            if let Some((_, old)) = self.we_resume.take() {
+                let _ = self.menu.remove(&old);
+            }
+            if let Some(text) = label {
+                let item = MenuItem::with_id(WE_RESUME, &text, true, None);
+                let _ = self.menu.insert(&item, WE_RESUME_AT);
+                self.we_resume = Some((text, item));
+            }
+        }
+        let now = std::time::Instant::now();
+        if let Some((who, at)) = WE_PRESSED.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            self.we_after.resume_pressed(&who, at);
+        }
+        // Only read the process list while the answer can matter.
+        let busy = held || self.we_held || self.we_after.showing();
+        let running = !busy || super::wallpaper_engine::running_now();
+        if self.we_after.shrank(&names, held) {
+            super::we_after::clear_stop();
+        }
+        let stop = !held && super::we_after::take_stop(now);
+        let user_paused = busy && super::live_feed::wallpaper_paused();
+        self.we_held = held;
+        self.we_after
+            .update(&names, held, running, user_paused, stop, now)
+            .map(|a| super::hub_panels::after_words(&a))
     }
 
     /// The tray icon's tooltip: the status line and each half's battery (#373).
@@ -226,7 +308,10 @@ impl Controls {
             .or_else(super::link::connected_name)
             .unwrap_or_default();
         let connected = self.connected || focus.is_some();
-        self.status = if super::screen_glow::status().reading && !paused {
+        let we_line = self.we_update();
+        self.status = if let Some(line) = we_line {
+            line
+        } else if super::screen_glow::status().reading && !paused {
             // #496: always visible while the screen is read.
             super::screen_glow::tooltip_status(connected).to_string()
         } else {
@@ -244,6 +329,13 @@ pub fn event(id: &str) {
     }
     if id == "fox-logs" {
         super::app_log::open_folder();
+    }
+    if id == WE_RESUME {
+        // The user's word (#1142): every hold ends, as the hub page's Resume does.
+        let who = super::wallpaper_sync::local_holders_now();
+        *WE_PRESSED.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((who, std::time::Instant::now()));
+        super::wallpaper_sync::resume_all();
     }
     if id == "fox-pause-all" {
         super::pause::set(!super::pause::paused());
@@ -434,5 +526,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Standalone Resume (#1142): the hub panel's words, the holder in the item's text, none
+    /// when nothing holds the wallpapers or the pause is stale.
+    #[test]
+    fn the_standalone_resume_names_whose_pause_it_ends() {
+        let none: Vec<String> = Vec::new();
+        assert_eq!(we_resume_label(&none, &none, false), None);
+        let arete = vec!["Arete".to_string()];
+        assert_eq!(
+            we_resume_label(&arete, &none, false).as_deref(),
+            Some("Resume wallpapers, paused by Arete")
+        );
+        assert_eq!(
+            we_resume_label(&arete, &none, false),
+            Some(crate::foxglove::hub_panels::resume_name("Arete"))
+        );
+        // A hold with no name still says what it ends.
+        assert_eq!(
+            we_resume_label(&none, &["render".to_string()], false).as_deref(),
+            Some("Resume wallpapers, paused by an app")
+        );
+        assert_eq!(we_resume_label(&arete, &none, true), None);
     }
 }

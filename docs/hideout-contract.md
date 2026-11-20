@@ -1063,6 +1063,19 @@ Nodes are `{type, id, props, bind?, stream?, children}`.
   module says in a `label` beside it why (for example "Start the web UI first"). Not a boolean:
   `ui.prop`. Optional, so a hub that doesn't know it draws the button enabled, and a module that
   must run there also answers the `ui.event` of a click it meant to refuse.
+- **`live` (#1142)** on `value`: `true` makes the value a status line for a screen reader: a
+  focusable node with the polite live role, announced when its words change (use it for the one
+  line that says what just happened, such as "Resumed. Arete can pause them again."). Anything
+  but `true` is a plain value (the hub does not validate it). Optional; a hub that doesn't know
+  it draws a plain value.
+- **`focus_after` (#1142)** on `button` (one that sends `ui.event`; not with `opens` or `action`):
+  the id of a node in the same panel that takes the keyboard focus once the button is pressed
+  from the keyboard (a click with the mouse leaves the focus alone), so a button that goes away
+  after its press does not drop the focus to the page's root. Usually the `live` value that
+  carries the outcome. An id that names no node does nothing, and a value that isn't a string is
+  ignored (the hub does not validate it). The focus
+  request lasts a few frames, so a node drawn later does not take it. Optional, so an older hub
+  ignores it.
 
 ### 5.3 Updates, input and assets
 

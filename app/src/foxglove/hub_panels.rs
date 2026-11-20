@@ -98,6 +98,17 @@ pub fn resumed(who: &str) -> String {
 pub fn stopped(who: &str) -> String {
     format!("{who} stopped, so its pause ended.")
 }
+/// The one line after a Resume or a stop ("Resumed. Arete can pause them again."), shared by the
+/// hub page and the standalone tray's tooltip. Real app names show as given; only the "an app"
+/// fallback is capitalised for the start of a sentence.
+pub fn after_words(after: &After) -> String {
+    match after {
+        After::Resumed(names) if names.is_empty() => resumed(&sentence_start(AN_APP)),
+        After::Resumed(names) => resumed(&holder_words(names)),
+        After::Stopped(Some(n)) => stopped(&cut_to(n, NAME_CUT)),
+        After::Stopped(None) => stopped(&sentence_start(AN_APP)),
+    }
+}
 /// "Resume wallpapers, paused by Arete": the button's accessible name.
 pub fn resume_name(who: &str) -> String {
     format!("{RESUME}, paused by {who}")
@@ -739,11 +750,7 @@ fn wallpaper_section(w: &Wallpaper) -> Value {
             After::Resumed(_) if w.full_screen => {
                 format!("Resumed. {FULL_SCREEN_SUB}")
             }
-            After::Resumed(names) => resumed(&sentence_start(&holder_words(names))),
-            After::Stopped(name) => stopped(&match name {
-                Some(n) => cut_to(n, NAME_CUT),
-                None => "An app".into(),
-            }),
+            other => after_words(other),
         };
         say = Some(sub.clone());
         (NONE_PAUSING.into(), "ok", Some(sub), false)
