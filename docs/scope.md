@@ -13,6 +13,9 @@ Foxglove is a Windows app for the **keyboard and the lights and screens around i
   peripherals' lights (through Windows Dynamic Lighting where it can), and scenes that tie them
   to the keyboard and the wallpaper.
 - **Device management on Windows:** finding devices, their state, and one place to see them.
+- **Read-only PC monitoring:** temperatures, clocks, fan speeds and load, shown on a page or tile
+  or used as a lighting input. Reading only: changing a fan, pump or power setting stays out of
+  scope (below).
 - **Optional integrations:** Wallpaper Engine, OBS, SignalRGB, OpenRGB, iCUE and others. Foxglove
   works fully without each of them and is richer with them. Content made for Foxglove, our own
   included, opts in through data that ships with it, never through code that names it: a
