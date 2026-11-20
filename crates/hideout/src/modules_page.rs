@@ -378,6 +378,16 @@ impl ModulesPage {
                         .perm
                         .as_mut()
                         .is_some_and(|p| p.start_hand_over(&done.id)) => {}
+            // A standalone copy opened after the dialog, which did not tell the user it would be
+            // closed: nothing is started beside it and nothing is closed unasked. The note with
+            // Start again shows, and Start again is the user's go-ahead to close it.
+            // The look is on a worker like the hand-over (`settle_hand_over`).
+            Then::TurnOn
+                if !done.handover
+                    && self
+                        .perm
+                        .as_mut()
+                        .is_some_and(|p| p.start_late_check(&done.id)) => {}
             Then::TurnOn => self.turn_on_now(&done.id),
             Then::Review => {
                 if let Some(a) = self.actions.as_deref() {

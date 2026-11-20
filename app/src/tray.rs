@@ -1,5 +1,4 @@
 use image::load_from_memory;
-use std::process;
 use std::sync::Arc;
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
@@ -101,9 +100,9 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
                     "quit" => {
                         crate::foxglove::app_log::line("Foxglove: Quit from the tray menu");
                         // Foxglove (#618): the panel, lights (a scene's right art while the art
-                        // service still runs), art and wallpapers back, within 4 s (quit.rs).
-                        crate::foxglove::quit::hand_back("Quit from the tray menu");
-                        process::exit(0)
+                        // service still runs), art and wallpapers back, within 4 s, then the
+                        // exit (quit.rs; Hideout's hand-over request ends in the same place).
+                        crate::foxglove::quit::quit_app("Quit from the tray menu")
                     }
                     _ => crate::foxglove::tray::event(event.id.0.as_str()),
                 }

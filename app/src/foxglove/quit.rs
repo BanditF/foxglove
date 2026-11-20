@@ -54,6 +54,28 @@ pub fn within(deadline: Instant, chains: Vec<Chain>) -> Vec<&'static str> {
     open
 }
 
+/// The app's quit as the tray's Quit does it: everything handed back within [`BUDGET`], then the
+/// process ends. The tray menu and Hideout's hand-over request both end here, so a quit asked
+/// from outside leaves exactly as a quit from the tray does. The hand-backs are the bounded part
+/// (4 s at most); a chain that is stuck is left as it is, and the process still exits.
+pub fn quit_app(why: &str) -> ! {
+    static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    // The first quit wins; a second one (the tray during a hand-over's quit, or the reverse)
+    // waits for the exit, so two hand-backs never run at once.
+    if QUITTING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        loop {
+            std::thread::park();
+        }
+    }
+    quit_with(why, hand_back, || std::process::exit(0))
+}
+
+/// [`quit_app`] with its two steps given (tests pass their own and see the order).
+pub fn quit_with<T>(why: &str, hand_back: impl FnOnce(&str), exit: impl FnOnce() -> T) -> T {
+    hand_back(why);
+    exit()
+}
+
 /// The app's hand-backs before it exits, within [`BUDGET`]. Logs how it went.
 pub fn hand_back(why: &str) {
     let start = Instant::now();
@@ -161,6 +183,17 @@ mod tests {
             ],
         );
         assert!(open.is_empty(), "chains did not overlap: {open:?}");
+    }
+
+    #[test]
+    fn a_quit_hands_back_first_and_then_exits() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        quit_with(
+            "Hideout took over",
+            |why| seen.borrow_mut().push(format!("hand back: {why}")),
+            || seen.borrow_mut().push("exit".to_string()),
+        );
+        assert_eq!(seen.into_inner(), ["hand back: Hideout took over", "exit"]);
     }
 
     #[test]

@@ -508,3 +508,10 @@ this. The app then serves no `foxglove-<user>` pipe; the hub serves that alias a
   checks as a pipe's server (same user, Medium integrity or above, no AppContainer, its install
   folder). Any other caller gets error 5 (denied) and nothing happens. Calling it on an
   app that runs inside Hideout does nothing (that app serves no pipe).
+  Limits that are accepted: the caller's process id is read once per connection, so a client that
+  exits and whose id is reused by a verified `hideout.exe` before the check would pass (the only
+  effect is a clean quit, which `taskkill` already allows); a standalone copy that starts between
+  the hub's last look and its own start can take the name, as it can today. After a copy has
+  closed, the hub serves the `foxglove-<user>` alias itself (a probe first), so CLI and SDK tools
+  on the alias keep working without a hub restart. Only Foxglove is wired for this so far; the
+  pipe name and image should later come from the manifest.

@@ -11,6 +11,19 @@
 //!
 //! Pure decision (`hand_over`), the wire conversation (`converse`, testable on in-memory ends)
 //! and the real pipe (`PipeOpen`).
+//!
+//! Known limits, accepted on purpose:
+//! - **A name-free race.** Between the last look (`seen() == No`) and the app's start, another
+//!   standalone copy could start (for example from its own Startup entry at sign-in) and take
+//!   the name, so two copies run. The window is milliseconds and the outcome is the same as
+//!   starting the app beside a copy without a hand-over; it is not guarded further.
+//! - **The caller's process id.** The app reads the kernel's client pid when the connection is
+//!   made and verifies that process a moment later. A client that exits in between, whose pid is
+//!   reused by a verified hideout.exe, would pass. The only effect is a clean quit of the app,
+//!   which any process of the same user can already cause (`taskkill`), so the id is read once
+//!   per connection. If the request ever guards more than a quit, read it once per call.
+//! - **One app's wiring.** `main.rs` wires only Foxglove's pipe and exe (`foxglove`). The copy
+//!   shown to the user is generic; later the pipe name and image should come from the manifest.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::mpsc;
@@ -38,6 +51,10 @@ pub trait Standalone: Send + Sync {
     /// Asks the copy to quit and waits (bounded) until it has gone. True only when it said yes
     /// and then went.
     fn ask_to_quit(&self, id: &str) -> bool;
+    /// The copy has gone and the name is free: the hub takes the app's alias name for its own
+    /// clients (CLI and SDK tools on `foxglove-<user>`), as it does when it starts with the name
+    /// free. Nothing for a fake.
+    fn freed(&self, _id: &str) {}
 }
 
 /// Closes the standalone copy of `id` if there is one. True: the app may be started now. False:
@@ -47,7 +64,13 @@ pub fn hand_over(s: &dyn Standalone, id: &str) -> bool {
         // It closed on its own since the dialog: nothing to hand over.
         Seen::No => true,
         Seen::Unsure => false,
-        Seen::Standalone => s.ask_to_quit(id) && s.seen(id) == Seen::No,
+        Seen::Standalone => {
+            let gone = s.ask_to_quit(id) && s.seen(id) == Seen::No;
+            if gone {
+                s.freed(id);
+            }
+            gone
+        }
     }
 }
 
@@ -62,13 +85,20 @@ const MAX_LINES: usize = 16;
 /// The longest line read.
 const MAX_LINE: u64 = 64 * 1024;
 
-pub type Ends = (Box<dyn Read + Send>, Box<dyn Write + Send>);
+/// Ends a read blocked on one connection from another thread (the wait is over): that read
+/// returns at once and the worker holding the connection can finish and let it go.
+pub type Cancel = Box<dyn Fn() + Send + Sync>;
+
+/// A verified connection: its read end, its write end and how to cancel a blocked read.
+pub type Ends = (Box<dyn Read + Send>, Box<dyn Write + Send>, Cancel);
 
 /// Where the copy's pipe is and how it is verified.
 pub trait Open: Send + Sync + 'static {
     fn probe(&self) -> Seen;
     /// A connection whose server was verified before this returns.
     fn open(&self) -> Option<Ends>;
+    /// The copy has gone: see [`Standalone::freed`].
+    fn freed(&self) {}
 }
 
 fn request(id: i64, method: &str, params: Value) -> String {
@@ -127,16 +157,69 @@ fn converse<R: Read, W: Write>(r: R, mut w: W) -> bool {
     }
 }
 
-/// [`converse`] on a worker thread, answered within `limit`.
+/// A read end that fails once the wait has been cancelled.
+struct Gated {
+    r: Box<dyn Read + Send>,
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Read for Gated {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::ErrorKind::ConnectionAborted.into());
+        }
+        self.r.read(b)
+    }
+}
+
+/// [`converse`] on a worker thread, answered within `limit`. When the limit passes the blocked
+/// read is cancelled, so the worker ends and the connection is let go (no thread is left behind
+/// for each Start again).
 fn within<O: Open>(o: Arc<O>, limit: Duration) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
     let (tx, rx) = mpsc::channel();
+    let (cancel_tx, cancel_rx) = mpsc::channel::<Arc<Cancel>>();
+    let late = Arc::new(AtomicBool::new(false));
+    let worker_late = late.clone();
     let spawned = std::thread::Builder::new()
         .name("hand-over".into())
         .spawn(move || {
-            let went = o.open().is_some_and(|(r, w)| converse(r, w));
+            let went = match o.open() {
+                Some((r, w, cancel)) => {
+                    // A cancel ends the read pending now and fails every later one, so a copy
+                    // that keeps sending cannot hold the worker (`CancelIoEx` alone reaches only
+                    // a read that is already waiting).
+                    let stopped = Arc::new(AtomicBool::new(false));
+                    let flag = stopped.clone();
+                    let cancel: Arc<Cancel> = Arc::new(Box::new(move || {
+                        flag.store(true, Ordering::SeqCst);
+                        cancel();
+                    }));
+                    // Hand the cancel over first, then look at the flag: whichever of the two
+                    // threads comes second finds the other's mark, so one of them cancels.
+                    let _ = cancel_tx.send(cancel.clone());
+                    if worker_late.load(Ordering::SeqCst) {
+                        cancel();
+                    }
+                    converse(Gated { r, stopped }, w)
+                }
+                None => false,
+            };
             let _ = tx.send(went);
         });
-    spawned.is_ok() && rx.recv_timeout(limit).unwrap_or(false)
+    if spawned.is_err() {
+        return false;
+    }
+    match rx.recv_timeout(limit) {
+        Ok(went) => went,
+        Err(_) => {
+            late.store(true, Ordering::SeqCst);
+            if let Ok(cancel) = cancel_rx.try_recv() {
+                cancel();
+            }
+            false
+        }
+    }
 }
 
 /// The standalone copy of one app over `O`.
@@ -158,6 +241,12 @@ impl<O: Open> Standalone for Wire<O> {
     fn ask_to_quit(&self, id: &str) -> bool {
         id == self.id && within(self.open.clone(), self.limit)
     }
+
+    fn freed(&self, id: &str) {
+        if id == self.id {
+            self.open.freed();
+        }
+    }
 }
 
 /// The real pipe of a standalone app (Windows): who is on `pipe` is checked against the app's
@@ -168,6 +257,8 @@ pub struct PipeOpen {
     pub exe: foxglove_plugin::owner::Expect,
     pub home: std::path::PathBuf,
     pub id: String,
+    /// The hub, which serves the alias once the copy has left the name.
+    pub hub: hideout_router::server::Hub,
 }
 
 #[cfg(windows)]
@@ -196,18 +287,59 @@ impl Open for PipeOpen {
         }
     }
 
+    fn freed(&self) {
+        // The same step the hub takes at its start: a probe first, then the name only if nobody
+        // is on it (a copy that started again keeps it).
+        let alias = self.hub.alias_pipe();
+        if self.pipe != alias {
+            // A hub folder of its own has its own alias name, which the copy never held.
+            log::info!(
+                "hand-over: the copy held {}, not {alias}; no alias claimed",
+                self.pipe
+            );
+            return;
+        }
+        match self.hub.serve_alias(&alias) {
+            hideout_router::AliasOutcome::Served => {
+                log::info!("hand-over: serving the alias {alias}")
+            }
+            hideout_router::AliasOutcome::Left(why) => log::warn!("hand-over: alias: {why}"),
+            hideout_router::AliasOutcome::Failed(e) => {
+                log::info!("hand-over: alias {alias} not served: {e}")
+            }
+        }
+    }
+
     fn open(&self) -> Option<Ends> {
         use foxglove_plugin::owner::{open_verified_with, TIMEOUT};
         let file = open_verified_with(&self.pipe, self.exe, TIMEOUT, &self.peers()).ok()?;
         let w = file.try_clone().ok()?;
-        Some((Box::new(file), Box::new(w)))
+        // A third handle for the cancel: it lives as long as the cancel closure, so the raw
+        // handle it uses can never have been closed and reused.
+        let c = file.try_clone().ok()?;
+        let cancel: Cancel = Box::new(move || {
+            use std::os::windows::io::AsRawHandle;
+            // SAFETY: `c` owns a valid handle for the whole call; a null overlapped cancels
+            // every read pending on the connection.
+            unsafe {
+                windows_sys::Win32::System::IO::CancelIoEx(
+                    c.as_raw_handle().cast(),
+                    std::ptr::null(),
+                )
+            };
+        });
+        Some((Box::new(file), Box::new(w), cancel))
     }
 }
 
 /// The Foxglove app's standalone copy: the pipe `foxglove-<user>` and the image `foxglove.exe`.
 /// The id is the app's, as its manifest names it.
 #[cfg(windows)]
-pub fn foxglove(home: &std::path::Path, id: &str) -> Arc<dyn Standalone> {
+pub fn foxglove(
+    home: &std::path::Path,
+    id: &str,
+    hub: hideout_router::server::Hub,
+) -> Arc<dyn Standalone> {
     Arc::new(Wire {
         id: id.to_string(),
         open: Arc::new(PipeOpen {
@@ -215,6 +347,7 @@ pub fn foxglove(home: &std::path::Path, id: &str) -> Arc<dyn Standalone> {
             exe: foxglove_plugin::owner::Expect::FOXGLOVE,
             home: home.to_path_buf(),
             id: id.to_string(),
+            hub,
         }),
         limit: LIMIT,
     })
@@ -231,6 +364,7 @@ mod tests {
         now: Mutex<Vec<Seen>>,
         quits: bool,
         asked: Mutex<u32>,
+        freed: Mutex<u32>,
     }
 
     impl Fake {
@@ -239,6 +373,7 @@ mod tests {
                 now: Mutex::new(seen.iter().rev().copied().collect()),
                 quits,
                 asked: Mutex::new(0),
+                freed: Mutex::new(0),
             }
         }
     }
@@ -255,6 +390,28 @@ mod tests {
         fn ask_to_quit(&self, _: &str) -> bool {
             *self.asked.lock().unwrap() += 1;
             self.quits
+        }
+        fn freed(&self, _: &str) {
+            *self.freed.lock().unwrap() += 1;
+        }
+    }
+
+    /// The alias is claimed only after a copy was closed and is gone: not when nothing was open,
+    /// not on a refusal, not when the copy stayed.
+    #[test]
+    fn the_name_is_taken_only_after_a_copy_has_gone() {
+        let f = Fake::new(&[Seen::Standalone, Seen::No], true);
+        assert!(hand_over(&f, "app"));
+        assert_eq!(*f.freed.lock().unwrap(), 1);
+        for (seen, quits) in [
+            (vec![Seen::No], true),
+            (vec![Seen::Unsure], true),
+            (vec![Seen::Standalone], false),
+            (vec![Seen::Standalone, Seen::Standalone], true),
+        ] {
+            let f = Fake::new(&seen, quits);
+            hand_over(&f, "app");
+            assert_eq!(*f.freed.lock().unwrap(), 0, "{seen:?} {quits}");
         }
     }
 
@@ -369,6 +526,7 @@ mod tests {
             Some((
                 Box::new(Hold(rx, Cursor::new(text))),
                 Box::new(Sink(Default::default())),
+                Box::new(|| {}),
             ))
         }
     }
@@ -508,5 +666,63 @@ mod tests {
         let p: foxglove_plugin_api::methods::InitializeParams =
             serde_json::from_value(sent[0]["params"].clone()).expect("a valid initialize");
         assert_eq!(p.api, foxglove_plugin_api::API_VERSION.to_string());
+    }
+
+    /// A pipe whose read blocks until its cancel is called, as `CancelIoEx` ends a pipe read.
+    struct Cancellable {
+        ended: Mutex<mpsc::Sender<()>>,
+    }
+    impl Open for Cancellable {
+        fn probe(&self) -> Seen {
+            Seen::Standalone
+        }
+        fn open(&self) -> Option<Ends> {
+            struct Block(mpsc::Receiver<()>, Cursor<Vec<u8>>, mpsc::Sender<()>);
+            impl Read for Block {
+                fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+                    let n = self.1.read(b)?;
+                    if n > 0 {
+                        return Ok(n);
+                    }
+                    // Blocks until cancelled (no timeout of its own), then fails as a cancel does.
+                    let _ = self.0.recv();
+                    let _ = self.2.send(());
+                    // As the real cancel fails a read: ERROR_OPERATION_ABORTED, which
+                    // `read_until` does not retry (it does retry `Interrupted`).
+                    Err(std::io::Error::from_raw_os_error(995))
+                }
+            }
+            let (tx, rx) = mpsc::channel::<()>();
+            let tx = Mutex::new(Some(tx));
+            let text = format!("{INIT}\n{YES}\n").into_bytes();
+            let ended = self.ended.lock().unwrap().clone();
+            Some((
+                Box::new(Block(rx, Cursor::new(text), ended)),
+                Box::new(Sink(Default::default())),
+                Box::new(move || {
+                    tx.lock().unwrap().take();
+                }),
+            ))
+        }
+    }
+
+    /// The copy answers but does not leave: at the limit the blocked read is cancelled, so the
+    /// worker ends and lets the connection go instead of waiting forever.
+    #[test]
+    fn a_wait_that_runs_out_cancels_the_blocked_read() {
+        let (ended, worker_ended) = mpsc::channel();
+        let w = Wire {
+            id: "app".into(),
+            open: Arc::new(Cancellable {
+                ended: Mutex::new(ended),
+            }),
+            limit: Duration::from_millis(200),
+        };
+        assert!(!hand_over(&w, "app"));
+        // The worker's read returned because of the cancel: its end is the event waited for.
+        assert!(
+            worker_ended.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the blocked read was never cancelled"
+        );
     }
 }

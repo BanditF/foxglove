@@ -574,7 +574,7 @@ impl PermUi {
     }
 
     /// Whether a verified standalone copy of `id` is open now (an unsure case is not one).
-    fn copy_open(&self, id: &str) -> bool {
+    pub(crate) fn copy_open(&self, id: &str) -> bool {
         self.standalone
             .as_ref()
             .is_some_and(|s| s.seen(id) == crate::handover::Seen::Standalone)
@@ -585,6 +585,24 @@ impl PermUi {
     /// starts the app only when [`PermUi::finished_hand_over`] says yes. False: nothing to hand
     /// over to (no standalone support here), so the app starts at once.
     pub fn start_hand_over(&mut self, id: &str) -> bool {
+        self.start_worker(id, |s, app| crate::handover::hand_over(s, app))
+    }
+
+    /// Allow without a promised hand-over: looks once more, on a worker, for a copy that opened
+    /// after the dialog. Same contract as [`PermUi::start_hand_over`]: the page starts the app
+    /// only when [`PermUi::finished_hand_over`] says yes (no copy now); a copy gives the note.
+    /// Nothing is ever closed by this.
+    pub fn start_late_check(&mut self, id: &str) -> bool {
+        self.start_worker(id, |s, app| {
+            s.seen(app) != crate::handover::Seen::Standalone
+        })
+    }
+
+    fn start_worker(
+        &mut self,
+        id: &str,
+        work: impl FnOnce(&dyn crate::handover::Standalone, &str) -> bool + Send + 'static,
+    ) -> bool {
         let Some(s) = self.standalone.clone() else {
             return false;
         };
@@ -598,7 +616,7 @@ impl PermUi {
         let spawned = std::thread::Builder::new()
             .name("hand-over-ui".into())
             .spawn(move || {
-                let went = crate::handover::hand_over(s.as_ref(), &app);
+                let went = work(s.as_ref(), &app);
                 let _ = tx.send(went);
                 // The page draws again at once (an event, no timer).
                 if let Some(c) = ctx {
@@ -615,7 +633,7 @@ impl PermUi {
     }
 
     /// The copy stays: a note with Start again, nothing started.
-    fn stays(&mut self, id: &str) {
+    pub(crate) fn stays(&mut self, id: &str) {
         let name = self
             .entries
             .iter()

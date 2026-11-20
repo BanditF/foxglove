@@ -844,6 +844,28 @@ fn a_copy_that_stays_is_left_alone_and_start_again_retries() {
     fx.assert_no_autostart_files();
 }
 
+/// A copy opens after the dialog was drawn (so it said nothing about closing one): Allow does
+/// not start the app beside it and does not close it unasked; the note shows instead.
+#[test]
+fn a_copy_that_opens_after_the_dialog_is_not_started_beside() {
+    let mut fx = Fx::new("fr5-late", "gizmo-keys", gizmo_manifest);
+    let c = Copy::new(false, true);
+    with_copy(&mut fx, &c);
+    let mut clicks = Clicks::default();
+    fx.look();
+    fx.add(&mut clicks);
+    assert!(!line_shown(&fx), "no copy when the dialog opened");
+    fx.tick_sensitive(&mut clicks);
+    *c.open.lock().unwrap() = true;
+    fx.allow(&mut clicks);
+    assert_eq!(*c.asked.lock().unwrap(), 0, "nothing is closed unasked");
+    assert!(fx.asked.0.borrow().is_empty(), "nothing started");
+    assert!(!fx.page.installed.iter().any(|m| m.enabled));
+    let note = fx.page.perm.as_ref().unwrap().handover_note.clone();
+    assert!(note.is_some_and(|n| n.line().contains("Gizmo Keys")));
+    fx.assert_no_autostart_files();
+}
+
 /// Something is on the pipe that did not verify: no line, no request, the plain start.
 #[test]
 fn an_unverified_pipe_is_never_asked_and_never_called_a_copy() {
