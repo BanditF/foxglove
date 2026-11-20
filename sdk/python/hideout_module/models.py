@@ -721,11 +721,13 @@ class McpTool(Model):
 class ModuleAction(Model):
     """`[[actions]]`: as plugin.toml, plus `when`."""
 
+    hint: Optional[str] = None
     id: str
     name: str
     when: Optional[str] = None
 
     FIELDS: ClassVar[dict] = {
+        'hint': ('hint', ('opt', 'str')),
         'id': ('id', 'str'),
         'name': ('name', 'str'),
         'when': ('when', ('opt', 'str')),
