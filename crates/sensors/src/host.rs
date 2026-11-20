@@ -1,6 +1,7 @@
 //! What the program does with the hub's messages, with no pipe and no clock of its own (the
 //! binary owns both): `facts.demand` starts and stops sampling (contract §8.8, v1.20), the
-//! `keyboard.game_mode` fact slows it, and every value the engine publishes comes out as a
+//! `keyboard.game_mode` fact slows it, the module's own page counts as a listener while it is on
+//! screen (`ui.visibility`, contract §5.9: a hub `bind` creates no demand), and every value the engine publishes comes out as a
 //! write for the binary to send as `facts.set`. A key outside the namespace never gets this far
 //! ([`GuardedSink`]).
 
@@ -12,6 +13,9 @@ use crate::{pattern_wants, Config, Engine, GuardedSink, Sink, SourceFactory, Sub
 
 /// The fact that says a game runs (Foxglove's keyboard module).
 pub const GAME_MODE_FACT: &str = "keyboard.game_mode";
+
+/// The id of the module's page panel (module.toml `[[ui.panels]]`).
+pub const PAGE_PANEL: &str = "page";
 
 /// The pattern the module registers and the hub's demand names.
 pub fn registered_pattern() -> String {
@@ -48,6 +52,10 @@ pub struct Host {
     engine: Engine<GuardedSink<Outbox>>,
     out: Outbox,
     sub: Option<SubId>,
+    /// The hub reports someone listening (`facts.demand` above 0).
+    external: bool,
+    /// The module's page is on screen (`ui.visibility visible`).
+    page_visible: bool,
     /// Called each time sampling ends and every source is dropped (the binary trims memory).
     on_release: Option<Box<dyn FnMut()>>,
 }
@@ -59,6 +67,8 @@ impl Host {
             engine: Engine::new(factories, GuardedSink::new(out.clone()), config),
             out,
             sub: None,
+            external: false,
+            page_visible: false,
             on_release: None,
         }
     }
@@ -80,8 +90,8 @@ impl Host {
         }
     }
 
-    /// A notification from the hub, as the binary's loop receives it: `facts.demand` and
-    /// `facts.changed` of [`GAME_MODE_FACT`]. Anything else changes nothing.
+    /// A notification from the hub, as the binary's loop receives it: `facts.demand`,
+    /// `ui.visibility` and `facts.changed` of [`GAME_MODE_FACT`]. Anything else changes nothing.
     pub fn notify(&mut self, method: &str, params: &serde_json::Value, now: Duration) {
         match method {
             "facts.demand" => {
@@ -91,6 +101,11 @@ impl Host {
                     .min(u32::MAX as u64) as u32;
                 self.demand(params["pattern"].as_str().unwrap_or(""), n, now);
             }
+            "ui.visibility" => self.visibility(
+                params["panel"].as_str().unwrap_or(""),
+                params["state"].as_str().unwrap_or(""),
+                now,
+            ),
             "facts.changed" if params["key"] == GAME_MODE_FACT => {
                 self.game_mode(params["value"].as_bool() == Some(true), now)
             }
@@ -124,14 +139,41 @@ impl Host {
         if !pattern_wants(pattern) {
             return;
         }
-        self.watching(|h| match (subscribers > 0, h.sub) {
-            (true, None) => h.sub = h.engine.subscribe(pattern, now),
+        self.watching(|h| {
+            h.external = subscribers > 0;
+            h.reconcile(now);
+        });
+    }
+
+    /// `ui.visibility {panel, state}` (H → M): the page on screen is a listener, so sampling runs
+    /// while it is `visible` and stops at once on `hidden` or `closed` unless an app still
+    /// listens. Another panel id or state changes nothing.
+    pub fn visibility(&mut self, panel: &str, state: &str, now: Duration) {
+        if panel != PAGE_PANEL {
+            return;
+        }
+        let visible = match state {
+            "visible" => true,
+            "hidden" | "closed" => false,
+            _ => return,
+        };
+        self.watching(|h| {
+            h.page_visible = visible;
+            h.reconcile(now);
+        });
+    }
+
+    /// Sampling follows `external || page_visible`; repeating the same listening state does
+    /// nothing.
+    fn reconcile(&mut self, now: Duration) {
+        match (self.external || self.page_visible, self.sub) {
+            (true, None) => self.sub = self.engine.subscribe(&registered_pattern(), now),
             (false, Some(id)) => {
-                h.engine.unsubscribe(id, now);
-                h.sub = None;
+                self.engine.unsubscribe(id, now);
+                self.sub = None;
             }
             _ => {}
-        });
+        }
     }
 
     /// `keyboard.game_mode` changed (`false` when it is missing or not on).
@@ -141,6 +183,10 @@ impl Host {
 
     /// The program ends: nothing stays published.
     pub fn stop(&mut self, now: Duration) {
-        self.demand(&registered_pattern(), 0, now);
+        self.watching(|h| {
+            h.external = false;
+            h.page_visible = false;
+            h.reconcile(now);
+        });
     }
 }

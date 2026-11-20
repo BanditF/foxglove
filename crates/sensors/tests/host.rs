@@ -210,3 +210,124 @@ fn a_game_that_stops_sampling_closes_and_the_end_of_it_opens_again() {
     );
     assert_eq!((open.get(), close.get()), (2, 1));
 }
+
+fn vis(panel: &str, state: &str) -> serde_json::Value {
+    serde_json::json!({"panel": panel, "state": state})
+}
+
+fn demand_n(n: u32) -> serde_json::Value {
+    serde_json::json!({"pattern": registered_pattern(), "subscribers": n})
+}
+
+/// A host whose release hook counts its runs.
+fn host_with_releases() -> (Host, Rc<Cell<u32>>, Rc<Cell<u32>>) {
+    let (mut h, reads) = host();
+    let releases = Rc::new(Cell::new(0));
+    let r = releases.clone();
+    h.on_release(move || r.set(r.get() + 1));
+    (h, reads, releases)
+}
+
+#[test]
+fn a_visible_page_samples_with_no_demand_and_hidden_or_closed_stop_it() {
+    for end in ["hidden", "closed"] {
+        let (mut h, reads, releases) = host_with_releases();
+        h.notify("ui.visibility", &vis("page", "visible"), s(0));
+        assert!(h.sampling() && h.next_due().is_some());
+        h.tick(s(0));
+        assert!(reads.get() >= 1);
+        h.notify("ui.visibility", &vis("page", end), s(1));
+        assert!(!h.sampling());
+        assert_eq!(h.next_due(), None, "no timer after release");
+        assert_eq!(releases.get(), 1);
+        let n = reads.get();
+        h.tick(s(30));
+        assert_eq!(reads.get(), n);
+    }
+}
+
+#[test]
+fn visible_twice_is_one_start_and_hidden_twice_one_release() {
+    let (mut h, reads, releases) = host_with_releases();
+    h.notify("ui.visibility", &vis("page", "visible"), s(0));
+    h.notify("ui.visibility", &vis("page", "visible"), s(0));
+    h.tick(s(0));
+    assert_eq!(reads.get(), 1, "one source set, one first read");
+    h.notify("ui.visibility", &vis("page", "hidden"), s(1));
+    h.notify("ui.visibility", &vis("page", "closed"), s(1));
+    assert_eq!(releases.get(), 1);
+}
+
+#[test]
+fn external_demand_keeps_sampling_when_the_page_goes_away_and_the_other_way_round() {
+    let (mut h, _, releases) = host_with_releases();
+    h.notify("facts.demand", &demand_n(1), s(0));
+    h.notify("ui.visibility", &vis("page", "visible"), s(0));
+    h.notify("ui.visibility", &vis("page", "hidden"), s(1));
+    assert!(h.sampling());
+    assert_eq!(releases.get(), 0);
+
+    h.notify("ui.visibility", &vis("page", "visible"), s(2));
+    h.notify("facts.demand", &demand_n(0), s(3));
+    assert!(h.sampling(), "the page still listens");
+    assert_eq!(releases.get(), 0);
+    h.notify("ui.visibility", &vis("page", "closed"), s(4));
+    assert!(!h.sampling());
+    assert_eq!(releases.get(), 1);
+}
+
+#[test]
+fn another_panel_or_an_unknown_state_changes_nothing() {
+    let (mut h, _, releases) = host_with_releases();
+    h.notify("ui.visibility", &vis("tile", "visible"), s(0));
+    h.notify("ui.visibility", &vis("page", "sideways"), s(0));
+    h.notify("ui.visibility", &serde_json::json!({}), s(0));
+    assert!(!h.sampling());
+    h.notify("ui.visibility", &vis("page", "visible"), s(1));
+    h.notify("ui.visibility", &vis("tile", "hidden"), s(2));
+    assert!(h.sampling());
+    assert_eq!(releases.get(), 0);
+}
+
+#[test]
+fn a_restarted_module_starts_on_the_hubs_first_visible() {
+    // A restart is a new host: it knows nothing until the hub sends `visible` after register.
+    let (mut h, reads, _) = host_with_releases();
+    assert!(!h.sampling());
+    h.tick(s(5));
+    assert_eq!(reads.get(), 0);
+    h.notify("ui.visibility", &vis("page", "visible"), s(6));
+    h.tick(s(6));
+    assert!(h.sampling());
+    assert!(reads.get() >= 1);
+}
+
+#[test]
+fn game_mode_while_the_page_is_visible_spaces_reads_by_ten_seconds() {
+    let (mut h, reads, _) = host_with_releases();
+    h.notify("ui.visibility", &vis("page", "visible"), s(0));
+    h.tick(s(0));
+    h.notify(
+        "facts.changed",
+        &serde_json::json!({"key": "keyboard.game_mode", "value": true}),
+        s(0),
+    );
+    let before = reads.get();
+    h.tick(s(5));
+    assert_eq!(reads.get(), before, "inside the game interval");
+    h.tick(s(10));
+    assert_eq!(reads.get(), before + 1);
+    h.tick(s(15));
+    assert_eq!(reads.get(), before + 1);
+    h.tick(s(20));
+    assert_eq!(reads.get(), before + 2);
+}
+
+#[test]
+fn stop_releases_a_visible_page_too() {
+    let (mut h, _, releases) = host_with_releases();
+    h.notify("ui.visibility", &vis("page", "visible"), s(0));
+    h.stop(s(1));
+    assert!(!h.sampling());
+    assert_eq!(releases.get(), 1);
+}
