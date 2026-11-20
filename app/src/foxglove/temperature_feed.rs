@@ -509,6 +509,10 @@ pub fn publish(status: Status) {
         &mut *LATEST.lock().unwrap_or_else(|e| e.into_inner()),
         status,
     );
+    // A running Temperature follows a new reading (its frames sleep between readings).
+    if before != status {
+        super::scene_run::reading_changed();
+    }
     // A new state (not a new number): whoever waited on the sensors may try again.
     if std::mem::discriminant(&before) != std::mem::discriminant(&status) {
         let wake = ON_STATE.lock().unwrap_or_else(|e| e.into_inner()).clone();

@@ -2,7 +2,8 @@
 //! review/ux-plan-gpu-temp-effect.md, slice 1): the pure core. The mapping from a reading to a
 //! colour, the words for it, the saved keys' defaults and the fixed Cool to hot ramp. Nothing
 //! here reads a sensor, draws a control or sends a colour; the reading feed is
-//! [`super::temperature_feed`], the Scenes page and the light output come in later slices.
+//! [`super::temperature_feed`], the Scenes page is slice 3 and the light output is
+//! [`super::temperature_out`].
 //!
 //! The rules the code keeps:
 //! - A missing reading is `None`, never 0, and never the cool colour (cool would say "cold"):
@@ -13,9 +14,6 @@
 //! - The Palette colours are the chosen palette's own (Bandit orange by default); Cool to hot
 //!   is the effect's own fixed ramp, not a palette (docs/palette.md is untouched).
 //!
-//! Most of what is here waits for slices 3 and 4 (the page and the output), so the items are
-//! allowed to be unused outside tests until then.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::ops::RangeInclusive;
 
@@ -44,7 +42,6 @@ pub const STEP_C: u16 = 5;
 pub const MIN_GAP_C: u16 = 10;
 /// The colour eases to a new reading over this long, so a one-second reading step never
 /// flickers (the frame scheduler sleeps once the ease ends).
-#[allow(dead_code)] // the light output (slice 4)
 pub const EASE_MS: u32 = 2_000;
 /// The fallback look's loop: "running, no reading".
 pub const FALLBACK_MS: u32 = 8_000;

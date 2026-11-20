@@ -834,8 +834,8 @@ fn begin(name: &str, look: &Look, room: &RoomMap) -> bool {
     let started = super::scene_run::start(name, look.effect(room), None);
     if started {
         TEMP_LIVE.store(reads, Ordering::Relaxed);
-        if reads {
-            super::scene_run::set_reads_temperature(true);
+        if let Some(t) = look.temperature() {
+            super::scene_run::set_temperature(t);
         }
     }
     started
@@ -853,7 +853,7 @@ fn take_look(name: &str, look: &Look, room: &RoomMap) {
         super::temperature_feed::set_source(&look.temp_source);
     }
     TEMP_LIVE.store(reads, Ordering::Relaxed);
-    super::scene_run::set_look(name, look.effect(room), reads);
+    super::scene_run::set_look(name, look.effect(room), look.temperature());
 }
 
 /// "Open Apps page": asks Hideout to show the PC sensors app's page, else its own; off the page's

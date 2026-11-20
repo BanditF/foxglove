@@ -55,7 +55,7 @@ pub enum Kind {
     ScreenGlow,
     /// A colour from a temperature reading ([`super::temperature`]): reads a
     /// sensor through the hub, so it needs the PC sensors app. The Scenes page offers it
-    /// (slice 3); the light output is slice 4, so until then it breathes its fallback colour.
+    /// (slice 3); its lights are [`super::temperature_out`] (slice 4).
     Temperature,
 }
 
@@ -527,6 +527,22 @@ impl Look {
         self.kind.uses_palette() && self.palette == WALLPAPER
     }
 
+    /// What Temperature's light output needs, for a Temperature look (`None` for any other).
+    pub fn temperature(&self) -> Option<super::temperature_out::TempLook> {
+        if self.kind != Kind::Temperature {
+            return None;
+        }
+        let l = self.clone().clamped();
+        Some(super::temperature_out::TempLook {
+            cool_c: l.cool_c,
+            hot_c: l.hot_c,
+            ramp: super::temperature::ramp(l.temp_colours, &l.palette),
+            fallback: super::temperature::fallback(l.temp_colours, &l.palette),
+            background: l.background.rgb(),
+            calm: !super::screen_glow::animations_on(),
+        })
+    }
+
     /// The effect this look runs, over `room` (a ripple starts at its keyboard).
     pub fn effect(&self, room: &RoomMap) -> Effect {
         let l = self.clone().clamped();
@@ -591,9 +607,10 @@ impl Look {
             Kind::ScreenGlow => Effect::Screen {
                 smoothing: super::screen_glow::smoothing_for(l.smoothing),
             },
-            // The light output is slice 4 (Effect::Temperature in the scene crate); until then
-            // a Temperature look that is started anyway breathes its fallback colour, never a
-            // made-up reading.
+            // The fallback look ("running, no reading"): a slow breathe, never a made-up
+            // reading. The running look is [`Look::temperature`]'s driver, which draws the
+            // colour itself; this is what a place without a reading (the wallpaper sync, the
+            // facts) sees.
             Kind::Temperature => Effect::Breathe {
                 from: background,
                 to: super::temperature::fallback(l.temp_colours, &l.palette),
@@ -1253,7 +1270,7 @@ mod tests {
                 Kind::TwoTone => "Tones".to_string(),
                 Kind::Tide => "Tide".to_string(),
                 Kind::ScreenGlow => "Screen".to_string(),
-                // Until the light output (slice 4) it breathes its fallback colour.
+                // Where the look has no reading to show (the facts), its fallback look.
                 Kind::Temperature => "Breathe".to_string(),
                 k => format!("{k:?}"),
             };
