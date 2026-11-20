@@ -191,6 +191,11 @@ fn worker(work: impl FnOnce() -> Result<()> + Send + 'static) {
         s.message = e.to_string();
     }
 }
+/// What the Startup and updates section says now, for the window's live region: it is the
+/// section's own line ("Checking for updates…", the result, an error), said when it changes.
+pub fn spoken() -> Option<String> {
+    Some(super::announce::brief(&state().message)).filter(|m| !m.is_empty())
+}
 pub fn available_version() -> Option<String> {
     state().available.as_ref().map(|(m, _)| m.version.clone())
 }

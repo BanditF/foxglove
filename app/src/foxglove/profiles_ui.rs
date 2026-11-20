@@ -113,14 +113,32 @@ fn share(ui: &mut egui::Ui, names: &[String], active: Option<&str>) {
                         Ok(()) => format!("Saved {}", path.display()),
                         Err(e) => format!("Can't export: {e}"),
                     });
+                    // Spoken: the file's name, never the whole path; errors cut short.
+                    let spoken = match &state.message {
+                        Some(m) if m.starts_with("Saved ") => {
+                            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                            format!("Profile saved: {}", name.unwrap_or_default())
+                        }
+                        Some(m) => super::announce::brief(m),
+                        None => String::new(),
+                    };
+                    super::announce::notice(ui.ctx(), spoken);
                 }
                 None => {
                     state.importing = None;
                     match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|text| {
                         store::import_names(&text).map(|(names, clashes)| (text, names, clashes))
                     }) {
-                        Ok(read) => state.importing = Some(read),
-                        Err(e) => state.message = Some(format!("Can't import: {e}")),
+                        Ok(read) => {
+                            let ask = format!("Import {}? Import button below", read.1.join(", "));
+                            super::announce::notice(ui.ctx(), super::announce::brief(&ask));
+                            state.importing = Some(read);
+                        }
+                        Err(e) => {
+                            let m = format!("Can't import: {e}");
+                            super::announce::notice(ui.ctx(), super::announce::brief(&m));
+                            state.message = Some(m);
+                        }
                     }
                 }
             }
@@ -152,6 +170,9 @@ fn share(ui: &mut egui::Ui, names: &[String], active: Option<&str>) {
                         Ok(done) => format!("Imported {}", done.join(", ")),
                         Err(e) => format!("Can't import: {e}"),
                     });
+                    if let Some(m) = &state.message {
+                        super::announce::notice(ui.ctx(), super::announce::brief(m));
+                    }
                     state.importing = None;
                     state.rules = None;
                 }

@@ -75,6 +75,23 @@ fn with<R>(f: impl FnOnce(&mut Inner) -> R) -> R {
     r
 }
 
+/// What a screen reader hears of the update's state, when it changes (nothing while idle and
+/// never the progress lines, which change many times).
+pub fn spoken(v: &View) -> Option<String> {
+    match v {
+        View::Idle => None,
+        View::Checking => Some("Checking the firmware folder".into()),
+        View::Confirm { .. } => Some("Firmware update ready: check it and confirm".into()),
+        View::Refused(why) => Some(super::announce::brief(why)),
+        View::Running(_) => Some("Updating the keyboard firmware".into()),
+        View::Done(_) => Some("Keyboard firmware update finished".into()),
+        View::Failed { message, .. } => Some(format!(
+            "Keyboard firmware update failed: {}",
+            super::announce::brief(message)
+        )),
+    }
+}
+
 pub fn view() -> View {
     STATE.lock().unwrap_or_else(|e| e.into_inner()).view.clone()
 }
