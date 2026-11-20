@@ -72,7 +72,7 @@ def tile(d, x, y, t):
     by = y + 36
     if state == "restarting":
         rr(d, [x + 1, y + 34, x + TW - 1, y + 56], fill=AMBER_BG, r=0)
-        text(d, (x + 12, y + 36), t.get("restart", "Restarting in 4 s (2 of 5)"), AMBER, F_S, AMBER_BG, "tile restart strip")
+        text(d, (x + 12, y + 36), t.get("restart", "Restarting in 4 s, try 3 of 5"), AMBER, F_S, AMBER_BG, "tile restart strip")
         by = y + 58
     if state in ("stopped", "needs-hub", "quarantined"):
         words = {"stopped": ("Stopped after", "5 crashes"), "needs-hub": ("Needs a newer", "Hideout"),
@@ -260,7 +260,7 @@ def supervisor():
     rr(d, [44, 348, 726, 414], fill=AMBER_BG, r=6)
     d.text((58, 364), GL["sync"], fill=AMBER, font=ICON)
     PAIRS.append(("crash bar icon", AMBER, AMBER_BG))
-    text(d, (84, 354), "Mic mute stopped unexpectedly. Restarting in 4 s (2 of 5).", TEXT, F_B, AMBER_BG, "crash bar title")
+    text(d, (84, 354), "Mic mute stopped unexpectedly. Restarting in 4 s, try 3 of 5.", TEXT, F_B, AMBER_BG, "crash bar title")
     text(d, (84, 380), "Your place on this page is kept.", TEXT, F, AMBER_BG, "crash bar line")
     text(d, (640, 380), "Open log", AMBER, F, AMBER_BG, "crash bar link")
     text(d, (50, 430), "Mic mute", TEXT, F_H, BG)

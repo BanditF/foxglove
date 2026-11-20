@@ -210,7 +210,7 @@ hideout-supervisor-ux.md's.
 | State | Tile | Page |
 |---|---|---|
 | Starting… | cached tile, orange ring on the icon, button enabled (key presses queue, UX3) | cached page, header "Starting…" |
-| Restarting | **amber strip** under the title: "Restarting in 4 s (2 of 5)"; body greyed, sub line becomes "Last seen 12 s ago"; button greyed with tooltip "<Module> is restarting. A key press waits up to 2 s." | the **amber crash bar**: "<Module> stopped unexpectedly. Restarting in 4 s (2 of 5)." / "Your place on this page is kept." · Open log; page below greyed with "Last seen …" |
+| Restarting | **amber strip** under the title: "Restarting in 4 s, try 3 of 5"; body greyed, sub line becomes "Last seen 12 s ago"; button greyed with tooltip "<Module> is restarting. A key press waits up to 2 s." | the **amber crash bar**: "<Module> stopped unexpectedly. Restarting in 4 s, try 3 of 5." / "Your place on this page is kept." · Open log; page below greyed with "Last seen …" |
 | Stopped after 5 crashes | red warning mark for the icon, red outline, "Stopped after 5 crashes", **Open** | the stopped card and its recovery ladder |
 | Needs a newer Hideout | red mark, "Needs a newer Hideout", **Update Hideout** | the §7.8 card |
 | Quarantined (§5.5) | red mark, "Its tile couldn't be shown", **Open** | "<Module>'s page couldn't be shown" card |
@@ -231,7 +231,7 @@ hideout-supervisor-ux.md's.
 | Tile ··· menu | Open <Module> · Hide tile · Move left · Move right |
 | Tray panel footer | Open Hideout · Edit tiles |
 | Stale caption | "Last seen <n> s ago" / "Last seen <n> min ago" |
-| Restart strip (tile) | "Restarting in <n> s (<k> of 5)" |
+| Restart strip (tile) | "Restarting in <n> s, try <t> of 5" |
 | Disabled button tooltip | "<Module> is restarting. A key press waits up to 2 s." |
 | Stopped tile | "Stopped after 5 crashes" · Open |
 | Lights handed back | "Your keyboard is back on its own lighting." |

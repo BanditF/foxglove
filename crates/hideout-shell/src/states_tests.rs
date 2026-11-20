@@ -1120,10 +1120,10 @@ fn sidebar_cases(dir: &std::path::Path) -> Vec<(&'static str, Hub, bool, &'stati
         ("Updating", updating(dir).0, true, "Art, updating\u{2026}"),
         ("Starting", gone("starting"), true, "Art, starting\u{2026}"),
         (
-            "Restarting (2 of 5)",
+            "Restarting, try 3 of 5",
             restarting(dir, 8, 2, Duration::ZERO).0,
             true,
-            "Art, restarting\u{2026} (2 of 5)",
+            "Art, restarting, try 3 of 5",
         ),
         (
             "Stopped after 5 crashes (mark wins, no ring)",
@@ -1271,7 +1271,7 @@ fn renders_adopted_row_states_for_review() {
 }
 
 /// #1159: a planned exit (a GPU reset, an update install) reads "Restarting…" with no count; a
-/// crash restart keeps its countdown and "(k of 5)". Side by side for review.
+/// crash restart keeps its countdown and "try k of 5". Side by side for review.
 #[test]
 fn the_planned_restart_row_has_no_count_and_the_crash_row_keeps_it() {
     let all: Vec<Installed> = [("m.fox", "Foxglove"), ("m.art", "Art")]
@@ -1298,7 +1298,7 @@ fn the_planned_restart_row_has_no_count_and_the_crash_row_keeps_it() {
     let planned = row_in(&all[0], &all, &fact, None);
     let crash = row_in(&all[1], &all, &fact, Some((3, 2)));
     assert_eq!(planned.state, "Restarting\u{2026}");
-    assert_eq!(crash.state, "Restarting in 3 s (2 of 5)");
+    assert_eq!(crash.state, "Restarting in 3 s, try 3 of 5");
     let rows = vec![planned, crash];
     let (w, h) = (1000u32, 240u32);
     let Some(px) = rasterise(w, h, |c| {

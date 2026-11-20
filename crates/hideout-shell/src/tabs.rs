@@ -407,6 +407,9 @@ pub enum TabState {
     Live,
     /// Starting, updating or restarting: a ring round the mark. The words are the §7.8 ones.
     Busy(String),
+    /// Restarting after a crash: the same ring, and the words are a whole line already
+    /// ("Restarting, try 3 of 5"), so nothing is added after them.
+    Retrying(String),
     /// Waiting for another module (§7.8, root cause once): the same ring, but the words are a
     /// fact, not something in progress, so no "…" ("Art, waiting for Link").
     Waiting(String),
@@ -462,7 +465,10 @@ impl Look {
     }
 
     pub fn busy(&self) -> bool {
-        matches!(self.state, TabState::Busy(_) | TabState::Waiting(_))
+        matches!(
+            self.state,
+            TabState::Busy(_) | TabState::Retrying(_) | TabState::Waiting(_)
+        )
     }
 
     /// Popped out or off: the label is muted even on the active tab.
@@ -475,8 +481,9 @@ impl Look {
         let mut parts: Vec<String> = Vec::new();
         match &self.state {
             TabState::Live => {}
-            // "Restarting… (2 of 5)" already has its ellipsis.
+            // "Restarting\u2026" (a planned restart) already has its ellipsis.
             TabState::Busy(w) if w.contains('\u{2026}') => parts.push(w.clone()),
+            TabState::Retrying(w) => parts.push(w.clone()),
             TabState::Busy(w) => parts.push(format!("{w}\u{2026}")),
             TabState::Waiting(w) => parts.push(w.clone()),
             TabState::Stopped(w) => parts.push(w.clone()),
