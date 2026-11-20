@@ -1425,6 +1425,112 @@ mod tests {
         assert!(view(&f).granted.is_empty());
     }
 
+    /// The first-run group "I understand" covers the items on screen when it is ticked, and
+    /// nothing else: an item added by a changed list comes back unticked and unconfirmed, with
+    /// its own "I understand" and no group box.
+    #[test]
+    fn the_group_i_understand_never_covers_items_added_later() {
+        let mut f = fx("grpadded", &["hub.notify", "net"]);
+        f.ui.open(ID, Opener::TurnOn);
+        let mut shown = f.ui.dialog.clone().unwrap();
+        assert_eq!(
+            shown.view.group_ack,
+            Some(false),
+            "fresh first run offers it"
+        );
+        shown.set_group_ack(true);
+        assert!(item(&shown, "net").confirmed);
+        // The app now also asks for a second sensitive thing.
+        std::fs::write(
+            f.folder.join("module.toml"),
+            manifest(&f.exe, &["hub.notify", "net", "key.events"]),
+        )
+        .unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&f.folder, NOW)
+            .unwrap();
+        assert!(f.ui.answer(PermAnswer::Allow(shown.allowed())).is_none());
+        assert!(view(&f).granted.is_empty(), "nothing was allowed");
+        let d = f.ui.dialog.clone().expect("reopened");
+        assert_eq!(d.reason, Some(Reason::ListChanged));
+        assert_eq!(d.view.group_ack, None, "no group box on a changed list");
+        for raw in ["net", "key.events"] {
+            let i = item(&d, raw);
+            assert!(i.sensitive && !i.checked && !i.confirmed, "{raw}");
+        }
+        assert!(item(&d, "key.events").new);
+        let chosen = d.allowed().chosen;
+        assert!(
+            !chosen.iter().any(|r| r == "net" || r == "key.events"),
+            "{chosen:?}"
+        );
+        // Ticking the group box on a dialog without it does nothing.
+        let mut d = d;
+        d.set_group_ack(true);
+        assert_eq!(d.count(), 1);
+    }
+
+    /// An update or a move never carries the group "I understand": a rebuild (void) and an
+    /// update that asks for more both open with every sensitive item unticked, unconfirmed and
+    /// with its own "I understand".
+    #[test]
+    fn an_update_or_move_never_carries_the_group_i_understand() {
+        let mut f = fx("grpgone", &["hub.notify", "net"]);
+        f.ui.open(ID, Opener::TurnOn);
+        let mut d = f.ui.dialog.clone().unwrap();
+        d.set_group_ack(true);
+        f.ui.answer(PermAnswer::Allow(d.allowed())).unwrap();
+        assert!(view(&f).granted.iter().any(|g| g.raw == "net"));
+        // A rebuilt file at the same place, then the same app moved to a new place.
+        std::fs::write(&f.exe, b"program v2").unwrap();
+        Registry::open_from_env(&f.home)
+            .unwrap()
+            .void_if_changed(ID, NOW)
+            .unwrap();
+        f.ui.refresh();
+        for how in [Opener::Header, Opener::TurnOn] {
+            f.ui.open(ID, how);
+            let d = f.ui.dialog.clone().unwrap();
+            assert_eq!(d.reason, Some(Reason::Void));
+            assert_eq!(d.view.group_ack, None, "{how:?}");
+            let net = item(&d, "net");
+            assert!(net.sensitive && !net.checked && !net.confirmed, "{how:?}");
+            assert!(!d.allowed().chosen.iter().any(|r| r == "net"));
+        }
+        let mut m = fx("grpmoved", &["hub.notify", "net"]);
+        m.ui.open(ID, Opener::TurnOn);
+        let mut d = m.ui.dialog.clone().unwrap();
+        d.set_group_ack(true);
+        m.ui.answer(PermAnswer::Allow(d.allowed())).unwrap();
+        // Same app, different path on this PC: its file is new for the grant.
+        let moved = m.exe.with_file_name("moved").join("vulpes.exe");
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::write(&moved, b"program v1").unwrap();
+        std::fs::write(
+            m.folder.join("module.toml"),
+            manifest(&moved, &["hub.notify", "net"]),
+        )
+        .unwrap();
+        let mut reg = Registry::open(&m.home, false).unwrap();
+        reg.register_adopted(&m.folder, NOW).unwrap();
+        reg.void_if_changed(ID, NOW).unwrap();
+        m.ui.refresh();
+        m.ui.open(ID, Opener::TurnOn);
+        let d = m.ui.dialog.clone().unwrap();
+        assert_eq!(d.reason, Some(Reason::Void), "the move voided the OK");
+        assert_eq!(d.view.group_ack, None, "a moved app gets no group box");
+        let net = item(&d, "net");
+        assert!(!net.checked && !net.confirmed);
+        // An update that asks for more: only the new items, with no group box.
+        let mut u = updated_with_more("grpmore", &["net"]);
+        u.ui.open(ID, Opener::More);
+        let d = u.ui.dialog.clone().unwrap();
+        assert_eq!(d.reason, Some(Reason::More));
+        assert_eq!(d.view.group_ack, None);
+        assert!(d.items.iter().filter(|i| i.sensitive).all(|i| !i.confirmed));
+    }
+
     #[test]
     fn a_list_that_changed_while_the_dialog_was_open_is_refused_and_reopens() {
         let mut f = fx("changed", &["hub.notify", "ui.window"]);
