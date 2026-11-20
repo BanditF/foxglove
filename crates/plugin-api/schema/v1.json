@@ -1,5 +1,5 @@
 {
-  "api": "1.16",
+  "api": "1.17",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -15,6 +15,20 @@
           "action"
         ],
         "title": "ActionInvoked",
+        "type": "object"
+      }
+    },
+    "app.hand_over": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "app.windows",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
         "type": "object"
       }
     },

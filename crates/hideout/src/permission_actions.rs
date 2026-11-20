@@ -68,6 +68,9 @@ pub struct Done {
     pub chosen: Vec<String>,
     pub declined: Vec<String>,
     pub then: Then,
+    /// The dialog said a standalone copy would be closed (FR5): the page asks the copy to quit
+    /// before it starts the app.
+    pub handover: bool,
 }
 
 fn group(g: RGroup) -> Group {
@@ -168,9 +171,10 @@ pub fn date_words(at: &str) -> String {
 /// First-run presentation (FR2): when Allow also starts the app, the button says so and the
 /// keyboard-sharing section stays out of the dialog (it is still offered from the app's
 /// Permissions, and nothing is recorded for it, so it is asked later, not declined now).
-fn present_first_run(d: &mut PermDialog, how: Opener) {
+fn present_first_run(d: &mut PermDialog, how: Opener, standalone: bool) {
     if how.then() == Then::TurnOn {
         d.view.starts = true;
+        d.view.handover = standalone;
         d.keyboard = None;
         if d.reason.is_none() && d.sensitive_count() > 0 && d.items.iter().all(|i| !i.before) {
             // One "I understand" for the whole sensitive group.
@@ -524,6 +528,15 @@ pub struct PermUi {
     first_run_drawn: bool,
     /// The first-run header the user answered Not now, by (app, list code), until a list changes.
     first_hidden: Vec<(String, String)>,
+    /// What the hub can see of standalone copies (FR5); none in tests that do not need it.
+    standalone: Option<std::sync::Arc<dyn crate::handover::Standalone>>,
+    /// The note after a hand-over that did not happen, with Start again.
+    pub(crate) retry: Option<String>,
+    /// The app whose standalone copy is being closed, and the worker's answer when it comes.
+    handing: Option<(String, std::sync::mpsc::Receiver<bool>)>,
+    /// The window's context, to ask for a redraw when the worker is done.
+    ctx: Option<egui::Context>,
+    pub(crate) handover_note: Option<hideout_shell::handover::Note>,
 }
 
 impl PermUi {
@@ -544,9 +557,104 @@ impl PermUi {
             first_run: None,
             first_run_drawn: false,
             first_hidden: Vec::new(),
+            standalone: None,
+            handover_note: None,
+            retry: None,
+            handing: None,
+            ctx: None,
         };
         p.refresh();
         p
+    }
+
+    /// Lets the dialog offer to close a standalone copy of an app (first-run FR5).
+    pub fn with_standalone(mut self, s: std::sync::Arc<dyn crate::handover::Standalone>) -> PermUi {
+        self.standalone = Some(s);
+        self
+    }
+
+    /// Whether a verified standalone copy of `id` is open now (an unsure case is not one).
+    fn copy_open(&self, id: &str) -> bool {
+        self.standalone
+            .as_ref()
+            .is_some_and(|s| s.seen(id) == crate::handover::Seen::Standalone)
+    }
+
+    /// Starts closing the standalone copy of `id` on a worker (the wait can take seconds, so the
+    /// window never blocks on it). True: a hand-over is under way (or already was) and the page
+    /// starts the app only when [`PermUi::finished_hand_over`] says yes. False: nothing to hand
+    /// over to (no standalone support here), so the app starts at once.
+    pub fn start_hand_over(&mut self, id: &str) -> bool {
+        let Some(s) = self.standalone.clone() else {
+            return false;
+        };
+        if self.handing.is_some() {
+            return true;
+        }
+        self.handover_note = None;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        let app = id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name("hand-over-ui".into())
+            .spawn(move || {
+                let went = crate::handover::hand_over(s.as_ref(), &app);
+                let _ = tx.send(went);
+                // The page draws again at once (an event, no timer).
+                if let Some(c) = ctx {
+                    c.request_repaint();
+                }
+            })
+            .is_ok();
+        if spawned {
+            self.handing = Some((id.to_string(), rx));
+        } else {
+            self.stays(id);
+        }
+        true
+    }
+
+    /// The copy stays: a note with Start again, nothing started.
+    fn stays(&mut self, id: &str) {
+        let name = self
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.view.listing.name.clone())
+            .unwrap_or_else(|| id.to_string());
+        log::warn!("hand-over: {id}: the standalone copy stays open; not starting");
+        self.handover_note = Some(hideout_shell::handover::Note {
+            id: id.to_string(),
+            name,
+        });
+    }
+
+    /// The finished hand-over, once: the app's id and whether it may start now. `wait` blocks for
+    /// the worker (tests); the page passes false and looks once per drawn frame.
+    pub fn finished_hand_over(&mut self, wait: bool) -> Option<(String, bool)> {
+        let (id, rx) = self.handing.take()?;
+        let went = if wait {
+            rx.recv()
+        } else {
+            match rx.try_recv() {
+                Ok(v) => Ok(v),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.handing = Some((id, rx));
+                    return None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Ok(false),
+            }
+        }
+        .unwrap_or(false);
+        if !went {
+            self.stays(&id);
+        }
+        Some((id, went))
+    }
+
+    /// The app whose Start again was pressed, once.
+    pub fn take_retry(&mut self) -> Option<String> {
+        self.retry.take()
     }
 
     /// Uses the hub's shared CLI grant queue.
@@ -651,7 +759,8 @@ impl PermUi {
                 if let Some(p) = prev {
                     d.mark_changes(p);
                 }
-                present_first_run(&mut d, how);
+                let copy = how.then() == Then::TurnOn && self.copy_open(id);
+                present_first_run(&mut d, how, copy);
                 let asked = d.items.iter().filter(|i| i.allowable).count();
                 log::info!(
                     "permissions: {id}: dialog shown, list {}, {asked} asked, {} can't be allowed",
@@ -680,6 +789,7 @@ impl PermUi {
     /// that changed reopens the dialog with the new list and the reason on top, nothing allowed.
     pub fn answer(&mut self, a: PermAnswer) -> Option<Done> {
         let d = self.dialog.take()?;
+        let handover = d.view.handover;
         let how = self.opener.take().unwrap_or(Opener::Change);
         let PermAnswer::Allow(Allowed {
             code,
@@ -709,6 +819,7 @@ impl PermUi {
                     chosen,
                     declined,
                     then: how.then(),
+                    handover,
                 })
             }
             Err(e) if e.contains("list_changed") => {
@@ -773,7 +884,8 @@ impl PermUi {
             .iter()
             .filter_map(|id| build_dialog(&self.home, id, None).ok())
             .map(|mut d| {
-                present_first_run(&mut d, Opener::Header);
+                let copy = self.copy_open(&d.id);
+                present_first_run(&mut d, Opener::Header, copy);
                 d
             })
             .collect();
@@ -835,6 +947,7 @@ impl PermUi {
                         chosen,
                         declined,
                         then: Then::TurnOn,
+                        handover: d.view.handover,
                     });
                 }
                 Err(e) if e.contains("list_changed") => {
@@ -1003,6 +1116,7 @@ impl PermUi {
     /// The header lines (at most one per module) and the Permissions sections, at the top of the
     /// Modules page.
     pub fn top(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        self.ctx = Some(ui.ctx().clone());
         let mut open: Option<(String, Opener, egui::Id)> = None;
         let mut hide: Option<(String, HeaderKind, String)> = None;
         let mut off: Option<(String, Option<String>)> = None;
@@ -1010,6 +1124,21 @@ impl PermUi {
         let mut keep_on: Option<(String, egui::Id)> = None;
         let mut keep_stop: Option<String> = None;
         let mut open_first: Option<egui::Id> = None;
+        if let Some((id, _)) = &self.handing {
+            let name = self
+                .entries
+                .iter()
+                .find(|e| &e.id == id)
+                .map(|e| e.view.listing.name.clone())
+                .unwrap_or_else(|| id.clone());
+            hideout_shell::handover::closing_ui(ui, t, &name);
+        } else if let Some(n) = self.handover_note.clone() {
+            if hideout_shell::handover::note_ui(ui, t, &n) {
+                self.handover_note = None;
+                self.retry = Some(n.id);
+            }
+            ui.add_space(8.0);
+        }
         for q in self.queue.for_home(&self.home) {
             let Some(e) = self.entries.iter().find(|e| e.id == q.id) else {
                 continue;
@@ -1133,6 +1262,7 @@ impl PermUi {
     /// Draws the dialog while it is open. An Allow that was recorded comes back so the page can
     /// turn the module on; the focus goes back to the button that opened it.
     pub fn dialog(&mut self, ctx: &egui::Context, t: &Tokens) -> Vec<Done> {
+        self.ctx = Some(ctx.clone());
         if self.first_run.is_some() {
             let first = !self.first_run_drawn;
             self.first_run_drawn = true;

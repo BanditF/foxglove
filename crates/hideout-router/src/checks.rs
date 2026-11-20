@@ -58,6 +58,8 @@ pub const FIRST_PARTY_AREAS: &[&str] = &[
     "tray.*",
     "overlay.*",
     "wallpaper-engine.*",
+    // (plugin API 1.17) The hub asks a standalone copy to quit: `app.hand_over`.
+    "app.*",
 ];
 
 /// The 14 v1 methods the legacy adopted module `foxglove` serves through the router today

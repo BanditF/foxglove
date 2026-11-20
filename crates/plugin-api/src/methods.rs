@@ -1164,6 +1164,15 @@ pub const METHODS: &[Method] = &[
         params: schema!(Empty),
         result: Some(schema!(SceneStopped)),
     },
+    // The hub asks a standalone copy to quit cleanly so it can start the app inside Hideout (API
+    // 1.17, first-run FR5). Only a verified hideout.exe on the other end of the pipe is obeyed.
+    Method {
+        name: "app.hand_over",
+        kind: Kind::Call,
+        permission: Some("app.windows"),
+        params: schema!(Empty),
+        result: Some(schema!(Empty)),
+    },
     // Hold and give back the lights (#236).
     Method {
         name: "lighting.lease",

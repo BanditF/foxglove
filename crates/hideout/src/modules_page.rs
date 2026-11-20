@@ -364,29 +364,77 @@ impl ModulesPage {
         if let Some(g) = self.grant.as_mut() {
             g.refresh();
         }
-        let Some(a) = self.actions.as_deref() else {
+        if self.actions.is_none() {
             return;
-        };
+        }
         match done.then {
-            Then::TurnOn => match a.turn_on(&done.id) {
-                Ok(()) => {
-                    self.set_enabled(&done.id, true);
-                    // The user's Allow started it: the Done card says so, live.
-                    self.done.show_for(&done.id);
-                    if done.id == crate::keyboard_actions::MODULE {
-                        if let Some(g) = self.grant.as_mut() {
-                            g.after_turn_on();
-                        }
-                    }
+            // FR5: the dialog said a standalone copy would be closed. It is asked to quit on a
+            // worker; the app starts when that finishes well (`settle_hand_over`). If the copy
+            // does not go (or anything is in doubt) the app is not started, a note with Start
+            // again shows, and the Startup entry is never touched.
+            Then::TurnOn
+                if done.handover
+                    && self
+                        .perm
+                        .as_mut()
+                        .is_some_and(|p| p.start_hand_over(&done.id)) => {}
+            Then::TurnOn => self.turn_on_now(&done.id),
+            Then::Review => {
+                if let Some(a) = self.actions.as_deref() {
+                    a.review(&done.id);
                 }
-                Err(why) => log::warn!("Modules page: {} not turned on ({why})", done.id),
-            },
-            Then::Review => a.review(&done.id),
+            }
             Then::Nothing => {}
         }
         if let Some(p) = self.perm.as_mut() {
             p.refresh();
         }
+    }
+
+    /// Starts the app now and shows the row and the Done card as on.
+    fn turn_on_now(&mut self, id: &str) {
+        let Some(a) = self.actions.as_deref() else {
+            return;
+        };
+        match a.turn_on(id) {
+            Ok(()) => {
+                self.set_enabled(id, true);
+                // The user's Allow started it: the Done card says so, live.
+                self.done.show_for(id);
+                if id == crate::keyboard_actions::MODULE {
+                    if let Some(g) = self.grant.as_mut() {
+                        g.after_turn_on();
+                    }
+                }
+            }
+            Err(why) => log::warn!("Modules page: {id} not turned on ({why})"),
+        }
+        if let Some(p) = self.perm.as_mut() {
+            p.refresh();
+        }
+    }
+
+    /// A finished hand-over: the app starts once its copy has gone (looked at once per frame;
+    /// `wait` is for tests).
+    fn settle_hand_over(&mut self, wait: bool) {
+        if let Some((id, true)) = self.perm.as_mut().and_then(|p| p.finished_hand_over(wait)) {
+            self.turn_on_now(&id);
+        }
+    }
+
+    /// Start again after a hand-over that did not happen: the same step, once more.
+    fn start_again_pending(&mut self) {
+        let Some(id) = self.perm.as_mut().and_then(|p| p.take_retry()) else {
+            return;
+        };
+        self.after_allow(crate::permission_actions::Done {
+            id,
+            code: String::new(),
+            chosen: Vec::new(),
+            declined: Vec::new(),
+            then: crate::permission_actions::Then::TurnOn,
+            handover: true,
+        });
     }
 
     /// An app was just added (Found card or Browse): the list takes it now and the normal
@@ -727,6 +775,8 @@ impl hideout_shell::Page for ModulesPage {
         self.grant = grant;
         self.perm = perm;
         self.discover = discover;
+        self.start_again_pending();
+        self.settle_hand_over(false);
         if let Some(id) = added {
             self.after_add(&id);
         }
@@ -973,6 +1023,7 @@ mod tests {
             chosen: Vec::new(),
             declined: Vec::new(),
             then,
+            handover: false,
         };
         let inst = Installed {
             adopted: true,

@@ -56,6 +56,7 @@ same messages.
 | `scenes.page` | call | `devices.read` (API 1.10) |
 | `scene.status` / `scene.repaint` / `scene.stop` | call | `devices.read` / `lighting.write` / `lighting.write` (API 1.16): see below |
 | `focus.get` / `focus.set` | call | `devices.read` / `focus.write` (API 1.12) |
+| `app.hand_over` | call | `app.windows` (API 1.17): only the hub's own `hideout.exe` is obeyed, see below |
 | `overlay.shown` / `overlay.set_shown` | call | `devices.read` / `app.windows` (API 1.13) |
 | `wallpaper-engine.pause` / `.release` / `.status` | call | `wallpaper.control` (API 1.15, #1120): see below. Never granted over MCP. Grants nothing a process of this user can't do itself (Wallpaper Engine's own `-control pause`); the `reason` refuses control, direction and zero-width characters (#1142). |
 | `screens.info_override` / `screens.info_release` | call | `screens.write` (API 1.14): the Info screen names of `screens.panel_override` / `screens.panel_release`, which stay as deprecated aliases. SDK: `info_screen_*`, the `panel_*` methods are deprecated. |
@@ -498,3 +499,11 @@ this. The app then serves no `foxglove-<user>` pipe; the hub serves that alias a
   (so `foxglove-cli status` still needs the standalone pipe), `lighting.*`, `art.*`, `screens.*`,
   `behaviors.*`, `profiles.*`, `focus.*`. Facts come from the hub's cache (`keyboard.*` is
   published by the module).
+
+- **The hub asks a standalone copy to quit (API 1.17, first-run FR5):** `app.hand_over {}` asks a
+  standalone Foxglove to hand back what it holds and exit cleanly, as the tray's Quit does, so the
+  hub can start it as an app inside Hideout. The kernel's answer for the caller's process id
+  decides, never anything in the request: it must be a `hideout.exe` that passes the same identity
+  checks as a pipe's server (same user, Medium integrity or above, no AppContainer, its install
+  folder). Any other caller gets error 5 (denied) and nothing happens. Calling it on an
+  app that runs inside Hideout does nothing (that app serves no pipe).

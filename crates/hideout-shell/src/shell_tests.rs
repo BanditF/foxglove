@@ -3990,6 +3990,7 @@ fn keep_test_dialog(
         same_place: false,
         view: crate::permission_dialog::View {
             starts: false,
+            handover: false,
             everyday_open: true,
             group_ack: None,
         },
@@ -4502,6 +4503,7 @@ fn fr2_test_dialog() -> crate::permission_dialog::PermDialog {
         same_place: false,
         view: View {
             starts: true,
+            handover: false,
             everyday_open: false,
             group_ack: Some(false),
         },

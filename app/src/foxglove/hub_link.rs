@@ -93,7 +93,7 @@ const GRANT_REGISTRY: &str = "facts.read:module.*";
 /// The Foxglove API this module serves: the plugin API's own version, so a client built for it
 /// (the CLI, the SDK) is not refused with code 7. A test keeps it, `module.toml` and the crate
 /// constant equal.
-const API: &str = "1.16";
+const API: &str = "1.17";
 /// How long a lost hub is waited for (§7.9).
 const GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 

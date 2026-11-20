@@ -78,6 +78,7 @@ pub mod keymap_layers;
 pub mod keymap_session;
 pub mod layout_files;
 // Foxglove (#719): the knob points at master or an app's volume.
+pub mod hand_over;
 pub mod hub_fact;
 pub mod knob;
 pub mod knob_health;

@@ -53,6 +53,23 @@ pub trait Devices: Send + Sync {
     }
 }
 
+thread_local! {
+    static PEER_PID: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// The process id of the client of the connection this thread serves (`GetNamedPipeClientProcessId`,
+/// set by the pipe listener before [`serve`] runs); `None` when it could not be read or the
+/// connection is not a pipe. A call that must come from one particular program (the hub's hand-over
+/// request) checks this process itself: the id is the kernel's answer, never the client's.
+pub fn peer_pid() -> Option<u32> {
+    PEER_PID.with(|p| p.get())
+}
+
+/// Records the client's process id for the connection this thread is about to serve.
+pub fn set_peer_pid(pid: Option<u32>) {
+    PEER_PID.with(|p| p.set(pid));
+}
+
 /// Which plugin each open connection is, by connection number (tools aren't listed).
 static CONN_PLUGINS: Mutex<std::collections::BTreeMap<u64, String>> =
     Mutex::new(std::collections::BTreeMap::new());

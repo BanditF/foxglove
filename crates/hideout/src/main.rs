@@ -24,6 +24,7 @@ mod discover;
 mod find_installed;
 #[cfg(windows)]
 mod grant_queue;
+mod handover;
 #[cfg(windows)]
 mod https;
 #[cfg(windows)]
@@ -381,6 +382,7 @@ fn main() {
         started._router.clone().map(|h| {
             permission_actions::PermUi::new(&paths.root, h)
                 .with_queue(grant_queue::shared().clone())
+                .with_standalone(handover::foxglove(&paths.root, keyboard_actions::MODULE))
         }),
         // The Found card and Add an app…: the same hub only (adding goes through its dialog).
         started
