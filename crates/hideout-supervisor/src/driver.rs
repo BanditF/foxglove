@@ -969,7 +969,9 @@ impl Supervisor {
         let depends = depends_event(id, manifest.as_ref());
         let m = manifest.clone();
         self.0.hub.act(|r| {
-            if let Some(e) = entry {
+            // Only when the router still has none: an entry made meanwhile holds the user's
+            // Allow, which this (possibly older) read must not replace (#1375).
+            if let Some(e) = entry.filter(|e| !r.knows_module(&e.id)) {
                 r.add_module(e);
             }
             if let Some(m) = &m {

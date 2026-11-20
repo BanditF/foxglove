@@ -455,6 +455,10 @@ pub struct Router {
     /// (module, method) pairs already logged as asked while the user's OK was missing (#1238):
     /// one log line per pair per run.
     asked_ungranted: HashSet<(String, String)>,
+    /// What the user's Allow granted a module this router has no entry for yet (an app adopted
+    /// into the running hub whose inventory change the watch hasn't learnt, #1375). Held until
+    /// [`Router::add_module`] gives the module its entry, so the Allow is never lost.
+    early_grants: HashMap<String, Vec<String>>,
     /// The `facts:<pattern>` each module's manifest provides (§4.5): what it may register.
     facts_decl: HashMap<String, Vec<String>>,
     /// Method areas the accepted root-signed catalogs assign, with the module id (§6.3, §13.6):
@@ -564,6 +568,7 @@ impl Router {
             channels_decl: HashMap::new(),
             methods_decl: HashMap::new(),
             asked_ungranted: HashSet::new(),
+            early_grants: HashMap::new(),
             facts_decl: HashMap::new(),
             root_areas: Vec::new(),
             secret_store: crate::secrets::default_store(),
@@ -581,7 +586,14 @@ impl Router {
     }
 
     /// Adds or replaces a module the router knows.
-    pub fn add_module(&mut self, m: ModuleEntry) {
+    pub fn add_module(&mut self, mut m: ModuleEntry) {
+        // An Allow that came before the entry: it is the user's, so it joins what the entry
+        // holds (the file's grants as read now).
+        if let Some(early) = self.early_grants.remove(&m.id) {
+            m.granted.extend(early);
+            m.granted.sort();
+            m.granted.dedup();
+        }
         self.modules.insert(m.id.clone(), m);
     }
 
@@ -1009,8 +1021,12 @@ impl Router {
     /// The user's Allow (and the hub's start): sets what module `id` holds. The only way a
     /// module's grants widen while the hub runs (#1178).
     pub fn set_module_grants(&mut self, id: &str, granted: Vec<String>) -> Vec<Out> {
-        if let Some(e) = self.modules.get_mut(id) {
-            e.granted = granted;
+        match self.modules.get_mut(id) {
+            Some(e) => e.granted = granted,
+            // Not learnt yet (adopted into the running hub, #1375): kept for its entry.
+            None => {
+                self.early_grants.insert(id.to_string(), granted);
+            }
         }
         self.revalidate_module_grants()
     }
@@ -1020,6 +1036,16 @@ impl Router {
     pub fn drop_module_grants(&mut self, id: &str, items: Option<&[String]>) -> Vec<Out> {
         if let Some(e) = self.modules.get_mut(id) {
             e.granted.retain(|g| items.is_some_and(|w| !w.contains(g)));
+        }
+        match items {
+            None => {
+                self.early_grants.remove(id);
+            }
+            Some(w) => {
+                if let Some(g) = self.early_grants.get_mut(id) {
+                    g.retain(|x| !w.contains(x));
+                }
+            }
         }
         self.revalidate_module_grants()
     }
@@ -1033,8 +1059,11 @@ impl Router {
             let file = files.get(id).map(Vec::as_slice).unwrap_or(&[]);
             let extra: Vec<&String> = file.iter().filter(|f| !e.granted.contains(f)).collect();
             if !extra.is_empty() && e.registered_version.is_some() {
-                log::warn!(
-                    "permissions: {id}: ignored a grant added to inventory.json by another process: {extra:?}"
+                // Also the normal Allow: the file is written before the router is told, and
+                // the watch may read it in between. Either way the router widens only by the
+                // user's Allow (or the next start), never by the file.
+                log::info!(
+                    "permissions: {id}: inventory.json lists {extra:?} that the hub has not recorded as allowed; not used until the user's Allow is recorded"
                 );
             }
             e.granted.retain(|g| file.contains(g));
@@ -1597,6 +1626,7 @@ impl Router {
             return out;
         }
         self.modules.remove(id);
+        self.early_grants.remove(id);
         self.tokens.remove(id);
         self.faults.remove(id);
         self.actions.remove(id);
