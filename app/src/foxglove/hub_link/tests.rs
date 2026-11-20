@@ -2720,3 +2720,84 @@ fn another_group_ends_the_old_subscription_and_subscribes_to_its_own_pattern() {
     assert!(rig.link.follow_source("a.b").unwrap());
     assert_eq!(rig.link.sensors.feed.group(), "gpu");
 }
+
+/// #1120 slice 1: callers on Foxglove's own local API are named to the hub (`lease.holders`),
+/// which merges them with the callers it routes into the one `lease_holders` fact the page and
+/// Hideout's tray read. Sent on a change only; an empty list clears them.
+#[test]
+fn local_holders_reach_the_hubs_fact_with_the_routed_ones() {
+    let (mut rig, _we) = we_rig();
+    let _ = rig.router.watch_facts(vec![String::new()]);
+    let key = "module.foxglove.lease_holders";
+    // Not before the hub has the module.
+    let mut early = Link::new(Vec::new(), launch());
+    early.sync_local_holders(&["Render queue".into()]).unwrap();
+    assert!(early.writer_mut().is_empty());
+    // Local only.
+    rig.link
+        .sync_local_holders(&["Render queue".to_string()])
+        .unwrap();
+    rig.pump();
+    assert_eq!(
+        rig.fact(key),
+        Some(json!({"wallpaper-engine": ["Render queue"]}))
+    );
+    // The same list again sends nothing.
+    rig.link
+        .sync_local_holders(&["Render queue".to_string()])
+        .unwrap();
+    assert!(rig.link.writer_mut().is_empty());
+    // With a routed holder: one sorted list, each name once.
+    let t = rig.tool_named(&["wallpaper.control"], "Arete");
+    pause(&mut rig, &t, "model");
+    let fact = rig.fact(key).unwrap();
+    let names = fact["wallpaper-engine"].as_array().unwrap().clone();
+    assert_eq!(names.len(), 2, "{fact}");
+    assert!(names.contains(&json!("Render queue")) && names.contains(&json!("Arete")));
+    // None left: the local name goes, the routed one stays.
+    rig.link.sync_local_holders(&[]).unwrap();
+    rig.pump();
+    assert_eq!(rig.fact(key), Some(json!({"wallpaper-engine": ["Arete"]})));
+}
+
+/// A local caller's own name is untrusted text: control and direction characters go, 32 characters
+/// at most, "An app" when it gave none.
+#[test]
+fn a_local_callers_name_is_cleaned() {
+    use crate::foxglove::api::clean_client_name as clean;
+    assert_eq!(clean("Render queue"), "Render queue");
+    assert_eq!(clean(""), "An app");
+    assert_eq!(clean("\u{202e}\n\t"), "An app");
+    assert_eq!(clean("evil\u{202e}\nname\u{200b}"), "evilname");
+    let long = clean(&"x".repeat(80));
+    assert_eq!(long.chars().count(), 32);
+    assert!(long.ends_with('\u{2026}'));
+    assert_eq!(clean("a   b"), "a b");
+}
+
+/// An older hub refuses `lease.holders`: said once, nothing breaks.
+#[test]
+fn an_older_hub_refusing_lease_holders_is_logged_once() {
+    let (mut rig, _we) = we_rig();
+    rig.link.sync_local_holders(&["A".to_string()]).unwrap();
+    let sent = String::from_utf8(std::mem::take(rig.link.writer_mut())).unwrap();
+    let req: Value = serde_json::from_str(sent.lines().next().unwrap()).unwrap();
+    assert_eq!(req["method"], "lease.holders");
+    assert_eq!(
+        req["params"],
+        json!({"family": "wallpaper-engine", "names": ["A"]})
+    );
+    let mut last = req;
+    for names in [vec!["A".to_string(), "B".to_string()], vec![]] {
+        let no =
+            json!({"jsonrpc":"2.0","id":last["id"],"error":{"code":-32601,"message":"no method"}});
+        rig.link.line(&no.to_string()).unwrap();
+        rig.link.sync_local_holders(&names).unwrap();
+        let sent = String::from_utf8(std::mem::take(rig.link.writer_mut())).unwrap();
+        last = serde_json::from_str(sent.lines().next().unwrap()).unwrap();
+    }
+    let no = json!({"jsonrpc":"2.0","id":last["id"],"error":{"code":-32601,"message":"no method"}});
+    rig.link.line(&no.to_string()).unwrap();
+    let log = rig.link.take_log();
+    assert_eq!(log.len(), 1, "{log:?}");
+}

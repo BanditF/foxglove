@@ -66,6 +66,9 @@ use super::wallpaper_sync_health::{self as health, Reason};
 
 /// The reasons of the live leases, as a fact (#1120).
 pub const PAUSED_BY: &str = "wallpaper_engine.paused_by";
+/// The names of the local callers holding a pause, one per line (#1120 slice 1): what
+/// `hub_link` sends the hub as `lease.holders`, which can't see them.
+pub const LOCAL_HOLDERS: &str = "wallpaper_engine.local_holders";
 
 /// The properties a wallpaper declares in its `project.json` to receive them (each one its
 /// manifest's `supports` names: `layer`, `gamemode`, `clock`, `foxglove_live`).
@@ -478,6 +481,8 @@ enum Wake {
 pub enum Ctl {
     Pause {
         conn: u64,
+        /// The caller's cleaned name (empty: the hub's callers).
+        name: String,
         reason: String,
         /// A paired wallpaper reports itself paused: the user's own pause.
         user_paused: bool,
@@ -1221,11 +1226,12 @@ fn serve(ctl: Ctl, leases: &mut Leases, apply: &mut impl Apply, full: bool) -> b
     match ctl {
         Ctl::Pause {
             conn,
+            name,
             reason,
             user_paused,
             reply: to,
         } => {
-            match leases.pause(apply, conn, &reason, user_paused) {
+            match leases.pause_named(apply, conn, &name, &reason, user_paused) {
                 Ok((lease, paused)) => {
                     let id = lease.clone();
                     if to.send(Reply::Paused { lease, paused }).is_err() {
@@ -1287,6 +1293,15 @@ fn announce(leases: &Leases) {
         }
         r => facts.set(PAUSED_BY, foxglove_devices::facts::Value::Text(r)),
     }
+    match leases.local_names() {
+        n if n.is_empty() => {
+            facts.remove(LOCAL_HOLDERS);
+        }
+        n => facts.set(
+            LOCAL_HOLDERS,
+            foxglove_devices::facts::Value::Text(n.join("\n")),
+        ),
+    }
     health::note(|h| {
         h.lease_pauses = leases.paused;
         h.lease_plays = leases.played;
@@ -1330,11 +1345,13 @@ fn control(make: impl FnOnce(Sender<Reply>) -> Ctl, start: bool) -> Result<Reply
 }
 
 /// `wallpaper-engine.pause`: a lease; the first one pauses Wallpaper Engine.
-pub fn pause(conn: u64, reason: &str) -> Result<(String, bool), Fail> {
+pub fn pause(conn: u64, name: &str, reason: &str) -> Result<(String, bool), Fail> {
     let user_paused = super::live_feed::wallpaper_paused();
     let reason = reason.to_string();
+    let name = name.to_string();
     let ask = |reply| Ctl::Pause {
         conn,
+        name,
         reason,
         user_paused,
         reply,
@@ -1388,6 +1405,18 @@ pub fn reasons_now() -> Vec<String> {
             .split("; ")
             .map(str::trim)
             .filter(|r| !r.is_empty())
+            .map(String::from)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The local holders' names as the `wallpaper_engine.local_holders` fact has them.
+pub fn local_holders_now() -> Vec<String> {
+    match super::devices::bus().facts().get(LOCAL_HOLDERS) {
+        Some(foxglove_devices::facts::Value::Text(t)) => t
+            .split('\n')
+            .filter(|n| !n.is_empty())
             .map(String::from)
             .collect(),
         _ => Vec::new(),
@@ -2470,6 +2499,7 @@ mod tests {
         let (reply, got) = mpsc::channel();
         let ctl = Ctl::Pause {
             conn,
+            name: String::new(),
             reason: "model loaded".into(),
             user_paused,
             reply,
@@ -3225,6 +3255,7 @@ mod tests {
             drop(gone);
             Ctl::Pause {
                 conn,
+                name: String::new(),
                 reason: "late".into(),
                 user_paused: false,
                 reply,
@@ -3238,6 +3269,7 @@ mod tests {
         let (reply, _held) = mpsc::channel();
         let hold = Ctl::Pause {
             conn: 2,
+            name: String::new(),
             reason: "real".into(),
             user_paused: false,
             reply,

@@ -767,6 +767,10 @@ pub struct Link<W: Write> {
     wallpaper: WallpaperProbe,
     /// What Temperature reads from the hub on this connection.
     sensors: Sensors,
+    /// The local holders' names the hub was told on this connection (#1120 slice 1).
+    held_sent: Vec<String>,
+    /// An older hub's refusal of `lease.holders` was logged (once).
+    held_said: bool,
 }
 
 /// Temperature's side of one connection ([`super::temperature_feed`]): the facts, and the
@@ -865,6 +869,8 @@ impl<W: Write> Link<W> {
             off: Vec::new(),
             wallpaper: wallpaper_now,
             sensors: Sensors::new(),
+            held_sent: Vec::new(),
+            held_said: false,
         }
     }
 
@@ -1364,6 +1370,17 @@ impl<W: Write> Link<W> {
                 ));
                 Ok(Step::Nothing)
             }
+            ("lease.holders", Err(e)) => {
+                // An older hub (before 1.21) lists only the callers it routes.
+                if !self.held_said {
+                    self.held_said = true;
+                    self.say(format!(
+                        "Foxglove: the hub would not list the local wallpaper pause holders: {}",
+                        reason(&e)
+                    ));
+                }
+                Ok(Step::Nothing)
+            }
             ("lease.end", Err(e)) => {
                 // An older hub (no `lease.end`): its callers' leases stay with it; the local
                 // ones ended already.
@@ -1386,6 +1403,23 @@ impl<W: Write> Link<W> {
             }
             _ => Ok(Step::Nothing),
         }
+    }
+
+    /// The local callers holding a Wallpaper Engine pause, by name, told to the hub as
+    /// `lease.holders` (contract 1.21) so its fact, the page and the tray name them with the
+    /// callers the hub routes. Sent when the list changed, once the hub has the module; the
+    /// runner tells the list again after each message, so a reconnect sends it once. Names are
+    /// the callers' own words (cleaned, cut at 32): the hub vouches for none of them.
+    pub fn sync_local_holders(&mut self, names: &[String]) -> Result<(), SessionError> {
+        if !self.registered() || self.held_sent == names {
+            return Ok(());
+        }
+        self.session.request(
+            "lease.holders",
+            json!({ "family": WE_FAMILY, "names": names }),
+        )?;
+        self.held_sent = names.to_vec();
+        Ok(())
     }
 
     /// Temperature's wish: read the sensors (the running scene's look reads and nothing holds
@@ -1771,6 +1805,16 @@ mod runner {
                 }
             }
         });
+        // The local holders' names follow the leases the same way (#1120 slice 1).
+        let local = facts.subscribe(crate::foxglove::wallpaper_sync::LOCAL_HOLDERS);
+        let ltx = tx.clone();
+        crate::foxglove::services::spawn_named("hub-link-local-holders", move || {
+            for _ in local {
+                if ltx.send(Msg::Guard).is_err() {
+                    break;
+                }
+            }
+        });
         // The Wallpaper Engine allow list follows its switches and sockets: told, never polled.
         let atx = tx.clone();
         crate::foxglove::we_panel::on_change(move || {
@@ -2112,6 +2156,11 @@ mod runner {
                 Err(e) => return lost(e, live),
             };
             if let Err(e) = link.sync_sensors(crate::foxglove::temperature_feed::wanted() && free) {
+                return lost(e, live);
+            }
+            if let Err(e) =
+                link.sync_local_holders(&crate::foxglove::wallpaper_sync::local_holders_now())
+            {
                 return lost(e, live);
             }
             if let Some(status) = link.take_sensor_status() {

@@ -29,6 +29,8 @@ pub const HUB_OWNED: &[&str] = &[
     "lease.closed",
     // (hub contract 1.17) A provider ends its own leases through the hub; no module serves it.
     "lease.end",
+    // (hub contract 1.21) A provider names its own callers to the hub; no module serves it.
+    "lease.holders",
 ];
 
 /// Method areas a first-party catalog assigns (§6.3): a third-party or private module never

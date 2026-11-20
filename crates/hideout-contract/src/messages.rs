@@ -493,6 +493,8 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         "lease.closed" => typed::<crate::lease::LeaseClosed>(params),
         // A provider's own Resume (§8.5, v1.17).
         crate::lease::LEASE_END => typed::<crate::lease::LeaseEnd>(params),
+        // A provider's own callers' names (§8.8, v1.21).
+        crate::lease::LEASE_HOLDERS => typed::<crate::lease::LeaseHolders>(params),
         // Demand for a module's facts (section 8.8, v1.20).
         FACTS_DEMAND => typed::<FactsDemand>(params),
         // Bring a module's page to the front (section 8.8, v1.19).

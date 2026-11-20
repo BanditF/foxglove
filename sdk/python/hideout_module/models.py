@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal, Optional, Union
 from ._model import Model
 
 HUB = '1.5'
-SPEC = '1.20'
+SPEC = '1.21'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -163,6 +163,23 @@ class LeaseEnd(Model):
 
     FIELDS: ClassVar[dict] = {
         'family': ('family', 'str'),
+    }
+    CLOSED: ClassVar[bool] = True
+
+
+@dataclass(kw_only=True)
+class LeaseHolders(Model):
+    """`lease.holders` (§8.8, v1.21): the family and the names of the provider's own callers (the
+ones that don't come through the hub). The hub cleans every name like a holder name (hidden
+characters dropped, at most [`HOLDER_NAME_MAX`] characters), keeps at most
+[`HOLDERS_MAX_NAMES`] and lists each once. A name is the caller's own word, never checked."""
+
+    family: str
+    names: list[str]
+
+    FIELDS: ClassVar[dict] = {
+        'family': ('family', 'str'),
+        'names': ('names', ('list', 'str')),
     }
     CLOSED: ClassVar[bool] = True
 
@@ -1052,6 +1069,7 @@ TYPES = {
     'config.Windows': Windows,
     'lease.LeaseClosed': LeaseClosed,
     'lease.LeaseEnd': LeaseEnd,
+    'lease.LeaseHolders': LeaseHolders,
     'legacy.Manifest': Manifest,
     'messages.ActionInvoke': ActionInvoke,
     'messages.ChannelCreate': ChannelCreate,

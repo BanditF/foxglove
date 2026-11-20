@@ -412,6 +412,10 @@ pub struct Router {
     restart_closes: HashMap<String, VecDeque<(String, String)>>,
     /// The providers whose `module.<id>.lease_holders` fact is set (§8.5, v1.17).
     holders_shown: std::collections::BTreeSet<String>,
+    /// The caller names each provider reported for holds it keeps outside the hub
+    /// (`lease.holders`, v1.21): module -> family -> cleaned names. Merged into the
+    /// `lease_holders` fact; dropped with the module's connection.
+    local_holders: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     /// The supervisor's pid and exe-hash check (§7.5); `None` = tokens only (tests, lab).
     launch_check: Option<LaunchCheck>,
     /// The verified program image of each module connection (#1155-B), set at `initialize`.
@@ -532,6 +536,7 @@ impl Router {
             leases: HashMap::new(),
             restart_closes: HashMap::new(),
             holders_shown: Default::default(),
+            local_holders: BTreeMap::new(),
             launch_check: None,
             identity_lookup: None,
             identities: HashMap::new(),
@@ -1471,6 +1476,7 @@ impl Router {
                 self.fact_owners.retain(|r| r.module != id);
                 self.demand_sent.retain(|k, _| k.0 != id);
                 self.wanted.remove(&id);
+                self.local_holders.remove(&id);
                 // What this module held may go to one that was refused it as `taken` (#1135).
                 self.restore_wanted();
                 self.channels.remove(&id);
@@ -1778,6 +1784,17 @@ impl Router {
             Some(Who::Tool { name, .. }) => name.clone(),
             _ => String::new(),
         };
+        Self::clean_holder_name(&raw)
+    }
+
+    /// A holder name as the fact lists it: hidden characters dropped, "An app" when nothing is
+    /// left, cut at [`hideout_contract::lease::HOLDER_NAME_MAX`] characters.
+    fn clean_holder_name(raw: &str) -> String {
+        // Control characters other than whitespace are dropped too (a name is one line).
+        let raw: String = raw
+            .chars()
+            .filter(|c| !c.is_control() || c.is_whitespace())
+            .collect();
         let name = hideout_contract::module::display_name(&raw, "An app");
         let max = hideout_contract::lease::HOLDER_NAME_MAX;
         if name.chars().count() <= max {
@@ -1787,10 +1804,48 @@ impl Router {
         format!("{}\u{2026}", cut.trim_end())
     }
 
+    /// `lease.holders` (v1.21): keeps `names` as the callers `module` holds `family` for outside
+    /// the hub. Cleaned, each once, at most [`hideout_contract::lease::HOLDERS_MAX_NAMES`];
+    /// empty removes the list. `false` when the family is not one this module may list.
+    fn set_local_holders(&mut self, module: &str, family: &str, names: &[String]) -> bool {
+        use hideout_contract::lease::{
+            HOLDERS_FAMILY_MAX, HOLDERS_MAX_FAMILIES, HOLDERS_MAX_NAMES,
+        };
+        if family.is_empty()
+            || family.len() > HOLDERS_FAMILY_MAX
+            || family.chars().any(char::is_control)
+        {
+            return false;
+        }
+        let mut clean: Vec<String> = Vec::new();
+        for n in names {
+            let n = Self::clean_holder_name(n);
+            if !clean.contains(&n) {
+                clean.push(n);
+            }
+            if clean.len() >= HOLDERS_MAX_NAMES {
+                break;
+            }
+        }
+        let fams = self.local_holders.entry(module.to_string()).or_default();
+        if clean.is_empty() {
+            fams.remove(family);
+        } else if fams.contains_key(family) || fams.len() < HOLDERS_MAX_FAMILIES {
+            fams.insert(family.to_string(), clean);
+        } else {
+            return false;
+        }
+        if fams.is_empty() {
+            self.local_holders.remove(module);
+        }
+        true
+    }
+
     /// Keeps the hub fact `module.<provider>.lease_holders` (§8.5, v1.17) on the live leases:
     /// set where somebody holds one, removed where nobody does. Called after every change.
     fn sync_lease_holders(&mut self, out: &mut Vec<Out>) {
-        if self.leases.is_empty() && self.holders_shown.is_empty() {
+        if self.leases.is_empty() && self.local_holders.is_empty() && self.holders_shown.is_empty()
+        {
             return;
         }
         type Families = BTreeMap<String, std::collections::BTreeSet<String>>;
@@ -1801,6 +1856,15 @@ impl Router {
                 .entry(hideout_contract::lease::family(&l.method).to_string())
                 .or_default()
                 .insert(self.holder_name(l.holder));
+        }
+        for (provider, families) in &self.local_holders {
+            for (family, names) in families {
+                held.entry(provider.clone())
+                    .or_default()
+                    .entry(family.clone())
+                    .or_default()
+                    .extend(names.iter().cloned());
+            }
         }
         let gone: Vec<String> = self
             .holders_shown
@@ -1997,6 +2061,40 @@ impl Router {
                         Some("family is a method family"),
                     ))),
                     (None, _) => out.push(answer(denied(&id, Some("only providers end leases")))),
+                }
+            }
+            // (v1.21) A provider names the callers it holds leases for outside the hub.
+            hideout_contract::lease::LEASE_HOLDERS => {
+                let family = params.get("family").and_then(Value::as_str);
+                let names: Option<Vec<String>> = params
+                    .get("names")
+                    .and_then(Value::as_array)
+                    .and_then(|a| a.iter().map(|n| n.as_str().map(String::from)).collect());
+                let bad = |id: &Value| {
+                    error(
+                        id,
+                        code::INVALID_PARAMS,
+                        "invalid params",
+                        Some("family is a method family; names are strings"),
+                    )
+                };
+                match (&module, family, names) {
+                    (Some(m), Some(f), Some(n)) if self.ready_conn(m).is_some() => {
+                        let m = m.clone();
+                        let reply = if self.set_local_holders(&m, f, &n) {
+                            ok(&id, json!({}))
+                        } else {
+                            bad(&id)
+                        };
+                        out.push(answer(reply));
+                    }
+                    (Some(_), Some(_), Some(_)) => {
+                        out.push(answer(denied(&id, Some("the module isn't ready"))))
+                    }
+                    (Some(_), _, _) => out.push(answer(bad(&id))),
+                    (None, _, _) => {
+                        out.push(answer(denied(&id, Some("only providers name holders"))))
+                    }
                 }
             }
             "ui.register" => {

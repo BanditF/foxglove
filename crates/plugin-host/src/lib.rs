@@ -40,6 +40,12 @@ pub trait Devices: Send + Sync {
         self.call(method, params)
     }
 
+    /// A connection finished `initialize`: its number and the name the client gave itself. The
+    /// name is the client's own word, untrusted text.
+    fn hello(&self, conn: u64, client_name: &str) {
+        let _ = (conn, client_name);
+    }
+
     /// A connection ended (the plugin stopped or crashed, the tool quit).
     fn closed(&self, conn: u64) {
         let _ = conn;
@@ -187,6 +193,8 @@ struct Session {
     plugin: Option<String>,
     /// This connection's number (0 until initialized).
     conn: u64,
+    /// The name the client gave in `initialize` (untrusted).
+    client_name: String,
     /// Network streams opened for the plugin (#214).
     net: net::Net,
 }
@@ -273,6 +281,7 @@ pub(crate) fn serve_with(
             if let Some(s) = session.as_mut().filter(|s| s.conn == 0) {
                 s.plugin = plugin.clone();
                 s.conn = conn;
+                ctx.devices.hello(conn, &s.client_name);
                 if let Some(id) = &plugin {
                     CONN_PLUGINS
                         .lock()
@@ -568,6 +577,7 @@ fn initialize(p: Value, ctx: &Context, session: &mut Option<Session>) -> Result<
         net: net::Net::default(),
         plugin: None,
         conn: 0,
+        client_name: p.client.name.clone(),
     });
     Ok(json!(InitializeResult {
         api: API_VERSION.to_string(),

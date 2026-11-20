@@ -59,7 +59,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.20",
+  "spec": "1.21",
   "streams": {
     "nodes": [
       "canvas",
@@ -343,6 +343,27 @@
         "family"
       ],
       "title": "LeaseEnd",
+      "type": "object"
+    },
+    "lease.LeaseHolders": {
+      "additionalProperties": false,
+      "description": "`lease.holders` (§8.8, v1.21): the family and the names of the provider's own callers (the\nones that don't come through the hub). The hub cleans every name like a holder name (hidden\ncharacters dropped, at most [`HOLDER_NAME_MAX`] characters), keeps at most\n[`HOLDERS_MAX_NAMES`] and lists each once. A name is the caller's own word, never checked.",
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "names": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "family",
+        "names"
+      ],
+      "title": "LeaseHolders",
       "type": "object"
     },
     "legacy.Manifest": {
