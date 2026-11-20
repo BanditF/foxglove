@@ -33,9 +33,12 @@ pub fn decide(key: &str, value: &Value) -> Option<Decision> {
     }
     Some(match value.as_str()? {
         "running" => Decision::Running,
-        "crash-stopped" => Decision::NotRunning("stopped after crashes"),
+        "crash-stopped" | "crash-looped" => Decision::NotRunning("stopped after crashes"),
         "waiting" | "needs-hub" | "update-waiting" => Decision::NotRunning("waiting for an answer"),
-        "off" | "install-failed" | "revoked" | "quarantined" => Decision::NotRunning("not started"),
+        "off" => Decision::NotRunning("turned off in Hideout"),
+        "install-failed" => Decision::NotRunning("could not install or update"),
+        "revoked" => Decision::NotRunning("withdrawn"),
+        "quarantined" => Decision::NotRunning("blocked"),
         _ => return None,
     })
 }
@@ -106,6 +109,9 @@ pub fn install(tray_start: bool, overridden: bool) {
     }
     match hideout_acl::signin_event::SignInEvent::open() {
         Ok(ev) => {
+            if ev.existed() {
+                log::info!("sign-in: the hand-over event already existed when the hub opened it");
+            }
             let _ = SIGNAL.set(Signal::new(Box::new(ev), std::time::Instant::now()));
         }
         Err(e) => log::warn!("sign-in: the hand-over event could not be opened: {e}"),
@@ -149,7 +155,23 @@ mod tests {
             state("waiting"),
             Some(Decision::NotRunning("waiting for an answer"))
         );
-        assert!(matches!(state("off"), Some(Decision::NotRunning(_))));
+        assert_eq!(state("crash-looped"), state("crash-stopped"));
+        for (st, why) in [
+            ("off", "turned off in Hideout"),
+            ("install-failed", "could not install or update"),
+            ("revoked", "withdrawn"),
+            ("quarantined", "blocked"),
+        ] {
+            assert_eq!(state(st), Some(Decision::NotRunning(why)), "{st}");
+            let l = line(&state(st).unwrap(), std::time::Duration::ZERO);
+            assert_eq!(
+                l,
+                format!(
+                    "sign-in: Foxglove not started ({why}); told a waiting copy to start on its own"
+                )
+            );
+            assert!(!l.contains("(not started)"));
+        }
     }
 
     #[test]

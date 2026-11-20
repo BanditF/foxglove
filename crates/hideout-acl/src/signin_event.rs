@@ -11,7 +11,9 @@
 use std::io;
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0,
+};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 
@@ -23,7 +25,7 @@ pub fn name_for(sid: &str) -> String {
 }
 
 /// An open handle on the event (created if it did not exist).
-pub struct SignInEvent(HANDLE);
+pub struct SignInEvent(HANDLE, bool);
 
 // SAFETY: a kernel event handle may be used from any thread.
 unsafe impl Send for SignInEvent {}
@@ -48,7 +50,15 @@ impl SignInEvent {
         if h.is_null() {
             return Err(io::Error::last_os_error());
         }
-        Ok(SignInEvent(h))
+        // SAFETY: read at once, on this thread, after the call that set it.
+        let existed = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+        Ok(SignInEvent(h, existed))
+    }
+
+    /// Whether the event was there already when this handle opened it (another process made it
+    /// first; the hub logs that).
+    pub fn existed(&self) -> bool {
+        self.1
     }
 
     /// Sets the event (it stays set).

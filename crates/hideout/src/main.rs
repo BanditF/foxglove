@@ -45,6 +45,7 @@ mod settings_page;
 mod signin_fact;
 #[cfg(windows)]
 mod signin_signal;
+#[cfg(windows)]
 mod signin_watch;
 
 /// What runs beside the shell: kept alive for the life of the process.
@@ -490,8 +491,6 @@ fn capture_client(
     }
 }
 
-/// The Start with Windows switch over the real Startup folder, for this exe.
-#[cfg(windows)]
 /// Re-reads Start with Windows when the Startup folder or the StartupApproved key changes, and
 /// tells the router when "Hideout starts at sign-in" changed. Nothing is written.
 #[cfg(windows)]
@@ -521,6 +520,8 @@ fn watch_sign_in_fact(paths: &hideout_shell::paths::HubPaths, hub: hideout_route
 #[cfg(not(windows))]
 fn watch_sign_in_fact(_: &hideout_shell::paths::HubPaths, _: hideout_router::server::Hub) {}
 
+/// The Start with Windows switch over the real Startup folder, for this exe.
+#[cfg(windows)]
 fn startup_switch(
     paths: &hideout_shell::paths::HubPaths,
 ) -> Option<
