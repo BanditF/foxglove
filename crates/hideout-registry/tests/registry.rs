@@ -72,7 +72,7 @@ fn an_unsigned_module_runs_only_in_developer_mode() {
     let mut reg = Registry::open(&home, false).unwrap();
     assert_eq!(id(reg.install(&folder, NOW)), "install.dev-mode-required");
 
-    reg.dev_mode = true;
+    reg.dev_unsigned = true;
     let m = reg.install(&folder, NOW).unwrap();
     assert_eq!((m.source.as_str(), m.anchor), ("sideload", None));
     reg.set_enabled("example.private.notes", true).unwrap();

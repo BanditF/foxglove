@@ -378,7 +378,7 @@ pub fn rebuild_gate(
     running_sha256: Option<&str>,
     new_sha256: &str,
 ) -> Result<(), &'static str> {
-    if !reg.dev_mode {
+    if !reg.dev_folders_on() {
         return Err("developer mode is off");
     }
     if reg.dev_folder_of(id).is_none() {
@@ -2228,7 +2228,7 @@ pub fn grant_listed_dialog_in(
 /// Turn off "Keep my OK after updates in this folder": clears only the follow
 /// ([`Registry::stop_keeping`]). Narrows, so it needs no list code and never asks.
 pub fn stop_keeping_in(home: &Path, id: &str) -> Result<bool, String> {
-    let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
+    let mut reg = Registry::open_with(home, hideout_registry::DevFlags::from_env())
         .map_err(|e| format!("{e:?}"))?;
     let was = reg.stop_keeping(id).map_err(|e| format!("{e:?}"))?;
     log::info!("permissions: {id}: keeping the OK for the folder turned off by user");
@@ -2246,7 +2246,7 @@ fn grant_listed_inner(
     by: &str,
     follow: bool,
 ) -> Result<hideout_registry::permission::Outcome, String> {
-    let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
+    let mut reg = Registry::open_with(home, hideout_registry::DevFlags::from_env())
         .map_err(|e| format!("{e:?}"))?;
     let out = reg
         .approve_listed(
@@ -2294,7 +2294,7 @@ pub fn revoke_items_in(
 ) -> Result<Vec<String>, String> {
     let owned = items.map(<[String]>::to_vec);
     hub.act(|r| r.drop_module_grants(id, owned.as_deref()));
-    let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
+    let mut reg = Registry::open_with(home, hideout_registry::DevFlags::from_env())
         .map_err(|e| format!("{e:?}"))?;
     let left = reg.revoke_items(id, items).map_err(|e| format!("{e:?}"))?;
     log::info!("permissions: {id}: turned off {items:?} by user");

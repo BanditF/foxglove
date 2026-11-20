@@ -10,7 +10,7 @@ use foxglove_plugin_trust::sha256_hex;
 use hideout_contract::module::{Context, Module, Visibility};
 use hideout_registry::hub_config::HubConfig;
 use hideout_registry::trust::{SeenAnchor, ROOT_ANCHOR};
-use hideout_registry::{Failure, Registry};
+use hideout_registry::{DevFlags, Failure, Registry};
 use serde_json::Value;
 
 fn vectors() -> PathBuf {
@@ -70,7 +70,14 @@ fn id_of(f: &Failure) -> String {
 
 /// Seeds `seen` and the user anchor, opens the registry and accepts the context's root.
 fn registry(home: &Home, ctx: &Value) -> Result<Registry, Failure> {
-    let mut reg = Registry::open(&home.0, ctx["developer_mode"].as_bool().unwrap_or(false))?;
+    let mut reg = Registry::open_with(
+        &home.0,
+        // The vectors' developer mode is unsigned sideload (12.6); dev folders are a separate switch.
+        DevFlags {
+            unsigned: ctx["developer_mode"].as_bool().unwrap_or(false),
+            folders: false,
+        },
+    )?;
     if let Some(seen) = ctx["seen"].as_object() {
         for (anchor, s) in seen {
             let s: SeenAnchor = serde_json::from_value(s.clone()).unwrap();

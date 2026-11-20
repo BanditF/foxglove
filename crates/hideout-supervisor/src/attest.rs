@@ -47,7 +47,7 @@ impl Verified {
 /// manifest without the hash is refused (no version-only fallback); the release pipeline
 /// already emits it (docs/hideout-permission-grant.md).
 pub fn attest_installed(home: &Path, id: &str, update: &Verified) -> Result<(), String> {
-    let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
+    let mut reg = Registry::open_with(home, hideout_registry::DevFlags::from_env())
         .map_err(|e| format!("{e:?}"))?;
     let floor = version_floor(&reg, id)
         .ok_or_else(|| format!("{id}: no recorded version to compare the release with; refused"))?;

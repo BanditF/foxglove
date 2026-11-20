@@ -25,7 +25,7 @@ impl Watches {
     /// Cheap to repeat; a watch whose program path is unchanged is kept.
     pub fn sync(&mut self, reg: &Registry, sup: &Supervisor) {
         let mut want: HashMap<String, PathBuf> = HashMap::new();
-        if reg.dev_mode {
+        if reg.dev_folders_on() {
             for id in reg.inventory.modules.keys() {
                 if reg.dev_folder_of(id).is_none() {
                     continue;
