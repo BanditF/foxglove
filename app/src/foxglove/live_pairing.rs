@@ -18,6 +18,13 @@
 //!   most [`REPUSH_MAX`] times per monitor per [`REPUSH_WINDOW`]. The count lives here, so a
 //!   client cannot reset it; only the user's Reconnect does. No timer: a refusal, a wallpaper
 //!   change or Reconnect are the only triggers.
+//! - **Shared:** a refusal while every allowed wallpaper on a monitor already has its socket
+//!   cannot be a wallpaper reloading (that one would have no socket), so some other app tried
+//!   to connect. That is one section-level fact ([`Links::foreign`]), never a per-wallpaper one:
+//!   the refusal names no monitor. It clears on Reconnect, on any join, on any socket closing,
+//!   and on Disconnect all. Reconnect with it up also closes the allowed wallpapers' sockets
+//!   (the store tracks one per monitor, so an app that redeemed a ticket first is among them)
+//!   and pushes fresh tickets.
 //! - **Disconnect all:** cancels every ticket, closes the sockets and holds the feed's
 //!   ticket path (no mint, no re-push) until Reconnect. Allowances stay.
 
@@ -70,6 +77,9 @@ pub struct Links {
     pub held: bool,
     /// Connections the old pasted token admitted (they name no wallpaper).
     pub old_way: usize,
+    /// Some other app (not one of the user's wallpapers) tried to connect while every allowed
+    /// wallpaper was connected. The section says so once; no row does.
+    pub foreign: bool,
 }
 
 fn allowed_in(allow: Option<&BTreeSet<String>>, file: &str) -> bool {
@@ -89,6 +99,8 @@ pub struct Pairing {
     old_off: bool,
     /// Connections admitted with the old pasted token (they hold no monitor).
     old_clients: BTreeSet<u64>,
+    /// A refusal came while every allowed wallpaper was already connected: see the module docs.
+    foreign: bool,
 }
 
 /// The one store: a [`Pairing`] behind a lock.
@@ -116,6 +128,7 @@ impl Pairing {
             held: false,
             old_off: false,
             old_clients: BTreeSet::new(),
+            foreign: false,
         }
     }
 
@@ -142,6 +155,7 @@ impl Pairing {
     /// connections to close are returned (S5a).
     pub fn set_allowed(&mut self, files: Option<BTreeSet<String>>) -> Vec<u64> {
         let before = std::mem::replace(&mut self.allow, files);
+        self.foreign = false;
         let mut close = Vec::new();
         // Wallpapers just allowed are pushed again, with a ticket, at the next sync.
         for s in self.slots.values_mut() {
@@ -222,6 +236,7 @@ impl Pairing {
         if monitor.is_some() && self.held {
             return false;
         }
+        self.foreign = false;
         if monitor.is_none() {
             // Admitted with the old token just before it was retired, or while held: not kept.
             if self.old_off || self.held {
@@ -238,6 +253,7 @@ impl Pairing {
 
     /// Connection `conn` closed.
     pub fn left(&mut self, conn: u64) {
+        self.foreign = false;
         self.old_clients.remove(&conn);
         for s in self.slots.values_mut().filter(|s| s.conn == Some(conn)) {
             s.conn = None;
@@ -250,6 +266,10 @@ impl Pairing {
         if self.held {
             return 0;
         }
+        // Every wallpaper on screen has its socket: a reloading wallpaper, or one the user
+        // switched Off (which retries on its own), would be missing one, so this refusal is
+        // some other app's. Honesty beats coverage: an Off wallpaper on screen hides it.
+        self.foreign = !self.slots.is_empty() && self.slots.values().all(|s| s.conn.is_some());
         let mut n = 0;
         for (monitor, s) in &mut self.slots {
             // A wallpaper the user hasn't allowed is never re-pushed, and never counts as stuck.
@@ -289,6 +309,10 @@ impl Pairing {
             .filter(|m| !monitors.contains(&m.as_str()))
             .cloned()
             .collect();
+        if !gone.is_empty() {
+            // Called on every sync: only a monitor really going away changes the picture.
+            self.foreign = false;
+        }
         for m in gone {
             self.slots.remove(&m);
             self.tickets.cancel(&m);
@@ -296,17 +320,27 @@ impl Pairing {
     }
 
     /// The user's Reconnect: the budget is new, and every monitor without a socket gets a fresh
-    /// ticket at the next sync (the outstanding one is cancelled).
-    pub fn reconnect(&mut self) {
+    /// ticket at the next sync (the outstanding one is cancelled). While the shared warning is up
+    /// the allowed wallpapers' sockets are let go too, and returned for the feed to close: one of
+    /// them may be the other app's, and the wallpaper joins again with its fresh ticket.
+    pub fn reconnect(&mut self) -> Vec<u64> {
         self.held = false;
+        // Only when the claim still holds: the same condition as its raise.
+        let shared =
+            std::mem::take(&mut self.foreign) && self.slots.values().all(|s| s.conn.is_some());
+        let mut close = Vec::new();
         for (m, s) in &mut self.slots {
             s.repushes.clear();
             s.capped = false;
+            if shared && allowed_in(self.allow.as_ref(), &s.file) {
+                close.extend(s.conn.take());
+            }
             if s.conn.is_none() {
                 self.tickets.cancel(m);
                 s.due = true;
             }
         }
+        close
     }
 
     /// Disconnect all: every ticket is cancelled and the ticket path is held until Reconnect.
@@ -315,6 +349,7 @@ impl Pairing {
     pub fn disconnect_all(&mut self) -> Vec<u64> {
         self.tickets.clear();
         self.held = true;
+        self.foreign = false;
         for s in self.slots.values_mut() {
             s.conn = None;
             s.due = false;
@@ -324,6 +359,7 @@ impl Pairing {
 
     /// The feed stopped: nothing outstanding, nothing connected.
     pub fn stopped(&mut self) {
+        self.foreign = false;
         self.tickets.clear();
         for s in self.slots.values_mut() {
             s.conn = None;
@@ -364,6 +400,7 @@ impl Pairing {
             by_dir,
             held: self.held,
             old_way: self.old_clients.len(),
+            foreign: self.foreign,
         }
     }
 
@@ -380,8 +417,8 @@ fn locked(store: Store) -> std::sync::MutexGuard<'static, Pairing> {
 
 /// The user's Reconnect (the Hideout panel's button calls this, S5): see
 /// [`Pairing::reconnect`]. The caller (`wallpaper_sync::reconnect`) wakes the pusher.
-pub fn reconnect(store: Store) {
-    locked(store).reconnect();
+pub fn reconnect(store: Store) -> Vec<u64> {
+    locked(store).reconnect()
 }
 
 /// Disconnect all, the store's half: see [`Pairing::disconnect_all`].
@@ -596,6 +633,121 @@ mod tests {
         p.reconnect();
         assert_eq!(p.take_due(), [A.to_string()]);
         assert!(p.admit(None, Some(&ta), "", now).is_err());
+    }
+
+    /// Joins `m` the way the feed does: mint, redeem, join.
+    fn join(p: &mut Pairing, m: &str, conn: u64, now: Instant) {
+        let t = ticket(p, m, now);
+        assert_eq!(p.admit(None, Some(&t), "", now), Ok(Some(m.to_string())));
+        assert!(p.joined(conn, Some(m)));
+    }
+
+    #[test]
+    fn a_refusal_with_every_wallpaper_connected_is_another_app() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        join(&mut p, A, 1, now);
+        join(&mut p, B, 2, now);
+        assert!(!p.links(now).foreign, "nothing refused yet");
+        p.refused(now);
+        assert!(p.links(now).foreign);
+    }
+
+    #[test]
+    fn a_refusal_while_a_wallpaper_is_still_connecting_is_not_reported() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        join(&mut p, A, 1, now);
+        // B reloaded and presents its spent ticket: it has no socket, so it is the likely sender.
+        ticket(&mut p, B, now);
+        p.refused(now);
+        assert!(!p.links(now).foreign);
+        // Nothing allowed is on screen: nothing to report either.
+        let mut none = Pairing::new();
+        none.refused(now);
+        assert!(!none.links(now).foreign);
+    }
+
+    #[test]
+    fn an_off_wallpaper_on_screen_may_be_the_sender() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        join(&mut p, A, 1, now);
+        // B shows a wallpaper the user switched Off: it has no socket and retries on its own,
+        // so a refusal may be its own.
+        p.mint(B, "other/index.html", now);
+        p.set_allowed(Some(BTreeSet::from(["hud".to_string()])));
+        p.refused(now);
+        assert!(!p.links(now).foreign);
+    }
+
+    #[test]
+    fn keep_clears_the_shared_flag_only_when_a_monitor_goes() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        join(&mut p, A, 1, now);
+        join(&mut p, B, 2, now);
+        p.refused(now);
+        p.keep(&[A, B]);
+        assert!(p.links(now).foreign, "a sync with the same monitors");
+        p.keep(&[A]);
+        assert!(!p.links(now).foreign, "a monitor was removed");
+    }
+
+    #[test]
+    fn the_shared_flag_clears_on_a_join_a_close_reconnect_and_disconnect_all() {
+        let raise = |p: &mut Pairing, now| {
+            p.refused(now);
+            assert!(p.links(now).foreign);
+        };
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        join(&mut p, A, 1, now);
+        raise(&mut p, now);
+        p.left(1);
+        assert!(!p.links(now).foreign, "a socket closed");
+        join(&mut p, A, 1, now);
+        raise(&mut p, now);
+        let t = ticket(&mut p, B, now);
+        p.admit(None, Some(&t), "", now).unwrap();
+        p.joined(2, Some(B));
+        assert!(!p.links(now).foreign, "a new join");
+        raise(&mut p, now);
+        p.reconnect();
+        assert!(!p.links(now).foreign, "Reconnect");
+        join(&mut p, A, 3, now);
+        join(&mut p, B, 4, now);
+        raise(&mut p, now);
+        p.disconnect_all();
+        assert!(!p.links(now).foreign, "Disconnect all");
+    }
+
+    #[test]
+    fn reconnect_closes_the_open_sockets_while_the_shared_flag_is_up() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        // The other app redeemed A's ticket first: its socket is the slot's.
+        join(&mut p, A, 1, now);
+        join(&mut p, B, 2, now);
+        p.refused(now);
+        let mut closed = p.reconnect();
+        closed.sort();
+        assert_eq!(closed, [1, 2], "the sockets of the allowed wallpapers");
+        let mut due = p.take_due();
+        due.sort();
+        assert_eq!(
+            due,
+            [A.to_string(), B.to_string()],
+            "both get fresh tickets"
+        );
+        // The old socket's own close arrives later and finds nothing to clear.
+        p.left(1);
+        // Without the flag Reconnect leaves a connected monitor alone, as before.
+        join(&mut p, A, 3, now);
+        assert!(p.reconnect().is_empty());
+    }
+
+    #[test]
+    fn reconnect_leaves_a_not_allowed_wallpapers_socket_to_its_own_rules() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        join(&mut p, A, 1, now);
+        p.refused(now);
+        p.set_allowed(Some(BTreeSet::new()));
+        assert!(p.reconnect().is_empty(), "set_allowed already closed it");
     }
 
     #[test]

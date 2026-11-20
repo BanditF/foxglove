@@ -848,12 +848,13 @@ pub fn repush() {
     changed(Reason::Pairing, |_| {});
 }
 
-/// The user's Reconnect (the Hideout panel, S5, calls this; there is no button yet): the
-/// re-push budget is new and every monitor without a socket gets a fresh ticket, pushed now.
-/// Event-driven: nothing retries on its own after this.
-pub fn reconnect() {
-    super::live_pairing::reconnect(super::live_pairing::store());
+/// The user's Reconnect on `store`: the re-push budget is new and every monitor without a socket
+/// gets a fresh ticket, pushed now. Returns the sockets to close (non-empty only while another
+/// app's connection attempt was reported). Event-driven: nothing retries on its own after this.
+pub fn reconnect(store: super::live_pairing::Store) -> Vec<u64> {
+    let close = super::live_pairing::reconnect(store);
     repush();
+    close
 }
 
 fn wake(w: Wake) {

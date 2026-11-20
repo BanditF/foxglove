@@ -631,6 +631,14 @@ fn the_panels_match_the_hub_vectors() {
             panels(&we_view(allow_case("hold"))),
         ),
         (
+            "Allow list: another app tried to connect",
+            panels(&we_view(allow_case("shared"))),
+        ),
+        (
+            "Allow list: another app tried to connect, one wallpaper reconnecting",
+            panels(&we_view(allow_case("shared-reloading"))),
+        ),
+        (
             "Allow list: needs an update",
             panels(&we_view(allow_case("update"))),
         ),
@@ -695,6 +703,22 @@ fn allow_case(case: &str) -> Wallpaper {
             inputs.hold = Some(super::super::we_panel::Hold::Paused);
         }
         "update" => inputs.asks[2].needs_update = true,
+        // Both allowed wallpapers are on screen and connected; a refusal came.
+        "shared" => {
+            inputs.asks[1].on_screen = true;
+            links.by_dir.insert("d:/we/hud".into(), Link::Connected);
+            links.by_dir.insert("d:/we/courier".into(), Link::Connected);
+            links.foreign = true;
+        }
+        // The flag alone is not enough: one wallpaper is still reconnecting.
+        "shared-reloading" => {
+            inputs.asks[1].on_screen = true;
+            links.by_dir.insert("d:/we/hud".into(), Link::Connected);
+            links
+                .by_dir
+                .insert("d:/we/courier".into(), Link::Reconnecting);
+            links.foreign = true;
+        }
         "engine-off" => {}
         other => panic!("{other}"),
     }
