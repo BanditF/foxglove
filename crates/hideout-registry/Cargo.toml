@@ -16,8 +16,14 @@ serde_json = "1"
 toml = "0.9"
 
 [target.'cfg(windows)'.dependencies]
-# GetDriveTypeW: a follow-folder grant only for a program on a local fixed drive.
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+# GetDriveTypeW + the storage bus type: a follow-folder grant only for a program on a local fixed
+# drive on an internal bus (never a USB disk that reports "fixed").
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
 
 [dev-dependencies]
 # The catalog store tests sign their own catalogs with keys made per run (minisign, MIT).
