@@ -266,14 +266,10 @@ impl Pairing {
         if self.held {
             return 0;
         }
-        // Every allowed wallpaper has its socket: a reloading wallpaper would be missing one, so
-        // this refusal is some other app's. (Nothing allowed on screen: nothing to say.)
-        let mut allowed = self
-            .slots
-            .values()
-            .filter(|s| allowed_in(self.allow.as_ref(), &s.file))
-            .peekable();
-        self.foreign = allowed.peek().is_some() && allowed.all(|s| s.conn.is_some());
+        // Every wallpaper on screen has its socket: a reloading wallpaper, or one the user
+        // switched Off (which retries on its own), would be missing one, so this refusal is
+        // some other app's. Honesty beats coverage: an Off wallpaper on screen hides it.
+        self.foreign = !self.slots.is_empty() && self.slots.values().all(|s| s.conn.is_some());
         let mut n = 0;
         for (monitor, s) in &mut self.slots {
             // A wallpaper the user hasn't allowed is never re-pushed, and never counts as stuck.
@@ -307,13 +303,16 @@ impl Pairing {
 
     /// The monitors showing wallpapers now; the others are forgotten, tickets and all.
     pub fn keep(&mut self, monitors: &[&str]) {
-        self.foreign = false;
         let gone: Vec<String> = self
             .slots
             .keys()
             .filter(|m| !monitors.contains(&m.as_str()))
             .cloned()
             .collect();
+        if !gone.is_empty() {
+            // Called on every sync: only a monitor really going away changes the picture.
+            self.foreign = false;
+        }
         for m in gone {
             self.slots.remove(&m);
             self.tickets.cancel(&m);
@@ -326,7 +325,9 @@ impl Pairing {
     /// them may be the other app's, and the wallpaper joins again with its fresh ticket.
     pub fn reconnect(&mut self) -> Vec<u64> {
         self.held = false;
-        let shared = std::mem::take(&mut self.foreign);
+        // Only when the claim still holds: the same condition as its raise.
+        let shared =
+            std::mem::take(&mut self.foreign) && self.slots.values().all(|s| s.conn.is_some());
         let mut close = Vec::new();
         for (m, s) in &mut self.slots {
             s.repushes.clear();
@@ -666,14 +667,27 @@ mod tests {
     }
 
     #[test]
-    fn a_wallpaper_the_user_did_not_allow_does_not_count_either_way() {
+    fn an_off_wallpaper_on_screen_may_be_the_sender() {
         let (mut p, now) = (Pairing::new(), Instant::now());
         join(&mut p, A, 1, now);
-        // B shows a wallpaper that is not allowed and has no socket: it never could.
+        // B shows a wallpaper the user switched Off: it has no socket and retries on its own,
+        // so a refusal may be its own.
         p.mint(B, "other/index.html", now);
         p.set_allowed(Some(BTreeSet::from(["hud".to_string()])));
         p.refused(now);
-        assert!(p.links(now).foreign);
+        assert!(!p.links(now).foreign);
+    }
+
+    #[test]
+    fn keep_clears_the_shared_flag_only_when_a_monitor_goes() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        join(&mut p, A, 1, now);
+        join(&mut p, B, 2, now);
+        p.refused(now);
+        p.keep(&[A, B]);
+        assert!(p.links(now).foreign, "a sync with the same monitors");
+        p.keep(&[A]);
+        assert!(!p.links(now).foreign, "a monitor was removed");
     }
 
     #[test]

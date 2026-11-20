@@ -4199,7 +4199,11 @@ fn live_wallpaper_card_allow_list_renders() {
                                 }
                                 crate::foxglove::focus_pins::feed_row(ui);
                                 notify_row(ui, &mut true);
-                                ui.weak("Listening on 127.0.0.1:8768: 1 wallpaper connected");
+                                ui.weak(if case == "shared" {
+                                    "Listening on 127.0.0.1:8768: 2 wallpapers connected"
+                                } else {
+                                    "Listening on 127.0.0.1:8768: 1 wallpaper connected"
+                                });
                                 if let Some(e) = error {
                                     ui.colored_label(crate::foxglove::theme::palette(ui).danger, e);
                                 }

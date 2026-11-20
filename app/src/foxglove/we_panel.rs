@@ -264,10 +264,11 @@ fn shared_app(i: &Inputs, order: &[&Ask], link: &dyn Fn(&Ask) -> Link) -> bool {
         && i.feed_on
         && i.engine_running
         && !i.links.held
+        && order.iter().any(|a| a.on_screen)
         && order
             .iter()
-            .filter(|a| a.allowed && a.on_screen && !a.needs_update)
-            .all(|a| link(a) == Link::Connected)
+            .filter(|a| a.on_screen)
+            .all(|a| a.allowed && !a.needs_update && link(a) == Link::Connected)
 }
 
 /// The section's view (plan §3). At most one section line shows, the first that holds from the
@@ -695,11 +696,22 @@ mod tests {
         assert_eq!(view(&i).line, None);
         i.links.by_dir.insert("courier".into(), Link::Capped);
         assert_eq!(view(&i).line, None);
-        // A wallpaper that is off, or not on screen, does not hold the line back.
+        // A wallpaper that is off and on screen may be the sender: no line.
+        let mut off = two_connected();
+        off.asks.push(ask("neon", "Neon Rain", true, false));
+        assert_eq!(view(&off).line, None);
+        let mut update = two_connected();
+        update.asks[1].needs_update = true;
+        assert_eq!(view(&update).line, None);
+        // One that is not on screen does not hold the line back.
         let mut j = two_connected();
-        j.asks.push(ask("neon", "Neon Rain", true, false));
+        j.asks.push(ask("neon", "Neon Rain", false, false));
         j.asks.push(ask("atlas", "Atlas", false, true));
         assert!(view(&j).line.unwrap().text.starts_with("An app that isn't"));
+        // Nothing on screen: nothing to say.
+        let mut none = two_connected();
+        none.asks.iter_mut().for_each(|a| a.on_screen = false);
+        assert_eq!(view(&none).line, None);
         // Not while disconnected, paused-off, or without the engine: those lines say why.
         j.links.held = true;
         assert!(view(&j).line.unwrap().text.starts_with("All wallpapers"));
