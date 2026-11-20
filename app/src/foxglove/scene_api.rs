@@ -49,6 +49,20 @@ fn bad(message: impl Into<String>) -> Error {
 
 /// The look a `scene.start` asks for, or the reason it is refused. Pure.
 pub fn parse_start(raw: Value) -> Result<Look, Error> {
+    parse_start_on(raw, &Look::default())
+}
+
+/// A look `scene.start` must never start, whatever the user allowed in the app: the ones that
+/// read the screen. Screen glow's "Allow and start" is the user's click in Foxglove; a caller
+/// of the API has no such click.
+pub fn api_refusal(kind: Kind) -> Option<String> {
+    kind.reads_screen()
+        .then(|| "Screen glow can only be started by the user in Foxglove".to_string())
+}
+
+/// As [`parse_start`], with the settings the user last saved for the same kind as the base: what
+/// the caller leaves out stays as the user tuned it (another kind starts from its defaults).
+pub fn parse_start_on(raw: Value, base: &Look) -> Result<Look, Error> {
     // Bounded before anything is looked at.
     if raw.to_string().len() > MAX_PARAMS_BYTES {
         return Err(bad(format!(
@@ -70,7 +84,7 @@ pub fn parse_start(raw: Value) -> Result<Look, Error> {
     let kind: Kind = serde_json::from_value(json!(p.look))
         .map_err(|_| bad(format!("unknown look {:?}; known: {}", p.look, kinds())))?;
     let extra = p.params.unwrap_or_default();
-    apply(kind, &extra)
+    apply(kind, &extra, base)
 }
 
 /// The kinds a caller may name, for the error text.
@@ -91,10 +105,14 @@ pub fn kind_name(k: Kind) -> String {
         .unwrap_or_default()
 }
 
-fn apply(kind: Kind, p: &SceneStartLook) -> Result<Look, Error> {
-    let mut look = Look {
-        kind,
-        ..Look::default()
+fn apply(kind: Kind, p: &SceneStartLook, base: &Look) -> Result<Look, Error> {
+    let mut look = if base.kind == kind {
+        base.clone()
+    } else {
+        Look {
+            kind,
+            ..Look::default()
+        }
     };
     let must = |used: bool, name: &str| -> Result<(), Error> {
         if used {
@@ -177,8 +195,8 @@ fn apply(kind: Kind, p: &SceneStartLook) -> Result<Look, Error> {
     ] {
         if let Some(v) = v {
             must(kind.reads_temperature(), name)?;
-            if !RANGE_C.contains(&v) {
-                return Err(bad(format!("{name} is 20 to 100")));
+            if !RANGE_C.contains(&v) || v % super::temperature::STEP_C != 0 {
+                return Err(bad(format!("{name} is 20 to 100 in steps of 5")));
             }
             *slot = v;
         }
@@ -217,7 +235,14 @@ static LIMIT: Mutex<Limiter> = Mutex::new(Limiter { last: None });
 
 /// `scene.start`: parse, refuse what must not start, rate limit, start.
 pub fn start(raw: Value) -> Result<Value, Error> {
-    let look = parse_start(raw)?;
+    let look = parse_start_on(raw, &looks::load_chosen().look)?;
+    if let Some(why) = api_refusal(look.kind) {
+        return Err(Error {
+            code: code::BUSY,
+            message: why,
+            data: None,
+        });
+    }
     if super::pause::paused() {
         return Err(Error {
             code: code::BUSY,
@@ -429,12 +454,44 @@ mod tests {
     }
 
     #[test]
-    fn screen_glow_parses_but_is_the_pages_to_gate() {
-        // Parsing is pure; `start` refuses it through `scenes_ui::refusal` unless allowed.
+    fn screen_glow_is_always_refused_even_when_the_user_allowed_it_in_the_app() {
         let l = parse_start(json!({"look": "screen-glow"})).unwrap();
         assert_eq!(l.kind, Kind::ScreenGlow);
-        assert!(!crate::foxglove::scenes_ui::start_allowed(l.kind, false));
+        // The page's own gate lets it through once the user said yes ...
+        assert!(crate::foxglove::scenes_ui::start_allowed(l.kind, true));
+        // ... the API's never does, and takes no such flag.
+        assert!(api_refusal(l.kind).is_some());
+        assert!(Kind::ALL
+            .iter()
+            .all(|k| api_refusal(*k).is_some() == k.reads_screen()));
         assert!(!kinds().contains("screen-glow"));
+    }
+
+    #[test]
+    fn what_the_caller_leaves_out_stays_as_the_user_saved_it() {
+        let saved = Look {
+            kind: Kind::Scanline,
+            speed: 7,
+            ..Look::default()
+        };
+        let l = parse_start_on(
+            json!({"look": "scanline", "params": {"width_mm": 60}}),
+            &saved,
+        )
+        .unwrap();
+        assert_eq!((l.speed, l.width_mm), (7, 60));
+        let other = parse_start_on(json!({"look": "sweep"}), &saved).unwrap();
+        assert_eq!(other.speed, Look::default().speed);
+    }
+
+    #[test]
+    fn the_ends_step_by_five_like_the_page_and_a_plus_in_a_colour_is_refused() {
+        for p in [json!({"cool_c": 33}), json!({"hot_c": 87})] {
+            let r = parse_start(json!({"look": "temperature", "params": p}));
+            assert_eq!(r.unwrap_err().code, code::INVALID_PARAMS);
+        }
+        let r = parse_start(json!({"look": "scanline", "params": {"colour": "#+1+2+3"}}));
+        assert!(r.is_err());
     }
 
     #[test]

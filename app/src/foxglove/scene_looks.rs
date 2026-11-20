@@ -884,7 +884,7 @@ pub struct FileLook {
 pub fn hex(s: &str) -> Result<[u8; 3], String> {
     let h = s
         .strip_prefix('#')
-        .filter(|h| h.len() == 6 && h.is_ascii())
+        .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))
         .ok_or_else(|| format!("{s:?} is not #rrggbb"))?;
     let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).map_err(|e| format!("{s:?}: {e}"));
     Ok([byte(0)?, byte(2)?, byte(4)?])

@@ -211,18 +211,19 @@ The params and results are in the schema. Notes:
     `... temperature fallback (no reading)` (#1378).
   - `scene.start {look, params?}` (`lighting.write`) starts a look as the Scenes page's Start does
     and answers `{look, scene}`. `look` is `scanline`, `sweep`, `ripple`, `breathe`, `gradient`,
-    `drift`, `two-tone`, `tide` or `temperature`. `params` (all optional, defaults otherwise):
+    `drift`, `two-tone`, `tide` or `temperature`. `params` (all optional; one left out keeps what the user saved on the Scenes page for that look, or Foxglove's default when another look was chosen):
     `palette` (one of Foxglove's own names), `speed` 1-10, `direction` down/up/right/left,
     `width_mm` 20-400, `colour` `#RRGGBB`, `background` night/off, and for Temperature `source`
     (`gpu`; lower case letters, digits, `_`, `-`, up to 24), `colours` palette/cool-to-hot,
-    `cool_c`, `hot_c` (20-100, at least 10 apart). Errors: -32602 for an unknown look, an unknown
+    `cool_c`, `hot_c` (20-100 in steps of 5 like the page, at least 10 apart). Errors: -32602 for an unknown look, an unknown
     or out-of-range or wrongly typed parameter, or one the look does not use (nothing is clamped
     silently), params over 1 KiB; BUSY (3) when Foxglove is paused, when Temperature has no
-    sensors (standalone, the sensors app off, no grant) or for Screen glow, which always needs the
-    user's yes in the app; RATE_LIMITED (8) for a start within 2 s of the last one. -32601 only
-    for a name the module does not serve. The chosen look is saved, as with the Scenes page's
-    Start. Through the hub the module must hold the user's `provide:` grants for the three names
-    (a changed manifest asks again).
+    sensors (standalone, the sensors app off, no grant) or for Screen glow, which the API never starts (the
+    user's click in the app is the only way, even once allowed); RATE_LIMITED (8) for a start within 2 s of the last one. -32601 only
+    for a name the module does not serve. The started look, with the params given, is saved as the chosen look, as with the Scenes
+    page's Start. Through the hub the module must hold the user's `provide:` grants for the three
+    names (a changed manifest asks again). The router's check of the caller's permission is the
+    only permission check: the module is not told who called, so it cannot check again.
 - **Case zones and the sync (#617, API 1.5):** `pc_lighting.list` gives each PC lighting
   device (by its key, `vvvv:pppp` plus a serial), its zones with `#rrggbb` colours, whether
   Foxglove writes it, the apps that may fight it, and the last write's status.

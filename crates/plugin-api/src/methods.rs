@@ -577,7 +577,7 @@ pub struct TemperatureStatus {
 
 /// `scene.start` (API 1.18): starts a look as the Scenes page's Start does. `look` is the
 /// kind's name (`scanline`, `sweep`, `ripple`, `breathe`, `gradient`, `drift`, `two-tone`,
-/// `tide`, `temperature`); `screen-glow` needs the user's yes in the app and is refused. Unknown
+/// `tide`, `temperature`); `screen-glow` is always refused (only the user starts it, in the app). Unknown
 /// names and unknown, out-of-range or inapplicable parameters are refused (code -32602).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -587,17 +587,19 @@ pub struct SceneStartParams {
     pub params: Option<SceneStartLook>,
 }
 
-/// The look's own parameters; each is optional; one left out takes Foxglove's default for that look.
+/// The look's own parameters; each is optional; one left out keeps what the user saved for that look (Foxglove's default for another look).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SceneStartLook {
     /// One of Foxglove's own palette names (not a wallpaper's).
     pub palette: Option<String>,
     /// 1 to 10.
+    #[schemars(range(min = 1, max = 10))]
     pub speed: Option<u8>,
     /// `down`, `up`, `right` or `left`.
     pub direction: Option<String>,
     /// 20 to 400.
+    #[schemars(range(min = 20, max = 400))]
     pub width_mm: Option<u16>,
     /// `#RRGGBB`, for the one-colour looks.
     pub colour: Option<String>,
@@ -607,9 +609,11 @@ pub struct SceneStartLook {
     pub source: Option<String>,
     /// Temperature: `palette` or `cool-to-hot`.
     pub colours: Option<String>,
-    /// Temperature: the cool end in whole degrees C (20 to 100).
+    /// Temperature: the cool end in whole degrees C (20 to 100, multiples of 5).
+    #[schemars(range(min = 20, max = 100))]
     pub cool_c: Option<u16>,
-    /// Temperature: the hot end in whole degrees C (20 to 100, at least 10 above `cool_c`).
+    /// Temperature: the hot end in whole degrees C (20 to 100, multiples of 5, at least 10 above `cool_c`).
+    #[schemars(range(min = 20, max = 100))]
     pub hot_c: Option<u16>,
 }
 

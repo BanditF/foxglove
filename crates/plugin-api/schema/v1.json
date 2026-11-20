@@ -2628,7 +2628,7 @@
         "$defs": {
           "SceneStartLook": {
             "additionalProperties": false,
-            "description": "The look's own parameters; each is optional; one left out takes Foxglove's default for that look.",
+            "description": "The look's own parameters; each is optional; one left out keeps what the user saved for that look (Foxglove's default for another look).",
             "properties": {
               "background": {
                 "description": "`night` or `off`.",
@@ -2652,10 +2652,10 @@
                 ]
               },
               "cool_c": {
-                "description": "Temperature: the cool end in whole degrees C (20 to 100).",
+                "description": "Temperature: the cool end in whole degrees C (20 to 100, multiples of 5).",
                 "format": "uint16",
-                "maximum": 65535,
-                "minimum": 0,
+                "maximum": 100,
+                "minimum": 20,
                 "type": [
                   "integer",
                   "null"
@@ -2669,10 +2669,10 @@
                 ]
               },
               "hot_c": {
-                "description": "Temperature: the hot end in whole degrees C (20 to 100, at least 10 above `cool_c`).",
+                "description": "Temperature: the hot end in whole degrees C (20 to 100, multiples of 5, at least 10 above `cool_c`).",
                 "format": "uint16",
-                "maximum": 65535,
-                "minimum": 0,
+                "maximum": 100,
+                "minimum": 20,
                 "type": [
                   "integer",
                   "null"
@@ -2695,8 +2695,8 @@
               "speed": {
                 "description": "1 to 10.",
                 "format": "uint8",
-                "maximum": 255,
-                "minimum": 0,
+                "maximum": 10,
+                "minimum": 1,
                 "type": [
                   "integer",
                   "null"
@@ -2705,8 +2705,8 @@
               "width_mm": {
                 "description": "20 to 400.",
                 "format": "uint16",
-                "maximum": 65535,
-                "minimum": 0,
+                "maximum": 400,
+                "minimum": 20,
                 "type": [
                   "integer",
                   "null"
@@ -2718,7 +2718,7 @@
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "`scene.start` (API 1.18): starts a look as the Scenes page's Start does. `look` is the\nkind's name (`scanline`, `sweep`, `ripple`, `breathe`, `gradient`, `drift`, `two-tone`,\n`tide`, `temperature`); `screen-glow` needs the user's yes in the app and is refused. Unknown\nnames and unknown, out-of-range or inapplicable parameters are refused (code -32602).",
+        "description": "`scene.start` (API 1.18): starts a look as the Scenes page's Start does. `look` is the\nkind's name (`scanline`, `sweep`, `ripple`, `breathe`, `gradient`, `drift`, `two-tone`,\n`tide`, `temperature`); `screen-glow` is always refused (only the user starts it, in the app). Unknown\nnames and unknown, out-of-range or inapplicable parameters are refused (code -32602).",
         "properties": {
           "look": {
             "type": "string"
