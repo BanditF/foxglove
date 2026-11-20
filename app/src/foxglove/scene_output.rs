@@ -755,6 +755,23 @@ impl Outputs {
         self.kick = true;
     }
 
+    /// Another look of the Temperature scene (its ends or colours were edited): the running
+    /// driver is kept, so the colour re-maps with no blink to the fallback and the rate limit
+    /// carries on.
+    pub fn set_effect_keeping_temperature(
+        &mut self,
+        effect: Effect,
+        look: TempLook,
+        reading: Option<f32>,
+        game: bool,
+        t: SceneTime,
+    ) {
+        let keep = self.temp.take();
+        self.set_effect(effect);
+        self.temp = keep;
+        self.set_temperature(look, reading, game, t);
+    }
+
     /// Temperature's reading changed (or went): the colour follows, rate-limited. Nothing is
     /// sent from here; the frames decide.
     pub fn set_reading(&mut self, reading: Option<f32>, game: bool, t: SceneTime) {
@@ -2653,6 +2670,33 @@ mod tests {
         o.set_reading(Some(75.0), false, SceneTime(100_000));
         run_frames(&mut o, 100_000, 103_000, &mut sent);
         assert_eq!(sent.effects.len(), n);
+    }
+
+    #[test]
+    fn editing_the_look_keeps_the_driver_and_never_shows_the_fallback() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        o.set_temperature(temp_look(), Some(60.0), false, SceneTime(0));
+        let mut sent = Sent::default();
+        run_frames(&mut o, 0, 30_000, &mut sent);
+        let shown = sent.effects[0][0];
+        // An edit of the ends (the Scenes page sends the whole look again).
+        let edited = TempLook {
+            cool_c: 30,
+            hot_c: 90,
+            ..temp_look()
+        };
+        o.set_effect_keeping_temperature(scanline(), edited, Some(60.0), false, SceneTime(40_000));
+        let mut after = Sent::default();
+        run_frames(&mut o, 40_000, 70_000, &mut after);
+        // Only steady colours, none of them the breathing fallback or dark.
+        assert!(!after.effects.is_empty());
+        for e in &after.effects {
+            assert_eq!(e[0], e[1], "steady");
+            assert_ne!(e[0], [0, 0, 0]);
+        }
+        let _ = shown;
     }
 
     #[test]

@@ -98,24 +98,16 @@ impl Driver {
         d
     }
 
-    /// The ends or colours were edited while running: the colour re-maps now (an edit is the
-    /// user's, not the sensors'), easing from what the lights show.
+    /// The ends or colours were edited while running: the colour re-maps with no restart,
+    /// easing from what the lights show now. The rate limit stays as it was (an edit is not a
+    /// way around it), so the new colour may wait out the rest of the interval.
     pub fn set_look(&mut self, look: TempLook, t: i64) {
         if look == self.look {
             return;
         }
-        let was_fallback = self.is_fallback();
         let shown = self.shown(t);
         self.look = look;
-        self.from = if was_fallback {
-            self.fallback_colour()
-        } else {
-            shown
-        };
-        self.eased_from = t;
-        self.target = self.wanted();
-        self.last_change = Some(t);
-        self.changed = true;
+        self.take_if_due(t, shown);
     }
 
     /// A new reading (or none) from the sensors.
@@ -149,6 +141,12 @@ impl Driver {
     /// Takes the wanted target when the rate limit allows; else leaves it for
     /// [`Driver::next_change_at`].
     fn consider(&mut self, t: i64) {
+        let shown = self.shown(t);
+        self.take_if_due(t, shown);
+    }
+
+    /// `consider`, easing from `shown` (what the lights show under the look that was in force).
+    fn take_if_due(&mut self, t: i64, shown: Rgb) {
         let want = self.wanted();
         if want == self.target {
             return;
@@ -157,7 +155,7 @@ impl Driver {
             .last_change
             .is_none_or(|l| t - l >= self.min_wait(want) || t < l);
         if due {
-            self.from = self.shown(t);
+            self.from = shown;
             self.eased_from = t;
             self.target = want;
             self.last_change = Some(t);
@@ -252,6 +250,7 @@ impl Driver {
     }
 
     /// Whether the lights show the fallback look now.
+    #[cfg(test)]
     pub fn is_fallback(&self) -> bool {
         self.target == Shows::Fallback
     }
@@ -461,5 +460,38 @@ mod tests {
         assert_ne!(before, RED);
         // Easing from what was shown, not jumping.
         assert_eq!(colour_of(&d.effect_at(5_000)), before);
+    }
+
+    #[test]
+    fn an_edit_keeps_the_rate_limit_and_does_not_jump() {
+        let mut d = Driver::new(look(), Some(40.0), false, 0);
+        d.effect_at(EASE_MS as i64);
+        d.take_changed();
+        // A reading change at 5 s takes at once and starts the rate limit.
+        d.set_reading(Some(60.0), false, 5_000);
+        let shown = colour_of(&d.effect_at(5_000));
+        d.take_changed();
+        // An edit 200 ms later: the lights do not jump, and the change waits for the limit.
+        d.set_look(
+            TempLook {
+                cool_c: 50,
+                hot_c: 60,
+                ..look()
+            },
+            5_200,
+        );
+        assert!(!d.take_changed(), "an edit is not a way round the limit");
+        assert_eq!(d.next_change_at(), Some(6_000));
+        let after = colour_of(&d.effect_at(5_200));
+        let near = |a: Rgb, b: Rgb| a.0.iter().zip(b.0).all(|(x, y)| x.abs_diff(y) < 40);
+        assert!(near(shown, after), "{shown:?} -> {after:?}");
+        // Once the interval is over the new mapping goes, easing from what was shown.
+        let before_take = colour_of(&d.effect_at(5_999));
+        d.effect_at(6_000);
+        assert!(d.take_changed());
+        assert_eq!(colour_of(&d.target_effect()), RED);
+        assert!(near(colour_of(&d.effect_at(6_000)), before_take));
+        // Never the fallback on the way.
+        assert!(!d.is_fallback());
     }
 }

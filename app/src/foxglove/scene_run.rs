@@ -961,10 +961,18 @@ fn control(
                 }
                 super::keyboard_facts::scene_look(&name, &effect);
                 let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
-                o.set_effect(*effect);
-                if let Some(look) = temperature {
-                    let (reading, game) = reading_now();
-                    o.set_temperature(*look, reading, game, clock.now());
+                match temperature {
+                    Some(look) => {
+                        let (reading, game) = reading_now();
+                        o.set_effect_keeping_temperature(
+                            *effect,
+                            *look,
+                            reading,
+                            game,
+                            clock.now(),
+                        );
+                    }
+                    None => o.set_effect(*effect),
                 }
             }
             Ctl::KeyboardArrived => {
