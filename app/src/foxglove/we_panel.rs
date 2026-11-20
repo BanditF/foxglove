@@ -163,7 +163,14 @@ fn old_way_line(n: usize) -> String {
 /// the order never depends on a status.
 pub fn view(i: &Inputs) -> View {
     let mut order: Vec<&Ask> = i.asks.iter().collect();
-    order.sort_by_key(|a| (!a.allowed, !a.on_screen, a.title.to_lowercase(), a.key.clone()));
+    order.sort_by_key(|a| {
+        (
+            !a.allowed,
+            !a.on_screen,
+            a.title.to_lowercase(),
+            a.key.clone(),
+        )
+    });
     let link = |a: &Ask| i.links.by_dir.get(&a.key).copied().unwrap_or(Link::Idle);
     let say = |s: &str, t: Tone| Some((s.to_string(), t));
 
@@ -253,10 +260,8 @@ pub fn view(i: &Inputs) -> View {
         })
     });
     // The button must tell the truth: old-way sockets count, and it is hidden when none exists.
-    let disconnect_all = i.feed_on
-        && i.engine_running
-        && !i.links.held
-        && (any_live || i.links.old_way > 0);
+    let disconnect_all =
+        i.feed_on && i.engine_running && !i.links.held && (any_live || i.links.old_way > 0);
     View {
         line,
         rows,
@@ -292,7 +297,10 @@ pub fn nodes(v: &View) -> Vec<Value> {
                     ui::toggle(&format!("{ALLOW}:{n}"), ALLOW_LABEL, r.allowed),
                     &format!("Let {} use your keyboard", r.title),
                 ));
-                let help = r.help.as_ref().map(|h| ui::label(&format!("we-help:{n}"), h));
+                let help = r
+                    .help
+                    .as_ref()
+                    .map(|h| ui::label(&format!("we-help:{n}"), h));
                 let button = r.reconnect.then(|| {
                     ui::named(
                         ui::event_button(&format!("{RECONNECT}:{n}"), RECONNECT_LABEL),
@@ -407,7 +415,10 @@ mod tests {
         );
         i.links.held = true;
         let l = view(&i).line.unwrap();
-        assert_eq!(l.text, "All wallpapers are disconnected. They stay allowed.");
+        assert_eq!(
+            l.text,
+            "All wallpapers are disconnected. They stay allowed."
+        );
         assert!(l.reconnect, "the line carries Reconnect");
         i.engine_running = false;
         let l = view(&i).line.unwrap();
@@ -574,7 +585,13 @@ mod tests {
         let a = view(&base(asks.clone(), Links::default()));
         assert_eq!(
             titles(&a),
-            ["Atlas", "Bandit HUD", "Courier", "Zed", "Neon Rain (Workshop)"]
+            [
+                "Atlas",
+                "Bandit HUD",
+                "Courier",
+                "Zed",
+                "Neon Rain (Workshop)"
+            ]
         );
         assert_eq!(a.keys, ["a", "b", "c", "d", "e"]);
         let b = view(&base(
@@ -600,7 +617,10 @@ mod tests {
         ));
         let tree = serde_json::to_string(&nodes(&v)).unwrap();
         for private in ["steam", "workshop", "431960", "d:/"] {
-            assert!(!tree.to_lowercase().contains(private), "{private} in {tree}");
+            assert!(
+                !tree.to_lowercase().contains(private),
+                "{private} in {tree}"
+            );
         }
         for id in ["we-allow:0", "we-allow:1", "we-reconnect:0", "we-asks"] {
             assert!(tree.contains(&format!("\"id\":\"{id}\"")), "{id}");
@@ -632,7 +652,10 @@ mod tests {
         assert!(has("we-allow:1", "Let Courier use your keyboard"));
         assert!(has("we-reconnect:0", "Reconnect Bandit HUD"));
         let mut all = view(&base(vec![], Links::default()));
-        all.line = Some(Line { text: "x".into(), reconnect: true });
+        all.line = Some(Line {
+            text: "x".into(),
+            reconnect: true,
+        });
         assert!(nodes(&all)
             .iter()
             .any(|n| n["props"]["name"] == "Reconnect all wallpapers"));
@@ -708,7 +731,13 @@ mod tests {
         let scenarios: Vec<(&str, Inputs)> = vec![
             (
                 "01-connected-and-not-on-screen",
-                mk(true, true, three(true, true, false), links(&[(hud, Link::Connected)]), None),
+                mk(
+                    true,
+                    true,
+                    three(true, true, false),
+                    links(&[(hud, Link::Connected)]),
+                    None,
+                ),
             ),
             (
                 "02-held-by-a-game",
@@ -729,13 +758,22 @@ mod tests {
                         ask(hud, "Bandit HUD", true, true),
                         ask("d:/we/courier", "Courier", true, true),
                     ],
-                    links(&[(hud, Link::Connecting), ("d:/we/courier", Link::Reconnecting)]),
+                    links(&[
+                        (hud, Link::Connecting),
+                        ("d:/we/courier", Link::Reconnecting),
+                    ]),
                     None,
                 ),
             ),
             (
                 "04-needs-you-reconnect",
-                mk(true, true, three(true, false, false), links(&[(hud, Link::Capped)]), None),
+                mk(
+                    true,
+                    true,
+                    three(true, false, false),
+                    links(&[(hud, Link::Capped)]),
+                    None,
+                ),
             ),
             ("05-needs-an-update", mk(true, true, upd, links(&[]), None)),
             (
@@ -746,9 +784,18 @@ mod tests {
                 "07-old-way-still-connected",
                 mk(true, true, three(false, false, false), old, None),
             ),
-            ("08-engine-not-running", mk(true, false, three(true, false, false), links(&[]), None)),
-            ("09-feed-off", mk(false, true, three(true, false, false), links(&[]), None)),
-            ("10-nothing-asked-yet", mk(true, true, vec![], links(&[]), None)),
+            (
+                "08-engine-not-running",
+                mk(true, false, three(true, false, false), links(&[]), None),
+            ),
+            (
+                "09-feed-off",
+                mk(false, true, three(true, false, false), links(&[]), None),
+            ),
+            (
+                "10-nothing-asked-yet",
+                mk(true, true, vec![], links(&[]), None),
+            ),
         ];
         let out: Vec<Value> = scenarios
             .iter()

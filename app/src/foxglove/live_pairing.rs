@@ -442,13 +442,19 @@ mod tests {
         p.set_allowed(only(&["hud"]));
         let t = ticket(&mut p, A, now);
         assert!(p.set_allowed(only(&[])).is_empty(), "no socket yet");
-        assert!(p.admit(None, Some(&t), "", now).is_err(), "ticket cancelled");
+        assert!(
+            p.admit(None, Some(&t), "", now).is_err(),
+            "ticket cancelled"
+        );
         p.set_allowed(only(&["hud"]));
         let t = ticket(&mut p, A, now);
         assert_eq!(p.admit(None, Some(&t), "", now), Ok(Some(A.into())));
         p.joined(7, Some(A));
         assert_eq!(p.set_allowed(only(&[])), vec![7]);
-        assert!(p.mint(A, "hud/index.html", now).is_none(), "off mints nothing");
+        assert!(
+            p.mint(A, "hud/index.html", now).is_none(),
+            "off mints nothing"
+        );
         assert!(!p.stuck());
         p.set_allowed(only(&["hud"]));
         assert!(p.mint(A, "hud/index.html", now).is_some(), "on mints again");
@@ -468,7 +474,10 @@ mod tests {
         assert_eq!(p.admit(None, Some("old"), "old", now), Ok(None));
         p.joined(9, None);
         assert_eq!(p.disconnect_all(), vec![9]);
-        assert!(p.admit(None, Some("old"), "old", now).is_err(), "token retired");
+        assert!(
+            p.admit(None, Some("old"), "old", now).is_err(),
+            "token retired"
+        );
     }
 
     #[test]

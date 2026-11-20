@@ -3401,7 +3401,9 @@ mod tests {
         assert_eq!(gate(&s), None);
         let mut p = pairing::Pairing::new();
         p.set_allowed(gate(&s));
-        assert!(p.mint("//?/DISPLAY#A", "hud/index.html", Instant::now()).is_some());
+        assert!(p
+            .mint("//?/DISPLAY#A", "hud/index.html", Instant::now())
+            .is_some());
     }
 
     #[test]
