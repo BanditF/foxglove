@@ -701,8 +701,9 @@ fn stop_by_hand() {
 /// decides again ([`after_start`]).
 fn start_by_hand(chosen: &Chosen) {
     if needs_yes(chosen) {
-        // Nothing to retry: only the user's click gives the yes.
-        RESUME.store(false, Ordering::Relaxed);
+        let gate = temperature_gate(&chosen.look);
+        let pending = RESUME.load(Ordering::Relaxed);
+        RESUME.store(resume_after_refusal(pending, gate), Ordering::Relaxed);
         return;
     }
     let saved = looks::load_saved().presets;
@@ -716,6 +717,40 @@ fn start_by_hand(chosen: &Chosen) {
         show_art(chosen);
     } else {
         eprintln!("Foxglove: a scene still ends; {name} starts after it");
+    }
+}
+
+/// What a refused hand start leaves of a pending start. Screen glow, and Temperature on its own,
+/// wait for the user (nothing to retry). A pending restore refused because the sensors app is
+/// off or not yet allowed stays pending: the cause is outside Foxglove and usually short, and
+/// the next change of the reading's state tries again ([`retry_resume`]). A click that was
+/// refused is never kept: it doesn't start by itself later.
+fn resume_after_refusal(pending: bool, gate: Option<temp_card::Gate>) -> bool {
+    pending
+        && matches!(
+            gate,
+            Some(temp_card::Gate::AppOff | temp_card::Gate::NotAllowed)
+        )
+}
+
+/// Whether a pending restore should try again now: one is pending, the page is up, and no scene
+/// runs.
+fn resume_due(pending: bool, ready: bool, running: bool) -> bool {
+    pending && ready && !running
+}
+
+/// The reading's state changed (the sensors app came up, the grant arrived): a restore the
+/// last refusal kept pending tries again. An event, never a timer; off the link's thread.
+fn retry_resume() {
+    let due = resume_due(
+        RESUME.load(Ordering::Relaxed),
+        READY.load(Ordering::Relaxed),
+        super::scene_run::running().is_some(),
+    );
+    if due {
+        super::services::spawn_named("temperature-resume", || {
+            start_by_hand(&looks::load_chosen());
+        });
     }
 }
 
@@ -865,6 +900,7 @@ pub fn startup() {
     }
     RESUME.store(resume, Ordering::Relaxed);
     READY.store(true, Ordering::Relaxed);
+    super::temperature_feed::on_state_change(retry_resume);
     // The same decision as a switch (it reads the active profile as it is now), unless the
     // demo scene already runs.
     if super::scene_run::running().is_none() {
@@ -2468,7 +2504,7 @@ pub(crate) mod tests {
         assert_eq!(
             status(&v),
             (
-                "Running: Temperature · Graphics card 64 °C, warm".into(),
+                "Running: Temperature · Graphics card 64\u{a0}°C, warm".into(),
                 Tone::Ok
             )
         );
@@ -3029,6 +3065,22 @@ pub(crate) mod tests {
         // An old store has no key: `None`, so the look decides.
         let old: Resume = toml::from_str("").unwrap();
         assert_eq!(old.running, None);
+    }
+
+    /// A launch restore refused for the sensors stays pending and tries again when the reading's
+    /// state changes; Temperature on its own, a click, and other refusals don't keep it.
+    #[test]
+    fn a_refused_restore_waits_for_the_sensors() {
+        use temp_card::Gate::*;
+        assert!(resume_after_refusal(true, Some(AppOff)));
+        assert!(resume_after_refusal(true, Some(NotAllowed)));
+        assert!(!resume_after_refusal(true, Some(Standalone)));
+        assert!(!resume_after_refusal(true, None));
+        assert!(!resume_after_refusal(false, Some(AppOff)));
+        assert!(resume_due(true, true, false));
+        assert!(!resume_due(true, true, true));
+        assert!(!resume_due(true, false, false));
+        assert!(!resume_due(false, true, false));
     }
 
     /// A palette effect clicked while a scene still ends (start refused) waits: the stop thread

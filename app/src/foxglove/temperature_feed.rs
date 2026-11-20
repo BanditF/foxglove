@@ -439,6 +439,7 @@ static WANTS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 type Wake = Arc<dyn Fn() + Send + Sync>;
 static ON_WANT: Mutex<Option<Wake>> = Mutex::new(None);
 static LATEST: Mutex<Status> = Mutex::new(Status::HubLost);
+static ON_STATE: Mutex<Option<Wake>> = Mutex::new(None);
 static SOURCE: Mutex<String> = Mutex::new(String::new());
 
 /// A sensor group as a plain name: letters, digits, `_` and `-`, so it can only ever make
@@ -504,7 +505,22 @@ pub fn on_want_change(wake: impl Fn() + Send + Sync + 'static) {
 
 /// The link's word on the reading, for the page and the lights.
 pub fn publish(status: Status) {
-    *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = status;
+    let before = std::mem::replace(
+        &mut *LATEST.lock().unwrap_or_else(|e| e.into_inner()),
+        status,
+    );
+    // A new state (not a new number): whoever waited on the sensors may try again.
+    if std::mem::discriminant(&before) != std::mem::discriminant(&status) {
+        let wake = ON_STATE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+}
+
+/// The scenes page's ear for a change of the reading's state (an event, never polled).
+pub fn on_state_change(wake: impl Fn() + Send + Sync + 'static) {
+    *ON_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(wake));
 }
 
 /// The status the link last published.
@@ -980,9 +996,23 @@ mod tests {
         assert_eq!(source(), "gpu");
         set_source("a.b");
         assert_eq!(source(), "gpu");
+        // The state hook fires for a new state, not for a new number in the same one.
+        let states = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = states.clone();
+        on_state_change(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
         publish(Status::Reading);
         assert_eq!(latest(), Status::Reading);
+        for t in [50.0, 51.0] {
+            publish(Status::Working {
+                temp_c: t,
+                game: false,
+            });
+        }
+        assert_eq!(states.load(Ordering::SeqCst), 2);
         publish(Status::HubLost);
         *ON_WANT.lock().unwrap() = None;
+        *ON_STATE.lock().unwrap() = None;
     }
 }

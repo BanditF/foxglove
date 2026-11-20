@@ -32,7 +32,7 @@ pub const STANDALONE: &str = "Temperature needs Hideout and its PC sensors app."
 /// The button that takes the user to the page that fixes [`NEEDS_APP`] and [`NOT_ALLOWED`].
 pub const OPEN_APPS: &str = "Open Apps page";
 /// Under the steppers when the ends are as close as they may be.
-pub const GAP_HINT: &str = "Hot has to be at least 10 °C above cool.";
+pub const GAP_HINT: &str = "Hot has to be at least 10\u{a0}°C above cool.";
 /// What the scale says with no reading at all.
 pub const NO_READING: &str = "No reading";
 
@@ -187,8 +187,8 @@ pub fn marker_text(running: bool, t: &TempView, look: &Look) -> String {
     match t.status {
         Status::Working { temp_c, .. } => temp::summary(Some(temp_c), look.cool_c, look.hot_c)
             .unwrap_or_else(|| NO_READING.into()),
-        Status::Reading => "Waiting for a reading…".into(),
-        Status::Missing | Status::NoReport => "Not reported".into(),
+        // One word for every state without a value (the plan, section 2): "doesn't report" is
+        // the status line's, not the marker's.
         _ => NO_READING.into(),
     }
 }
@@ -242,7 +242,7 @@ pub fn at_gap(cool: u16, hot: u16) -> bool {
 /// What "Back to" says: the defaults as the button's words.
 pub fn back_label() -> String {
     format!(
-        "Back to {}-{} °C",
+        "Back to {}-{}\u{a0}°C",
         temp::DEFAULT_COOL_C,
         temp::DEFAULT_HOT_C
     )
@@ -320,6 +320,29 @@ fn stepper(ui: &mut egui::Ui, name: &str, value: u16, (down, up): (bool, bool)) 
     });
     if plus.clicked() {
         pressed = 1;
+    }
+    // Up and Down step by 5 while one of the two buttons has the keyboard (Tab reaches them);
+    // the other arrows still move between controls.
+    for b in [&minus, &plus] {
+        if b.has_focus() {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    b.id,
+                    egui::EventFilter {
+                        vertical_arrows: true,
+                        ..Default::default()
+                    },
+                )
+            });
+        }
+    }
+    if minus.has_focus() || plus.has_focus() {
+        let key = |ui: &egui::Ui, k| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+        if key(ui, egui::Key::ArrowUp) && up {
+            pressed = 1;
+        } else if key(ui, egui::Key::ArrowDown) && down {
+            pressed = -1;
+        }
     }
     pressed
 }
@@ -442,14 +465,14 @@ fn scale(ui: &mut egui::Ui, look: &Look, reading: Option<f32>, marker: &str) {
     painter.text(
         egui::pos2(rect.left(), label_y),
         Align2::LEFT_TOP,
-        format!("{} °C", look.cool_c),
+        format!("{}\u{a0}°C", look.cool_c),
         font.clone(),
         p.muted,
     );
     painter.text(
         egui::pos2(rect.right(), label_y),
         Align2::RIGHT_TOP,
-        format!("{} °C", look.hot_c),
+        format!("{}\u{a0}°C", look.hot_c),
         font.clone(),
         p.muted,
     );
@@ -557,7 +580,7 @@ mod tests {
                 game: false
             }),
             (
-                "Running: Temperature · Graphics card 64 °C, warm".into(),
+                "Running: Temperature · Graphics card 64\u{a0}°C, warm".into(),
                 Tone::Ok
             )
         );
@@ -567,7 +590,7 @@ mod tests {
                 game: true
             }),
             (
-                "Running: Temperature · Graphics card 64 °C, warm · updates every 10 s while you play"
+                "Running: Temperature · Graphics card 64\u{a0}°C, warm · updates every 10 s while you play"
                     .into(),
                 Tone::Ok
             )
@@ -663,7 +686,10 @@ mod tests {
             if s.reading().is_none() {
                 for text in [&marker, &line] {
                     assert!(
-                        !text.contains("0 °C") && !text.contains('°') || text.contains("Today")
+                        !text.contains("0\u{a0}°C")
+                            && !text.contains("0 °C")
+                            && !text.contains('°')
+                            || text.contains("Today")
                     );
                     assert!(!text.trim_start_matches("Running: ").is_empty());
                 }
@@ -682,20 +708,11 @@ mod tests {
                 }),
                 &l
             ),
-            "64 °C, warm"
+            "64\u{a0}°C, warm"
         );
-        assert_eq!(
-            marker_text(true, &hosted(Status::Missing), &l),
-            "Not reported"
-        );
-        assert_eq!(
-            marker_text(true, &hosted(Status::NoReport), &l),
-            "Not reported"
-        );
-        assert_eq!(
-            marker_text(true, &hosted(Status::Reading), &l),
-            "Waiting for a reading…"
-        );
+        for s in [Status::Missing, Status::NoReport, Status::Reading] {
+            assert_eq!(marker_text(true, &hosted(s), &l), "No reading");
+        }
         assert_eq!(
             marker_text(false, &hosted(Status::Reading), &l),
             "No reading"
@@ -765,7 +782,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(back_label(), "Back to 40-80 °C");
+        assert_eq!(back_label(), "Back to 40-80\u{a0}°C");
         assert!(!moved(&look()));
         assert!(moved(&Look {
             cool_c: 45,

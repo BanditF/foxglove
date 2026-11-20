@@ -198,7 +198,7 @@ pub fn word(temp_c: Option<f32>, cool: u16, hot: u16) -> Option<Word> {
 
 /// A reading as written: whole degrees, a space before the unit ("64 °C").
 pub fn degrees(temp_c: f32) -> String {
-    format!("{} °C", temp_c.round() as i32)
+    format!("{}\u{a0}°C", temp_c.round() as i32)
 }
 
 /// The reading with its word ("64 °C, warm"); `None` without a reading, so "0 °C" is never
@@ -371,12 +371,21 @@ mod tests {
 
     #[test]
     fn degrees_are_whole_with_a_space_before_the_unit() {
-        assert_eq!(degrees(64.0), "64 °C");
-        assert_eq!(degrees(63.6), "64 °C");
-        assert_eq!(degrees(63.4), "63 °C");
-        assert_eq!(summary(Some(64.0), 40, 80).as_deref(), Some("64 °C, warm"));
-        assert_eq!(summary(Some(81.0), 40, 80).as_deref(), Some("81 °C, hot"));
-        assert_eq!(summary(Some(35.0), 40, 80).as_deref(), Some("35 °C, cool"));
+        assert_eq!(degrees(64.0), "64\u{a0}°C");
+        assert_eq!(degrees(63.6), "64\u{a0}°C");
+        assert_eq!(degrees(63.4), "63\u{a0}°C");
+        assert_eq!(
+            summary(Some(64.0), 40, 80).as_deref(),
+            Some("64\u{a0}°C, warm")
+        );
+        assert_eq!(
+            summary(Some(81.0), 40, 80).as_deref(),
+            Some("81\u{a0}°C, hot")
+        );
+        assert_eq!(
+            summary(Some(35.0), 40, 80).as_deref(),
+            Some("35\u{a0}°C, cool")
+        );
     }
 
     #[test]
@@ -414,6 +423,7 @@ mod tests {
                 "CPU",
                 "unavailable",
                 "unknown",
+                "0\u{a0}°C",
                 "0 °C",
             ] {
                 assert!(!text.contains(bad), "{text:?} has {bad:?}");
