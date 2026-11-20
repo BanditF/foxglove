@@ -4,7 +4,10 @@
 use std::time::Duration;
 
 use foxglove_sensors::host::{registered_pattern, Host};
-use foxglove_sensors::ui::{page, GroupState, PageInput, PageOut, PageView, PANEL};
+use foxglove_sensors::ui::{
+    page, tile, tile_panel, GroupState, PageInput, PageOut, PageView, PanelsOut, PanelsView, PANEL,
+    TILE,
+};
 use foxglove_sensors::{Config, Group, Metric, Reading, Source, SourceError, SourceFactory};
 use hideout_contract::module::{Context, Module};
 use serde_json::{json, Value};
@@ -154,7 +157,7 @@ fn the_panels_match_the_hub_vectors() {
         (&m.id, &m.name, &declared, &actions),
         every_state()
             .into_iter()
-            .map(|(n, i)| (n, vec![foxglove_sensors::ui::panel(&i)]))
+            .map(|(n, i)| (n, vec![tile_panel(&i), foxglove_sensors::ui::panel(&i)]))
             .collect(),
     );
 }
@@ -486,10 +489,13 @@ fn the_manifest_declares_the_page() {
         &Context::default(),
     )
     .unwrap();
-    assert_eq!(m.panels.len(), 1);
-    assert_eq!(m.panels[0].id, PANEL);
-    assert_eq!(m.panels[0].title, "PC sensors");
-    assert_eq!(m.panels[0].icon, "chart");
+    assert_eq!(m.panels.len(), 2);
+    assert_eq!(m.panels[0].id, TILE);
+    assert_eq!(m.panels[1].id, PANEL);
+    for p in &m.panels {
+        assert_eq!(p.title, "PC sensors");
+        assert_eq!(p.icon, "chart");
+    }
 }
 
 /// The NVIDIA sentence only when the whole card is unavailable (and something else reads);
@@ -509,4 +515,174 @@ fn the_nvidia_sentence_is_only_for_a_card_that_gives_nothing() {
     );
     assert_eq!(note(&none()), None);
     assert_eq!(note(&working()), None);
+}
+
+// The tray tile (slice 3c).
+
+fn tile_visibility(h: &mut Host, state: &str, now: Duration) {
+    h.notify(
+        "ui.visibility",
+        &json!({"panel": TILE, "state": state}),
+        now,
+    );
+}
+
+fn depth(v: &Value) -> usize {
+    1 + v["children"]
+        .as_array()
+        .map(|c| c.iter().map(depth).max().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+fn count(v: &Value) -> usize {
+    1 + v["children"]
+        .as_array()
+        .map(|c| c.iter().map(count).sum())
+        .unwrap_or(0)
+}
+
+fn kinds(v: &Value, kind: &str) -> usize {
+    usize::from(v["type"] == kind)
+        + v["children"]
+            .as_array()
+            .map(|c| c.iter().map(|x| kinds(x, kind)).sum())
+            .unwrap_or(0)
+}
+
+#[test]
+fn the_tile_shows_the_busiest_and_names_the_others() {
+    let t = tile(&working());
+    assert_eq!(value_of(&t, "glance"), "Graphics card 87%");
+    assert_eq!(
+        node(&t, "sub").unwrap()["props"]["text"],
+        "Processor 23% · Memory 62%"
+    );
+    assert_eq!(node(&t, "glance").unwrap()["props"]["tone"], "neutral");
+    let meter = node(&t, "meter").unwrap();
+    assert_eq!(meter["props"]["value"], 87.0);
+    assert_eq!(meter["props"]["name"], "Graphics card, 87 percent busy");
+    // Memory in front when it is the busiest.
+    let mut i = working();
+    i.values.insert(Metric::RamUsed, 95);
+    assert_eq!(value_of(&tile(&i), "glance"), "Memory 95%");
+}
+
+#[test]
+fn the_tile_never_draws_a_missing_value_as_zero() {
+    let r = tile(&reading());
+    assert_eq!(value_of(&r, "glance"), "Reading…");
+    assert!(!digits(&r));
+    assert_eq!(
+        node(&r, "sub").unwrap()["props"]["text"],
+        "Processor · Graphics card · Memory"
+    );
+    let n = tile(&none());
+    assert_eq!(value_of(&n, "glance"), "Not reported");
+    assert!(!digits(&n));
+    // A card Windows gives nothing for: the others are named, the card says so.
+    let m = tile(&missing());
+    assert_eq!(value_of(&m, "glance"), "Memory 62%");
+    assert_eq!(
+        node(&m, "sub").unwrap()["props"]["text"],
+        "Processor 23% · Graphics card not reported"
+    );
+}
+
+#[test]
+fn the_tile_stays_inside_the_tile_caps() {
+    for (name, i) in every_state() {
+        let t = tile(&i);
+        assert!(count(&t) <= 12, "{name}: nodes");
+        assert!(depth(&t) <= 3, "{name}: depth");
+        assert_eq!(kinds(&t, "value"), 1, "{name}: one value");
+        for k in ["label", "meter", "button"] {
+            assert!(kinds(&t, k) <= 1, "{name}: at most one {k}");
+        }
+        assert_eq!(kinds(&t, "button") + kinds(&t, "stream"), 0, "{name}");
+        let mut out = Vec::new();
+        texts(&t, &mut out);
+        assert!(out.iter().all(|s| s.len() <= 64), "{name}: {out:?}");
+    }
+}
+
+#[test]
+fn a_visible_tile_starts_sampling_and_hidden_releases() {
+    let mut h = host();
+    tile_visibility(&mut h, "visible", s(0));
+    assert!(h.sampling());
+    h.tick(s(0));
+    h.take_writes();
+    assert_eq!(value_of(&h.tile_tree(), "glance"), "Graphics card 87%");
+    // The page as well: hiding the tile alone keeps the page's sampling.
+    visible(&mut h, "visible", s(1));
+    tile_visibility(&mut h, "hidden", s(2));
+    assert!(h.sampling());
+    visible(&mut h, "hidden", s(3));
+    assert!(!h.sampling());
+    h.take_writes();
+    assert_eq!(value_of(&h.tile_tree(), "glance"), "Reading…");
+    // Hidden then closed: closed releases too.
+    tile_visibility(&mut h, "visible", s(4));
+    assert!(h.sampling());
+    tile_visibility(&mut h, "closed", s(5));
+    assert!(!h.sampling());
+    assert!(h.next_due().is_none());
+}
+
+#[test]
+fn an_unseen_tile_never_holds_numbers() {
+    let mut h = host();
+    h.demand(&registered_pattern(), 1, s(0));
+    h.tick(s(0));
+    h.take_writes();
+    assert_eq!(value_of(&h.tile_tree(), "glance"), "Reading…");
+}
+
+#[test]
+fn both_panels_register_together_and_then_patch_apart() {
+    let mut h = host();
+    let mut v = PanelsView::new();
+    let out = v.next(h.tile_tree(), h.page_tree());
+    let [PanelsOut::Register(panels)] = &out[..] else {
+        panic!("one register, got {out:?}")
+    };
+    assert_eq!(panels.len(), 2);
+    assert_eq!(
+        (panels[0]["id"].as_str(), panels[0]["slot"].as_str()),
+        (Some("tile"), Some("tile"))
+    );
+    assert_eq!(
+        (panels[1]["id"].as_str(), panels[1]["slot"].as_str()),
+        (Some("page"), Some("page"))
+    );
+    assert!(v.next(h.tile_tree(), h.page_tree()).is_empty());
+    // Only the tile is on screen: only the tile patches.
+    tile_visibility(&mut h, "visible", s(0));
+    h.tick(s(0));
+    h.take_writes();
+    let out = v.next(h.tile_tree(), h.page_tree());
+    assert!(
+        matches!(&out[..], [PanelsOut::Patch { panel: "tile", .. }]),
+        "{out:?}"
+    );
+    // The release patch leaves no number in the tile.
+    tile_visibility(&mut h, "hidden", s(5));
+    h.take_writes();
+    let out = v.next(h.tile_tree(), h.page_tree());
+    let [PanelsOut::Patch { panel: "tile", ops }] = &out[..] else {
+        panic!("a tile release patch, got {out:?}")
+    };
+    assert!(!digits(&Value::Array(ops.clone())));
+}
+
+#[test]
+fn a_shape_change_registers_both_panels_again() {
+    let mut v = PanelsView::new();
+    v.next(tile(&working()), page(&working()));
+    // The page changes shape (no readings at all): both panels go out again.
+    let out = v.next(tile(&working()), page(&none()));
+    assert!(
+        matches!(&out[..], [PanelsOut::Register(p)] if p.len() == 2),
+        "{out:?}"
+    );
 }

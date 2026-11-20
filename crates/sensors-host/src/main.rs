@@ -16,7 +16,7 @@ use foxglove_plugin::hideout::{
     Register, RpcError, Session, UiEvent, UiPatch,
 };
 use foxglove_sensors::host::{registered_pattern, Host, Write, GAME_MODE_FACT};
-use foxglove_sensors::ui::{self, PageInput, PageOut, PageView};
+use foxglove_sensors::ui::{self, PageInput, PanelsOut, PanelsView};
 use foxglove_sensors::{nvml, pdh, Config, Source, SourceFactory};
 use serde_json::{json, Value};
 
@@ -70,6 +70,23 @@ fn main() {
         eprintln!("{ID}: {e}");
         std::process::exit(1);
     }
+}
+
+/// One `ui.patch` of `panel`.
+fn patch(
+    session: &mut Pipe,
+    panel: &str,
+    ops: Vec<Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ops: Vec<PatchOp> = ops
+        .into_iter()
+        .filter_map(|o| serde_json::from_value(o).ok())
+        .collect();
+    session.ui_patch(&UiPatch {
+        panel: panel.into(),
+        ops,
+    })?;
+    Ok(())
 }
 
 /// Waits for the answer to request `id`; everything else that arrives is kept for the loop.
@@ -130,19 +147,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     // The page (contract order: module.register, ui.register, module.ready). It starts as all
     // "Reading…": nothing has been asked of the sensors yet.
-    let mut view = PageView::default();
-    let first = ui::page(&PageInput {
+    let mut view = PanelsView::new();
+    let first = PageInput {
         game_mode_visible: true,
         ..PageInput::default()
-    });
-    if let Some(PageOut::Register(panel)) = view.next(first) {
-        let id = session.ui_register(&Register {
-            instance: launch.instance.clone(),
-            panels: vec![panel],
-        })?;
-        let result = answer(&mut session, &lines, &mut inbox, id)?;
-        if result["rejected"].as_array().is_some_and(|r| !r.is_empty()) {
-            return Err(format!("the hub refused the page {}", result["rejected"]).into());
+    };
+    for out in view.next(ui::tile(&first), ui::page(&first)) {
+        if let PanelsOut::Register(panels) = out {
+            let id = session.ui_register(&Register {
+                instance: launch.instance.clone(),
+                panels,
+            })?;
+            let result = answer(&mut session, &lines, &mut inbox, id)?;
+            if result["rejected"].as_array().is_some_and(|r| !r.is_empty()) {
+                return Err(format!("the hub refused the panels {}", result["rejected"]).into());
+            }
         }
     }
     session.ready(&launch.instance)?;
@@ -208,39 +227,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for w in host.take_writes() {
             session.set_fact(params(&w))?;
         }
-        match view.next(host.page_tree()) {
-            Some(PageOut::Register(panel)) => {
-                session.ui_register(&Register {
-                    instance: launch.instance.clone(),
-                    panels: vec![panel],
-                })?;
+        for out in view.next(host.tile_tree(), host.page_tree()) {
+            match out {
+                PanelsOut::Register(panels) => {
+                    session.ui_register(&Register {
+                        instance: launch.instance.clone(),
+                        panels,
+                    })?;
+                }
+                PanelsOut::Patch { panel, ops } => patch(&mut session, panel, ops)?,
             }
-            Some(PageOut::Patch(ops)) => {
-                let ops: Vec<PatchOp> = ops
-                    .into_iter()
-                    .filter_map(|o| serde_json::from_value(o).ok())
-                    .collect();
-                session.ui_patch(&UiPatch {
-                    panel: ui::PANEL.into(),
-                    ops,
-                })?;
-            }
-            None => {}
         }
         if inbox.exit {
             break;
         }
     }
     host.stop(start.elapsed());
-    if let Some(PageOut::Patch(ops)) = view.next(host.page_tree()) {
-        let ops: Vec<PatchOp> = ops
-            .into_iter()
-            .filter_map(|o| serde_json::from_value(o).ok())
-            .collect();
-        let _ = session.ui_patch(&UiPatch {
-            panel: ui::PANEL.into(),
-            ops,
-        });
+    for out in view.next(host.tile_tree(), host.page_tree()) {
+        if let PanelsOut::Patch { panel, ops } = out {
+            // The hub is going or gone: a failed patch ends nothing more.
+            let _ = patch(&mut session, panel, ops);
+        }
     }
     for w in host.take_writes() {
         // The hub is going or gone: a failed write ends nothing more.

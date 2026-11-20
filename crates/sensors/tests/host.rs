@@ -279,12 +279,12 @@ fn external_demand_keeps_sampling_when_the_page_goes_away_and_the_other_way_roun
 #[test]
 fn another_panel_or_an_unknown_state_changes_nothing() {
     let (mut h, _, releases) = host_with_releases();
-    h.notify("ui.visibility", &vis("tile", "visible"), s(0));
+    h.notify("ui.visibility", &vis("other", "visible"), s(0));
     h.notify("ui.visibility", &vis("page", "sideways"), s(0));
     h.notify("ui.visibility", &serde_json::json!({}), s(0));
     assert!(!h.sampling());
     h.notify("ui.visibility", &vis("page", "visible"), s(1));
-    h.notify("ui.visibility", &vis("tile", "hidden"), s(2));
+    h.notify("ui.visibility", &vis("other", "hidden"), s(2));
     assert!(h.sampling());
     assert_eq!(releases.get(), 0);
 }

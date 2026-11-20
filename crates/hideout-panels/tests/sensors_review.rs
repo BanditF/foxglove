@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use egui::{epaint, Pos2, Rect, TextureId, Vec2};
 use hideout_contract::panel::Register;
-use hideout_panels::{panel_ui, PanelHost, PanelKey};
+use hideout_panels::{panel_ui, tile_ui, PanelHost, PanelKey};
 use serde_json::{json, Value};
 
 const VECTORS: &str = include_str!("../../../tests/hideout-vectors/modules/sensors.json");
@@ -205,13 +205,21 @@ fn host_for(state: &str) -> PanelHost {
 
 /// The states side by side, each in a column the width of the hub's page, captioned.
 fn sheet(file: &str, states: &[&str]) {
+    sheet_of(file, states, false)
+}
+
+/// The same for the tray tile (`tile`) or the page.
+fn sheet_of(file: &str, states: &[&str], tile: bool) {
     let mut hosts: Vec<(&str, PanelHost)> = states.iter().map(|s| (*s, host_for(s))).collect();
     let module = serde_json::from_str::<Value>(VECTORS).unwrap()["module"]
         .as_str()
         .unwrap()
         .to_string();
-    let col = 400.0f32;
-    let (w, h) = ((col as u32 + 12) * states.len() as u32 + 12, 560u32);
+    let col = if tile { 250.0f32 } else { 400.0f32 };
+    let (w, h) = (
+        (col as u32 + 12) * states.len() as u32 + 12,
+        if tile { 200u32 } else { 560u32 },
+    );
     let Some(px) = rasterise(w, h, |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal_top(|ui| {
@@ -220,8 +228,12 @@ fn sheet(file: &str, states: &[&str]) {
                         ui.set_width(col);
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(*cap).small().weak());
-                            ui.heading("PC sensors");
-                            let _ = panel_ui(host, ui, &PanelKey::new(&module, "page"));
+                            if tile {
+                                let _ = tile_ui(host, ui, &PanelKey::new(&module, "tile"));
+                            } else {
+                                ui.heading("PC sensors");
+                                let _ = panel_ui(host, ui, &PanelKey::new(&module, "page"));
+                            }
                         });
                     });
                     ui.add_space(12.0);
@@ -252,5 +264,19 @@ fn renders_the_sensors_page_for_review() {
     sheet(
         "ux-sensors3-more.png",
         &["Fan as percent", "Game mode not visible"],
+    );
+}
+
+#[test]
+fn renders_the_sensors_tile_for_review() {
+    sheet_of(
+        "ux-sensors3-tile.png",
+        &[
+            "Working",
+            "Reading",
+            "Graphics card details missing",
+            "No sensors",
+        ],
+        true,
     );
 }
