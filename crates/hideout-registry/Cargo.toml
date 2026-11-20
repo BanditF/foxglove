@@ -20,6 +20,7 @@ toml = "0.9"
 # drive on an internal bus (never a USB disk that reports "fixed").
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Storage_CloudFilters",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Ioctl",

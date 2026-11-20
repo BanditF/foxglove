@@ -352,6 +352,15 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.add(egui::Label::new(RichText::new(&row.path).strong().color(c(t.text))).wrap());
+                if let Some(parent) = &row.also_inside {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(dev_settings::also_inside_line(parent))
+                                .color(c(t.text_muted)),
+                        )
+                        .wrap(),
+                    );
+                }
                 // A problem row says so, and still lists its apps (from what was stored), so
                 // the user sees who is affected before choosing Remove.
                 if let Some(p) = row.problem {

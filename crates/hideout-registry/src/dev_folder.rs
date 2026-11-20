@@ -20,10 +20,29 @@
 //! - the carry moves only the file binding. It never adds a grant: what a rebuild newly asks for
 //!   stays pending, and the user's Allow is still the only thing that grants it.
 
+use crate::drive::{not_local_kind, DriveProbe, NotLocalKind, SystemDrives};
 use crate::inventory::{Bound, Identity, IdentityClass, Installed, ADOPTED};
 use crate::keyboard::{canonical_path, same_path, strip_verbatim};
-use crate::permission::on_local_fixed_drive;
+use crate::sync_root::{SyncAnswer, SyncProbe, SystemSync};
 use crate::{Failure, HubConfig, Registry};
+
+/// The questions about the place a dev folder sits in (which disk, whether a cloud service keeps
+/// it in step) behind probes, so tests use fakes. [`DevProbes::default`] is the real system.
+/// Every check that uses them fails closed on an answer it can't read.
+#[derive(Clone)]
+pub struct DevProbes {
+    pub drives: std::sync::Arc<dyn DriveProbe>,
+    pub sync: std::sync::Arc<dyn SyncProbe>,
+}
+
+impl Default for DevProbes {
+    fn default() -> Self {
+        DevProbes {
+            drives: std::sync::Arc::new(SystemDrives),
+            sync: std::sync::Arc::new(SystemSync),
+        }
+    }
+}
 
 /// `attested[].by` of a program change a dev folder kept.
 pub const DEV_ATTESTED_BY: &str = "dev-folder";
@@ -392,8 +411,16 @@ pub enum DevFolderRefusal {
     ModeOff,
     /// Not a folder that exists.
     NotAFolder,
-    /// Not on this PC's own (local fixed) drive.
-    NotLocal,
+    /// Not on this PC's own (local fixed) drive, and what kind of drive it is on.
+    NotLocal(NotLocalKind),
+    /// A cloud service keeps the folder in step (it is under a sync root).
+    Cloud,
+    /// Whether a cloud service keeps the folder in step could not be read.
+    CloudUnknown,
+    /// The folder's name can't be read as text (it is not valid Unicode).
+    NameUnreadable,
+    /// The folder is inside this listed dev folder, which already vouches for it.
+    InsideListed(String),
     /// [`folder_check`] said no.
     Problem(FolderProblem),
     /// The list could not be saved (or the path could not be resolved).
@@ -414,8 +441,12 @@ pub struct DevFolderAdded {
 pub enum RowProblem {
     /// The folder is gone.
     Missing,
-    /// It is not on a local fixed drive.
-    NotLocal,
+    /// It is not on a local fixed drive, and what kind of drive it is on.
+    NotLocal(NotLocalKind),
+    /// A cloud service keeps it in step.
+    Cloud,
+    /// Whether a cloud service keeps it in step could not be read.
+    CloudUnknown,
     /// [`folder_check`] said no.
     Folder(FolderProblem),
 }
@@ -427,6 +458,8 @@ pub struct DevFolderRow {
     pub problem: Option<RowProblem>,
     /// Names of the apps enrolled in it.
     pub apps: Vec<String>,
+    /// The first other listed dev folder this one is inside, if any.
+    pub inside: Option<String>,
 }
 
 impl Registry {
@@ -459,8 +492,20 @@ impl Registry {
             Err(DevFolderRefusal::NotAFolder) => {
                 Err(crate::permission::io_invalid("that is not a folder"))
             }
-            Err(DevFolderRefusal::NotLocal) => Err(crate::permission::io_invalid(
+            Err(DevFolderRefusal::NotLocal(_)) => Err(crate::permission::io_invalid(
                 "a dev folder must be on this PC's own drive",
+            )),
+            Err(DevFolderRefusal::Cloud) => Err(crate::permission::io_invalid(
+                "a folder that syncs with the cloud can't be a dev folder",
+            )),
+            Err(DevFolderRefusal::CloudUnknown) => Err(crate::permission::io_invalid(
+                "couldn't tell whether that folder syncs with the cloud",
+            )),
+            Err(DevFolderRefusal::NameUnreadable) => Err(crate::permission::io_invalid(
+                "that folder's name can't be read",
+            )),
+            Err(DevFolderRefusal::InsideListed(_)) => Err(crate::permission::io_invalid(
+                "that folder is inside a dev folder already",
             )),
             Err(DevFolderRefusal::Problem(p)) => Err(crate::permission::io_invalid(p.text())),
             Err(DevFolderRefusal::Failed(f)) => Err(f),
@@ -479,15 +524,32 @@ impl Registry {
             return Err(DevFolderRefusal::NotAFolder);
         }
         let canon = canonical_path(p).map_err(|e| DevFolderRefusal::Failed(Failure::Io(e)))?;
-        let probe = format!("{}\\x", canon.trim_end_matches('\\'));
-        if !on_local_fixed_drive(&probe) {
-            return Err(DevFolderRefusal::NotLocal);
+        // A name that is not valid Unicode came back with replacement characters: it would not
+        // name the same folder again, so it is never stored.
+        if canon.contains('\u{FFFD}') {
+            return Err(DevFolderRefusal::NameUnreadable);
+        }
+        match self.place_problem(&canon) {
+            Some(RowProblem::NotLocal(k)) => return Err(DevFolderRefusal::NotLocal(k)),
+            Some(RowProblem::Cloud) => return Err(DevFolderRefusal::Cloud),
+            Some(RowProblem::CloudUnknown) => return Err(DevFolderRefusal::CloudUnknown),
+            _ => {}
         }
         if let Some(why) = folder_check(&canon) {
             return Err(DevFolderRefusal::Problem(why));
         }
         let mut list = self.dev_folders();
         let was_listed = list.iter().any(|f| same_path(f, &canon));
+        // Inside a listed folder that counts now: it adds no trust, so nothing is written. A
+        // listed parent that Hideout ignores (gone, or no longer qualifying) does not block it.
+        if !was_listed {
+            if let Some(parent) = list
+                .iter()
+                .find(|f| path_within(f, &canon) && self.listed_problem(f).is_none())
+            {
+                return Err(DevFolderRefusal::InsideListed(parent.clone()));
+            }
+        }
         if !was_listed {
             list.push(canon.clone());
             self.change_hub(|h| h.set_dev_folders(&list))
@@ -497,6 +559,32 @@ impl Registry {
             path: canon,
             was_listed,
         })
+    }
+
+    /// The place checks a dev folder must pass, in order: on this PC's own drive, not kept in step
+    /// by a cloud service. None when it passes. Asked of the registry's probes, and run on add,
+    /// on every read of the list and on every carry.
+    fn place_problem(&self, canon: &str) -> Option<RowProblem> {
+        let probe = format!("{}\\x", canon.trim_end_matches('\\'));
+        if let Some(k) = not_local_kind(&probe, &*self.probes.drives) {
+            return Some(RowProblem::NotLocal(k));
+        }
+        match self.probes.sync.check(canon) {
+            SyncAnswer::Local => None,
+            SyncAnswer::Synced => Some(RowProblem::Cloud),
+            SyncAnswer::Unknown => Some(RowProblem::CloudUnknown),
+        }
+    }
+
+    /// Why a listed folder is not trusted right now (the checks of adding, run again).
+    fn listed_problem(&self, path: &str) -> Option<RowProblem> {
+        if !std::path::Path::new(path).is_dir() {
+            Some(RowProblem::Missing)
+        } else if let Some(p) = self.place_problem(path) {
+            Some(p)
+        } else {
+            folder_check(path).map(RowProblem::Folder)
+        }
     }
 
     /// Whether a rebuild restarts the app by itself (`[dev] restart_after_rebuild`, on unless the
@@ -531,17 +619,12 @@ impl Registry {
                 Some((f, name))
             })
             .collect();
-        self.dev_folders()
-            .into_iter()
+        let all = self.dev_folders();
+        all.iter()
+            .cloned()
             .map(|path| {
-                let probe = format!("{}\\x", path.trim_end_matches('\\'));
-                let problem = if !std::path::Path::new(&path).is_dir() {
-                    Some(RowProblem::Missing)
-                } else if !on_local_fixed_drive(&probe) {
-                    Some(RowProblem::NotLocal)
-                } else {
-                    folder_check(&path).map(RowProblem::Folder)
-                };
+                let problem = self.listed_problem(&path);
+                let inside = all.iter().find(|f| path_within(f, &path)).cloned();
                 let mut apps: Vec<String> = enrolled
                     .iter()
                     .filter(|(f, _)| same_path(f, &path))
@@ -553,6 +636,7 @@ impl Registry {
                     path,
                     problem,
                     apps,
+                    inside,
                 }
             })
             .collect()
@@ -615,7 +699,10 @@ impl Registry {
     /// local fixed drive, and strictly inside a listed folder that is still a directory on a
     /// local fixed drive.
     pub fn dev_folder_for(&self, path: &str) -> Option<String> {
-        if !self.dev_folders_on() || path.is_empty() || !on_local_fixed_drive(path) {
+        if !self.dev_folders_on()
+            || path.is_empty()
+            || !crate::permission::on_local_fixed_drive_with(path, &*self.probes.drives)
+        {
             return None;
         }
         // The caller's path must already be the canonical one: a spelling through a junction or
@@ -635,9 +722,12 @@ impl Registry {
         }
         folders.into_iter().find(|f| {
             path_within(f, path)
-                && on_local_fixed_drive(&format!("{}\\x", f.trim_end_matches('\\')))
                 && std::path::Path::new(f).is_dir()
+                && self.place_problem(f).is_none()
                 && folder_problem(f).is_none()
+                // The program itself is not under a sync root either (a placeholder file in a
+                // folder that is not): checked again on every carry.
+                && self.probes.sync.check(path) == SyncAnswer::Local
                 && !exe_open_to_others(f, path)
         })
     }

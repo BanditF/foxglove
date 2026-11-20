@@ -938,6 +938,298 @@ mod settings {
         );
     }
 
+    // ---- DF3 and DF4: the place checks, with fake probes ----------------------------------------
+
+    use hideout_registry::dev_folder::DevProbes;
+    use hideout_registry::drive::{BusType, DriveProbe, NotLocalKind};
+    use hideout_registry::sync_root::{SyncAnswer, SyncProbe};
+    use std::sync::{Arc, Mutex};
+
+    /// One answer for every drive.
+    #[derive(Clone, Copy)]
+    struct Drives {
+        fixed: bool,
+        bus: Option<BusType>,
+        remote: bool,
+    }
+    impl DriveProbe for Drives {
+        fn is_fixed(&self, _: &str) -> bool {
+            self.fixed
+        }
+        fn bus_type(&self, _: &str) -> Option<BusType> {
+            self.bus
+        }
+        fn is_remote(&self, _: &str) -> bool {
+            self.remote
+        }
+    }
+    const INTERNAL: Drives = Drives {
+        fixed: true,
+        bus: Some(BusType::Nvme),
+        remote: false,
+    };
+
+    type Answer = Box<dyn Fn(&str) -> SyncAnswer + Send>;
+
+    /// Answers by path, changeable while a registry holds it.
+    #[derive(Clone)]
+    struct Fake(Arc<Mutex<Answer>>);
+    impl Fake {
+        fn all(a: SyncAnswer) -> Fake {
+            Fake(Arc::new(Mutex::new(Box::new(move |_| a))))
+        }
+        fn set(&self, f: impl Fn(&str) -> SyncAnswer + Send + 'static) {
+            *self.0.lock().unwrap() = Box::new(f);
+        }
+    }
+    impl SyncProbe for Fake {
+        fn check(&self, path: &str) -> SyncAnswer {
+            (self.0.lock().unwrap())(path)
+        }
+    }
+
+    fn probes(d: Drives, s: &Fake) -> DevProbes {
+        DevProbes {
+            drives: Arc::new(d),
+            sync: Arc::new(s.clone()),
+        }
+    }
+
+    fn fake_reg(name: &str, d: Drives, s: &Fake) -> Registry {
+        Registry::open(&temp(name), true)
+            .unwrap()
+            .with_dev_probes(probes(d, s))
+    }
+
+    fn only(path: &str) -> impl Fn(&str) -> SyncAnswer + Send + 'static {
+        let path = path.to_string();
+        move |p| {
+            if same_path(p, &path) {
+                SyncAnswer::Synced
+            } else {
+                SyncAnswer::Local
+            }
+        }
+    }
+
+    #[test]
+    fn a_drive_that_is_not_the_pcs_own_is_refused_by_kind_and_nothing_is_written() {
+        let dir = temp("kind-dir").display().to_string();
+        let local = Fake::all(SyncAnswer::Local);
+        let d = |fixed, bus, remote| Drives { fixed, bus, remote };
+        let cases = [
+            (d(true, Some(BusType::Usb), false), NotLocalKind::PlugIn),
+            (d(false, Some(BusType::Sd), false), NotLocalKind::PlugIn),
+            (
+                d(true, Some(BusType::FileBackedVirtual), false),
+                NotLocalKind::VirtualOrUnknown,
+            ),
+            (d(true, None, false), NotLocalKind::VirtualOrUnknown),
+            (d(false, None, true), NotLocalKind::Network),
+        ];
+        for (i, (dr, want)) in cases.into_iter().enumerate() {
+            let mut reg = fake_reg(&format!("kind-home{i}"), dr, &local);
+            match reg.try_add_dev_folder(&dir) {
+                Err(DevFolderRefusal::NotLocal(k)) => assert_eq!(k, want, "case {i}"),
+                other => panic!("case {i}: {other:?}"),
+            }
+            assert!(reg.dev_folders().is_empty(), "case {i}");
+        }
+        // The same folder on an internal fixed drive is added.
+        let mut reg = fake_reg("kind-ok", INTERNAL, &local);
+        assert!(reg.try_add_dev_folder(&dir).is_ok());
+    }
+
+    #[test]
+    fn a_listed_folder_that_moves_to_a_plug_in_drive_shows_its_kind_and_is_not_carried() {
+        let mut f = fx("kind-row");
+        allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+        let local = Fake::all(SyncAnswer::Local);
+        f.reg.set_dev_probes(probes(INTERNAL, &local));
+        assert!(f.reg.dev_folder_of(ID).is_some());
+        f.reg.set_dev_probes(probes(
+            Drives {
+                fixed: true,
+                bus: Some(BusType::Usb),
+                remote: false,
+            },
+            &local,
+        ));
+        assert_eq!(
+            f.reg.dev_folder_rows()[0].problem,
+            Some(RowProblem::NotLocal(NotLocalKind::PlugIn))
+        );
+        assert!(f.reg.dev_folder_of(ID).is_none());
+    }
+
+    #[test]
+    fn a_cloud_synced_folder_is_refused_on_add_and_nothing_is_written() {
+        let dir = temp("cloud-dir").display().to_string();
+        let s = Fake::all(SyncAnswer::Synced);
+        let mut reg = fake_reg("cloud-home", INTERNAL, &s);
+        assert!(matches!(
+            reg.try_add_dev_folder(&dir),
+            Err(DevFolderRefusal::Cloud)
+        ));
+        assert!(reg.dev_folders().is_empty());
+        // The old string API refuses too.
+        assert!(reg.add_dev_folder(&dir).is_err());
+        assert!(reg.dev_folders().is_empty());
+        // A probe that can't answer fails closed, with its own refusal.
+        s.set(|_| SyncAnswer::Unknown);
+        assert!(matches!(
+            reg.try_add_dev_folder(&dir),
+            Err(DevFolderRefusal::CloudUnknown)
+        ));
+        assert!(reg.dev_folders().is_empty());
+        // Not synced: added.
+        s.set(|_| SyncAnswer::Local);
+        assert!(reg.try_add_dev_folder(&dir).is_ok());
+    }
+
+    /// Every carry asks again: the folder, or the program alone, turning out synced (or not
+    /// readable) stops the carry at once and the row says why; asking Local again restores it.
+    #[test]
+    fn a_cloud_synced_folder_or_program_stops_the_carry_on_every_check() {
+        let mut f = fx("cloud-carry");
+        allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+        let s = Fake::all(SyncAnswer::Local);
+        f.reg.set_dev_probes(probes(INTERNAL, &s));
+        let exe = canonical_path(&f.exe).unwrap();
+        let folder = f.reg.dev_folders()[0].clone();
+        assert_eq!(f.reg.dev_folder_for(&exe).as_deref(), Some(folder.as_str()));
+        assert!(f.reg.dev_folder_of(ID).is_some());
+        // The folder syncs.
+        s.set(only(&folder));
+        assert_eq!(f.reg.dev_folder_for(&exe), None);
+        assert!(f.reg.dev_folder_of(ID).is_none());
+        assert_eq!(f.reg.dev_folder_rows()[0].problem, Some(RowProblem::Cloud));
+        // Only the program is a placeholder.
+        s.set(only(&exe));
+        assert_eq!(f.reg.dev_folder_for(&exe), None);
+        assert!(f.reg.dev_folder_of(ID).is_none());
+        // Can't tell: refused, and the row says so in its own words.
+        s.set(|_| SyncAnswer::Unknown);
+        assert_eq!(f.reg.dev_folder_for(&exe), None);
+        assert_eq!(
+            f.reg.dev_folder_rows()[0].problem,
+            Some(RowProblem::CloudUnknown)
+        );
+        // Back to plain local: carried again (the enrolment was never dropped).
+        s.set(|_| SyncAnswer::Local);
+        assert!(f.reg.dev_folder_of(ID).is_some());
+    }
+
+    #[test]
+    fn a_rebuild_in_a_cloud_synced_folder_voids_instead_of_carrying() {
+        let mut f = fx("cloud-void");
+        allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+        let s = Fake::all(SyncAnswer::Synced);
+        f.reg.set_dev_probes(probes(INTERNAL, &s));
+        rebuild(&f, b"build 2");
+        assert!(
+            f.reg.binding_void(ID).is_some(),
+            "a synced folder carries nothing"
+        );
+        s.set(|_| SyncAnswer::Local);
+        assert_eq!(f.reg.binding_void(ID), None);
+    }
+
+    #[test]
+    fn a_folder_inside_a_listed_one_is_refused_and_a_parent_is_allowed() {
+        let local = Fake::all(SyncAnswer::Local);
+        let mut reg = fake_reg("nest-home", INTERNAL, &local);
+        let parent = temp("nest-parent");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let a = reg
+            .try_add_dev_folder(&parent.display().to_string())
+            .unwrap();
+        match reg.try_add_dev_folder(&child.display().to_string()) {
+            Err(DevFolderRefusal::InsideListed(p)) => assert_eq!(p, a.path),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(reg.dev_folders(), vec![a.path.clone()]);
+        // Already listed still says so (not "inside").
+        assert!(
+            reg.try_add_dev_folder(&parent.display().to_string())
+                .unwrap()
+                .was_listed
+        );
+        // The other order: child first, then its parent. Both rows stay; the child says where.
+        let mut reg = fake_reg("nest-home2", INTERNAL, &local);
+        let c = reg
+            .try_add_dev_folder(&child.display().to_string())
+            .unwrap();
+        let p = reg
+            .try_add_dev_folder(&parent.display().to_string())
+            .unwrap();
+        let rows = reg.dev_folder_rows();
+        assert_eq!(rows.len(), 2);
+        let crow = rows.iter().find(|r| r.path == c.path).unwrap();
+        let prow = rows.iter().find(|r| r.path == p.path).unwrap();
+        assert_eq!(crow.inside.as_deref(), Some(p.path.as_str()));
+        assert_eq!(prow.inside, None);
+    }
+
+    #[test]
+    fn a_listed_parent_that_is_ignored_does_not_block_a_child() {
+        let s = Fake::all(SyncAnswer::Local);
+        let mut reg = fake_reg("nest-ignored", INTERNAL, &s);
+        let parent = temp("nest-ign-parent");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let pp = reg
+            .try_add_dev_folder(&parent.display().to_string())
+            .unwrap()
+            .path;
+        // The parent (only) is synced now; the child on its own is not.
+        s.set(only(&pp));
+        assert!(reg.try_add_dev_folder(&child.display().to_string()).is_ok());
+    }
+
+    /// A folder whose name is not valid Unicode canonicalizes to a lossy string that names
+    /// nothing: refused with its own reason, and never stored.
+    #[test]
+    fn a_folder_name_that_is_not_unicode_is_refused() {
+        use std::os::windows::ffi::OsStringExt;
+        let base = temp("badname");
+        let bad = base.join(std::ffi::OsString::from_wide(&[0x62, 0xD800, 0x64]));
+        std::fs::create_dir_all(&bad).unwrap();
+        let link = base.join("link");
+        use std::os::windows::ffi::OsStrExt;
+        let back = |p: &std::path::Path| {
+            let w: Vec<u16> = p
+                .as_os_str()
+                .encode_wide()
+                .map(|c| if c == 0x2F { 0x5C } else { c })
+                .collect();
+            std::ffi::OsString::from_wide(&w)
+        };
+        // Raw OsStr arguments: `junction` would turn the name lossy and point at nothing.
+        let st = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(back(&link))
+            .arg(back(&bad))
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "mklink failed: {st:?}");
+        let s = Fake::all(SyncAnswer::Local);
+        let mut reg = fake_reg("badname-home", INTERNAL, &s);
+        assert!(matches!(
+            reg.try_add_dev_folder(&link.display().to_string()),
+            Err(DevFolderRefusal::NameUnreadable)
+        ));
+        assert!(reg.dev_folders().is_empty());
+    }
+
+    #[test]
+    fn the_real_probes_let_an_ordinary_folder_through() {
+        let mut reg = Registry::open(&temp("real-home"), true).unwrap();
+        let r = reg.try_add_dev_folder(&temp("real-dir").display().to_string());
+        assert!(r.is_ok(), "{r:?}");
+    }
+
     #[test]
     fn the_restart_switch_defaults_on_and_is_saved_in_hideout_toml() {
         let home = temp("sw-home");

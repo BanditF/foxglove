@@ -25,6 +25,7 @@ pub mod inventory;
 pub mod keyboard;
 pub mod lab;
 pub mod permission;
+pub mod sync_root;
 pub mod trust;
 
 use std::collections::BTreeMap;
@@ -190,6 +191,9 @@ pub struct Registry {
     pub dev_unsigned: bool,
     /// The dev-folder path is on (`HIDEOUT_DEV_MODE`): gates dev folders only, never sideload.
     pub dev_folders: bool,
+    /// The disk and cloud-sync questions the dev-folder checks ask (the system's, unless a test
+    /// sets fakes with [`Registry::with_dev_probes`]).
+    pub(crate) probes: dev_folder::DevProbes,
     /// The API a legacy `plugin.toml` is checked against (§4.10): the Foxglove plugin API
     /// (`foxglove_plugin_api::API_VERSION`, what `plugin-host` serves), not the hub's version.
     pub legacy_api: Version,
@@ -369,6 +373,7 @@ impl Registry {
             running: BTreeMap::new(),
             dev_unsigned: dev.unsigned,
             dev_folders: dev.folders,
+            probes: dev_folder::DevProbes::default(),
             legacy_api: foxglove_plugin_api::API_VERSION,
             lab: false,
             lab_report: Vec::new(),
@@ -378,6 +383,20 @@ impl Registry {
             catalog_report: Vec::new(),
             accepted_info: BTreeMap::new(),
         })
+    }
+
+    /// Asks the dev-folder checks of `probes` instead of the system (tests only: a registry with
+    /// fakes would let an unsafe place through, so no shipped code calls this).
+    #[doc(hidden)]
+    pub fn with_dev_probes(mut self, probes: dev_folder::DevProbes) -> Registry {
+        self.probes = probes;
+        self
+    }
+
+    /// [`Registry::with_dev_probes`] on a registry already open (tests only).
+    #[doc(hidden)]
+    pub fn set_dev_probes(&mut self, probes: dev_folder::DevProbes) {
+        self.probes = probes;
     }
 
     /// [`Registry::open`] with developer mode and lab mode from this process's environment: what

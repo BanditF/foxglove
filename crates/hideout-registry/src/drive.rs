@@ -63,11 +63,65 @@ impl BusType {
 }
 
 /// The two questions the local-drive check asks about a drive root such as `C:\`.
-pub trait DriveProbe {
+pub trait DriveProbe: Send + Sync {
     /// Windows reports the drive as fixed (`DRIVE_FIXED`): not network, removable, optical or RAM.
     fn is_fixed(&self, root: &str) -> bool;
     /// The bus the drive's disk is on, or None when it can't be read.
     fn bus_type(&self, root: &str) -> Option<BusType>;
+    /// Windows reports the drive as a network drive (`DRIVE_REMOTE`). Only used to word a
+    /// refusal; the default (no) never lets a drive pass, because the fixed and bus answers still
+    /// decide.
+    fn is_remote(&self, _root: &str) -> bool {
+        false
+    }
+}
+
+/// Why a path is not on this PC's own internal fixed drive, for the words of a refusal. The
+/// decision is the same for every kind: refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotLocalKind {
+    /// A disk on a plug-in bus (USB, SD, MMC, FireWire), whatever Windows calls it.
+    PlugIn,
+    /// A virtual disk (VHD), or a drive Hideout can't place: an unknown or unreadable bus, a
+    /// device path, a drive that is not fixed.
+    VirtualOrUnknown,
+    /// A network share or mapped network drive.
+    Network,
+}
+
+/// None when `path` is on one of this PC's internal fixed drives; otherwise why not. The single
+/// rule behind [`crate::permission::on_local_fixed_drive_with`], so the words can never disagree
+/// with the decision. Fails closed: a probe that can't answer lands in `VirtualOrUnknown`.
+pub fn not_local_kind(path: &str, probe: &dyn DriveProbe) -> Option<NotLocalKind> {
+    let p = crate::keyboard::strip_verbatim(path).replace('/', "\\");
+    if crate::keyboard::is_unc(&p) {
+        return Some(NotLocalKind::Network);
+    }
+    if p.starts_with("\\\\") {
+        // A device path (`\\.\...`) or anything else that is not a drive letter.
+        return Some(NotLocalKind::VirtualOrUnknown);
+    }
+    let b = p.as_bytes();
+    if b.len() < 4 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
+        return Some(NotLocalKind::VirtualOrUnknown);
+    }
+    let root = &p[..3];
+    if probe.is_remote(root) {
+        return Some(NotLocalKind::Network);
+    }
+    match probe.bus_type(root) {
+        Some(bus) if bus.is_internal() => {
+            if probe.is_fixed(root) {
+                None
+            } else {
+                Some(NotLocalKind::VirtualOrUnknown)
+            }
+        }
+        Some(BusType::Usb | BusType::Sd | BusType::Mmc | BusType::Ieee1394) => {
+            Some(NotLocalKind::PlugIn)
+        }
+        _ => Some(NotLocalKind::VirtualOrUnknown),
+    }
 }
 
 /// A fixed drive on an internal bus; an unreadable bus type is not internal.
@@ -80,6 +134,16 @@ pub struct SystemDrives;
 
 #[cfg(windows)]
 impl DriveProbe for SystemDrives {
+    fn is_remote(&self, root: &str) -> bool {
+        // DRIVE_REMOTE (winbase.h).
+        const DRIVE_REMOTE: u32 = 4;
+        let wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
+        unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(wide.as_ptr()) == DRIVE_REMOTE
+        }
+    }
+
     fn is_fixed(&self, root: &str) -> bool {
         // DRIVE_FIXED (winbase.h).
         const DRIVE_FIXED: u32 = 3;
@@ -268,6 +332,77 @@ mod tests {
         let any = Fake::on('S', true, Some(BusType::Sata));
         assert!(!local(r"\\srv\share\a.exe", &any));
         assert!(!local(r"\\?\UNC\srv\share\a.exe", &any));
+    }
+
+    struct Remote;
+    impl DriveProbe for Remote {
+        fn is_fixed(&self, _: &str) -> bool {
+            false
+        }
+        fn bus_type(&self, _: &str) -> Option<BusType> {
+            None
+        }
+        fn is_remote(&self, _: &str) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn the_kind_of_a_refusal_follows_the_bus_and_agrees_with_the_decision() {
+        use NotLocalKind::*;
+        let kind = |p: &str, f: &Fake| not_local_kind(p, f);
+        for b in [BusType::Usb, BusType::Sd, BusType::Mmc, BusType::Ieee1394] {
+            // Plug-in whether or not Windows says "fixed".
+            for fixed in [true, false] {
+                assert_eq!(kind(r"E:\a", &Fake::on('E', fixed, Some(b))), Some(PlugIn));
+            }
+        }
+        for b in [
+            BusType::Virtual,
+            BusType::FileBackedVirtual,
+            BusType::Unknown,
+            BusType::Atapi,
+            BusType::from_raw(99),
+        ] {
+            assert_eq!(
+                kind(r"E:\a", &Fake::on('E', true, Some(b))),
+                Some(VirtualOrUnknown),
+                "{b:?}"
+            );
+        }
+        // A bus that can't be read, or an internal bus on a drive that is not fixed: unknown.
+        assert_eq!(
+            kind(r"C:\a", &Fake::on('C', true, None)),
+            Some(VirtualOrUnknown)
+        );
+        assert_eq!(
+            kind(r"C:\a", &Fake::on('C', false, Some(BusType::Sata))),
+            Some(VirtualOrUnknown)
+        );
+        assert_eq!(
+            kind(r"C:\a", &Fake::on('C', true, Some(BusType::Nvme))),
+            None
+        );
+        // Network: UNC (a mapped drive canonicalizes to it), verbatim UNC, a remote drive letter.
+        let any = Fake::on('S', true, Some(BusType::Sata));
+        assert_eq!(kind(r"\\srv\share\a", &any), Some(Network));
+        assert_eq!(kind(r"\\?\UNC\srv\share\a", &any), Some(Network));
+        assert_eq!(not_local_kind(r"Z:\a", &Remote), Some(Network));
+        assert_eq!(kind(r"\\.\PhysicalDrive1\a", &any), Some(VirtualOrUnknown));
+        assert_eq!(kind("relative", &any), Some(VirtualOrUnknown));
+        // The boolean check is exactly "no kind".
+        use crate::permission::on_local_fixed_drive_with as local;
+        for b in [
+            None,
+            Some(BusType::Usb),
+            Some(BusType::Sata),
+            Some(BusType::Virtual),
+        ] {
+            for fixed in [true, false] {
+                let f = Fake::on('C', fixed, b);
+                assert_eq!(local(r"C:\a", &f), not_local_kind(r"C:\a", &f).is_none());
+            }
+        }
     }
 
     #[test]

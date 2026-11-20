@@ -4915,6 +4915,7 @@ fn dev_view(case: &str) -> crate::dev_settings::DevView {
             app("Tally", AppState::NotAllowed),
         ],
         problem: None,
+        also_inside: None,
     };
     match case {
         "off" => DevView::default(),
@@ -4924,6 +4925,7 @@ fn dev_view(case: &str) -> crate::dev_settings::DevView {
                 path: r"D:\dev\foxglove".into(),
                 apps: vec![],
                 problem: None,
+                also_inside: None,
             }],
             ..Default::default()
         },
@@ -4944,6 +4946,7 @@ fn dev_view(case: &str) -> crate::dev_settings::DevView {
                         app("Probe", AppState::Ignored),
                     ],
                     problem: Some(Problem::FolderOpen),
+                    also_inside: None,
                 },
                 DevRow {
                     path: r"D:\dev\new-app".into(),
@@ -4953,11 +4956,62 @@ fn dev_view(case: &str) -> crate::dev_settings::DevView {
                         app("Lamp", AppState::Stopped),
                     ],
                     problem: None,
+                    also_inside: None,
                 },
             ],
             note: Some(Note {
                 text: Problem::Profile.line().into(),
                 error: true,
+            }),
+        },
+        // DF3/DF4: each way a listed folder stops qualifying, and a folder held by another one.
+        "df34" => DevView {
+            on: true,
+            restart: true,
+            folders: vec![
+                DevRow {
+                    path: r"D:\dev\app".into(),
+                    apps: vec![app("Foxglove", AppState::Running)],
+                    problem: None,
+                    also_inside: None,
+                },
+                DevRow {
+                    path: r"D:\dev\app\tools".into(),
+                    apps: vec![],
+                    problem: None,
+                    also_inside: Some(r"D:\dev\app".into()),
+                },
+                DevRow {
+                    path: r"E:\usb\app".into(),
+                    apps: vec![app("Relay", AppState::Ignored)],
+                    problem: Some(Problem::PlugIn),
+                    also_inside: None,
+                },
+                DevRow {
+                    path: r"\\nas\share\app".into(),
+                    apps: vec![],
+                    problem: Some(Problem::NetworkDrive),
+                    also_inside: None,
+                },
+                DevRow {
+                    path: r"C:\Users\me\Sync\app".into(),
+                    apps: vec![app("Probe", AppState::Ignored)],
+                    problem: Some(Problem::Cloud),
+                    also_inside: None,
+                },
+            ],
+            note: Some(Note {
+                text: Problem::Cloud.line().into(),
+                error: true,
+            }),
+        },
+        "inside" => DevView {
+            on: true,
+            restart: true,
+            folders: vec![ok],
+            note: Some(Note {
+                text: crate::dev_settings::inside_line(r"D:\dev\foxglove"),
+                error: false,
             }),
         },
         "added" => DevView {
@@ -5042,6 +5096,10 @@ fn renders_the_developer_settings_for_review() {
         ("problem", false, 720, 1100, "df2-states-light.png"),
         ("problem", true, 720, 1100, "df2-states-dark.png"),
         ("problem", false, 360, 1500, "df2-states-narrow-light.png"),
+        ("df34", false, 720, 1100, "df34-refusals-light.png"),
+        ("df34", true, 720, 1100, "df34-refusals-dark.png"),
+        ("df34", false, 360, 1700, "df34-refusals-narrow-light.png"),
+        ("inside", false, 720, 760, "df34-inside-light.png"),
     ] {
         let view = dev_view(case);
         let choice = if dark {
@@ -5113,6 +5171,29 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
                 && live.is_some_and(|x| x != Live::Off)
         }),
         "the note is a live region: {on:?}"
+    );
+    // DF3/DF4: every row line, and "Also inside", is text a screen reader reaches.
+    let df = accesskit_nodes(&dev_view("df34"));
+    for want in [
+        crate::dev_settings::Problem::PlugIn.row_line().to_string(),
+        crate::dev_settings::Problem::NetworkDrive
+            .row_line()
+            .to_string(),
+        crate::dev_settings::Problem::Cloud.row_line().to_string(),
+        crate::dev_settings::also_inside_line(r"D:\dev\app"),
+    ] {
+        assert!(
+            df.iter()
+                .any(|(_, l, _)| l.as_deref() == Some(want.as_str())),
+            "{want}: {df:?}"
+        );
+    }
+    assert!(
+        df.iter().any(|(_, l, live)| {
+            l.as_deref() == Some(crate::dev_settings::Problem::Cloud.line())
+                && live.is_some_and(|x| x != Live::Off)
+        }),
+        "the refusal is a live region: {df:?}"
     );
     // Dev off with folders listed: the off line and the paths, none of this section's controls.
     let off = accesskit_nodes(&dev_view("off-listed"));
@@ -5400,6 +5481,7 @@ fn focus_after_a_removal_goes_to_the_next_row_then_the_previous_then_add() {
         path: p.into(),
         apps: vec![],
         problem: None,
+        also_inside: None,
     };
     let rows = [r"D:\a", r"D:\b", r"D:\c"];
     let view = |list: &[&str]| crate::dev_settings::DevView {
