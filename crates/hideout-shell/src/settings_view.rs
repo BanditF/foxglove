@@ -156,6 +156,17 @@ struct DevUi {
     focus: Option<DevFocus>,
 }
 
+/// The bold face when the shell installed one (a context without the shell's fonts, as in some
+/// tests, has none, and egui panics on an unknown named family).
+fn bold_family(ctx: &egui::Context) -> egui::FontFamily {
+    let bold = egui::FontFamily::Name(crate::shell::BOLD_FAMILY.into());
+    if ctx.fonts(|f| f.definitions().families.contains_key(&bold)) {
+        bold
+    } else {
+        egui::FontFamily::Proportional
+    }
+}
+
 /// The Remove confirm (DF1). Cancel is first, filled and focused; Esc and a click outside are
 /// Cancel. Returns `Some(true)` for Remove folder, `Some(false)` for Cancel.
 fn remove_confirm(
@@ -169,14 +180,23 @@ fn remove_confirm(
     let mut answer = None;
     let mut ids: Vec<egui::Id> = Vec::new();
     let modal = egui::Modal::new(egui::Id::new("hideout.dev.remove-confirm")).show(ctx, |ui| {
-        ui.set_width(440.0_f32.min(ui.available_width()));
+        // 440 wide at most, and a 16 px margin each side on a narrow window (the modal frame
+        // takes its own padding, so 64 leaves the margin).
+        ui.set_width((ctx.content_rect().width() - 64.0).clamp(200.0, 440.0));
         ui.label(
             RichText::new(dev_settings::CONFIRM_TITLE)
                 .heading()
                 .color(c(t.text)),
         );
         ui.add_space(6.0);
-        ui.add(egui::Label::new(RichText::new(path).strong().color(c(t.text))).wrap());
+        ui.add(
+            egui::Label::new(
+                RichText::new(path)
+                    .family(bold_family(ui.ctx()))
+                    .color(c(t.text)),
+            )
+            .wrap(),
+        );
         ui.add_space(4.0);
         ui.add(egui::Label::new(RichText::new(&body).color(c(t.text))).wrap());
         ui.add_space(10.0);

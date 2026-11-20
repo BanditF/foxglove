@@ -5262,6 +5262,30 @@ fn the_remove_confirm_cancels_with_the_button_and_with_escape() {
     assert!(d.sent.is_empty(), "{:?}", d.sent);
 }
 
+/// A click outside the dialog is Cancel too: nothing is sent, the dialog closes, and the focus
+/// goes back to the same Remove...
+#[test]
+fn a_click_outside_the_remove_confirm_cancels_it() {
+    use crate::dev_settings::{self as w};
+    let mut d = DevDriver::new("ok");
+    d.press(&w::remove_name(FOX));
+    assert!(d.dialog_open());
+    let at = egui::pos2(4.0, 1390.0);
+    let b = |pressed| Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    d.frames(1, vec![Event::PointerMoved(at)]);
+    d.frames(1, vec![b(true)]);
+    d.frames(1, vec![b(false)]);
+    d.frames(3, vec![]);
+    assert!(d.sent.is_empty(), "{:?}", d.sent);
+    assert!(!d.dialog_open());
+    assert_eq!(d.focused(), Some(w::remove_name(FOX)));
+}
+
 /// After Remove folder the focus goes to the next row's Remove..., else the previous one's, else
 /// Add a folder....
 #[test]

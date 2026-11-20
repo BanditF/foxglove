@@ -27,6 +27,10 @@ pub const ALREADY: &str = "That folder is already on the list.";
 pub const REMOVED: &str = "Removed.";
 pub const FAILED: &str = "Hideout couldn't save that. Nothing changed.";
 
+/// The folder is off the list but the clean-up behind it failed: "Nothing changed" would be untrue.
+pub const REMOVED_NOT_TIDY: &str =
+    "Hideout removed the folder but couldn't finish tidying up. It will finish next time it starts.";
+
 // The Remove confirm (DF1): one click to ask, one to remove. Cancel is the default.
 pub const REMOVE_BUTTON: &str = "Remove\u{2026}";
 pub const CONFIRM_TITLE: &str = "Remove this dev folder?";
@@ -268,6 +272,7 @@ mod tests {
             CONFIRM_TITLE.to_string(),
             CONFIRM_NO_APPS.to_string(),
             FAILED.to_string(),
+            REMOVED_NOT_TIDY.to_string(),
             REMOVED.to_string(),
         ];
         for n in 0..4 {
