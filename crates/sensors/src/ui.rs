@@ -117,7 +117,7 @@ fn now_row(id: &str, what: &str, s: Shown) -> Value {
     let meter = json!({
         "type": "meter",
         "id": format!("{id}-meter"),
-        "props": {"value": s.meter, "max": 100, "label": s.name},
+        "props": {"value": s.meter, "max": 100, "name": s.name},
     });
     row(
         id,
@@ -157,7 +157,8 @@ const BLIND_TO_GAMES: &str = "PC sensors can't see when you're gaming, so it kee
 a second. To slow it down during games, allow \"see whether game mode is on\" on the Apps page.";
 
 const NO_READINGS: &str = "Windows isn't giving any readings right now.";
-const GPU_NOTE: &str =
+const GPU_NOTE: &str = "This graphics card doesn't report these to Windows.";
+const GPU_NOTE_ALL: &str =
     "This graphics card doesn't report these to Windows. Today only NVIDIA cards do.";
 
 /// The page's tree for what the sensors say now (contract §5.2; one column).
@@ -238,8 +239,16 @@ pub fn page(i: &PageInput) -> Value {
         detail_row("gpu-power", "Power", power),
         detail_row("gpu-fan", "Fan", fan),
     ];
-    if missing_detail {
-        gpu_rows.push(toned("gpu-note", GPU_NOTE, "off"));
+    // The NVIDIA sentence only when the whole card is unavailable and Windows gives other
+    // readings (so it isn't simply a bad moment); with some values present it is only "these";
+    // with no readings at all the "Not reported" rows say enough.
+    if missing_detail && !none {
+        let note = if i.state(Group::Gpu) == GroupState::Unavailable {
+            GPU_NOTE_ALL
+        } else {
+            GPU_NOTE
+        };
+        gpu_rows.push(toned("gpu-note", note, "off"));
     }
 
     let mut about = ABOUT.to_string();

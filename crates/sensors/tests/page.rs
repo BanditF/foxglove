@@ -47,10 +47,12 @@ fn game() -> PageInput {
     }
 }
 
-/// A card that reports load only (not NVIDIA): the rest "Not reported".
+/// A card Windows gives nothing for (not NVIDIA): the rest "Not reported".
 fn missing() -> PageInput {
     let mut i = working();
+    i.states.insert(Group::Gpu, GroupState::Unavailable);
     for m in [
+        Metric::GpuLoad,
         Metric::GpuTemp,
         Metric::GpuClock,
         Metric::GpuPower,
@@ -58,6 +60,21 @@ fn missing() -> PageInput {
     ] {
         i.values.remove(&m);
     }
+    i
+}
+
+/// An NVIDIA card that gives no power: only that row is missing, and the card is not blamed.
+fn partial() -> PageInput {
+    let mut i = working();
+    i.values.remove(&Metric::GpuPower);
+    i
+}
+
+/// A fan that reports its duty only.
+fn fan_percent() -> PageInput {
+    let mut i = working();
+    i.values.remove(&Metric::GpuFan);
+    i.values.insert(Metric::GpuFanPct, 45);
     i
 }
 
@@ -81,7 +98,9 @@ fn every_state() -> Vec<(&'static str, PageInput)> {
         ("Reading", reading()),
         ("Working", working()),
         ("Game mode on", game()),
+        ("Fan as percent", fan_percent()),
         ("Graphics card details missing", missing()),
+        ("Some details missing", partial()),
         ("No sensors", none()),
         ("Game mode not visible", blind()),
     ]
@@ -281,7 +300,7 @@ fn every_value_has_an_accessible_name() {
         "Graphics card temperature, 64 degrees Celsius"
     );
     assert_eq!(
-        node(&t, "now-cpu-meter").unwrap()["props"]["label"],
+        node(&t, "now-cpu-meter").unwrap()["props"]["name"],
         "Processor, 23 percent busy"
     );
 }
@@ -471,4 +490,23 @@ fn the_manifest_declares_the_page() {
     assert_eq!(m.panels[0].id, PANEL);
     assert_eq!(m.panels[0].title, "PC sensors");
     assert_eq!(m.panels[0].icon, "chart");
+}
+
+/// The NVIDIA sentence only when the whole card is unavailable (and something else reads);
+/// some values missing blames nothing; no readings at all adds no note.
+#[test]
+fn the_nvidia_sentence_is_only_for_a_card_that_gives_nothing() {
+    let note = |i: &PageInput| {
+        node(&page(i), "gpu-note").map(|n| n["props"]["text"].as_str().unwrap().to_string())
+    };
+    assert_eq!(
+        note(&missing()).as_deref(),
+        Some("This graphics card doesn't report these to Windows. Today only NVIDIA cards do.")
+    );
+    assert_eq!(
+        note(&partial()).as_deref(),
+        Some("This graphics card doesn't report these to Windows.")
+    );
+    assert_eq!(note(&none()), None);
+    assert_eq!(note(&working()), None);
 }

@@ -245,8 +245,12 @@ fn renders_the_sensors_page_for_review() {
         "ux-sensors3-edge.png",
         &[
             "Graphics card details missing",
+            "Some details missing",
             "No sensors",
-            "Game mode not visible",
         ],
+    );
+    sheet(
+        "ux-sensors3-more.png",
+        &["Fan as percent", "Game mode not visible"],
     );
 }
