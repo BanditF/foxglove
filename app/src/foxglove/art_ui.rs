@@ -733,7 +733,7 @@ fn tile(
             p.text,
         );
     }
-    r
+    theme::named(r, name)
 }
 
 /// The right screen's column of Showing now: the picture, its name and badge, the restart
@@ -1672,7 +1672,8 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
                 }
             }
         });
-        ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("Search").desired_width(140.0));
+        let r = ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("Search").desired_width(140.0));
+        theme::named(r, "Search art");
         {
             ui.menu_button("Add art…", |ui| {
                 if ui.button("A file…").clicked() {
@@ -1917,6 +1918,7 @@ fn pc_tile(ui: &mut egui::Ui, piece: &PcPiece, index: usize, tile: Tile, acts: &
         })
         .response;
     let r = ui.interact(r.rect, ui.id().with(("art-pc", piece.key)), Sense::click());
+    let r = theme::named(r, &piece.name);
     let showable = can_send && !matches!(badge, Badge::TooBig | Badge::Sending(_));
     if r.clicked() && showable && !on {
         acts.push(Act::ShowPiece(index));

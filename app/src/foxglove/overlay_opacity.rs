@@ -58,6 +58,7 @@ pub fn rows(ui: &mut egui::Ui, settings: &mut crate::settings::Settings) {
     slider(
         ui,
         &mut settings.opacity,
+        "Opacity",
         "How see-through the layer overlay is",
         |_| {},
     );
@@ -68,12 +69,18 @@ pub fn rows(ui: &mut egui::Ui, settings: &mut crate::settings::Settings) {
     let mut now = shown;
     let mut follow = settings.label_opacity.is_none();
     let mut follow_changed = false;
-    slider(ui, &mut now, "How see-through the key labels are", |ui| {
-        follow_changed = ui
-            .checkbox(&mut follow, "Follow HUD")
-            .on_hover_text("The labels move with Opacity; moving their slider unlinks them")
-            .changed();
-    });
+    slider(
+        ui,
+        &mut now,
+        "Key labels",
+        "How see-through the key labels are",
+        |ui| {
+            follow_changed = ui
+                .checkbox(&mut follow, "Follow HUD")
+                .on_hover_text("The labels move with Opacity; moving their slider unlinks them")
+                .changed();
+        },
+    );
     settings.label_opacity = touched(settings.label_opacity, shown, now);
     if follow_changed {
         settings.label_opacity = linked(follow, now);
@@ -141,6 +148,7 @@ pub fn paint_outline(ui: &egui::Ui, rect: egui::Rect) {
 pub fn slider(
     ui: &mut egui::Ui,
     value: &mut u8,
+    name: &str,
     hover: &str,
     trailing: impl FnOnce(&mut egui::Ui),
 ) -> bool {
@@ -151,7 +159,8 @@ pub fn slider(
         ui,
         |ui| {
             trailing(ui);
-            ui.add(egui::DragValue::new(&mut typed).range(0..=100).suffix("%"));
+            let r = ui.add(egui::DragValue::new(&mut typed).range(0..=100).suffix("%"));
+            super::theme::named(r, &format!("{name} percent"));
         },
         |ui| {
             ui.spacing_mut().slider_width = ui.available_width().max(MIN_RAIL);
@@ -164,6 +173,7 @@ pub fn slider(
                 .on_hover_text(format!(
                     "{hover}. It snaps to {DETENT}% when dragged near it; hold Alt to pass it"
                 ));
+            let response = super::theme::named(response, name);
             #[cfg(test)]
             RAIL.set(Some(response.rect));
             // A press focuses it, so the arrow keys fine-tune from there.

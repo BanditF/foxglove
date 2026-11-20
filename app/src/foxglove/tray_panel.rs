@@ -1204,9 +1204,14 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
                     for (name, rgb) in super::lights_page::SWATCHES {
                         let selected = super::lights_page::is_swatch((l.hue, l.sat), rgb);
                         let color = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-                        if super::lights_page::swatch(ui, color, selected)
-                            .on_hover_text(name)
-                            .clicked()
+                        if super::theme::named_choice(
+                            ui.unique_id(),
+                            super::lights_page::swatch(ui, color, selected),
+                            name,
+                            selected,
+                        )
+                        .on_hover_text(name)
+                        .clicked()
                             && !selected
                         {
                             let (hue, sat) = super::accent::hue_sat(rgb[0], rgb[1], rgb[2]);

@@ -40,7 +40,7 @@ fn combo(
     if let Some(width) = width {
         combo = combo.width(width);
     }
-    combo.show_ui(ui, |ui| {
+    let shown_combo = combo.show_ui(ui, |ui| {
         if ui.selectable_label(active.is_none(), "Default").clicked() {
             chosen = Some(None);
         }
@@ -53,6 +53,7 @@ fn combo(
             }
         }
     });
+    super::theme::named(shown_combo.response, "Profile");
     match chosen.filter(|n| n != active) {
         Some(name) => store::set_active(name.as_deref()).map_err(|e| e.to_string()),
         None => Ok(()),

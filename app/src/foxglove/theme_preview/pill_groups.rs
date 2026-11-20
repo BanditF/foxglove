@@ -28,7 +28,7 @@ fn tree(ctx: &egui::Context, size: egui::Vec2, mut draw: impl FnMut(&mut egui::U
 }
 
 /// A page of the settings window, drawn with `samples`.
-fn page_tree(page: Page, samples: &Samples, height: f32) -> TreeUpdate {
+pub(super) fn page_tree(page: Page, samples: &Samples, height: f32) -> TreeUpdate {
     let ctx = preview_ctx();
     show_samples(page, samples);
     let t = tree(&ctx, egui::vec2(1072.0, height + 40.0), |ui| {

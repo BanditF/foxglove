@@ -1251,7 +1251,7 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 for (name, rgb) in swatches.iter().cloned() {
                     let selected = is_swatch((*hue, *sat), rgb);
                     let shown = super::calibrate::keyboard_screen(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-                    if swatch(ui, shown, selected).on_hover_text(&name).clicked() {
+                    if theme::named_choice(ui.unique_id(), swatch(ui, shown, selected), &name, selected).on_hover_text(&name).clicked() {
                         (*hue, *sat) = swatch_hue_sat(rgb);
                     }
                 }
@@ -1265,11 +1265,11 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 ui.add_space(2.0);
                 if m.hue {
                     value_row(ui, "Hue", format!("{hue}°"));
-                    full_slider(ui, egui::Slider::new(&mut *hue, 0..=359));
+                    full_slider(ui, "Hue", egui::Slider::new(&mut *hue, 0..=359));
                 }
                 if m.sat {
                     value_row(ui, "Saturation", format!("{sat}%"));
-                    full_slider(ui, egui::Slider::new(&mut *sat, 0..=100));
+                    full_slider(ui, "Saturation", egui::Slider::new(&mut *sat, 0..=100));
                 }
             }
         }
@@ -1315,14 +1315,14 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         if m.brightness {
             ui.add_space(4.0);
             value_row(ui, "Brightness", format!("{brightness}%"));
-            full_slider(ui, egui::Slider::new(&mut *brightness, 0..=100));
+            full_slider(ui, "Brightness", egui::Slider::new(&mut *brightness, 0..=100));
         }
 
         if m.speed {
             let reported = left.map(|l| l.speed).filter(|s| (1..=5).contains(s));
             let mut speed = draft.speed.or(reported).unwrap_or(3);
             value_row(ui, "Speed", speed.to_string());
-            let r = full_slider(ui, egui::Slider::new(&mut speed, 1..=5));
+            let r = full_slider(ui, "Speed", egui::Slider::new(&mut speed, 1..=5));
             if r.changed() {
                 draft.speed = Some(speed);
             }
@@ -1516,9 +1516,9 @@ pub(crate) fn value_row(ui: &mut egui::Ui, name: &str, value: String) {
 }
 
 /// A slider across the card, its value shown in the row above.
-pub(crate) fn full_slider(ui: &mut egui::Ui, slider: egui::Slider) -> egui::Response {
+pub(crate) fn full_slider(ui: &mut egui::Ui, name: &str, slider: egui::Slider) -> egui::Response {
     ui.spacing_mut().slider_width = ui.available_width();
-    let r = ui.add(slider.show_value(false));
+    let r = theme::named(ui.add(slider.show_value(false)), name);
     if r.dragged() {
         ui.ctx()
             .data_mut(|d| d.insert_temp(egui::Id::new("lights-dragging"), true));

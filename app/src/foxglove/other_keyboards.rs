@@ -163,6 +163,7 @@ pub fn row(ui: &mut egui::Ui, k: &Keyboard, detail: &str, layout: Option<&KeyLay
                     ui,
                     size,
                     &k.key,
+                    &k.name,
                     Thumb::keyboard(keys, Tint::Unknown),
                     false,
                 );

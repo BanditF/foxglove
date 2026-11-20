@@ -335,6 +335,8 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
         set_page(to);
         ui.ctx().request_repaint();
     }
+    // Controls drawn right after their label take it as their name (#1376).
+    theme::name_controls(ui.ctx());
 }
 
 fn sidebar(ui: &mut egui::Ui, page: &mut Page) {

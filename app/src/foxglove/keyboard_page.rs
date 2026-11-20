@@ -905,6 +905,10 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
                         ui.id().with(("board-screen", screen_no)),
                         Sense::click(),
                     );
+                    let click = theme::named(
+                        click,
+                        &format!("{}, opens Screens", super::screen_roles::name(s.role)),
+                    );
                     screen_no += 1;
                     if screen(ui, v, s.role, screen_rect, click) {
                         go = Some(Page::Screens);
@@ -938,6 +942,14 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
                     glow.expand2(egui::vec2(0.0, 6.0)),
                     ui.id().with(("board-glow", i)),
                     Sense::click(),
+                );
+                let glow_click = theme::named(
+                    glow_click,
+                    &if v.split {
+                        format!("{} half glow", if i == 0 { "Left" } else { "Right" })
+                    } else {
+                        "Keyboard glow".to_string()
+                    },
                 );
                 #[cfg(test)]
                 hits.glows.push(glow);

@@ -359,6 +359,8 @@ fn run_inner(
         .with_transparent(true)
         .with_has_shadow(false)
         .with_always_on_top()
+        // The window's title is its accessible name, so keep the app id (X11 class) a plain word.
+        .with_app_id("foxglove")
         // Foxglove: the window icon (Alt+Tab, Linux), the same art as the exe's.
         .with_icon(std::sync::Arc::new(
             eframe::icon_data::from_png_bytes(include_bytes!("../../resources/icon.png"))
@@ -396,7 +398,7 @@ fn run_inner(
     }
 
     eframe::run_native(
-        crate::foxglove::settings_window::OVERLAY_TITLE, // Foxglove (#535)
+        crate::foxglove::settings_window::OVERLAY_TITLE, // the window's accessible name (#1376)
         options,
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]
