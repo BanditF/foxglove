@@ -309,6 +309,12 @@ pub fn connect_to(pipe: &str, nonce: &str, server: Option<u32>) -> io::Result<Ch
 /// name is opened (never a UNC share). The returned connection is `Clone`; the last clone
 /// dropped closes it.
 pub fn connect_router(pipe: &str, hub: u32) -> io::Result<ChannelConn> {
+    connect_router_opt(pipe, Some(hub))
+}
+
+/// [`connect_router`] where the hub's pid may be unknown (a launch without `HIDEOUT_HUB_PID`,
+/// an older hub): with `None` the server is not checked, as `open_pipe` never did either.
+pub fn connect_router_opt(pipe: &str, hub: Option<u32>) -> io::Result<ChannelConn> {
     if !stays_a_local_pipe(pipe) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -322,7 +328,9 @@ pub fn connect_router(pipe: &str, hub: u32) -> io::Result<ChannelConn> {
         .custom_flags(FILE_FLAG_OVERLAPPED)
         .security_qos_flags(SECURITY_IDENTIFICATION)
         .open(pipe)?;
-    crate::hideout::check_server(&file, hub)?;
+    if let Some(hub) = hub {
+        crate::hideout::check_server(&file, hub)?;
+    }
     Ok(ChannelConn {
         pipe: PipeConn(std::sync::Arc::new(Owned(file.into_raw_handle() as HANDLE))),
         deadline: None,

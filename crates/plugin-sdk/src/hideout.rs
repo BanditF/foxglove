@@ -291,25 +291,49 @@ pub fn check_server(pipe: &std::fs::File, hub: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// The module's connection to the router pipe: on Windows an overlapped handle (a clone can
+/// write while another thread blocks in `read`), elsewhere a [`std::fs::File`].
+#[cfg(windows)]
+pub type ModulePipe = crate::channel::ChannelConn;
+/// The module's connection to the router pipe (see the Windows type).
+#[cfg(not(windows))]
+pub type ModulePipe = std::fs::File;
+
+/// Opens the router pipe the hub named for a module that reads on one thread and writes on
+/// another, and returns two handles to the one connection (read, write). On Windows the pipe
+/// is opened with `FILE_FLAG_OVERLAPPED`: a synchronous handle serialises I/O per file object,
+/// so a reader blocked in `ReadFile` would starve every write on the same pipe (the hub then
+/// drops a module that cannot send, #1347). Nothing is sent, the token least of all, until the
+/// pipe is known to be the hub's own when `HIDEOUT_HUB_PID` says who that is (contract §7.5).
+pub fn connect_pipe(pipe: &str) -> io::Result<(ModulePipe, ModulePipe)> {
+    let hub = std::env::var("HIDEOUT_HUB_PID")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok());
+    #[cfg(windows)]
+    {
+        let conn = crate::channel::connect_router_opt(pipe, hub)?;
+        Ok((conn.clone(), conn))
+    }
+    #[cfg(not(windows))]
+    {
+        let file = open_pipe(pipe)?;
+        if let Some(hub) = hub {
+            check_server(&file, hub)?;
+        }
+        Ok((file.try_clone()?, file))
+    }
+}
+
 /// Connects to the router pipe the hub named at launch.
-pub fn connect_env() -> io::Result<(Session<BufReader<std::fs::File>, std::fs::File>, Launch)> {
+pub fn connect_env() -> io::Result<(Session<BufReader<ModulePipe>, ModulePipe>, Launch)> {
     let launch = Launch::from_env().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "HIDEOUT_PIPE, HIDEOUT_TOKEN and HIDEOUT_INSTANCE are not set: the hub starts modules",
         )
     })?;
-    let pipe = open_pipe(&launch.pipe)?;
-    // Nothing is sent, the token least of all, until the pipe is known to be the hub's own
-    // (contract §7.5): another process may have made an instance of the name.
-    if let Some(hub) = std::env::var("HIDEOUT_HUB_PID")
-        .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-    {
-        check_server(&pipe, hub)?;
-    }
-    let reader = BufReader::new(pipe.try_clone()?);
-    Ok((Session::new(reader, pipe), launch))
+    let (read, write) = connect_pipe(&launch.pipe)?;
+    Ok((Session::new(BufReader::new(read), write), launch))
 }
 
 /// The module's side of one JSON-RPC connection.
@@ -665,6 +689,59 @@ mod tests {
             .unwrap();
         assert!(r.rejected.is_empty());
         assert!(s.pending().is_empty());
+    }
+
+    /// #1347: a reader blocked in `read` on the module's pipe must not hold up a write from
+    /// another thread (a synchronous handle serialises the two; the hub then drops the module).
+    #[cfg(windows)]
+    #[test]
+    fn a_blocked_read_does_not_block_a_write() {
+        use crate::channel::{unique_pipe_name, ServerPipe};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let name = unique_pipe_name("test.module", "no-starve");
+        let server = ServerPipe::create(&name, true).unwrap();
+        let accept = std::thread::spawn(move || server.accept().unwrap());
+        let (read, mut write) = connect_pipe(&name).unwrap();
+        let mut hub = accept.join().unwrap();
+        let (up_tx, up_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut lines = BufReader::new(read);
+            let mut line = String::new();
+            up_tx.send(()).unwrap();
+            lines.read_line(&mut line).unwrap(); // blocks until the hub speaks
+            line
+        });
+        up_rx.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(300)); // let the read reach the kernel
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let r = write.write_all(
+                b"facts.get
+",
+            );
+            let _ = done_tx.send(r.is_ok());
+        });
+        let wrote = done_rx.recv_timeout(Duration::from_secs(5));
+        // Let the reader go either way, so a failure does not hang the test process.
+        hub.write_all(
+            b"from-hub
+",
+        )
+        .unwrap();
+        assert_eq!(wrote, Ok(true), "the write waited for the blocked read");
+        let mut got = [0u8; 10];
+        io::Read::read_exact(&mut hub, &mut got).unwrap();
+        assert_eq!(
+            &got,
+            b"facts.get
+"
+        );
+        assert_eq!(
+            reader.join().unwrap(),
+            "from-hub
+"
+        );
     }
 
     #[test]

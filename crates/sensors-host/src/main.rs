@@ -12,7 +12,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Instant;
 
 use foxglove_plugin::hideout::{
-    check_server, open_pipe, Handler, Incoming, InitializeModule, Launch, ModuleRegister, Session,
+    connect_pipe, Handler, Incoming, InitializeModule, Launch, ModulePipe, ModuleRegister, Session,
 };
 use foxglove_sensors::host::{registered_pattern, Host, Write, GAME_MODE_FACT};
 use foxglove_sensors::{nvml, pdh, Config, Source, SourceFactory};
@@ -53,7 +53,7 @@ impl Handler for Inbox {
     }
 }
 
-type Pipe = Session<std::io::Empty, std::fs::File>;
+type Pipe = Session<std::io::Empty, ModulePipe>;
 
 fn main() {
     if let Err(e) = run() {
@@ -86,15 +86,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let launch = Launch::from_env().ok_or(
         "HIDEOUT_PIPE, HIDEOUT_TOKEN and HIDEOUT_INSTANCE are not set: the hub starts modules",
     )?;
-    let pipe = open_pipe(&launch.pipe)?;
-    // Nothing is sent, the token least of all, until the pipe is the hub's own (§7.5).
-    if let Some(hub) = std::env::var("HIDEOUT_HUB_PID")
-        .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-    {
-        check_server(&pipe, hub)?;
-    }
-    let reader = BufReader::new(pipe.try_clone()?);
+    // Overlapped, so the reader thread's blocked read never holds up a write (#1347).
+    let (read, pipe) = connect_pipe(&launch.pipe)?;
+    let reader = BufReader::new(read);
     let (tx, lines) = mpsc::channel::<String>();
     std::thread::spawn(move || {
         for line in reader.lines() {
