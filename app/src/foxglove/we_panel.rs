@@ -9,6 +9,9 @@
 //! ticket or a token never reaches a node id, a label or the view's words: a row is known to the
 //! panel by its index in [`View::keys`], a list Foxglove keeps.
 
+// The model lands first and is exercised by its tests; S5b wires it into the page and removes this.
+#![allow(dead_code)]
+
 use std::collections::BTreeSet;
 
 use serde_json::Value;
