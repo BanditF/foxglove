@@ -37,7 +37,7 @@ pub enum Group {
     Cpu,
     Gpu,
     Ram,
-    /// The board and chassis (Windows' thermal zones), never the processor package.
+    /// The board and case (Windows' thermal zones), never the processor package.
     System,
 }
 
@@ -71,7 +71,7 @@ pub enum Metric {
     GpuFan,
     /// The fan's duty in percent: its own fact, never published as RPM.
     GpuFanPct,
-    /// The hottest board or chassis thermal zone, in degrees Celsius.
+    /// The hottest board or case thermal zone, in degrees Celsius.
     SysTemp,
 }
 

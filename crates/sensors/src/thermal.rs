@@ -1,7 +1,7 @@
 //! System temperature from Windows' Thermal Zone Information counters
 //! (`\Thermal Zone Information(*)\Temperature`, Kelvin). No admin, no driver, no elevation.
 //!
-//! These are the board's and chassis' ACPI zones, not the processor's package temperature, so
+//! These are the board's and case's ACPI zones, not the processor's package temperature, so
 //! the value is published as `sensor.system.temp_c` (the hottest zone) and never as a CPU
 //! reading. A PC without the counter, or a zone with no valid value, is absent: never 0.
 //!
@@ -28,7 +28,7 @@ pub fn zone_name(instance: &str) -> String {
     t.to_uppercase()
 }
 
-/// The zones from the counter's instances, in name order; an invalid value drops that zone.
+/// The zones from the counter's instances, hottest first (name on ties); an invalid value drops that zone.
 pub fn zones_from(instances: &[(String, f64)]) -> Vec<Zone> {
     let mut zones: Vec<Zone> = instances
         .iter()
@@ -38,7 +38,7 @@ pub fn zones_from(instances: &[(String, f64)]) -> Vec<Zone> {
             (!name.is_empty()).then_some(Zone { name, celsius })
         })
         .collect();
-    zones.sort_by(|a, b| a.name.cmp(&b.name));
+    zones.sort_by(|a, b| b.celsius.cmp(&a.celsius).then_with(|| a.name.cmp(&b.name)));
     zones
 }
 

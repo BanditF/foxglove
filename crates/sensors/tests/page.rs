@@ -717,8 +717,14 @@ fn the_system_temperature_is_the_hottest_zone_with_the_zones_listed() {
     assert_eq!(value_of(&t, "sys-zone-0-value"), "38 °C");
     assert_eq!(value_of(&t, "sys-zone-1-value"), "28 °C");
     let text = shown(node(&t, "system").unwrap());
-    assert!(text.contains("System temperature") && text.contains("Zone HPTZ"));
-    // A board or chassis zone, never the processor.
+    assert!(
+        text.contains("System temperature") && text.contains("Zone 1") && text.contains("Zone 2")
+    );
+    // Firmware names are never drawn.
+    for raw in ["HPTZ", "TZ00"] {
+        assert!(!text.contains(raw), "{raw} shows");
+    }
+    // A board or case zone, never the processor.
     let low = text.to_lowercase();
     assert!(!low.contains("cpu") && !low.contains("processor"));
 }
@@ -727,7 +733,11 @@ fn the_system_temperature_is_the_hottest_zone_with_the_zones_listed() {
 fn a_missing_zone_counter_is_not_reported_and_never_zero() {
     let t = page(&no_system());
     assert_eq!(value_of(&t, "sys-temp-value"), "Not reported");
-    assert!(node(&t, "sys-zone-0-value").is_none() && node(&t, "sys-note").is_none());
+    assert!(node(&t, "sys-zone-0-value").is_none());
+    assert_eq!(
+        node(&t, "sys-note").unwrap()["props"]["text"],
+        "This PC doesn't report it to Windows."
+    );
     assert!(!digits(node(&t, "system").unwrap()));
     // Not read yet: Reading…
     assert_eq!(value_of(&page(&reading()), "sys-temp-value"), "Reading…");

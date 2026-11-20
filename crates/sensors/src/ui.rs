@@ -155,13 +155,13 @@ const ABOUT: &str = "Shows how busy your processor, graphics card and memory are
 graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, \
 performance or power. It reads only while this page is open or another app asks, and stops when \
 nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra \
-driver. System temperature is the hottest board or chassis zone Windows reports.";
+driver. System temperature is the hottest board or case zone Windows reports.";
 
 const BLIND_TO_GAMES: &str = "PC sensors can't see when you're gaming, so it keeps updating once \
 a second. To slow it down during games, allow \"see whether game mode is on\" on the Apps page.";
 
-const SYS_NOTE: &str =
-    "Board and chassis zones as Windows reports them. The hottest is shown first.";
+const SYS_NOTE: &str = "Board and case zones as Windows reports them. The hottest is shown first.";
+const SYS_MISSING: &str = "This PC doesn't report it to Windows.";
 const NO_READINGS: &str = "Windows isn't giving any readings right now.";
 const GPU_NOTE: &str = "This graphics card doesn't report these to Windows.";
 const GPU_NOTE_ALL: &str =
@@ -260,6 +260,7 @@ pub fn page(i: &PageInput) -> Value {
     let system = shown(i, Metric::SysTemp, "System temperature", |v| {
         (format!("{v} °C"), format!("{v} degrees Celsius"))
     });
+    let missing = system.text == "Not reported";
     let has_zones = system.tone == "neutral" && !i.zones.is_empty();
     let mut sys_rows = vec![detail_row("sys-temp", "Hottest zone", system)];
     if has_zones {
@@ -267,16 +268,20 @@ pub fn page(i: &PageInput) -> Value {
             let s = Shown {
                 text: format!("{} °C", z.celsius),
                 tone: "neutral",
-                name: format!("Zone {}, {} degrees Celsius", z.name, z.celsius),
+                name: format!("Zone {}, {} degrees Celsius", n + 1, z.celsius),
                 meter: 0.0,
             };
             sys_rows.push(detail_row(
                 &format!("sys-zone-{n}"),
-                &format!("Zone {}", z.name),
+                &format!("Zone {}", n + 1),
                 s,
             ));
         }
         sys_rows.push(toned("sys-note", SYS_NOTE, "off"));
+    } else {
+        // One note node in every no-zone state, so a release keeps the page's shape.
+        let note = if missing { SYS_MISSING } else { SYS_NOTE };
+        sys_rows.push(toned("sys-note", note, "off"));
     }
 
     let mut about = ABOUT.to_string();

@@ -282,6 +282,14 @@
                     ],
                     "id": "sys-temp",
                     "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
+                      "tone": "off"
+                    },
+                    "type": "label"
                   }
                 ],
                 "id": "system",
@@ -295,7 +303,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or chassis zone Windows reports."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -595,14 +603,14 @@
                       {
                         "id": "sys-zone-0-name",
                         "props": {
-                          "text": "Zone HPTZ"
+                          "text": "Zone 1"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-0-value",
                         "props": {
-                          "name": "Zone HPTZ, 38 degrees Celsius",
+                          "name": "Zone 1, 38 degrees Celsius",
                           "tone": "neutral",
                           "value": "38 °C"
                         },
@@ -617,14 +625,14 @@
                       {
                         "id": "sys-zone-1-name",
                         "props": {
-                          "text": "Zone TZ00"
+                          "text": "Zone 2"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-1-value",
                         "props": {
-                          "name": "Zone TZ00, 28 degrees Celsius",
+                          "name": "Zone 2, 28 degrees Celsius",
                           "tone": "neutral",
                           "value": "28 °C"
                         },
@@ -637,7 +645,7 @@
                   {
                     "id": "sys-note",
                     "props": {
-                      "text": "Board and chassis zones as Windows reports them. The hottest is shown first.",
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
                       "tone": "off"
                     },
                     "type": "label"
@@ -654,7 +662,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or chassis zone Windows reports."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -954,14 +962,14 @@
                       {
                         "id": "sys-zone-0-name",
                         "props": {
-                          "text": "Zone HPTZ"
+                          "text": "Zone 1"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-0-value",
                         "props": {
-                          "name": "Zone HPTZ, 38 degrees Celsius",
+                          "name": "Zone 1, 38 degrees Celsius",
                           "tone": "neutral",
                           "value": "38 °C"
                         },
@@ -976,14 +984,14 @@
                       {
                         "id": "sys-zone-1-name",
                         "props": {
-                          "text": "Zone TZ00"
+                          "text": "Zone 2"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-1-value",
                         "props": {
-                          "name": "Zone TZ00, 28 degrees Celsius",
+                          "name": "Zone 2, 28 degrees Celsius",
                           "tone": "neutral",
                           "value": "28 °C"
                         },
@@ -996,7 +1004,7 @@
                   {
                     "id": "sys-note",
                     "props": {
-                      "text": "Board and chassis zones as Windows reports them. The hottest is shown first.",
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
                       "tone": "off"
                     },
                     "type": "label"
@@ -1013,7 +1021,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or chassis zone Windows reports."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -1313,14 +1321,14 @@
                       {
                         "id": "sys-zone-0-name",
                         "props": {
-                          "text": "Zone HPTZ"
+                          "text": "Zone 1"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-0-value",
                         "props": {
-                          "name": "Zone HPTZ, 38 degrees Celsius",
+                          "name": "Zone 1, 38 degrees Celsius",
                           "tone": "neutral",
                           "value": "38 °C"
                         },
@@ -1335,14 +1343,14 @@
                       {
                         "id": "sys-zone-1-name",
                         "props": {
-                          "text": "Zone TZ00"
+                          "text": "Zone 2"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-1-value",
                         "props": {
-                          "name": "Zone TZ00, 28 degrees Celsius",
+                          "name": "Zone 2, 28 degrees Celsius",
                           "tone": "neutral",
                           "value": "28 °C"
                         },
@@ -1355,7 +1363,7 @@
                   {
                     "id": "sys-note",
                     "props": {
-                      "text": "Board and chassis zones as Windows reports them. The hottest is shown first.",
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
                       "tone": "off"
                     },
                     "type": "label"
@@ -1372,7 +1380,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or chassis zone Windows reports."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -1680,14 +1688,14 @@
                       {
                         "id": "sys-zone-0-name",
                         "props": {
-                          "text": "Zone HPTZ"
+                          "text": "Zone 1"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-0-value",
                         "props": {
-                          "name": "Zone HPTZ, 38 degrees Celsius",
+                          "name": "Zone 1, 38 degrees Celsius",
                           "tone": "neutral",
                           "value": "38 °C"
                         },
@@ -1702,14 +1710,14 @@
                       {
                         "id": "sys-zone-1-name",
                         "props": {
-                          "text": "Zone TZ00"
+                          "text": "Zone 2"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-1-value",
                         "props": {
-                          "name": "Zone TZ00, 28 degrees Celsius",
+                          "name": "Zone 2, 28 degrees Celsius",
                           "tone": "neutral",
                           "value": "28 °C"
                         },
@@ -1722,7 +1730,7 @@
                   {
                     "id": "sys-note",
                     "props": {
-                      "text": "Board and chassis zones as Windows reports them. The hottest is shown first.",
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
                       "tone": "off"
                     },
                     "type": "label"
@@ -1739,7 +1747,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or chassis zone Windows reports."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -2047,14 +2055,14 @@
                       {
                         "id": "sys-zone-0-name",
                         "props": {
-                          "text": "Zone HPTZ"
+                          "text": "Zone 1"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-0-value",
                         "props": {
-                          "name": "Zone HPTZ, 38 degrees Celsius",
+                          "name": "Zone 1, 38 degrees Celsius",
                           "tone": "neutral",
                           "value": "38 °C"
                         },
@@ -2069,14 +2077,14 @@
                       {
                         "id": "sys-zone-1-name",
                         "props": {
-                          "text": "Zone TZ00"
+                          "text": "Zone 2"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-1-value",
                         "props": {
-                          "name": "Zone TZ00, 28 degrees Celsius",
+                          "name": "Zone 2, 28 degrees Celsius",
                           "tone": "neutral",
                           "value": "28 °C"
                         },
@@ -2089,7 +2097,7 @@
                   {
                     "id": "sys-note",
                     "props": {
-                      "text": "Board and chassis zones as Windows reports them. The hottest is shown first.",
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
                       "tone": "off"
                     },
                     "type": "label"
@@ -2106,7 +2114,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or chassis zone Windows reports."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -2400,6 +2408,14 @@
                     ],
                     "id": "sys-temp",
                     "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "This PC doesn't report it to Windows.",
+                      "tone": "off"
+                    },
+                    "type": "label"
                   }
                 ],
                 "id": "system",
@@ -2413,7 +2429,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or chassis zone Windows reports."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -2621,6 +2637,14 @@
                     ],
                     "id": "sys-temp",
                     "type": "row"
+                  },
+                  {
+                    "id": "sys-note",
+                    "props": {
+                      "text": "This PC doesn't report it to Windows.",
+                      "tone": "off"
+                    },
+                    "type": "label"
                   }
                 ],
                 "id": "system",
@@ -2634,7 +2658,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or chassis zone Windows reports."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports."
                     },
                     "type": "markdown"
                   }
@@ -2934,14 +2958,14 @@
                       {
                         "id": "sys-zone-0-name",
                         "props": {
-                          "text": "Zone HPTZ"
+                          "text": "Zone 1"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-0-value",
                         "props": {
-                          "name": "Zone HPTZ, 38 degrees Celsius",
+                          "name": "Zone 1, 38 degrees Celsius",
                           "tone": "neutral",
                           "value": "38 °C"
                         },
@@ -2956,14 +2980,14 @@
                       {
                         "id": "sys-zone-1-name",
                         "props": {
-                          "text": "Zone TZ00"
+                          "text": "Zone 2"
                         },
                         "type": "label"
                       },
                       {
                         "id": "sys-zone-1-value",
                         "props": {
-                          "name": "Zone TZ00, 28 degrees Celsius",
+                          "name": "Zone 2, 28 degrees Celsius",
                           "tone": "neutral",
                           "value": "28 °C"
                         },
@@ -2976,7 +3000,7 @@
                   {
                     "id": "sys-note",
                     "props": {
-                      "text": "Board and chassis zones as Windows reports them. The hottest is shown first.",
+                      "text": "Board and case zones as Windows reports them. The hottest is shown first.",
                       "tone": "off"
                     },
                     "type": "label"
@@ -2993,7 +3017,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or chassis zone Windows reports.\n\nPC sensors can't see when you're gaming, so it keeps updating once a second. To slow it down during games, allow \"see whether game mode is on\" on the Apps page."
+                      "text": "Shows how busy your processor, graphics card and memory are, and your graphics card's temperature, speed, power and fan. It only reads: it never changes fan speed, performance or power. It reads only while this page is open or another app asks, and stops when nothing looks. Processor temperature isn't shown: Windows doesn't share it without an extra driver. System temperature is the hottest board or case zone Windows reports.\n\nPC sensors can't see when you're gaming, so it keeps updating once a second. To slow it down during games, allow \"see whether game mode is on\" on the Apps page."
                     },
                     "type": "markdown"
                   }
