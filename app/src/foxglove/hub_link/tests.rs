@@ -2689,3 +2689,34 @@ fn a_status_is_handed_over_only_when_it_changed() {
     assert_eq!(rig.link.take_sensor_status(), Some(Reading::Reading));
     assert!(rig.link.take_sensor_status().is_none());
 }
+
+#[test]
+fn another_group_ends_the_old_subscription_and_subscribes_to_its_own_pattern() {
+    let mut rig = sensor_rig(true);
+    rig.connect(&keyboard());
+    rig.hub_fact(APP_STATE, json!("running"));
+    assert_eq!(rig.want_sensors(true), 2);
+    rig.hub_fact("sensor.gpu.state", json!("ok"));
+    rig.hub_fact("sensor.gpu.temp_c", json!(64.0));
+    assert!(rig.reading().reading().is_some());
+    // The same group: nothing to do.
+    assert!(rig.link.follow_source("gpu").unwrap());
+    // A plain name that is another group: the old one ends, the readings start over.
+    assert!(rig.link.follow_source("cpu").unwrap());
+    assert!(!rig.link.sensors_listening());
+    assert_eq!(rig.link.sensors.feed.group(), "cpu");
+    assert_eq!(rig.reading().reading(), None);
+    assert_eq!(
+        rig.want_sensors(true),
+        3,
+        "the old one ended, then one subscribe and one list for cpu"
+    );
+    rig.hub_fact("sensor.cpu.state", json!("ok"));
+    rig.hub_fact("sensor.cpu.temp_c", json!(50.0));
+    assert_eq!(rig.reading().reading(), Some(50.0));
+    // Something that is not a plain name is the default group, never a wider pattern.
+    assert!(rig.link.follow_source("*").unwrap());
+    assert_eq!(rig.link.sensors.feed.group(), "gpu");
+    assert!(rig.link.follow_source("a.b").unwrap());
+    assert_eq!(rig.link.sensors.feed.group(), "gpu");
+}

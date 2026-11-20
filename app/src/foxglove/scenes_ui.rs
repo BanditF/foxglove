@@ -39,6 +39,7 @@ use super::scene_looks::{
 };
 use super::screen_glow as glow;
 use super::settings_ui::{card, split_row};
+use super::temperature_card::{self as temp_card, TempView};
 use super::theme;
 
 /// The preview's frame interval: 20 frames a second at most.
@@ -99,6 +100,8 @@ pub struct View {
     pub focused: Vec<String>,
     /// Screen glow (#496).
     pub screen: ScreenView,
+    /// Temperature: the reading's state and what refuses a start.
+    pub temperature: TempView,
 }
 
 /// What the page knows of Screen glow (#496).
@@ -140,6 +143,13 @@ pub fn status(v: &View) -> (String, Tone) {
         // No preview before the yes: the hint under the map says what shows once it runs.
         (None, false, _) if v.look.kind.reads_screen() => ("Not running.".into(), Tone::Muted),
         (Some(_), false, Some(who)) => (format!("Paused for {who}"), Tone::Warn),
+        // Temperature: the reading's state in the plan's words.
+        (Some(_), false, None) if v.temperature.live => {
+            temp_card::status_line(true, &v.temperature, &v.look)
+        }
+        (None, false, _) if v.look.kind.reads_temperature() => {
+            temp_card::status_line(false, &v.temperature, &v.look)
+        }
         (Some(name), false, None) => match &v.heal.suffix {
             Some(s) => (format!("Running: {name} · {s}"), Tone::Warn),
             None => (format!("Running: {name}"), Tone::Ok),
@@ -235,6 +245,9 @@ pub enum Intent {
     AllowAndStart,
     /// Screen glow's "Stop allowing": forgets the yes and stops it.
     StopAllowing,
+    /// Temperature's "Open Apps page": Hideout's Apps page, where the PC sensors app is turned
+    /// on and Foxglove is allowed to read.
+    OpenApps,
 }
 
 /// The page's own state between frames.
@@ -379,6 +392,7 @@ fn show(ui: &mut egui::Ui) {
         yielded_to: super::lights_owner::yielded_to(),
         focused: st.focused.clone(),
         screen: screen_view(),
+        temperature: temperature_view(),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -580,10 +594,7 @@ pub fn profile_changed() {
             }
             let saved = looks::load_saved().presets;
             let room = super::scene_room::room();
-            super::scene_run::set_effect(
-                &scene_name(&chosen.look, &saved),
-                chosen.look.effect(&room),
-            );
+            take_look(&scene_name(&chosen.look, &saved), &chosen.look, &room);
             show_art(&chosen);
             tell_unseen(&chosen);
         }
@@ -616,7 +627,7 @@ pub fn wallpapers_changed() {
     }
     let saved = looks::load_saved().presets;
     let room = super::scene_room::room();
-    super::scene_run::set_effect(&scene_name(&chosen.look, &saved), chosen.look.effect(&room));
+    take_look(&scene_name(&chosen.look, &saved), &chosen.look, &room);
     show_art(&chosen);
 }
 
@@ -640,7 +651,7 @@ pub fn wallpaper_palette_changed() {
         return;
     }
     let room = super::scene_room::room();
-    super::scene_run::set_effect(&name, chosen.look.effect(&room));
+    take_look(&name, &chosen.look, &room);
 }
 
 /// Only a scene that ran under the page's unnamed fallback while its look is a wallpaper's
@@ -664,7 +675,7 @@ pub fn start_look(look: Look) {
     let room = super::scene_room::room();
     let name = scene_name(&chosen.look, &saved);
     if super::scene_run::running().is_some() && !STOPPING.load(Ordering::Relaxed) {
-        super::scene_run::set_effect(&name, chosen.look.effect(&room));
+        take_look(&name, &chosen.look, &room);
         save_resume(true);
     } else {
         start_by_hand(&chosen);
@@ -690,14 +701,15 @@ fn stop_by_hand() {
 /// decides again ([`after_start`]).
 fn start_by_hand(chosen: &Chosen) {
     if needs_yes(chosen) {
-        // Nothing to retry: only the user's click gives the yes.
-        RESUME.store(false, Ordering::Relaxed);
+        let gate = temperature_gate(&chosen.look);
+        let pending = RESUME.load(Ordering::Relaxed);
+        RESUME.store(resume_after_refusal(pending, gate), Ordering::Relaxed);
         return;
     }
     let saved = looks::load_saved().presets;
     let room = super::scene_room::room();
     let name = scene_name(&chosen.look, &saved);
-    let started = super::scene_run::start(&name, chosen.look.effect(&room), None);
+    let started = begin(&name, &chosen.look, &room);
     after_start(started);
     if started {
         BY_PROFILE.store(false, Ordering::Relaxed);
@@ -705,6 +717,40 @@ fn start_by_hand(chosen: &Chosen) {
         show_art(chosen);
     } else {
         eprintln!("Foxglove: a scene still ends; {name} starts after it");
+    }
+}
+
+/// What a refused hand start leaves of a pending start. Screen glow, and Temperature on its own,
+/// wait for the user (nothing to retry). A pending restore refused because the sensors app is
+/// off or not yet allowed stays pending: the cause is outside Foxglove and usually short, and
+/// the next change of the reading's state tries again ([`retry_resume`]). A click that was
+/// refused is never kept: it doesn't start by itself later.
+fn resume_after_refusal(pending: bool, gate: Option<temp_card::Gate>) -> bool {
+    pending
+        && matches!(
+            gate,
+            Some(temp_card::Gate::AppOff | temp_card::Gate::NotAllowed)
+        )
+}
+
+/// Whether a pending restore should try again now: one is pending, the page is up, and no scene
+/// runs.
+fn resume_due(pending: bool, ready: bool, running: bool) -> bool {
+    pending && ready && !running
+}
+
+/// The reading's state changed (the sensors app came up, the grant arrived): a restore the
+/// last refusal kept pending tries again. An event, never a timer; off the link's thread.
+fn retry_resume() {
+    let due = resume_due(
+        RESUME.load(Ordering::Relaxed),
+        READY.load(Ordering::Relaxed),
+        super::scene_run::running().is_some(),
+    );
+    if due {
+        super::services::spawn_named("temperature-resume", || {
+            start_by_hand(&looks::load_chosen());
+        });
     }
 }
 
@@ -725,7 +771,7 @@ fn start_by_profile(chosen: &Chosen) {
     let saved = looks::load_saved().presets;
     let room = super::scene_room::room();
     let name = scene_name(&chosen.look, &saved);
-    if super::scene_run::start(&name, chosen.look.effect(&room), None) {
+    if begin(&name, &chosen.look, &room) {
         BY_PROFILE.store(true, Ordering::Relaxed);
         RESUME.store(false, Ordering::Relaxed);
         show_art(chosen);
@@ -737,6 +783,12 @@ fn start_by_profile(chosen: &Chosen) {
 
 /// Screen glow without the user's yes (#496): nothing starts, and the page says so.
 fn needs_yes(chosen: &Chosen) -> bool {
+    if let Some(g) = temperature_gate(&chosen.look) {
+        // Temperature without its sensors: nothing starts, and the page says why.
+        eprintln!("Foxglove: Temperature didn't start: {}", g.words().0);
+        super::scene_run::repaint_page();
+        return true;
+    }
     let refuse = !start_allowed(chosen.look.kind, glow::allowed());
     if refuse {
         eprintln!("Foxglove: Screen glow didn't start: it needs the user's yes");
@@ -744,6 +796,77 @@ fn needs_yes(chosen: &Chosen) -> bool {
         super::scene_run::repaint_page();
     }
     refuse
+}
+
+/// What the page knows of Temperature now: the reading's state, whether Foxglove runs as
+/// Hideout's app, and whether the running scene is the Temperature look.
+fn temperature_view() -> TempView {
+    TempView {
+        status: super::temperature_feed::latest(),
+        hosted: super::hub_link::module_mode(),
+        live: TEMP_LIVE.load(Ordering::Relaxed) && super::scene_run::running().is_some(),
+    }
+}
+
+/// The running scene is the Temperature look (it listens to the sensors).
+static TEMP_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// Why a Temperature look cannot start now; `None` for any other look.
+fn temperature_gate(look: &Look) -> Option<temp_card::Gate> {
+    if !look.kind.reads_temperature() {
+        return None;
+    }
+    TempView {
+        status: super::temperature_feed::latest(),
+        hosted: super::hub_link::module_mode(),
+        live: false,
+    }
+    .gate()
+}
+
+/// Starts a scene with this look; Temperature follows its sensor group and listens to the PC
+/// sensors from the start. False when it did not start (a gate, or a scene still ending).
+fn begin(name: &str, look: &Look, room: &RoomMap) -> bool {
+    let reads = look.kind.reads_temperature();
+    if reads {
+        super::temperature_feed::set_source(&look.temp_source);
+    }
+    let started = super::scene_run::start(name, look.effect(room), None);
+    if started {
+        TEMP_LIVE.store(reads, Ordering::Relaxed);
+        if reads {
+            super::scene_run::set_reads_temperature(true);
+        }
+    }
+    started
+}
+
+/// The running scene takes this look; Temperature keeps (or starts) listening, any other look
+/// stops it. A Temperature look the gates refuse changes nothing.
+fn take_look(name: &str, look: &Look, room: &RoomMap) {
+    if let Some(g) = temperature_gate(look) {
+        eprintln!("Foxglove: look {name} not taken: {}", g.words().0);
+        return;
+    }
+    let reads = look.kind.reads_temperature();
+    if reads {
+        super::temperature_feed::set_source(&look.temp_source);
+    }
+    TEMP_LIVE.store(reads, Ordering::Relaxed);
+    super::scene_run::set_look(name, look.effect(room), reads);
+}
+
+/// "Open Apps page": asks Hideout to show the PC sensors app's page, else its own; off the page's
+/// thread, since the hub may take its time. Under Foxglove alone there is no Hideout to ask.
+fn open_apps() {
+    #[cfg(windows)]
+    super::services::spawn_named("open-apps", || {
+        use super::hub_fact::{show, show_module, HubPipe, LIMIT};
+        let pipe = std::sync::Arc::new(HubPipe);
+        if !show_module(pipe.clone(), "org.foxglove.sensors", LIMIT) {
+            show(pipe, LIMIT);
+        }
+    });
 }
 
 /// Whether a look may start without asking: anything but Screen glow, which needs the yes.
@@ -777,6 +900,7 @@ pub fn startup() {
     }
     RESUME.store(resume, Ordering::Relaxed);
     READY.store(true, Ordering::Relaxed);
+    super::temperature_feed::on_state_change(retry_resume);
     // The same decision as a switch (it reads the active profile as it is now), unless the
     // demo scene already runs.
     if super::scene_run::running().is_none() {
@@ -853,6 +977,7 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             }
             ctx.request_repaint();
         }
+        Intent::OpenApps => open_apps(),
         Intent::WithArt(on) => {
             st.chosen.with_art = on;
             looks::save_chosen(&st.chosen);
@@ -916,6 +1041,7 @@ fn stop_scene() {
     if !STOPPING.swap(true, Ordering::Relaxed) {
         super::services::spawn_named("scene-stop", move || {
             super::scene_run::stop();
+            TEMP_LIVE.store(false, Ordering::Relaxed);
             STOPPING.store(false, Ordering::Relaxed);
             // A profile switch while this stop ran (quick switches back to a game) gets its
             // scene now that the lights are back.
@@ -945,7 +1071,7 @@ fn save_layout(st: &mut State, layout: &foxglove_scene::Layout) {
 fn resend(st: &State) {
     if super::scene_run::running().is_some() {
         let name = scene_name(&st.chosen.look, &st.saved.presets);
-        super::scene_run::set_effect(&name, st.chosen.look.effect(&st.room));
+        take_look(&name, &st.chosen.look, &st.room);
         show_art(&st.chosen);
     }
 }
@@ -1837,7 +1963,7 @@ fn field(
 }
 
 /// A strip of colours left to right, as one mesh.
-fn strip(painter: &egui::Painter, rect: egui::Rect, stops: &[Rgb]) {
+pub(super) fn strip(painter: &egui::Painter, rect: egui::Rect, stops: &[Rgb]) {
     let stops: Vec<Rgb> = if stops.is_empty() {
         vec![Rgb::BLACK]
     } else {
@@ -1868,6 +1994,9 @@ fn look_stops(look: &Look) -> Vec<Rgb> {
             Rgb([0x9a, 0xa0, 0xa8]),
         ];
     }
+    if look.kind.reads_temperature() {
+        return super::temperature::ramp(look.temp_colours, &look.palette);
+    }
     if look.kind.uses_colour() {
         vec![Rgb(look.colour), look.background.rgb()]
     } else {
@@ -1883,6 +2012,7 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
         permission_card(ui, draft, out);
         return;
     }
+    let mut open_apps = false;
     let mut set = |look: Look, save: bool| out.push(Intent::Look { look, save });
     ui.horizontal_wrapped(|ui| {
         theme::pill_group(ui, "Effect", |ui, g| {
@@ -1946,48 +2076,60 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
             })
         });
     } else {
-        ui.label(theme::caps_label(ui, "Palette"));
-        ui.horizontal_wrapped(|ui| {
-            theme::pill_group(ui, "Palette", |ui, g| {
-                // A wallpaper's palette shows only while its look has it and its wallpaper is
-                // here (#488, #562).
-                let own = (!PALETTES.iter().any(|(n, _)| *n == look.palette)
-                    && looks::scenes()
-                        .palettes
+        let temperature = look.kind.reads_temperature();
+        if temperature {
+            temp_card::head(ui, look, &mut set);
+        }
+        if !temperature || look.temp_colours == super::temperature::Colours::Palette {
+            ui.label(theme::caps_label(ui, "Palette"));
+            ui.horizontal_wrapped(|ui| {
+                theme::pill_group(ui, "Palette", |ui, g| {
+                    // A wallpaper's palette shows only while its look has it and its wallpaper is
+                    // here (#488, #562).
+                    let own = (!PALETTES.iter().any(|(n, _)| *n == look.palette)
+                        && looks::scenes()
+                            .palettes
+                            .iter()
+                            .any(|p| p.name == look.palette))
+                    .then_some(look.palette.as_str());
+                    // Then the palette that follows the wallpaper on screen (#40).
+                    let names = PALETTES
                         .iter()
-                        .any(|p| p.name == look.palette))
-                .then_some(look.palette.as_str());
-                // Then the palette that follows the wallpaper on screen (#40).
-                let names = PALETTES
-                    .iter()
-                    .map(|(n, _)| *n)
-                    .chain([looks::WALLPAPER])
-                    .chain(own);
-                for name in names {
-                    let label = if name == looks::WALLPAPER {
-                        looks::WALLPAPER_LABEL
-                    } else {
-                        name
-                    };
-                    let mut pill = g.pill(ui, look.palette == name, label);
-                    if name == looks::WALLPAPER {
-                        pill = pill.on_hover_text(looks::WALLPAPER_HINT);
+                        .map(|(n, _)| *n)
+                        .chain([looks::WALLPAPER])
+                        .chain(own);
+                    for name in names {
+                        let label = if name == looks::WALLPAPER {
+                            looks::WALLPAPER_LABEL
+                        } else {
+                            name
+                        };
+                        let mut pill = g.pill(ui, look.palette == name, label);
+                        if name == looks::WALLPAPER {
+                            pill = pill.on_hover_text(looks::WALLPAPER_HINT);
+                        }
+                        if pill.clicked() {
+                            set(
+                                Look {
+                                    palette: name.into(),
+                                    ..look.clone()
+                                },
+                                true,
+                            );
+                        }
                     }
-                    if pill.clicked() {
-                        set(
-                            Look {
-                                palette: name.into(),
-                                ..look.clone()
-                            },
-                            true,
-                        );
-                    }
-                }
-            })
-        });
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), Sense::hover());
-        strip(ui.painter(), rect, &looks::palette(&look.palette));
+                })
+            });
+            if !temperature {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), Sense::hover());
+                strip(ui.painter(), rect, &looks::palette(&look.palette));
+            }
+        }
+        if temperature {
+            let asked = temp_card::tail(ui, look, &v.temperature, v.running.is_some(), &mut set);
+            open_apps = asked.open_apps;
+        }
     }
     ui.add_space(4.0);
     if look.kind.uses_speed() {
@@ -2037,6 +2179,9 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
         );
     }
     ui.add_space(6.0);
+    if open_apps {
+        out.push(Intent::OpenApps);
+    }
     save_row(ui, draft, out);
 }
 
@@ -2233,6 +2378,7 @@ pub(crate) mod tests {
             yielded_to: None,
             focused: Vec::new(),
             screen: ScreenView::default(),
+            temperature: TempView::default(),
         }
     }
 
@@ -2297,7 +2443,84 @@ pub(crate) mod tests {
             yielded_to: None,
             focused: Vec::new(),
             screen: ScreenView::default(),
+            temperature: TempView::default(),
         }
+    }
+
+    /// Temperature (slice 3): it is in the picker, the page words its state, and a start
+    /// without Hideout's sensors is refused by every path (Foxglove on its own here).
+    #[test]
+    fn temperature_is_offered_worded_and_refused_without_its_sensors() {
+        use crate::foxglove::temperature_card::{Gate, TempView};
+        use crate::foxglove::temperature_feed::Status;
+        assert!(Kind::ALL.contains(&Kind::Temperature));
+        let look = Look {
+            kind: Kind::Temperature,
+            ..Look::default()
+        };
+        // Not running, hosted, nothing wrong: the muted line.
+        let mut v = View {
+            look: look.clone(),
+            running: None,
+            temperature: TempView {
+                status: Status::Reading,
+                hosted: true,
+                live: false,
+            },
+            ..tests::sample_none()
+        };
+        assert_eq!(
+            status(&v),
+            (
+                "Not running. The scale shows the last reading once it starts.".into(),
+                Tone::Muted
+            )
+        );
+        v.temperature.status = Status::AppOff;
+        assert_eq!(
+            status(&v).0,
+            "Temperature needs the PC sensors app. Turn it on on Hideout's Apps page."
+        );
+        v.temperature.status = Status::NotAllowed;
+        assert_eq!(status(&v).1, Tone::Warn);
+        v.temperature.hosted = false;
+        assert_eq!(
+            status(&v),
+            (
+                "Temperature needs Hideout and its PC sensors app.".into(),
+                Tone::Muted
+            )
+        );
+        // Running: the reading's words.
+        v.running = Some("Temperature".into());
+        v.temperature = TempView {
+            status: Status::Working {
+                temp_c: 64.0,
+                game: false,
+            },
+            hosted: true,
+            live: true,
+        };
+        assert_eq!(
+            status(&v),
+            (
+                "Running: Temperature · Graphics card 64\u{a0}°C, warm".into(),
+                Tone::Ok
+            )
+        );
+        // A refused start: here Foxglove runs on its own, so every start path says no, and a
+        // look that is not Temperature is never held by it.
+        assert_eq!(temperature_gate(&look), Some(Gate::Standalone));
+        assert_eq!(temperature_gate(&Look::default()), None);
+        let chosen = Chosen {
+            look,
+            ..Chosen::default()
+        };
+        assert!(
+            needs_yes(&chosen),
+            "Temperature without Hideout never starts"
+        );
+        assert!(!needs_yes(&Chosen::default()));
     }
 
     /// #496: Screen glow never starts without the yes, whoever asks: the page's Start shows the
@@ -2312,7 +2535,7 @@ pub(crate) mod tests {
         let glow = Effect::Screen {
             smoothing: foxglove_scene::Smoothing::Even,
         };
-        // The one gate every start goes through (`scene_run::start`, `set_effect`).
+        // The one gate every start goes through (`scene_run::start`, `set_look`).
         assert!(!crate::foxglove::scene_run::may_run(&glow, false));
         assert!(crate::foxglove::scene_run::may_run(&glow, true));
         assert!(crate::foxglove::scene_run::may_run(
@@ -2842,6 +3065,22 @@ pub(crate) mod tests {
         // An old store has no key: `None`, so the look decides.
         let old: Resume = toml::from_str("").unwrap();
         assert_eq!(old.running, None);
+    }
+
+    /// A launch restore refused for the sensors stays pending and tries again when the reading's
+    /// state changes; Temperature on its own, a click, and other refusals don't keep it.
+    #[test]
+    fn a_refused_restore_waits_for_the_sensors() {
+        use temp_card::Gate::*;
+        assert!(resume_after_refusal(true, Some(AppOff)));
+        assert!(resume_after_refusal(true, Some(NotAllowed)));
+        assert!(!resume_after_refusal(true, Some(Standalone)));
+        assert!(!resume_after_refusal(true, None));
+        assert!(!resume_after_refusal(false, Some(AppOff)));
+        assert!(resume_due(true, true, false));
+        assert!(!resume_due(true, true, true));
+        assert!(!resume_due(true, false, false));
+        assert!(!resume_due(false, true, false));
     }
 
     /// A palette effect clicked while a scene still ends (start refused) waits: the stop thread

@@ -73,7 +73,8 @@ impl Connect for HubPipe {
 #[derive(Clone, Copy)]
 enum Ask {
     Fact,
-    Show,
+    /// `hub.show` for this module id.
+    Show(&'static str),
 }
 
 fn request(id: i64, method: &str, params: Value) -> String {
@@ -105,7 +106,7 @@ fn converse<R: Read, W: Write>(r: R, mut w: W, ask: Ask) -> Option<Value> {
     let mut r = BufReader::new(r);
     let permissions: Vec<&str> = match ask {
         Ask::Fact => vec!["facts.read:module.foxglove.state"],
-        Ask::Show => vec![],
+        Ask::Show(_) => vec![],
     };
     let init = request(
         0,
@@ -117,7 +118,7 @@ fn converse<R: Read, W: Write>(r: R, mut w: W, ask: Ask) -> Option<Value> {
     answer(&mut r, 0)?;
     let line = match ask {
         Ask::Fact => request(1, "facts.get", json!({"key": FACT})),
-        Ask::Show => request(1, "hub.show", json!({"id": MODULE})),
+        Ask::Show(id) => request(1, "hub.show", json!({"id": id})),
     };
     w.write_all(line.as_bytes()).ok()?;
     answer(&mut r, 1)
@@ -151,7 +152,13 @@ pub fn hosting<C: Connect>(c: Arc<C>, limit: Duration) -> Hosting {
 /// Asks the hub to show Foxglove's page. True when it said yes; an older hub (-32601) or any
 /// failure is false, and the caller exits quietly anyway.
 pub fn show<C: Connect>(c: Arc<C>, limit: Duration) -> bool {
-    within(c, Ask::Show, limit).is_some()
+    within(c, Ask::Show(MODULE), limit).is_some()
+}
+
+/// Asks the hub to show another module's page (the PC sensors app's, from Temperature's "Open
+/// Apps page"). Same answer rule as [`show`].
+pub fn show_module<C: Connect>(c: Arc<C>, id: &'static str, limit: Duration) -> bool {
+    within(c, Ask::Show(id), limit).is_some()
 }
 
 #[cfg(test)]
