@@ -51,7 +51,7 @@ rust-ini = "0.21.3"
 directories = "6.0.0"
 tray-icon = "0.24.2"
 egui = "0.36.1"
-# Keep the native Glow backends, without the AccessKit Windows subclass.
+# The native Glow backends. AccessKit is added for Windows only (see the target table below).
 eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts", "links", "wayland", "x11"] }
 egui_extras = { version = "0.36.1", features = ["all_loaders"] }
 qmk-via-api = "0.9.0"
@@ -82,6 +82,10 @@ objc2-app-kit = { version = "0.3", features = ["NSResponder", "NSView", "NSWindo
 raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Foxglove (#1376): UI Automation for screen readers. Windows only; the vendored eframe and
+# accesskit_windows below (see [patch.crates-io]) make it safe to switch on (commit 23b354fa
+# turned it off because accesskit_windows panicked when Windows' atom table was full).
+eframe = { version = "0.36.1", default-features = false, features = ["accesskit"] }
 raw-window-handle = "0.6"
 windows-collections = "0.3.2"
 windows = { version = "0.62.2", features = [
@@ -101,6 +105,8 @@ windows = { version = "0.62.2", features = [
     # Foxglove (#741): the Startup-folder shortcut (IShellLinkW, IPersistFile).
     "Win32_System_Com",
     "Win32_System_Registry",
+    # Foxglove (#1376): GlobalAddAtomW holds the screen-reader adapter's atom.
+    "Win32_System_DataExchange",
     # Foxglove (#410): lock/unlock and display on/off.
     "Win32_System_Power",
     # Foxglove (#372): the low-battery notification.
@@ -204,9 +210,19 @@ anyhow = "1"
 # OpenRGB retry test (#1006). Already in the tree (through tokio).
 socket2 = "0.6"
 
+# Foxglove (#1376): the fork test of the vendored accesskit_windows (window-free).
+[target.'cfg(windows)'.dev-dependencies]
+accesskit_windows = "0.32.1"
+
 # Foxglove: smaller dev/test builds (same as the root workspace; see its Cargo.toml).
 [profile.dev]
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Foxglove (#1376): two minimal vendored patches so AccessKit can be on. Both are marked
+# "FOXGLOVE PATCH" in their sources; see vendor/README.md for the diff summary and upstream links.
+[patch.crates-io]
+eframe = { path = "vendor/eframe" }
+accesskit_windows = { path = "vendor/accesskit_windows" }

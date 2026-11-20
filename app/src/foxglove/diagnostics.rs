@@ -53,6 +53,8 @@ pub struct Facts {
     pub scene: String,
     /// Screen glow (#496): allowed or not, running, stopped or held (by what), updates a second.
     pub screen_glow: String,
+    /// Screen readers (#1376): whether the UI Automation adapter is on, or why not.
+    pub screen_readers: String,
     /// Background services that failed: restarted, or stopped for good (#587).
     pub services: Vec<String>,
     /// Keyboard health (#705): each row as `level item: reason`, the worst first.
@@ -200,6 +202,7 @@ pub fn report(f: &Facts, personal: &Personal) -> String {
     line("Room map", &f.room);
     line("Scene", &f.scene);
     line("Screen glow", &f.screen_glow);
+    line("Screen readers", &f.screen_readers);
     if f.services.is_empty() {
         line("Services", "all running");
     }
@@ -330,6 +333,7 @@ pub fn collect(ctx: &egui::Context) -> Facts {
         screen_glow: super::screen_glow::diagnostics()
             .trim_start_matches("Screen glow: ")
             .to_string(),
+        screen_readers: super::screen_reader::diagnostics(),
         services: super::services::problems()
             .into_iter()
             .chain(super::page_guard::problems())
@@ -410,6 +414,7 @@ pub(crate) fn sample() -> Facts {
         room: "monitor 597x336 at 0,0 (0 lights), keyboard left 124x90 at 134,486 (1 lights)".into(),
         scene: "demo scanline running 12 s, 180 case frames, 120 keyboard colours".into(),
         screen_glow: "not allowed · stopped · 0 updates/s".into(),
+        screen_readers: "on".into(),
         services: vec![
             "pc-lights: service stopped after 5 failures (Panicked: bad report)".into(),
             "battery: 1 failure, running again (Panicked: oops)".into(),
@@ -472,6 +477,7 @@ mod tests {
             "Lights held by  zmk:1d50:615e: pomodoro (Normal)",
             "Room map        monitor 597x336",
             "Scene           demo scanline running 12 s",
+            "Screen readers  on",
             "Services        pc-lights: service stopped after 5 failures",
             "                battery: 1 failure, running again",
             "Health          failed  Right screen: 2 art pushes failed",
