@@ -8283,6 +8283,851 @@
                     "type": "value"
                   },
                   {
+                    "id": "we-line",
+                    "props": {
+                      "text": "An app that isn't one of your wallpapers tried to connect. If a wallpaper stops showing your typing, press Reconnect."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "we-reconnect:all",
+                    "props": {
+                      "label": "Reconnect",
+                      "name": "Reconnect all wallpapers"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "children": [
+                              {
+                                "id": "we-allow:0",
+                                "props": {
+                                  "label": "Allow",
+                                  "name": "Let Bandit HUD use your keyboard",
+                                  "value": true
+                                },
+                                "type": "toggle"
+                              },
+                              {
+                                "id": "we-title:0",
+                                "props": {
+                                  "tone": "neutral",
+                                  "value": "Bandit HUD"
+                                },
+                                "type": "value"
+                              },
+                              {
+                                "id": "we-status:0",
+                                "props": {
+                                  "tone": "ok",
+                                  "value": "Connected"
+                                },
+                                "type": "value"
+                              }
+                            ],
+                            "id": "we-head:0",
+                            "type": "row"
+                          },
+                          {
+                            "id": "we-cap:0",
+                            "props": {
+                              "text": "Bandit HUD can see which key positions you press and when, never the letters."
+                            },
+                            "type": "label"
+                          }
+                        ],
+                        "id": "we-row:0",
+                        "type": "column"
+                      },
+                      {
+                        "children": [
+                          {
+                            "children": [
+                              {
+                                "id": "we-allow:1",
+                                "props": {
+                                  "label": "Allow",
+                                  "name": "Let Courier use your keyboard",
+                                  "value": true
+                                },
+                                "type": "toggle"
+                              },
+                              {
+                                "id": "we-title:1",
+                                "props": {
+                                  "tone": "neutral",
+                                  "value": "Courier"
+                                },
+                                "type": "value"
+                              },
+                              {
+                                "id": "we-status:1",
+                                "props": {
+                                  "tone": "ok",
+                                  "value": "Connected"
+                                },
+                                "type": "value"
+                              }
+                            ],
+                            "id": "we-head:1",
+                            "type": "row"
+                          },
+                          {
+                            "id": "we-cap:1",
+                            "props": {
+                              "text": "Courier can see which key positions you press and when, never the letters."
+                            },
+                            "type": "label"
+                          }
+                        ],
+                        "id": "we-row:1",
+                        "type": "column"
+                      },
+                      {
+                        "children": [
+                          {
+                            "children": [
+                              {
+                                "id": "we-allow:2",
+                                "props": {
+                                  "label": "Allow",
+                                  "name": "Let Neon Rain (Workshop) use your keyboard",
+                                  "value": false
+                                },
+                                "type": "toggle"
+                              },
+                              {
+                                "id": "we-title:2",
+                                "props": {
+                                  "tone": "neutral",
+                                  "value": "Neon Rain (Workshop)"
+                                },
+                                "type": "value"
+                              },
+                              {
+                                "id": "we-status:2",
+                                "props": {
+                                  "tone": "off",
+                                  "value": "Off"
+                                },
+                                "type": "value"
+                              }
+                            ],
+                            "id": "we-head:2",
+                            "type": "row"
+                          },
+                          {
+                            "id": "we-cap:2",
+                            "props": {
+                              "text": "Neon Rain (Workshop) can see which key positions you press and when, never the letters."
+                            },
+                            "type": "label"
+                          }
+                        ],
+                        "id": "we-row:2",
+                        "type": "column"
+                      }
+                    ],
+                    "id": "we-asks",
+                    "props": {
+                      "title": "Wallpapers that want your keyboard"
+                    },
+                    "type": "section"
+                  },
+                  {
+                    "id": "we-disconnect-all",
+                    "props": {
+                      "label": "Disconnect all wallpapers"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "wallpaper-engine",
+                "props": {
+                  "title": "Wallpaper Engine"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Allow list: another app tried to connect"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Solid · 80 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Orange"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights, its art and Wallpaper Engine, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: Solid"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 80 %",
+                      "max": 100,
+                      "value": 80
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Orange"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "we-state",
+                    "props": {
+                      "tone": "ok",
+                      "value": "Playing"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "children": [
+                      {
+                        "children": [
+                          {
+                            "children": [
+                              {
+                                "id": "we-allow:0",
+                                "props": {
+                                  "label": "Allow",
+                                  "name": "Let Bandit HUD use your keyboard",
+                                  "value": true
+                                },
+                                "type": "toggle"
+                              },
+                              {
+                                "id": "we-title:0",
+                                "props": {
+                                  "tone": "neutral",
+                                  "value": "Bandit HUD"
+                                },
+                                "type": "value"
+                              },
+                              {
+                                "id": "we-status:0",
+                                "props": {
+                                  "tone": "ok",
+                                  "value": "Connected"
+                                },
+                                "type": "value"
+                              }
+                            ],
+                            "id": "we-head:0",
+                            "type": "row"
+                          },
+                          {
+                            "id": "we-cap:0",
+                            "props": {
+                              "text": "Bandit HUD can see which key positions you press and when, never the letters."
+                            },
+                            "type": "label"
+                          }
+                        ],
+                        "id": "we-row:0",
+                        "type": "column"
+                      },
+                      {
+                        "children": [
+                          {
+                            "children": [
+                              {
+                                "id": "we-allow:1",
+                                "props": {
+                                  "label": "Allow",
+                                  "name": "Let Courier use your keyboard",
+                                  "value": true
+                                },
+                                "type": "toggle"
+                              },
+                              {
+                                "id": "we-title:1",
+                                "props": {
+                                  "tone": "neutral",
+                                  "value": "Courier"
+                                },
+                                "type": "value"
+                              },
+                              {
+                                "id": "we-status:1",
+                                "props": {
+                                  "tone": "active",
+                                  "value": "Reconnecting…"
+                                },
+                                "type": "value"
+                              }
+                            ],
+                            "id": "we-head:1",
+                            "type": "row"
+                          },
+                          {
+                            "id": "we-cap:1",
+                            "props": {
+                              "text": "Courier can see which key positions you press and when, never the letters."
+                            },
+                            "type": "label"
+                          }
+                        ],
+                        "id": "we-row:1",
+                        "type": "column"
+                      },
+                      {
+                        "children": [
+                          {
+                            "children": [
+                              {
+                                "id": "we-allow:2",
+                                "props": {
+                                  "label": "Allow",
+                                  "name": "Let Neon Rain (Workshop) use your keyboard",
+                                  "value": false
+                                },
+                                "type": "toggle"
+                              },
+                              {
+                                "id": "we-title:2",
+                                "props": {
+                                  "tone": "neutral",
+                                  "value": "Neon Rain (Workshop)"
+                                },
+                                "type": "value"
+                              },
+                              {
+                                "id": "we-status:2",
+                                "props": {
+                                  "tone": "off",
+                                  "value": "Off"
+                                },
+                                "type": "value"
+                              }
+                            ],
+                            "id": "we-head:2",
+                            "type": "row"
+                          },
+                          {
+                            "id": "we-cap:2",
+                            "props": {
+                              "text": "Neon Rain (Workshop) can see which key positions you press and when, never the letters."
+                            },
+                            "type": "label"
+                          }
+                        ],
+                        "id": "we-row:2",
+                        "type": "column"
+                      }
+                    ],
+                    "id": "we-asks",
+                    "props": {
+                      "title": "Wallpapers that want your keyboard"
+                    },
+                    "type": "section"
+                  },
+                  {
+                    "id": "we-disconnect-all",
+                    "props": {
+                      "label": "Disconnect all wallpapers"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "wallpaper-engine",
+                "props": {
+                  "title": "Wallpaper Engine"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Allow list: another app tried to connect, one wallpaper reconnecting"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Solid · 80 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Orange"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights, its art and Wallpaper Engine, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: Solid"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 80 %",
+                      "max": 100,
+                      "value": 80
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Orange"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "we-state",
+                    "props": {
+                      "tone": "ok",
+                      "value": "Playing"
+                    },
+                    "type": "value"
+                  },
+                  {
                     "children": [
                       {
                         "children": [

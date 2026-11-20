@@ -4103,6 +4103,26 @@ fn live_wallpaper_card_allow_list_renders() {
         held: true,
         ..Links::default()
     };
+    let mut shared_links = Links::default();
+    shared_links.by_dir.insert("hud".into(), Link::Connected);
+    shared_links
+        .by_dir
+        .insert("courier".into(), Link::Connected);
+    shared_links.foreign = true;
+    let shared = Inputs {
+        links: shared_links.clone(),
+        hold: None,
+        ..list.clone()
+    };
+    // One wallpaper is reloading: the line must not show.
+    let mut reloading_links = shared_links;
+    reloading_links
+        .by_dir
+        .insert("courier".into(), Link::Reconnecting);
+    let shared_reloading = Inputs {
+        links: reloading_links,
+        ..shared.clone()
+    };
     let held = Inputs {
         links: held_links,
         hold: None,
@@ -4153,6 +4173,8 @@ fn live_wallpaper_card_allow_list_renders() {
                 ("none", &none, false, None),
                 ("engine-off", &engine_off, false, None),
                 ("old-way", &old_way, false, None),
+                ("shared", &shared, false, None),
+                ("shared-reloading", &shared_reloading, false, None),
                 ("error", &list, false, Some(refused)),
                 ("hub", &list, true, None),
             ] {

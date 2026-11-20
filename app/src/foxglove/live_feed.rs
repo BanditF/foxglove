@@ -702,7 +702,15 @@ fn apply_allowed(s: &LiveSettings) {
 /// The user's Reconnect: wallpapers that lost their ticket or their socket get a fresh ticket
 /// (`wallpaper_sync::reconnect`).
 pub fn reconnect() {
-    super::wallpaper_sync::reconnect();
+    let store = RUNNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map_or_else(pairing::store, |r| r.store);
+    let close = super::wallpaper_sync::reconnect(store);
+    if !close.is_empty() {
+        send(Msg::Close(close));
+    }
 }
 
 fn set_status(text: impl Into<String>) {
@@ -991,6 +999,8 @@ fn serve(
                 eprintln!("Foxglove: live feed: {again} wallpaper(s) are handed a new ticket");
                 super::wallpaper_sync::repush();
             }
+            // The refusal may have raised (or kept) the section's line about another app.
+            super::we_panel::changed();
             return;
         }
         Err(NotAdmitted::Other(e)) => {
