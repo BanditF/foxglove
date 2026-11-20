@@ -87,6 +87,7 @@ mod win {
             )));
         }
         let reg = arm_key(key);
+        let key = key.to_string();
         if reg.is_none() {
             log::info!("sign-in watch: the registry key is not there; the Startup folder only");
         }
@@ -94,7 +95,7 @@ mod win {
         std::thread::Builder::new()
             .name("signin-watch".into())
             .spawn(move || {
-                let armed = armed;
+                let mut armed = armed;
                 loop {
                     let mut hs = vec![armed.folder];
                     if let Some((_, ev)) = armed.reg {
@@ -121,6 +122,14 @@ mod win {
                                 ev,
                                 1,
                             );
+                        }
+                    }
+                    // The key is made by the first disable in Windows Settings, which may be
+                    // after the hub started: look for it again on each wake while it is missing.
+                    if armed.reg.is_none() {
+                        armed.reg = arm_key(&key);
+                        if armed.reg.is_some() {
+                            log::info!("sign-in watch: the registry key appeared; watching it");
                         }
                     }
                     on_wake();

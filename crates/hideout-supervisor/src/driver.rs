@@ -424,7 +424,7 @@ fn next_expiry(map: &BTreeMap<String, Prepared>) -> Option<Instant> {
 }
 
 /// The program file of a launch: `run[0]`, relative to the module's folder unless absolute.
-fn program_of(dir: &Path, run0: &str) -> PathBuf {
+pub fn program_of(dir: &Path, run0: &str) -> PathBuf {
     let p = PathBuf::from(run0);
     if p.is_absolute() {
         p
@@ -1371,6 +1371,24 @@ impl Supervisor {
     /// on here: that dialog isn't built, so it answers why and the caller opens the module. In
     /// safe mode it is saved as on and not started ("On · not started in safe mode").
     pub fn turn_on(&self, id: &str) -> Result<(), String> {
+        self.save_on(id)?;
+        if self.safe_mode() {
+            log::info!("supervisor: {id}: turned on; not started in safe mode");
+        }
+        // Turned on again while its Remove waited for it to stop: the Remove is dropped.
+        if self.0.removing.lock().unwrap().remove(id) {
+            self.remove_done(id, Err("turned on again".into()));
+        }
+        self.feed(Ev::Enable { id: id.into() });
+        // A fact it waits for that was set while it was off starts it now (§4.6, v1.10).
+        self.0.hub.act(|r| r.activation_due(Some(id)));
+        Ok(())
+    }
+
+    /// Only the saving half of [`Supervisor::turn_on`]: the row is saved as on (the same checks)
+    /// and nothing is started. A hand-over saves first, so a hub that restarts before the app
+    /// has started brings it up at its own start.
+    pub fn save_on(&self, id: &str) -> Result<(), String> {
         // A withdrawn version is never turned on, however the ask came (#1026).
         let withdrawn = Registry::open_from_env(&self.0.home)
             .ok()
@@ -1401,16 +1419,6 @@ impl Supervisor {
             log::warn!("supervisor: {id}: not turned on: {e}");
             return Err(e);
         }
-        if self.safe_mode() {
-            log::info!("supervisor: {id}: turned on; not started in safe mode");
-        }
-        // Turned on again while its Remove waited for it to stop: the Remove is dropped.
-        if self.0.removing.lock().unwrap().remove(id) {
-            self.remove_done(id, Err("turned on again".into()));
-        }
-        self.feed(Ev::Enable { id: id.into() });
-        // A fact it waits for that was set while it was off starts it now (§4.6, v1.10).
-        self.0.hub.act(|r| r.activation_due(Some(id)));
         Ok(())
     }
 

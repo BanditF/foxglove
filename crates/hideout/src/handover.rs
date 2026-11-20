@@ -322,6 +322,19 @@ impl<O: Open> Standalone for Wire<O> {
 
 /// The real pipe of a standalone app (Windows): who is on `pipe` is checked against the app's
 /// image name and the installer's records (`find_installed`), never against a reply.
+/// What a probe of the copy's pipe means. A server that is this hub itself (it serves the app's
+/// alias name) is no standalone copy: nothing to close, so `No`, not an unverified holder.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn seen_from(p: foxglove_plugin::owner::Probe, own_pid: u32) -> Seen {
+    use foxglove_plugin::owner::Probe;
+    match p {
+        Probe::Free => Seen::No,
+        Probe::Verified { .. } => Seen::Standalone,
+        Probe::Foreign { pid: Some(pid), .. } if pid == own_pid => Seen::No,
+        Probe::Foreign { .. } => Seen::Unsure,
+    }
+}
+
 #[cfg(windows)]
 pub struct PipeOpen {
     pub pipe: String,
@@ -350,12 +363,11 @@ impl PipeOpen {
 #[cfg(windows)]
 impl Open for PipeOpen {
     fn probe(&self) -> Seen {
-        use foxglove_plugin::owner::{probe_with, Probe, TIMEOUT};
-        match probe_with(&self.pipe, self.exe, TIMEOUT, &self.peers()) {
-            Probe::Free => Seen::No,
-            Probe::Verified { .. } => Seen::Standalone,
-            Probe::Foreign { .. } => Seen::Unsure,
-        }
+        use foxglove_plugin::owner::{probe_with, TIMEOUT};
+        seen_from(
+            probe_with(&self.pipe, self.exe, TIMEOUT, &self.peers()),
+            std::process::id(),
+        )
     }
 
     fn freed(&self) {
@@ -430,6 +442,19 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use std::sync::Mutex;
+
+    #[test]
+    fn the_hubs_own_pid_on_the_pipe_is_no_copy() {
+        use foxglove_plugin::owner::Probe;
+        let foreign = |pid| Probe::Foreign {
+            pid,
+            why: "x".into(),
+        };
+        assert_eq!(seen_from(foreign(Some(7)), 7), Seen::No);
+        assert_eq!(seen_from(foreign(Some(8)), 7), Seen::Unsure);
+        assert_eq!(seen_from(foreign(None), 7), Seen::Unsure);
+        assert_eq!(seen_from(Probe::Free, 7), Seen::No);
+    }
 
     /// A fake pipe: what is on it now and what the conversation does.
     struct Fake {

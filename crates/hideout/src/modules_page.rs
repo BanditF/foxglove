@@ -26,6 +26,11 @@ pub trait Actions {
     fn go_back(&self, id: &str);
     fn turn_off(&self, id: &str);
     fn turn_on(&self, id: &str) -> Result<(), String>;
+    /// Saves the row as on without starting it (a hand-over saves first: a hub that restarts
+    /// before the app started brings it up). Fakes may do nothing.
+    fn save_on(&self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
     /// Turn on as a handle any thread can call, so a hand-over's worker can start the app itself
     /// when its copy has gone (the page may not be on screen then). `None`: the page starts it.
     fn starter(&self) -> Option<crate::permission_actions::Starter> {
@@ -69,6 +74,9 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     }
     fn turn_on(&self, id: &str) -> Result<(), String> {
         hideout_supervisor::driver::Supervisor::turn_on(self, id)
+    }
+    fn save_on(&self, id: &str) -> Result<(), String> {
+        hideout_supervisor::driver::Supervisor::save_on(self, id)
     }
     fn starter(&self) -> Option<crate::permission_actions::Starter> {
         let me = self.clone();
@@ -386,6 +394,7 @@ impl ModulesPage {
             // again shows, and the Startup entry is never touched.
             Then::TurnOn
                 if done.handover
+                    && self.save_before_hand_over(&done.id)
                     && self
                         .perm
                         .as_mut()
@@ -410,6 +419,19 @@ impl ModulesPage {
         }
         if let Some(p) = self.perm.as_mut() {
             p.refresh();
+        }
+    }
+
+    /// The row is saved as on before the copy is asked to quit: its quit cannot be taken back, so
+    /// a hub that exits before the app started still starts it at the next start. False when it
+    /// could not be saved: the plain start then runs and shows why.
+    fn save_before_hand_over(&self, id: &str) -> bool {
+        match self.actions.as_deref().map(|a| a.save_on(id)) {
+            Some(Err(why)) => {
+                log::warn!("Modules page: {id} not saved as on before the hand-over ({why})");
+                false
+            }
+            _ => true,
         }
     }
 
@@ -1047,6 +1069,10 @@ mod tests {
             self.0.borrow_mut().push(format!("turn-on {id}"));
             Ok(())
         }
+        fn save_on(&self, id: &str) -> Result<(), String> {
+            self.0.borrow_mut().push(format!("save-on {id}"));
+            Ok(())
+        }
         fn check_for_updates(&self, id: &str) {
             self.0.borrow_mut().push(format!("check {id}"));
         }
@@ -1114,6 +1140,47 @@ mod tests {
         page.after_allow(done(Then::TurnOn));
         assert_eq!(*log.0.borrow(), ["turn-on m.a"]);
         assert!(page.installed[0].enabled);
+    }
+
+    /// A promised hand-over saves the row as on before anything else, so a hub that exits while
+    /// the copy leaves still starts the app at its next start.
+    #[test]
+    fn a_hand_over_saves_the_row_as_on_first() {
+        use crate::permission_actions::{Done, Then};
+        let inst = Installed {
+            adopted: true,
+            id: "m.a".into(),
+            name: "Art".into(),
+            version: "1.0.0".into(),
+            enabled: false,
+            dev: false,
+            dev_folder: None,
+        };
+        let log = Log::default();
+        let mut page = ModulesPage {
+            installed: vec![inst],
+            facts: None,
+            actions: Some(Box::new(log.clone())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+            done: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: None,
+            ask: Default::default(),
+            told: Default::default(),
+            discover: None,
+        };
+        page.after_allow(Done {
+            id: "m.a".into(),
+            code: String::new(),
+            chosen: Vec::new(),
+            declined: Vec::new(),
+            then: Then::TurnOn,
+            handover: true,
+        });
+        assert_eq!(*log.0.borrow(), ["save-on m.a", "turn-on m.a"]);
     }
 
     const TAG: &str = "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0";

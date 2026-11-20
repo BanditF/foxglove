@@ -68,11 +68,13 @@
       <Custom Action="RemoveAutostart" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
 
-    <!-- FR6 (review/ux-plan-first-run.md, Q1): a one-page install and a finish page. No accept box
-         (Hub/user choice, overriding the Q1 recommendation): an "I accept" box gates Install, next to a
-         "Read the license" button that opens the license on its own page. The finish page has "Open Hideout now" ticked, which starts the hub as the user
-         with no arguments (never the tray flag, nothing at sign-in), and the line that apps already
-         on the PC stay as they are. -->
+    <!-- FR6 (review/ux-plan-first-run.md, Q1): a one-page install and a finish page. There is no
+         accept box (Hub/user choice, overriding the Q1 recommendation): the install page shows the
+         license behind a "Read the license" button that opens it on its own page, and Install is
+         never gated on it. The finish page has "Open Hideout now" ticked, which starts the hub as
+         the user with no arguments (never the tray flag, nothing at sign-in), and the line that apps
+         already on the PC stay as they are. After a removal (REMOVE="ALL") the page says
+         "Hideout is removed" and shows neither the line nor the box. -->
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open Hideout now" />
     <Property Id="WixShellExecTarget" Value="[#HideoutExe]" />
@@ -125,20 +127,28 @@
         </Control>
       </Dialog>
 
-      <Dialog Id="ExitDialog" Width="370" Height="270" Title="Hideout is installed">
+      <Dialog Id="ExitDialog" Width="370" Height="270" Title="Hideout">
         <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes">
           <Text>{\WixUI_Font_Title}Hideout is installed</Text>
+          <Condition Action="hide">REMOVE~="ALL"</Condition>
+        </Control>
+        <Control Id="TitleRemoved" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes">
+          <Text>{\WixUI_Font_Title}Hideout is removed</Text>
+          <Condition Action="hide">NOT REMOVE~="ALL"</Condition>
         </Control>
         <Control Id="Description" Type="Text" X="20" Y="50" Width="330" Height="45" Transparent="yes" NoPrefix="yes"
-                 Text="Apps you already have stay as they are. Hideout does not start when you sign in unless you turn that on." />
+                 Text="Apps you already have stay as they are. Hideout does not start when you sign in unless you turn that on.">
+          <Condition Action="hide">REMOVE~="ALL"</Condition>
+        </Control>
         <Control Id="OptionalCheckBox" Type="CheckBox" X="20" Y="120" Width="330" Height="18" CheckBoxValue="1"
                  Property="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Text="Open Hideout now">
-          <!-- A re-run of the MSI (Installed) launches nothing, so the box is not shown then. -->
-          <Condition Action="hide">Installed</Condition>
+          <!-- A re-run of the MSI (Installed) launches nothing, and a removal has nothing to open,
+               so the box is not shown then. -->
+          <Condition Action="hide">Installed OR REMOVE~="ALL"</Condition>
         </Control>
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="Finish">
-          <Publish Event="DoAction" Value="LaunchHideout">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed</Publish>
+          <Publish Event="DoAction" Value="LaunchHideout">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT REMOVE~="ALL"</Publish>
           <Publish Event="EndDialog" Value="Return">1</Publish>
         </Control>
       </Dialog>

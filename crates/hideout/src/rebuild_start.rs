@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hideout_registry::Registry;
-use hideout_supervisor::driver::Supervisor;
+use hideout_supervisor::driver::{program_of, Supervisor};
 
 use crate::rebuild_watch::{self as watch, Outcome};
 
@@ -30,11 +30,15 @@ impl Watches {
                 if reg.dev_folder_of(id).is_none() {
                     continue;
                 }
-                let exe = reg
+                let run0 = reg
                     .manifest(id)
                     .and_then(|m| m.run.and_then(|r| r.into_iter().next()));
-                if let Some(exe) = exe {
-                    want.insert(id.clone(), PathBuf::from(exe));
+                let version = reg.inventory.modules.get(id).map(|m| m.version.clone());
+                if let (Some(run0), Some(version)) = (run0, version) {
+                    // The same file the driver launches: a relative run[0] is the module
+                    // folder's, not the hub's working directory's.
+                    let exe = program_of(&reg.module_dir(id, &version), &run0);
+                    want.insert(id.clone(), exe);
                 }
             }
         }
@@ -65,5 +69,19 @@ impl Watches {
                 Err(e) => log::warn!("rebuild {id}: no watch: {e}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A relative `run[0]` is watched where the driver launches it, in the module's folder.
+    #[test]
+    fn a_relative_program_is_watched_in_the_module_folder() {
+        let dir = std::path::Path::new("modules").join("app").join("1.0");
+        assert_eq!(program_of(&dir, "app.exe"), dir.join("app.exe"));
+        let abs = std::env::current_dir().unwrap().join("x").join("app.exe");
+        assert_eq!(program_of(&dir, abs.to_str().unwrap()), abs);
     }
 }
