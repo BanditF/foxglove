@@ -40,6 +40,10 @@ pub trait Page {
     fn take_said(&mut self) -> Vec<String> {
         Vec::new()
     }
+    /// Work the page owes whether or not it is drawn: the hub calls it once per frame for every
+    /// page, on screen or not (a hand-over finishing while the user is on another page or the
+    /// window is in the tray).
+    fn background(&mut self) {}
     /// Listed at the bottom of the sidebar, after the modules' pages (Settings, #1087).
     fn at_bottom(&self) -> bool {
         false
@@ -2903,6 +2907,9 @@ impl Hub {
             if let Some(h) = self.hooks.as_mut() {
                 h.quarantine(&module);
             }
+        }
+        for page in self.pages.iter_mut() {
+            page.background();
         }
         self.capture_keys(ctx);
         self.notice_tick(ctx);
