@@ -60,7 +60,7 @@ pub const FAILED: &str =
 
 pub const LOG_TURNED_ON: &str = "Start with Windows turned on by the user (dialog)";
 pub const LOG_TURNED_OFF: &str = "Start with Windows turned off by the user";
-pub const LOG_REMOVED: &str = "Start with Windows: shortcut removed by the user";
+pub const LOG_REMOVED: &str = "Start with Windows shortcut removed by the user";
 
 /// The log line for a click that really changed something; `None` for everything else (no change,
 /// a test run, a failure, which logs its own warning).
@@ -679,7 +679,7 @@ mod tests {
         );
         assert_eq!(
             click_log(Click::Remove, &Ok(Outcome::Changed)),
-            Some("Start with Windows: shortcut removed by the user")
+            Some("Start with Windows shortcut removed by the user")
         );
         for o in [
             Ok(Outcome::Unchanged),

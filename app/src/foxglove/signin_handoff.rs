@@ -179,7 +179,7 @@ pub fn at_startup() -> bool {
                 super::app_log::early(super::signin_counts::LOG_DEFERRED);
             } else {
                 super::app_log::early(&format!(
-                    "Foxglove: the hub already runs Foxglove as its module; exiting{}",
+                    "Foxglove: Hideout already runs Foxglove as its app; exiting{}",
                     if show {
                         " after asking it to show Foxglove"
                     } else {
