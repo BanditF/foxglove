@@ -346,17 +346,36 @@ impl Hub {
         pid: Option<u32>,
         container: Option<&str>,
         reader: impl Read + Send + 'static,
-        mut writer: impl Write + Send + 'static,
+        writer: impl Write + Send + 'static,
     ) -> ConnId {
-        // The peer's process is opened now, at connect; its program is read from that handle
-        // before the first line is handled (S1).
-        let mut hold = match pid {
-            Some(pid) if origin == Origin::Pipe => {
-                let lookup = self.0.peers.lock().unwrap().clone();
-                Some(lookup.open(pid))
-            }
+        // The peer's process is opened now, at connect (S1).
+        let hold = match pid {
+            Some(pid) if origin == Origin::Pipe => Some(self.open_peer(pid)),
             _ => None,
         };
+        self.attach_held(origin, pid, container, hold, reader, writer)
+    }
+
+    /// Opens a handle on the connecting process `pid` through the hub's lookup.
+    pub fn open_peer(&self, pid: u32) -> Box<dyn crate::tool_id::PeerHold> {
+        let lookup = self.0.peers.lock().unwrap().clone();
+        lookup.open(pid)
+    }
+
+    /// [`Hub::attach_in`] for a peer whose process the caller already opened (`hold`): the
+    /// transport's admission check and the program's identity then come from one handle.
+    /// The program is read from that handle only when the connection's first line is an
+    /// outside tool's `initialize` (S1): an app's connection, which carries its launch
+    /// token, is never read or hashed.
+    pub fn attach_held(
+        &self,
+        origin: Origin,
+        pid: Option<u32>,
+        container: Option<&str>,
+        mut hold: Option<Box<dyn crate::tool_id::PeerHold>>,
+        reader: impl Read + Send + 'static,
+        mut writer: impl Write + Send + 'static,
+    ) -> ConnId {
         let conn = {
             let mut r = self.0.router.lock().unwrap();
             let conn = r.connect(origin);
@@ -395,19 +414,21 @@ impl Hub {
         std::thread::Builder::new()
             .name(format!("hideout-router-r{conn}"))
             .spawn(move || {
-                if let Some(hold) = hold.as_mut() {
-                    let id = hold.identity();
-                    hub.act(|r| {
-                        r.set_peer_identity(conn, id);
-                        Vec::new()
-                    });
-                }
-                drop(hold);
                 let mut reader = BufReader::new(reader);
                 while let Ok(Some(line)) = read_line(&mut reader) {
                     let line = line.trim_end_matches(['\r', '\n']);
                     if line.is_empty() {
                         continue;
+                    }
+                    // The handle serves the first line only.
+                    if let Some(mut h) = hold.take() {
+                        if is_tool_initialize(line) {
+                            let id = h.identity();
+                            hub.act(|r| {
+                                r.set_peer_identity(conn, id);
+                                Vec::new()
+                            });
+                        }
                     }
                     hub.act(|r| r.receive(conn, line, Instant::now()));
                     if !hub.0.writers.lock().unwrap().contains_key(&conn) {
@@ -471,7 +492,10 @@ impl Hub {
                         Ok(conn) => {
                             // The handle stays open while `conn` lives.
                             let pid = client_pid(handle);
-                            let peer = match hub.admit(pid) {
+                            // One handle on the process serves the admission check and the
+                            // program's identity (a pid reused between them can't mix them).
+                            let hold = pid.map(|p| hub.open_peer(p));
+                            let peer = match hub.admit_held(pid, hold.as_deref()) {
                                 Ok(p) => p,
                                 Err(why) => {
                                     // Dropping the connection closes it.
@@ -480,7 +504,7 @@ impl Hub {
                                 }
                             };
                             let sid = peer.app_container.as_deref();
-                            hub.attach_in(Origin::Pipe, pid, sid, conn.clone(), conn);
+                            hub.attach_held(Origin::Pipe, pid, sid, hold, conn.clone(), conn);
                         }
                         Err(e) => log::warn!("router: {name}: accept: {e}"),
                     }
@@ -532,10 +556,24 @@ impl Hub {
     /// token can't be read (an elevated tool the hub can't look into, a process already gone).
     /// Admitted, the peer as its token says (its AppContainer SID goes on its connection).
     pub fn admit(&self, pid: Option<u32>) -> Result<hideout_acl::Peer, String> {
+        self.admit_held(pid, None)
+    }
+
+    /// [`Hub::admit`] reading the token from `hold`'s process handle when it has one, so the
+    /// check and the program's identity name the same process.
+    pub fn admit_held(
+        &self,
+        pid: Option<u32>,
+        hold: Option<&dyn crate::tool_id::PeerHold>,
+    ) -> Result<hideout_acl::Peer, String> {
         let guests = self.pipe_guests();
         // A client the router can't name is refused, guests or not (#1089 re-check).
         let pid = pid.ok_or("its process is unknown")?;
-        let peer = hideout_acl::peer(pid).map_err(|e| format!("pid {pid}: token not read: {e}"))?;
+        let token = match hold.and_then(|h| h.token()) {
+            Some(t) => t,
+            None => hideout_acl::peer(pid),
+        };
+        let peer = token.map_err(|e| format!("pid {pid}: token not read: {e}"))?;
         if hideout_acl::admits(&peer, &guests) {
             Ok(peer)
         } else {
@@ -553,6 +591,14 @@ impl Hub {
     pub fn pipe_guests(&self) -> Vec<String> {
         self.0.pipe_acl.lock().unwrap().guests.clone()
     }
+}
+
+/// Whether a first line is an outside tool's `initialize`: no launch token (an app's own
+/// connection carries one and is never read or hashed).
+fn is_tool_initialize(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| {
+        v["method"] == "initialize" && v["params"].get("token").is_none()
+    })
 }
 
 /// The process id of a connected router pipe's client.
@@ -680,6 +726,25 @@ mod tests {
         }
     }
 
+    /// One `initialize` line from an outside tool, then silence until the sender is dropped.
+    struct HelloThenSilent(Option<Vec<u8>>, mpsc::Receiver<()>);
+    impl Read for HelloThenSilent {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if let Some(line) = self.0.take() {
+                buf[..line.len()].copy_from_slice(&line);
+                return Ok(line.len());
+            }
+            let _ = self.1.recv();
+            Ok(0)
+        }
+    }
+
+    fn hello() -> Vec<u8> {
+        br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"t","version":"1"},"api":"1.1","permissions":[]}}
+"#
+        .to_vec()
+    }
+
     #[test]
     fn pid_reuse_uses_handle_opened_at_connect() {
         let id = |p: &str| ToolId {
@@ -690,7 +755,13 @@ mod tests {
         let h = hub();
         h.set_peer_lookup(Arc::new(TableLookup(table.clone())));
         let (keep, rx) = mpsc::channel();
-        let conn = h.attach_in(Origin::Pipe, Some(77), None, Silent(rx), io::sink());
+        let conn = h.attach_in(
+            Origin::Pipe,
+            Some(77),
+            None,
+            HelloThenSilent(Some(hello()), rx),
+            io::sink(),
+        );
         // The pid now belongs to another program; the connection keeps what was opened.
         table.0.lock().unwrap().insert(77, id(r"C:\B.exe"));
         let mut got = None;
