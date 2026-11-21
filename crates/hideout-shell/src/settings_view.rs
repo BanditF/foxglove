@@ -310,7 +310,7 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
     if !v.on {
         ui.add(egui::Label::new(RichText::new(dev_settings::MODE_OFF).color(c(t.text))).wrap());
         ui.add(
-            egui::Label::new(RichText::new(dev_settings::MODE_OFF_MORE).color(c(t.text_muted)))
+            egui::Label::new(RichText::new(dev_settings::mode_off_more()).color(c(t.text_muted)))
                 .wrap(),
         );
         ui.add_space(6.0);
