@@ -529,9 +529,10 @@ impl ModulesPage {
 
     /// **Update in Hideout**, from the row or the Found card: an app that runs is stopped first
     /// (before the update voids its grants, so the old program does not keep running under an OK
-    /// it no longer has), the changed file is registered again, and the Allow dialog opens. It
-    /// starts again only from the user's Allow. If the update fails the app that ran is turned
-    /// back on: a failed update must not leave it off.
+    /// it no longer has) and the changed file is registered again. When something waits for a
+    /// choice the Allow dialog opens and the app starts again only from the user's Allow. When
+    /// nothing does, no dialog opens and an app that ran starts again at once. If the update
+    /// fails the app that ran is turned back on: a failed update must not leave it off.
     fn update_in_hideout(&mut self, id: &str) {
         let was_running = self.installed.iter().any(|m| m.id == id && m.enabled);
         if was_running {
@@ -548,7 +549,7 @@ impl ModulesPage {
             }
             return;
         };
-        self.after_add(&updated);
+        self.list_after_add(&updated);
         // Something waits for a choice: grants the update voided, or a permission the new file
         // asks for and nobody granted (both are pending in the record now).
         let waits = self.discover.as_ref().is_some_and(|d| {
@@ -561,7 +562,16 @@ impl ModulesPage {
                         .map(|m| !m.pending_permissions.is_empty())
                 })
                 .unwrap_or(true)
+                || crate::permission_actions::needs_ok(&d.home, &updated)
         });
+        // The dialog opens only when it has something to ask: an app that starts again behind an
+        // open Allow dialog would look as if it ran before the user's OK.
+        if let Some(p) = self.perm.as_mut() {
+            p.refresh();
+            if waits {
+                p.open(&updated, crate::permission_actions::Opener::TurnOn);
+            }
+        }
         let name = self
             .installed
             .iter()
@@ -592,6 +602,15 @@ impl ModulesPage {
     /// An app was just added (Found card or Browse): the list takes it now and the normal
     /// first-run Allow dialog opens for it. Nothing is allowed or started until the user's Allow.
     fn after_add(&mut self, id: &str) {
+        self.list_after_add(id);
+        if let Some(p) = self.perm.as_mut() {
+            p.refresh();
+            p.open(id, crate::permission_actions::Opener::TurnOn);
+        }
+    }
+
+    /// The list takes an app that was just added or updated.
+    fn list_after_add(&mut self, id: &str) {
         if let Some(home) = self.discover.as_ref().map(|d| d.home.clone()) {
             match read_installed(&home) {
                 Ok(list) => self.installed = list,
@@ -604,10 +623,6 @@ impl ModulesPage {
                     }
                 }
             }
-        }
-        if let Some(p) = self.perm.as_mut() {
-            p.refresh();
-            p.open(id, crate::permission_actions::Opener::TurnOn);
         }
     }
 
@@ -2150,6 +2165,30 @@ mod tests {
         let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
         assert_eq!(reg.inventory.modules[GADGET].version, "0.2.0");
         assert!(!reg.inventory.modules[GADGET].granted.is_empty());
+    }
+
+    /// The Allow dialog opens after an update only when it has something to ask. With nothing to
+    /// choose, no dialog stands in front of an app that already runs again.
+    #[test]
+    fn an_update_with_nothing_to_choose_opens_no_dialog() {
+        use crate::discover::tests::GADGET;
+        for (name, running, same) in [
+            ("row-changed-dialog-1", true, true),
+            ("row-changed-dialog-2", false, true),
+            ("row-changed-dialog-3", true, false),
+            ("row-changed-dialog-4", false, false),
+        ] {
+            let (mut page, log) = changed_page(name, running, same);
+            page.update_in_hideout(GADGET);
+            let open = page.perm.as_ref().unwrap().dialog.is_some();
+            assert_eq!(open, !same, "{name}");
+            if !same {
+                assert!(
+                    !log.borrow().iter().any(|l| l.starts_with("turn-on")),
+                    "{name}"
+                );
+            }
+        }
     }
 
     /// The Found card's Update button is named for its app; the row's button is not.
