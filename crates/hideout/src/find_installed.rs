@@ -347,6 +347,19 @@ pub fn adopt(
     found: &Found,
     now: &str,
 ) -> Result<String, String> {
+    adopt_with(m, home, staging, found, now, crate::adopt::run)
+}
+
+/// [`adopt`] with the registering step given (`crate::adopt::run`; a test swaps the staged
+/// file in it).
+fn adopt_with(
+    m: &dyn Machine,
+    home: &Path,
+    staging: &Path,
+    found: &Found,
+    now: &str,
+    register: impl Fn(&Path, &Path, &str) -> Result<String, String>,
+) -> Result<String, String> {
     let p = product(&found.id).ok_or_else(|| "not an app Hideout knows".to_string())?;
     let text = manifest_text(m, p, found)?;
     // The product the user chose is the one registered, whatever id the template names.
@@ -354,11 +367,19 @@ pub fn adopt(
         return Err(format!("{} names another app", p.name));
     }
     let dir = staging.join(&p.id);
+    // An earlier record of this id (and its grants) is not ours to drop on a failed check.
+    let fresh = !hideout_registry::Registry::open_from_env(home)
+        .is_ok_and(|r| r.inventory.modules.contains_key(&p.id));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    std::fs::write(dir.join("module.toml"), text)
+    std::fs::write(dir.join("module.toml"), &text)
         .map_err(|e| format!("manifest not saved: {e}"))?;
-    let out = crate::adopt::run(home, &dir, now);
+    let out = register(home, &dir, now);
     let _ = std::fs::remove_dir_all(&dir);
+    // What the registry now holds must be the text made above, byte for byte: a swap of the
+    // staged file between the write and the adopt code's read does not stay registered.
+    if out.is_ok() && !crate::discover::registered_matches(home, &p.id, &text, fresh) {
+        return Err(format!("{} changed while it was added", p.name));
+    }
     out
 }
 
@@ -1217,6 +1238,67 @@ mod tests {
         assert_eq!(
             adopt(&m, &home, &staging, &newer, "2026-11-18T09:00:00Z").unwrap(),
             "registered foxglove 0.3.1 (installed separately)"
+        );
+    }
+
+    /// The staged file is swapped before the adopt code reads it: a first add is refused and
+    /// leaves no record; a refresh is refused and the record that was there stays.
+    #[test]
+    fn a_staged_file_swapped_before_it_is_registered_does_not_stay() {
+        let install = temp("swap-install");
+        let exe = install.join("foxglove.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        let home = temp("swap-home");
+        let staging = temp("swap-staging");
+        let found = Found {
+            id: "foxglove".into(),
+            exe,
+            version: "0.3.0".into(),
+            source: Source::Record,
+            folder: None,
+            manifest: None,
+        };
+        let m = Fake::default();
+        let swapped = |home: &Path, dir: &Path, now: &str| {
+            let at = dir.join("module.toml");
+            let text = std::fs::read_to_string(&at).unwrap();
+            std::fs::write(
+                &at,
+                format!(
+                    "{text}
+# swapped
+"
+                ),
+            )
+            .unwrap();
+            crate::adopt::run(home, dir, now)
+        };
+        let has = |home: &Path| {
+            hideout_registry::Registry::open_from_env(home)
+                .unwrap()
+                .inventory
+                .modules
+                .get("foxglove")
+                .map(|e| e.version.clone())
+        };
+        let now = "2026-11-21T08:00:00Z";
+        let e = adopt_with(&m, &home, &staging, &found, now, swapped).unwrap_err();
+        assert!(e.contains("changed while it was added"), "{e}");
+        assert_eq!(
+            has(&home),
+            None,
+            "a first add that fails the check is removed"
+        );
+
+        adopt(&m, &home, &staging, &found, now).unwrap();
+        let newer = Found {
+            version: "0.3.1".into(),
+            ..found
+        };
+        assert!(adopt_with(&m, &home, &staging, &newer, now, swapped).is_err());
+        assert!(
+            has(&home).is_some(),
+            "a record that was there is not dropped"
         );
     }
 

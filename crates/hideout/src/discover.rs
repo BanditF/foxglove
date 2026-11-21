@@ -603,7 +603,7 @@ fn void_grants_after_update(home: &Path, id: &str, now: &str) {
 /// does not (or can't be read) this is `false`, and when the record is `fresh` (this add made
 /// it) it is removed: unregistered, with any grants; the app's own files are never touched. A
 /// record that was there before the add is left alone.
-fn registered_matches(home: &Path, id: &str, staged: &str, fresh: bool) -> bool {
+pub(crate) fn registered_matches(home: &Path, id: &str, staged: &str, fresh: bool) -> bool {
     let Ok(mut reg) = hideout_registry::Registry::open_from_env(home) else {
         return false;
     };
