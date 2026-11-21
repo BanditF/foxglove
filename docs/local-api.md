@@ -153,7 +153,7 @@ The params and results are in the schema. Notes:
   same rules), then tells the wallpapers it has gone. Pushes wait while paused; the newest state goes
   once, `RELOAD_QUIET` after the play. `wallpaper-engine.status {}` answers `{running, owner:
   "foxglove", leases, paused_by_lease}`. Errors: 1 Wallpaper Engine isn't installed, 2 it isn't
-  running, 6 the command failed or timed out (5 s), 8 more than 16 leases on one connection
+  running, 6 the command failed, exited with a code other than 0, or timed out (5 s), 8 more than 16 leases on one connection
   (through the hub: 16 per caller, `lease.limit`, and 64 for all its callers together),
   -32602 an unknown lease or one of another connection (or a reason over 64 characters), 5 no
   `wallpaper.control`. The fact `wallpaper_engine.paused_by` holds the live leases' reasons
