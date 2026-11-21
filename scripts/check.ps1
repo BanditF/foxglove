@@ -73,7 +73,8 @@ try {
     Step 'scripts: ops tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-ops.ps1 }
     # The UIA tree dump's pure parts (#1376): JSON shape, expectation matching; never reads a window.
     Step 'scripts: uia_tree self-test' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/lab/uia_tree.ps1 -SelfTest }
-    Step 'scripts: demo-up tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-demo-up.ps1 }
+    Step 'scripts: stall-wake tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-stall-wake.ps1 }
+Step 'scripts: demo-up tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-demo-up.ps1 }
     Step 'scripts: dev copy-in tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-dev-copy-in.ps1 }
     # Functions over 120 lines and files over 1,500 lines, listed as warnings; never fails.
     Step 'size budget' { python scripts/size_budget.py }
