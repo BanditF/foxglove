@@ -381,3 +381,14 @@ What Foxglove does once it runs with identity (none of it runs unpackaged):
 - **Foxglove recognises its own hold:** an owner byte naming a LampArray transport Foxglove holds, with Windows' leave to drive it, is "Foxglove, through Windows Dynamic Lighting" (or the running scene), never the amber "Windows holds the keyboard's lights".
 - **What the user sees:** while Windows Dynamic Lighting (not Foxglove's own hold) has the keyboard's lights and nothing waits for them, the Lights page's Keyboard card shows a quiet bar, "Windows Dynamic Lighting is controlling this keyboard", with **Open Dynamic Lighting settings** (`ms-settings:personalization-lighting`); with identity its sentence says to drag Foxglove to the top of Background light control and check both keyboard device pages. A waiting scene keeps the amber bar. The Keyboard health view has a "Dynamic Lighting identity" row (OK with identity; WARN when the package is next to the exe but this copy has none, or the exe was rebuilt without the flag), one row per keyboard LampArray transport Foxglove holds (WARN when another controller ranks first for it), and after a flash a WARN "Lights owner after the flash" when Windows took the lights that it didn't have before (with a notification). **The app never writes the Windows setting.** On-call: after each batched flash, read the health view (or `foxglove-lab health`) for that row.
 - **Every other LampArray (the G502, any Dynamic Lighting device)** follows the running scene as before; between scenes the Lights worker gives a device Windows hands to Foxglove its colours, and as the background controller one it never set gets its resting look (saved colours, else white), so none is left dark or as another controller left it.
+
+### Checking a built MSI offline
+
+`python scripts/msi_tables.py <file.msi> --product hideout|foxglove` opens the MSI read-only through
+msi.dll and checks its tables: UpgradeCode and version, the upgrade row and the downgrade block,
+per-user scope (HKCU only, nothing under Program Files), no Run value or Startup shortcut, only the
+expected files, and that uninstall removes the folders and runs the autostart cleanup as the user
+before the files go (and not on an upgrade). It installs nothing and opens no window. It proves what
+the package declares, not that Windows runs it correctly. `app.yml` runs it on the Foxglove MSI and
+`scripts/build-hideout-installer.ps1` on the Hideout one; `scripts/test_msi_tables.py` tests the
+checker on fixture databases (no WiX needed) in the gate.

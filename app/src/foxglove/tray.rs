@@ -534,6 +534,40 @@ mod tests {
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
     }
 
+    /// #1085: at 16 px the eye is a one-pixel rim, a clear gap and a pupil, all fully opaque and in
+    /// the taskbar's orange; the round pause badge is solid where the eye is clear.
+    #[test]
+    fn the_eye_reads_on_both_taskbars_at_16_px() {
+        for (light, taskbar, orange) in [
+            (false, [0x20, 0x20, 0x20], [0xf0, 0x8a, 0x3c]),
+            (true, [0xf3, 0xf3, 0xf3], [0xb4, 0x54, 0x0f]),
+        ] {
+            let load = |g| {
+                image::load_from_memory(png(g, light, 16))
+                    .expect("decodes")
+                    .into_rgba8()
+            };
+            let eye = load(Glyph::Screen);
+            // The badge box is 9 x 6 in the bottom-right corner; its middle row is y = 13.
+            for (x, name) in [(7, "rim"), (11, "pupil")] {
+                let p = eye.get_pixel(x, 13);
+                assert_eq!(p[3], 255, "{name} is opaque (light={light})");
+                assert_eq!([p[0], p[1], p[2]], orange, "{name} is the taskbar's orange");
+                assert!(
+                    contrast(orange, taskbar) >= 3.0,
+                    "{name} reads (light={light})"
+                );
+            }
+            assert_eq!(eye.get_pixel(8, 13)[3], 0, "clear between rim and pupil");
+            let pause = load(Glyph::Paused);
+            assert_eq!(
+                pause.get_pixel(12, 12)[3],
+                255,
+                "the pause badge is solid here"
+            );
+        }
+    }
+
     /// The fox reads on its taskbar, connected (white on dark, black on light) and paused (grey).
     #[test]
     fn the_fox_reads_on_both_taskbars() {

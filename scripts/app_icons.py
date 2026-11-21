@@ -11,8 +11,11 @@ Writes:
 - tray-icon-white*.png / tray-icon-black*.png: the Bandit fox as a glyph, for dark / light
   taskbars. Plain: a keyboard is connected (solid, the mask cut out); -off: none is (the outline);
   -paused: Foxglove is paused (#404; the fox greyed, an orange pause badge in the corner).
-  -screen: Screen glow reads the screen (#496; the fox, an orange badge with an eye in the
-  corner where the pause badge sits). Paused wins over it in the app.
+  -screen: Screen glow reads the screen (#496, #1085; the fox, and in the corner where the pause
+  badge sits an orange eye: an almond outline with a round pupil and no disc, so it differs from
+  the round pause badge by silhouette). 16 and 20 px are hand-placed pixel maps (every edge pixel
+  fully on or off), the larger sizes and the macOS template are drawn from the same proportions.
+  Paused wins over it in the app.
   Drawn for Windows' small-icon sizes: the plain name is 32 px, -16/-20/-24 the smaller ones.
 - tray-icon-template.png (44), -off and -paused: macOS templates (black + alpha).
 - packaging/identity/Assets/logo44/50/150.png for the sparse package.
@@ -128,9 +131,75 @@ TRAY_SIZES = [16, 20, 24, 32]
 TRAY_STATES = ["on", "off", "paused", "screen"]
 
 
+# The eye badge at the two smallest sizes, hand-placed (#1085): X = the almond's rim, P = the
+# pupil, . = clear. Bottom-right of the icon. Every edge pixel is fully on or off.
+EYE_MAPS = {
+    16: [
+        "...XXX...",
+        ".XX...XX.",
+        "X..PPP..X",
+        "X..PPP..X",
+        ".XX...XX.",
+        "...XXX...",
+    ],
+    20: [
+        "...XXXXX...",
+        ".XX.....XX.",
+        "XX..PPP..XX",
+        "XX..PPP..XX",
+        ".XX.....XX.",
+        "...XXXXX...",
+    ],
+}
+
+
+def eye_parts(size, ss=16):
+    """The eye badge as three L masks of S = size * ss pixels: (footprint, rim, pupil). The
+    footprint is everything the eye covers (rim, gap and pupil); the fox is cleared around it."""
+    S = size * ss
+    foot, rim, pupil = (Image.new("L", (S, S), 0) for _ in range(3))
+    if size in EYE_MAPS:
+        rows = EYE_MAPS[size]
+        w, h = len(rows[0]), len(rows)
+        x0, y0 = size - w, size - h
+        for y, row in enumerate(rows):
+            cols = [x for x, ch in enumerate(row) if ch != "."]
+            for x, ch in enumerate(row):
+                box = [(x0 + x) * ss, (y0 + y) * ss, (x0 + x + 1) * ss - 1, (y0 + y + 1) * ss - 1]
+                if cols[0] <= x <= cols[-1]:
+                    ImageDraw.Draw(foot).rectangle(box, fill=255)
+                if ch == "X":
+                    ImageDraw.Draw(rim).rectangle(box, fill=255)
+                elif ch == "P":
+                    ImageDraw.Draw(pupil).rectangle(box, fill=255)
+        return foot, rim, pupil
+    # Same proportions, drawn: an almond about 9:6 with a rim of about size/16 and a round pupil.
+    w, h = round(size * 0.56), round(size * 0.375)
+    a, b = w * ss / 2, h * ss / 2
+    cx, cy = S - a, S - b
+    t = max(1.0, size / 16) * ss
+
+    def lens(img, a, b):
+        R = (b + a * a / b) / 2
+        k = (a * a / b - b) / 2
+        m1 = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(m1).ellipse([cx - R, cy + k - R, cx + R, cy + k + R], fill=255)
+        m2 = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(m2).ellipse([cx - R, cy - k - R, cx + R, cy - k + R], fill=255)
+        img.paste(ImageChops.multiply(m1, m2))
+
+    lens(foot, a, b)
+    inner = Image.new("L", (S, S), 0)
+    lens(inner, a - 1.3 * t, b - t)
+    rim = ImageChops.subtract(foot, inner)
+    pr = b * 0.4
+    ImageDraw.Draw(pupil).ellipse([cx - pr, cy - pr, cx + pr, cy + pr], fill=255)
+    return foot, rim, pupil
+
+
 def tray(size, variant, state):
-    """One glyph: `state` is "on" (solid fox, mask cut out), "off" (its outline) or "paused" (the
-    fox greyed, with an orange pause badge in the corner)."""
+    """One glyph: `state` is "on" (solid fox, mask cut out), "off" (its outline), "paused" (the
+    fox greyed, with an orange pause badge in the corner) or "screen" (the fox and an orange eye)."""
     c = TRAY_COLOURS[variant]
     ss = 16
     S = size * ss
@@ -141,12 +210,16 @@ def tray(size, variant, state):
         alpha = ImageChops.subtract(sil, sil.filter(ImageFilter.MinFilter(k)))
     else:
         alpha = ImageChops.subtract(sil, holes)
-    if state in ("paused", "screen"):
-        # The badge: a disc in the bottom-right corner, cut clear of the fox, with two bars
-        # (paused) or an eye (screen).
+    gap = px * (1.0 if size <= 24 else 1.5)
+    if state == "screen":
+        # The eye (#1085): the fox is cleared around its footprint by a gap of one pixel.
+        foot, rim, pupil = eye_parts(size, ss)
+        k = int(2 * gap + 1)
+        alpha = ImageChops.multiply(alpha, ImageChops.invert(foot.filter(ImageFilter.MaxFilter(k))))
+    if state == "paused":
+        # The badge: a disc in the bottom-right corner, cut clear of the fox, with two bars.
         br = S * 0.235
         bx, by = S - br, S - br
-        gap = px * (1.0 if size <= 24 else 1.5)
         cut = Image.new("L", (S, S), 255)
         ImageDraw.Draw(cut).ellipse([bx - br - gap, by - br - gap, bx + br + gap, by + br + gap], fill=0)
         alpha = ImageChops.multiply(alpha, cut)
@@ -167,20 +240,9 @@ def tray(size, variant, state):
         for x0 in (left, left + bw + gap_bars):
             d.rectangle([x0 * px, top * px, (x0 + bw) * px - 1, (top + bh) * px - 1], fill=(0, 0, 0, 0))
     if state == "screen":
-        d = ImageDraw.Draw(im)
-        d.ellipse([bx - br, by - br, bx + br, by + br], fill=c["badge"] + (255,))
-        # The eye: an almond (two overlapping circles) cut out of the disc, its pupil left in.
-        w, h = br * 0.78, br * 0.42
-        R = (h + w * w / h) / 2
-        k = (w * w / h - h) / 2
-        a = Image.new("L", (S, S), 0)
-        ImageDraw.Draw(a).ellipse([bx - R, by + k - R, bx + R, by + k + R], fill=255)
-        b = Image.new("L", (S, S), 0)
-        ImageDraw.Draw(b).ellipse([bx - R, by - k - R, bx + R, by - k + R], fill=255)
-        lens = ImageChops.multiply(a, b)
-        im.putalpha(ImageChops.subtract(im.getchannel("A"), lens))
-        pr = max(px * 1.0, h * 0.62)
-        d.ellipse([bx - pr, by - pr, bx + pr, by + pr], fill=c["badge"] + (255,))
+        eye = Image.new("RGBA", (S, S), c["badge"] + (255,))
+        eye.putalpha(ImageChops.lighter(rim, pupil))
+        im.alpha_composite(eye)
     return im.reduce(ss)
 
 

@@ -39,7 +39,8 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   notification grants nothing: `added` only says a call that was denied is worth sending
   again, and the hub checks that call as any other. The module SDKs keep each
   `facts.subscribe` the hub denied or ended (64 at most, the oldest dropped) and send them
-  once more per `module.grants` with a non-empty `added`, with no timer. Not sent on a v1
+  once more per `module.grants` with a non-empty `added`, with no timer. A module that no longer
+  wants one calls the SDK's `forget_denied(pattern)`. Not sent on a v1
   connection. Additive: the hub version stays 1.5; an older hub never sends it and an older
   module ignores it.
 - **1.21** (#1142, who holds a pause): a provider can name the callers it holds leases for
@@ -180,7 +181,7 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 - **1.11** (#991): the Hideout release a module version needs. A catalog entry may carry the
   optional `min_hub_release` `{version, url}`: the first Hideout release that serves this
   module version, and that release's page (§12.4). **Update Hideout** on a Needs a newer
-  Hideout card and Modules row opens that page when the installed version's entry in its own
+  Hideout card and Apps page row opens that page when the installed version's entry in its own
   source's accepted catalog has one and its `url` is on the allow-list (`https`, host
   `github.com`, path `/BanditF/foxglove/releases` or below; no query, fragment, escape or `..`);
   anything else opens the releases page, as before (§7.8). A field that can't be read is
@@ -403,7 +404,7 @@ The hub MUST do these six things and nothing else (design §3):
 
 1. **Tray icon:** the glyph and its states; a menu of the hub's items plus the modules' declared
    actions; the tray panel, which hosts `tile` panels.
-2. **Window frame:** the sidebar, the status strip, the Modules page; placement and DPI; theme
+2. **Window frame:** the sidebar, the status strip, the Apps page; placement and DPI; theme
    tokens; the command palette (§2.6).
 3. **Module registry:** what is installed, enabled and running, at which version and instance;
    the shallow trust check before every launch (§7.4); permission grants.
@@ -674,7 +675,7 @@ plug-ins** (no dylibs, no scripts in the hub).
 | `family` | string | yes | `hideout`, `foxglove`, `vulpes`, `digitalis` or `third-party` (§4.3). |
 | `hub` | string | yes | Contract version it was written for, `MAJOR.MINOR` (VS Code's `engines`). v1 readers accept `1.0`; (v1.4) readers of hub 1.1 accept `1.0` and `1.1`. |
 | `visibility` | string | no | `public` (default) or `private` (§13). |
-| `description` | string | no | Plain words for the Modules page. |
+| `description` | string | no | Plain words for the Apps page. |
 | `api` | table, or string | no | Method-family API versions it calls, `{ foxglove = "1.13", vulpes = "1.0" }`. A plain string means `{ foxglove = "<string>" }`. |
 | `requires` | array of strings | no | Modules needed at enable (§4.4). |
 | `enriches` | array of strings | no | Third-party programs it works with, as `<name>.exe`. Missing ones give one hint; never block. |
@@ -855,7 +856,7 @@ item shows:
 - The hub evaluates it from its facts cache (§2.4 includes cached facts), so a cold module's
   items still show or hide correctly.
 - A module whose devices aren't present (all its `page` panels false) shows no sidebar page, only
-  a row on the Modules page (UX12).
+  a row on the Apps page (UX12).
 - `devices.present.<class>` facts are published by the first-party device module from
   catalog data, never by the hub.
 - **`apps.seen.<name>` (v1.4, optional fact).** `true` once the app `<name>.exe` has had a window
@@ -1483,7 +1484,7 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   the hub-side `attest_update` (no router method, module request or CLI verb reaches it), which
   accepts only a bound, not void grant and a new file in the **same install folder**, and
   appends `{from_sha256, to_sha256, from_path, to_path, version, at, by}` to `bound.attested`
-  (the history the Modules page shows; the last 20 are kept). A hash that no attestation names,
+  (the history the Apps page shows; the last 20 are kept). A hash that no attestation names,
   or a file in another folder, voids. A grant with no `bound` record (made before #1178) is not
   voided by this rule.
   *Tradeoff:* this is **weaker than binding to one file hash**. Whoever can call the update
@@ -1844,7 +1845,7 @@ Design §3.1.
 
 ### 7.8 States (UX4)
 
-One state list, used by the panel header, the Modules page and the tray status line. The hub
+One state list, used by the panel header, the Apps page and the tray status line. The hub
 publishes it as the fact `module.<id>.state` (and `module.<id>.reason`).
 
 Two more facts carry what the crash bar and the stopped card need (v1.4), published by the
@@ -1872,7 +1873,7 @@ supervisor beside the state:
   `null` once another version of the module connects, or (v1.9) once the installed version is
   no longer withdrawn. The module's own words never reach it: `module.*` facts are the hub's.
   (v1.9) Also published for an installed version that isn't running (turned off, waiting for a
-  call, or found at hub start), so its Modules row can say so.
+  call, or found at hub start), so its Apps page row can say so.
 - **`module.<id>.provides` (v1.14, P9):** the method patterns the hub routes to the module now, an
   array, or `null` when it has none (set on `module.register`, cleared when the module goes). A
   module granted `facts.read:module.*` learns from it which other modules provide a method area.
@@ -1919,7 +1920,7 @@ Rules:
   never a link), labelled "Publisher's note:", with C0/C1 controls, bidi marks, overrides and
   isolates and zero-width characters dropped, whitespace runs as one space, and at most 160
   characters (cut on a whole character, "…"); never in the notification, tray, tile, tooltip or
-  Modules row. Copy diagnostics has it in full, those characters escaped (`\u{202e}`). The
+  Apps page row. Copy diagnostics has it in full, those characters escaped (`\u{202e}`). The
   notification comes once per withdrawn version (remembered in the hub's own state), not per
   sign-in; later sign-ins show the card and the tray's red dot only.
 - **Start with default settings** renames the settings folder to `settings.bad-<time>` and starts
@@ -1938,7 +1939,7 @@ Rules:
   only with a previous version kept (`module.<id>.previous`).
 - (v1.10 clarification, #1096) A `needs-hub` module is **listed, never dropped**: the hub reads
   its manifest's head (§4.1: `id`, `name`, `version`, `hub`) and names it by that `name` on the
-  Modules page and in the tray. This holds for every source: an installed catalog or sideloaded
+  Apps page and in the tray. This holds for every source: an installed catalog or sideloaded
   version (the hub went back a version) and a lab module (docs/hideout-lab.md), which joins the
   lab inventory from its head with nothing granted. Installing or updating to a version whose
   `hub` isn't served is still refused at install step (6) (`manifest.hub`, §7.4) before
@@ -1983,7 +1984,7 @@ Rules:
 
 ### 7.10 Safe mode and bisect (UX5)
 
-- After three hub restarts in five minutes the hub starts in **safe mode**: only the Modules page,
+- After three hub restarts in five minutes the hub starts in **safe mode**: only the Apps page,
   no module started, a banner with **Start normally**. Safe mode is a flag the hub sets for itself
   in `hideout.toml`, logged, cleared by **Start normally**. A restart counts when the last run
   ended without a clean exit: the running hub's mark in `run\hub-run.json` is still there.
@@ -2866,7 +2867,7 @@ anchor = "<trust anchor id>"      # §13.6; absent only for a developer-mode fol
   (`https://…/c/catalog.json` → `https://…/c/root.json`, query and fragment dropped), or the same
   folder. Each file's signature is the file's name plus `.minisig`. A source with a user anchor
   (§13.6) has no `root.json`.
-- Adding or removing a source is a user action in the Modules page or the CLI. A source is never
+- Adding or removing a source is a user action in the Apps page or the CLI. A source is never
   added by a module or an outside tool.
 - Removing a source leaves its installed modules installed; their updates stop.
 

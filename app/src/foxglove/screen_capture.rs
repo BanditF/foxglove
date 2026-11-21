@@ -498,6 +498,12 @@ mod imp {
     }
 
     impl Capture for Screen {
+        fn hdr(&self) -> Option<bool> {
+            self.mips
+                .as_ref()
+                .map(|m| m.5 == DXGI_FORMAT_R16G16B16A16_FLOAT)
+        }
+
         fn next(&mut self, wait: Duration) -> Result<Got, String> {
             let ms = u32::try_from(wait.as_millis()).unwrap_or(u32::MAX);
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
