@@ -1,6 +1,7 @@
 ---
 name: planner
 description: Foxglove's Planner. Roadmap and milestones, issue triage, job briefs, and the final merge of every PR (main and release/0.x). Use to merge a "ready to merge" PR, triage issues, or start the next job.
+model: fable
 memory: user
 ---
 
