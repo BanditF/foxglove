@@ -1415,6 +1415,11 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     )
                     .on_hover_text("Run this scene on the lights")
                     .on_disabled_hover_text(why_not);
+                if !start.enabled() {
+                    // A screen reader hears why Start is unavailable, not only a hover.
+                    ui.ctx()
+                        .accesskit_node_builder(start.id, |n| n.set_description(why_not));
+                }
                 if start.clicked() {
                     if start_allowed(v.look.kind, v.screen.allowed) {
                         out.push(Intent::Start);
@@ -3069,8 +3074,13 @@ pub(crate) mod tests {
         assert!(!stop_primary(&H::default()));
     }
 
-    /// Whether the page's Start button is disabled, and what its disabled hover says it is.
+    /// Whether the page's Start button is disabled.
     fn start_disabled(v: &View) -> bool {
+        start_node(v).0
+    }
+
+    /// Whether the page's Start button is disabled, and the reason a screen reader hears.
+    fn start_node(v: &View) -> (bool, Option<String>) {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let mut fonts = egui::FontDefinitions::default();
@@ -3089,12 +3099,13 @@ pub(crate) mod tests {
         });
         out.textures_delta.clear();
         let tree = out.platform_output.accesskit_update.expect("a tree");
-        tree.nodes
+        let n = tree
+            .nodes
             .iter()
             .map(|(_, n)| n)
             .find(|n| n.label() == Some("Start"))
-            .expect("the Start button")
-            .is_disabled()
+            .expect("the Start button");
+        (n.is_disabled(), n.description().map(str::to_string))
     }
 
     #[test]
@@ -3126,6 +3137,17 @@ pub(crate) mod tests {
             !start_disabled(&with(Status::Reading, true)),
             "nothing wrong"
         );
+        // The reason is on the button for a screen reader too, and only while it is disabled.
+        use crate::foxglove::temperature_card::{NEEDS_APP, NOT_ALLOWED};
+        assert_eq!(
+            start_node(&with(Status::AppOff, true)).1.as_deref(),
+            Some(NEEDS_APP)
+        );
+        assert_eq!(
+            start_node(&with(Status::NotAllowed, true)).1.as_deref(),
+            Some(NOT_ALLOWED)
+        );
+        assert_eq!(start_node(&with(Status::Reading, true)).1, None);
     }
 
     /// Whether the page draws `label`.

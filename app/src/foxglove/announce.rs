@@ -35,7 +35,11 @@ pub fn said(ctx: &egui::Context, id: egui::Id) -> Option<String> {
 /// Draws the live region: nothing to see, a polite node with the last thing said as its name.
 pub fn region(ui: &mut egui::Ui, id: egui::Id) {
     let text = said(ui.ctx(), id).unwrap_or_default();
-    let (_, r) = ui.allocate_exact_size(egui::Vec2::ZERO, egui::Sense::hover());
+    // The node's id is the region's own, not the next automatic one: an automatic id moves
+    // when the widgets drawn before it change, and a reader then sees a new node holding the old
+    // words (said twice, or a change missed).
+    let (_, rect) = ui.allocate_space(egui::Vec2::ZERO);
+    let r = ui.interact(rect, id.with("region"), egui::Sense::hover());
     let node = r.id;
     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text.clone()));
     // The name is the words (a plain label node keeps its text as a value, which a live region
@@ -276,6 +280,36 @@ mod tests {
             mem(&ctx).repeat.as_deref(),
             Some("Profile saved: a.foxprofile")
         );
+    }
+
+    #[test]
+    fn the_region_keeps_its_node_when_the_widgets_before_it_change() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let id = egui::Id::new("card");
+        say(&ctx, id, "Cool at 45 degrees Celsius");
+        let node_with = |before: usize| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                for n in 0..before {
+                    ui.label(format!("pill {n}"));
+                }
+                region(ui, id);
+            });
+            out.textures_delta.clear();
+            let tree = out.platform_output.accesskit_update.expect("a tree");
+            let live: Vec<_> = tree
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.label() == Some("Cool at 45 degrees Celsius"))
+                .map(|(k, n)| (*k, n.live()))
+                .collect();
+            assert_eq!(live.len(), 1, "{live:?}");
+            assert_eq!(live[0].1, Some(Live::Polite));
+            live[0].0
+        };
+        let a = node_with(0);
+        assert_eq!(node_with(3), a);
+        assert_eq!(node_with(1), a);
     }
 
     #[test]
