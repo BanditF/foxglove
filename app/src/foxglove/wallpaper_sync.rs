@@ -1583,7 +1583,7 @@ impl Apply for Cli {
         }
         let exe = self.exe.clone().ok_or("no Wallpaper Engine program")?;
         let (args, raw) = arguments(location, props);
-        run_cli(&exe, &args, &raw)
+        run_cli(&exe, &args, &raw, "push")
     }
 
     fn control(&mut self, command: &str) -> Result<(), String> {
@@ -1595,7 +1595,7 @@ impl Apply for Cli {
             return Err("Wallpaper Engine isn't running".into());
         }
         let exe = self.exe.clone().ok_or("no Wallpaper Engine program")?;
-        run_cli(&exe, &["-control".into(), command.into()], "")
+        run_cli(&exe, &["-control".into(), command.into()], "", command)
     }
 
     fn interfaces(&mut self) -> Vec<(String, String)> {
@@ -1607,26 +1607,48 @@ impl Apply for Cli {
     }
 }
 
+/// Whether an exit code other than 0 counts as a failed command (#1399). Off until the lab
+/// check has recorded what the real program exits with: nothing documents what
+/// `wallpaper64.exe -control ...` or `applyProperties` exit with, and a success that exits
+/// non-zero would make every pause, play and push read as failed. Until then such a code is
+/// only logged, with the command, in foxglove.log. Turn this on once the codes are known.
+const NONZERO_EXIT_FAILS: bool = false;
+
 /// Runs one Wallpaper Engine command and says whether it went through (#1399): the program
-/// has to start, end within `PUSH_LIMIT` and exit with code 0. Anything else is a failure, never
-/// a crash.
-///
-/// The exit codes are NOT verified against the real program: nothing documents what
-/// `wallpaper64.exe -control ...` or `applyProperties` exit with when the command is refused,
-/// and the lab check could not run yet (see #1399). The rule here is the usual one, 0 = done.
-/// The failure text carries the code, so one look at foxglove.log settles it.
+/// has to start and end within `PUSH_LIMIT`. Anything else is a failure, never a crash. An
+/// exit code other than 0 is logged (see `NONZERO_EXIT_FAILS`); `what` names the command there.
 #[cfg(windows)]
-fn run_cli(exe: &std::path::Path, args: &[String], raw: &str) -> Result<(), String> {
-    run_cli_with(exe, args, raw, PUSH_LIMIT)
+fn run_cli(exe: &std::path::Path, args: &[String], raw: &str, what: &str) -> Result<(), String> {
+    let code = run_cli_with(exe, args, raw, PUSH_LIMIT)?;
+    if let Some(odd) = exit_result(code, NONZERO_EXIT_FAILS)? {
+        note_odd_exit(what, &odd);
+    }
+    Ok(())
 }
 
+/// One log line per new (command, code) pair, not one per push.
+#[cfg(windows)]
+fn note_odd_exit(what: &str, odd: &str) {
+    static LAST: Mutex<String> = Mutex::new(String::new());
+    let line = format!("{what} {odd}");
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last != line {
+        eprintln!(
+            "Foxglove: wallpaper sync: {line}; not counted as a failure until the exit codes are checked (#1399)"
+        );
+        *last = line;
+    }
+}
+
+/// Runs the command and hands back its exit code. `Err` only when it couldn't start or didn't
+/// end within `limit` (it is stopped then).
 #[cfg(windows)]
 fn run_cli_with(
     exe: &std::path::Path,
     args: &[String],
     raw: &str,
     limit: Duration,
-) -> Result<(), String> {
+) -> Result<Option<u32>, String> {
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
@@ -1653,27 +1675,39 @@ fn run_cli_with(
         let _ = child.wait();
         return Err(format!("no answer in {} s", limit.as_secs()));
     }
-    match child.wait() {
-        // Windows exit codes are unsigned; `code()` hands them over as i32.
-        Ok(status) => exit_result(status.code().map(|c| c as u32)),
-        Err(e) => Err(format!("no exit code: {e}")),
-    }
+    // Windows exit codes are unsigned; `code()` hands them over as i32.
+    Ok(child
+        .wait()
+        .ok()
+        .and_then(|status| status.code())
+        .map(|c| c as u32))
 }
 
-/// What an exit code means: 0 went through, anything else did not. Codes from 0x8000_0000 up
-/// are Windows status codes (a crash, for one) and read better in hex.
+/// What an exit code means. 0 went through: `Ok(None)`. Anything else is `Err` when `strict`,
+/// and `Ok(Some(text))` to log when not. Codes from 0x8000_0000 up are Windows status codes (a
+/// crash, for one) and read better in hex.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn exit_result(code: Option<u32>) -> Result<(), String> {
-    match code {
-        Some(0) => Ok(()),
-        Some(c) if c >= 0x8000_0000 => Err(format!("exited with code 0x{c:08X}")),
-        Some(c) => Err(format!("exited with code {c}")),
-        None => Err("ended with no exit code".into()),
+fn exit_result(code: Option<u32>, strict: bool) -> Result<Option<String>, String> {
+    let odd = match code {
+        Some(0) => return Ok(None),
+        Some(c) if c >= 0x8000_0000 => format!("exited with code 0x{c:08X}"),
+        Some(c) => format!("exited with code {c}"),
+        None => "ended with no exit code".to_string(),
+    };
+    if strict {
+        Err(odd)
+    } else {
+        Ok(Some(odd))
     }
 }
 
 #[cfg(not(windows))]
-fn run_cli(_exe: &std::path::Path, _args: &[String], _raw: &str) -> Result<(), String> {
+fn run_cli(
+    _exe: &std::path::Path,
+    _args: &[String],
+    _raw: &str,
+    _what: &str,
+) -> Result<(), String> {
     Err("Wallpaper Engine runs on Windows only".into())
 }
 
@@ -2257,7 +2291,7 @@ mod tests {
             .unwrap();
         let props = properties_with(&live_state(), None, Supports::ALL, Some(&ticket));
         let (args, raw) = arguments(WE_LEFT, &props);
-        let done = run_cli(std::path::Path::new(&exe), &args, &raw);
+        let done = run_cli(std::path::Path::new(&exe), &args, &raw, "push");
         std::env::remove_var("WE_SHIM_TRACE");
         let captured = std::fs::read_to_string(&trace).unwrap_or_default();
         let _ = std::fs::remove_file(&trace);
@@ -2271,21 +2305,32 @@ mod tests {
     }
 
     #[test]
-    fn only_exit_code_zero_went_through() {
-        assert_eq!(exit_result(Some(0)), Ok(()));
-        assert_eq!(exit_result(Some(1)), Err("exited with code 1".into()));
+    fn a_non_zero_exit_code_fails_only_under_the_strict_rule() {
+        for strict in [false, true] {
+            assert_eq!(exit_result(Some(0), strict), Ok(None));
+        }
         assert_eq!(
-            exit_result(Some(0xC000_0005)),
+            exit_result(Some(1), false),
+            Ok(Some("exited with code 1".into()))
+        );
+        assert_eq!(
+            exit_result(Some(0xC000_0005), false),
+            Ok(Some("exited with code 0xC0000005".into()))
+        );
+        assert!(exit_result(None, false).unwrap().is_some());
+        assert_eq!(exit_result(Some(1), true), Err("exited with code 1".into()));
+        assert_eq!(
+            exit_result(Some(0xC000_0005), true),
             Err("exited with code 0xC0000005".into())
         );
-        assert!(exit_result(None).is_err());
+        assert!(exit_result(None, true).is_err());
     }
 
     /// Against Windows' own `cmd.exe` and `ping.exe`, with no window; nothing here starts
     /// Wallpaper Engine.
     #[cfg(windows)]
     #[test]
-    fn a_command_that_exits_non_zero_or_never_ends_has_failed() {
+    fn a_command_hands_back_its_exit_code_and_fails_when_it_never_starts_or_ends() {
         let system =
             std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
         let cmd = system.join("cmd.exe");
@@ -2297,8 +2342,14 @@ mod tests {
                 Duration::from_secs(20),
             )
         };
-        assert_eq!(run("0"), Ok(()));
-        assert_eq!(run("3"), Err("exited with code 3".into()));
+        assert_eq!(run("0"), Ok(Some(0)));
+        assert_eq!(run("3"), Ok(Some(3)));
+        // The whole path: until the real codes are checked (#1399) a non-zero exit is
+        // logged and not a failure. This flips with `NONZERO_EXIT_FAILS`.
+        assert_eq!(
+            run_cli(&cmd, &["/c".into(), "exit".into(), "3".into()], "", "test").is_err(),
+            NONZERO_EXIT_FAILS
+        );
         let gone = run_cli_with(&system.join("no-such-program.exe"), &[], "", PUSH_LIMIT);
         assert!(gone.unwrap_err().starts_with("couldn't start: "));
         // About four seconds of loopback pings against a 200 ms limit: stopped, and said so.
