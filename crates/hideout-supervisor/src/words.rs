@@ -21,6 +21,16 @@ pub const DIDNT_START: &str = "It didn't start. Open log to see why.";
 pub const WAITS_FOR_OK: &str = "Waits for your OK";
 /// The row's button for it: opens the permission dialog.
 pub const REVIEW_OK: &str = "Review\u{2026}";
+
+/// A button's label as a sentence names it ("Press Review to give it."): without the trailing
+/// ellipsis the button itself wears.
+pub fn named(button: &str) -> &str {
+    let b = button.trim_end();
+    b.strip_suffix('\u{2026}')
+        .or_else(|| b.strip_suffix("..."))
+        .unwrap_or(b)
+        .trim_end()
+}
 /// The ladder's second step line.
 pub const DIDNT_HELP: &str = "Starting again didn't help last time.";
 /// `install-failed` after a failed pid or exe-hash check at `initialize` (#959).
@@ -776,6 +786,14 @@ pub fn not_carried(why: NotCarried, folder: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_button_named_in_a_sentence_loses_its_ellipsis() {
+        assert_eq!(named(REVIEW_OK), "Review");
+        assert_eq!(named("Turn on..."), "Turn on");
+        assert_eq!(named(TURN_ON), "Turn on");
+        assert_eq!(named("Wait\u{2026} what"), "Wait\u{2026} what");
+    }
 
     #[test]
     fn no_ids_in_drawn_strings() {

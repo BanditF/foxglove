@@ -716,7 +716,7 @@ pub mod words {
     pub const HUB_ITSELF: &str = "Hideout closed with no apps on.";
     pub const HUB_ITSELF_LINE: &str = "The problem is in Hideout itself, not an app.";
     /// The safe-mode banner's line after Stop finding.
-    pub const STOPPED: &str = "Stopped finding. Nothing was changed.";
+    pub const STOPPED: &str = "Stopped finding. Nothing changed.";
     /// The banner's line when no module would start (no link then).
     pub const NONE_ON: &str = "No apps are on, so the problem is in Hideout itself.";
     pub const TRAY_FOUND: &str = "Hideout \u{b7} found the app";

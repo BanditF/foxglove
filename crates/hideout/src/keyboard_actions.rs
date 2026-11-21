@@ -177,16 +177,16 @@ impl GrantUi {
         };
         if let Err(e) = r {
             log::warn!("keyboard grant: {a:?} failed ({e})");
-            self.note = Some(
-                match a {
-                    Answer::Allow if e == MISMATCH => {
-                        "Foxglove wasn't allowed: its app file isn't the one shown."
-                    }
-                    Answer::Allow => "Foxglove couldn't be allowed. Try again from Turn on\u{2026}",
-                    Answer::NotNow => "Your answer couldn't be saved.",
+            self.note = Some(match a {
+                Answer::Allow if e == MISMATCH => {
+                    "Foxglove wasn't allowed: its app file isn't the one shown.".to_string()
                 }
-                .into(),
-            );
+                Answer::Allow => format!(
+                    "Foxglove couldn't be allowed. Press {} to try again.",
+                    hideout_supervisor::words::named(hideout_shell::keyboard_grant::TURN_ON)
+                ),
+                Answer::NotNow => "Your answer couldn't be saved.".to_string(),
+            });
         } else {
             self.note = None;
         }

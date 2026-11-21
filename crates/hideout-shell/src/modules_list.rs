@@ -105,7 +105,7 @@ pub fn turn_on_failed(name: &str, why: &str) -> String {
     } else if why.contains("OK first") {
         format!(
             "Couldn't turn on {name}: it still needs your OK. Press {} to give it.",
-            words::REVIEW_OK
+            words::named(words::REVIEW_OK)
         )
     } else {
         format!(
@@ -273,7 +273,7 @@ pub enum Find<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Banner<'a> {
     pub line: &'a str,
-    /// "Stopped finding. Nothing was changed."
+    /// "Stopped finding. Nothing changed."
     pub note: Option<&'a str>,
     pub find: Find<'a>,
 }
@@ -930,6 +930,14 @@ mod tests {
             "Couldn't turn on Art: the app didn't start. Try Turn on again."
         );
         assert!(!other.contains("Os"));
+        // A button named in a sentence has no ellipsis.
+        assert_eq!(
+            turn_on_failed(
+                "Art",
+                "Hideout needs your OK first. Press Turn on\u{2026} to review."
+            ),
+            "Couldn't turn on Art: it still needs your OK. Press Review to give it."
+        );
         let mut a = RemoveAsk::default();
         a.set_turn_on_failed("m", other.clone());
         assert_eq!(a.turn_on_line("m"), Some(other.as_str()));

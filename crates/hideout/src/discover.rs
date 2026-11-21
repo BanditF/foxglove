@@ -38,16 +38,16 @@ pub mod words {
         "Choose the folder the app was installed in. Hideout looks there for the file that describes the app.";
     pub const NOT_NOW: &str = "Not now";
     pub const LIST_NOT_READ: &str =
-        "The app was added, but the list could not be refreshed. Close Hideout and open it again.";
+        "The app was added, but the list couldn't be refreshed. Close Hideout and open it again.";
     pub const BROWSE: &str = "Browse\u{2026}";
     pub const CANCEL: &str = "Cancel";
     pub const NO_FILE: &str =
         "Hideout can't find the app here. Choose the folder the app was installed in.";
     // Each refusal ends with a next step that Browse can do from where it is shown.
     pub const NOT_READ: &str =
-        "That app's file could not be read. Reinstall the app, then try again.";
+        "That app's file couldn't be read. Reinstall the app, then try again.";
     pub const NOT_ADDABLE: &str =
-        "That app can't be added to Hideout. Choose another app's folder.";
+        "That app can't be added to Hideout. To add a different app, choose its folder.";
     /// Also shown when the folder is on this PC but the app it names is on another drive.
     pub const NOT_THIS_PC: &str =
         "Hideout adds apps only from this PC's own drive. Choose a folder there.";
@@ -63,7 +63,7 @@ pub mod words {
     }
     /// Anything else that went wrong while adding (the raw reason goes to the log).
     pub fn not_saved(name: &str) -> String {
-        format!("Hideout could not save {name}. Try again.")
+        format!("Hideout couldn't save {name}. Try again.")
     }
     /// The app's file changed between the look and the add.
     pub fn changed(name: &str) -> String {
@@ -2273,11 +2273,11 @@ mod tests {
     fn a_refused_pick_says_what_to_do_next() {
         assert_eq!(
             words::NOT_READ,
-            "That app's file could not be read. Reinstall the app, then try again."
+            "That app's file couldn't be read. Reinstall the app, then try again."
         );
         assert_eq!(
             words::NOT_ADDABLE,
-            "That app can't be added to Hideout. Choose another app's folder."
+            "That app can't be added to Hideout. To add a different app, choose its folder."
         );
         assert_eq!(
             words::NOT_THIS_PC,
@@ -2293,7 +2293,7 @@ mod tests {
             let last = w.trim_end_matches('.').rsplit(". ").next().unwrap();
             assert!(w.contains(". "), "{w}");
             assert!(
-                last.starts_with("Choose ") || last.ends_with("try again"),
+                last.to_lowercase().contains("choose ") || last.ends_with("try again"),
                 "{w}"
             );
         }

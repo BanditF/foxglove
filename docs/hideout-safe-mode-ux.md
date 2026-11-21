@@ -149,7 +149,7 @@ One notification, only when the result is ready and the window is closed: "Found
 ## Stopping
 
 **Stop finding** (bar, tray menu, between-rounds card, the paused and asked questions) stops the
-round's modules and returns to the safe-mode banner with the line "Stopped finding. Nothing was
+round's modules and returns to the safe-mode banner with the line "Stopped finding. Nothing
 changed." No confirmation: nothing is saved, and the banner still has **Start normally**. Stop goes
 back to safe mode, not to a normal start, because the cause is still unknown.
 
@@ -194,7 +194,7 @@ or Stop.
 | Found | "<Module> seems to make Hideout close." / "Hideout closed in rounds <list> with <Module> on, and stayed open without it." |
 | Not found | "Hideout stayed open in every round." / "It may need two modules on together, or the problem has passed." |
 | Hideout itself | "Hideout closed with no modules on." / "The problem is in Hideout itself, not a module." |
-| Stopped | "Stopped finding. Nothing was changed." |
+| Stopped | "Stopped finding. Nothing changed." |
 | Tray | "Hideout · finding the module (round <k> of <n>)" |
 
 "Seems" stays: one close can be chance. Never shown: exit codes, marker files, state ids, "bisect".
