@@ -152,10 +152,10 @@ pub(super) fn layers(facts: &Facts, active: &[u8], names: &[Option<String>]) {
         "keyboard.layer",
         Value::Int(active.iter().copied().max().unwrap_or(0).into()),
     );
-    facts.set(
-        "keyboard.game_mode",
-        Value::Bool(super::wallpaper_sync::game_mode(active, names)),
-    );
+    let game = super::wallpaper_sync::game_mode(active, names);
+    facts.set("keyboard.game_mode", Value::Bool(game));
+    // Sound holds the keyboard's lights steady meanwhile.
+    super::sound_feed::set_game(game);
     match super::wallpaper_sync::layer_name(active, names) {
         Some(name) => facts.set("keyboard.layer_name", Value::Text(name)),
         None => {

@@ -211,7 +211,7 @@ The params and results are in the schema. Notes:
     `... temperature fallback (no reading)` (#1378).
   - `scene.start {look, params?}` (`lighting.write`) starts a look as the Scenes page's Start does
     and answers `{look, scene}`. `look` is `scanline`, `sweep`, `ripple`, `breathe`, `gradient`,
-    `drift`, `two-tone`, `tide` or `temperature`. `params` (all optional; one left out keeps what the user saved on the Scenes page for that look, or Foxglove's default when another look was chosen):
+    `drift`, `two-tone`, `tide`, `temperature` or `sound` (Sound takes `palette` only; the caller never gets the level, and `lights.status` says only `look: sound`). `params` (all optional; one left out keeps what the user saved on the Scenes page for that look, or Foxglove's default when another look was chosen):
     `palette` (one of Foxglove's own names), `speed` 1-10, `direction` down/up/right/left,
     `width_mm` 20-400, `colour` `#RRGGBB`, `background` night/off, and for Temperature `source`
     (`gpu`; lower case letters, digits, `_`, `-`, up to 24), `colours` palette/cool-to-hot,

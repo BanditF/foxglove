@@ -409,6 +409,13 @@ scanline can run down the monitors, through the case's fans and on into the keys
   the two ends (20 to 100 °C in steps of 5, at least 10 apart). The colour changes at most
   about once a second (once in ten seconds while a game runs). With no reading the lights show
   a steady calm colour; a missing reading is never shown as 0.
+- **Sound** (Effects): your lights get brighter as your PC gets louder, in the palette's colours,
+  and rest at a dim colour when nothing plays or the sound is muted. **Smoothing:** Calm or
+  Quick (Calm only while Windows' animation effects are off). The bar under it shows the level
+  from quiet to loud while the scene runs. Foxglove only reads how loud your PC's sound is. It
+  records nothing and never uses the microphone. While you play a game the keyboard holds one
+  steady colour and the PC's lights keep following. It follows the speakers or headset Windows
+  plays through, and pauses while the PC is locked, the display is off or Foxglove is paused.
 - **Start** sends the scene to the lights; **Stop** puts back the colours from before (or the
   ones you picked for the keyboard or the case meanwhile). A plugin's notification still shows
   over a scene, and nothing is sent while the PC is locked, the display is off or Foxglove is

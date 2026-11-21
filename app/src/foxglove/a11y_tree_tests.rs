@@ -81,6 +81,7 @@ fn the_scenes_page_has_an_effect_group_a_start_button_and_a_live_region() {
             ..Look::default()
         },
         running: None,
+        sound: Default::default(),
         temperature: TempView {
             status: Status::Reading,
             hosted: true,

@@ -92,6 +92,21 @@ pub struct Peaks {
     pub sessions: Vec<Meter>,
 }
 
+/// What the default output device says of its sound now, for lights that follow loudness (the
+/// Sound effect): one meter read and nothing else. A level, never samples: nothing is captured,
+/// and no input device (microphone) is opened or read.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Output {
+    /// There is a default output device.
+    pub device: bool,
+    /// The device's own peak, 0.0-1.0: the mix, before its volume. `None` when it can't be read.
+    pub peak: Option<f32>,
+    /// Master is muted or at 0 (the meter is before the volume, so it still moves).
+    pub muted: bool,
+    /// How many sessions are Active (something is playing, or says it is).
+    pub active: usize,
+}
+
 /// What changed, for the knob: it re-reads what it needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
@@ -613,7 +628,7 @@ pub fn display_name(
 mod imp {
     use super::{
         display_name, dos_path, exe_key, has_app_window, has_window, id_path, package_key,
-        step_level, Change, Meter, Owner, Peaks, Session, Sessions,
+        step_level, Change, Meter, Output, Owner, Peaks, Session, Sessions,
     };
     use crate::master::{self, AppVolume, Audio, Device, Live, Soft};
     use std::collections::HashMap;
@@ -661,6 +676,8 @@ mod imp {
     enum Req {
         Active(SyncSender<std::result::Result<Vec<Session>, String>>),
         Peaks(SyncSender<std::result::Result<Peaks, String>>),
+        /// The device's level alone ([`Output`]): one meter read.
+        Output(SyncSender<std::result::Result<Output, String>>),
         Step(String, i32, SyncSender<std::result::Result<u8, String>>),
         Mute(String, bool, SyncSender<std::result::Result<bool, String>>),
         Level(String, SyncSender<std::result::Result<(u8, bool), String>>),
@@ -692,6 +709,23 @@ mod imp {
         Recheck,
         /// Foxglove quits: the device and the apps back to Windows' own levels.
         Stop(SyncSender<()>),
+    }
+
+    impl Req {
+        /// An event after which [`Output`] may read differently (a session came, went or changed
+        /// state, master changed, the device changed): [`watch_output`]'s listener hears it.
+        fn changes_output(&self) -> bool {
+            matches!(
+                self,
+                Req::Master(..)
+                    | Req::Created(_)
+                    | Req::State(..)
+                    | Req::Disconnected(_)
+                    | Req::Device
+                    | Req::Endpoint(_)
+                    | Req::Recheck
+            )
+        }
     }
 
     #[implement(IAudioSessionNotification)]
@@ -1670,6 +1704,30 @@ mod imp {
                         .collect();
                     let _ = reply.send(Ok(Peaks { endpoint, sessions }));
                 }
+                Req::Output(reply) => {
+                    // SAFETY: COM call on this MTA thread.
+                    let peak = self
+                        .endpoint_meter
+                        .as_ref()
+                        .and_then(|m| unsafe { m.GetPeakValue() }.ok());
+                    // Master as the knob shows it (Foxglove's own on a device it sets, #1064).
+                    let master = self
+                        .soft
+                        .as_ref()
+                        .and_then(Soft::master)
+                        .or_else(|| self.endpoint.as_ref().and_then(|e| master_level(e).ok()));
+                    let active = self
+                        .sessions
+                        .iter()
+                        .filter(|t| t.state == AudioSessionStateActive)
+                        .count();
+                    let _ = reply.send(Ok(Output {
+                        device: self.endpoint.is_some(),
+                        peak,
+                        muted: master.is_some_and(|(percent, muted)| muted || percent == 0),
+                        active,
+                    }));
+                }
                 Req::Step(id, steps, reply) => {
                     if let Some(soft) = self.soft.as_mut() {
                         let mut audio = Com {
@@ -2136,6 +2194,33 @@ mod imp {
             .map_or(0, |d| (d.as_secs() / 86_400) as i64)
     }
 
+    /// Who hears that [`output`] may read differently now.
+    static OUTPUT_WATCH: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+
+    /// `changed` hears each event after which [`output`] may read differently (on the sessions'
+    /// thread: only enqueue or wake). One listener; a new one replaces the last.
+    pub fn watch_output(changed: impl Fn() + Send + Sync + 'static) {
+        *OUTPUT_WATCH.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(changed));
+    }
+
+    fn output_changed() {
+        let watch = OUTPUT_WATCH
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(changed) = watch {
+            changed();
+        }
+    }
+
+    /// The default output device's level now ([`Output`]): one read, asked of the sessions'
+    /// thread. An error when that thread isn't running or doesn't answer.
+    pub fn output() -> std::result::Result<Output, String> {
+        let tx = CONTROL.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let tx = tx.ok_or_else(|| "the audio sessions' thread isn't running".to_string())?;
+        Handle(tx).ask(Req::Output)
+    }
+
     /// The per-device setting changed, or the Knob card is drawn: the device's facts are read
     /// again and the software master follows the setting (#1064).
     pub fn recheck() {
@@ -2246,6 +2331,8 @@ mod imp {
                                     w.run_due();
                                     let act = w.follow.due(Instant::now());
                                     w.look(act);
+                                    // The default device may have been opened again.
+                                    output_changed();
                                     continue;
                                 }
                                 Err(RecvTimeoutError::Disconnected) => break,
@@ -2256,7 +2343,11 @@ mod imp {
                             Err(_) => break,
                         },
                     };
+                    let edge = req.changes_output();
                     w.handle(req);
+                    if edge {
+                        output_changed();
+                    }
                 }
                 let _ = &w.devices_client;
             })
@@ -2266,7 +2357,7 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::{recheck, start, stop};
+pub use imp::{output, recheck, start, stop, watch_output};
 
 /// Off Windows there are no sessions.
 #[cfg(not(windows))]
@@ -2279,6 +2370,14 @@ pub fn start(
 
 #[cfg(not(windows))]
 pub fn recheck() {}
+
+#[cfg(not(windows))]
+pub fn output() -> Result<Output, String> {
+    Err("no audio sessions on this system".into())
+}
+
+#[cfg(not(windows))]
+pub fn watch_output(_changed: impl Fn() + Send + Sync + 'static) {}
 
 #[cfg(not(windows))]
 pub fn stop(_within: std::time::Duration) {}

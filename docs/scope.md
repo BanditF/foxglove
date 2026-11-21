@@ -11,7 +11,8 @@ Foxglove is a Windows app for the **keyboard and the lights and screens around i
   first in line.
 - **PC lighting and screens:** case lights (fan lighting included; fan speed is not),
   peripherals' lights (through Windows Dynamic Lighting where it can), and scenes that tie them
-  to the keyboard and the wallpaper.
+  to the keyboard and the wallpaper. A scene may follow how loud the PC plays (the Sound
+  effect): it reads the output level only, never the microphone, and records nothing.
 - **Device management on Windows:** finding devices, their state, and one place to see them.
 - **Read-only PC monitoring:** temperatures, clocks, fan speeds and load, shown on a page or tile
   or used as a lighting input. Reading only: changing a fan, pump or power setting stays out of

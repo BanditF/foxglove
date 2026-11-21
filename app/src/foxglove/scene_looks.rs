@@ -57,10 +57,14 @@ pub enum Kind {
     /// sensor through the hub, so it needs the PC sensors app. The Scenes page offers it
     /// (slice 3); its lights are [`super::temperature_out`] (slice 4).
     Temperature,
+    /// Brightness from how loud the PC is playing ([`super::sound`]): reads the output
+    /// device's level, never the microphone. Its card is [`super::sound_card`], its lights
+    /// [`super::sound_out`].
+    Sound,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Scanline,
         Kind::Sweep,
         Kind::Ripple,
@@ -71,6 +75,7 @@ impl Kind {
         Kind::Tide,
         Kind::ScreenGlow,
         Kind::Temperature,
+        Kind::Sound,
     ];
 
     pub fn label(self) -> &'static str {
@@ -86,6 +91,7 @@ impl Kind {
             Kind::Tide => "Tide effect",
             Kind::ScreenGlow => super::screen_glow::NAME,
             Kind::Temperature => super::temperature::NAME,
+            Kind::Sound => super::sound::NAME,
         }
     }
 
@@ -107,6 +113,7 @@ impl Kind {
             }
             Kind::ScreenGlow => super::screen_glow::DESCRIPTION,
             Kind::Temperature => super::temperature::DESCRIPTION,
+            Kind::Sound => super::sound::DESCRIPTION,
         }
     }
 
@@ -119,7 +126,12 @@ impl Kind {
         // Two-tone keeps the palette rule's 8 s loop (docs/palette.md).
         !matches!(
             self,
-            Kind::Gradient | Kind::TwoTone | Kind::Tide | Kind::ScreenGlow | Kind::Temperature
+            Kind::Gradient
+                | Kind::TwoTone
+                | Kind::Tide
+                | Kind::ScreenGlow
+                | Kind::Temperature
+                | Kind::Sound
         )
     }
 
@@ -137,6 +149,11 @@ impl Kind {
     /// Reads a temperature from the hub's sensors: Temperature.
     pub fn reads_temperature(self) -> bool {
         self == Kind::Temperature
+    }
+
+    /// Reads how loud the PC is playing: Sound.
+    pub fn reads_sound(self) -> bool {
+        self == Kind::Sound
     }
 
     pub fn uses_direction(self) -> bool {
@@ -457,6 +474,13 @@ pub struct Look {
     pub cool_c: u16,
     #[serde(skip_serializing_if = "hot_is_default")]
     pub hot_c: u16,
+    /// Sound's smoothing: Calm, or Quick.
+    #[serde(skip_serializing_if = "sound_smoothing_is_default")]
+    pub sound_smoothing: super::sound::Smooth,
+}
+
+fn sound_smoothing_is_default(v: &super::sound::Smooth) -> bool {
+    *v == super::sound::Smooth::default()
 }
 
 // Saved only when changed: a store written before Temperature stays byte for byte what it was,
@@ -491,6 +515,7 @@ impl Default for Look {
             temp_colours: super::temperature::Colours::default(),
             cool_c: super::temperature::DEFAULT_COOL_C,
             hot_c: super::temperature::DEFAULT_HOT_C,
+            sound_smoothing: super::sound::Smooth::default(),
         }
     }
 }
@@ -539,6 +564,18 @@ impl Look {
             ramp: super::temperature::ramp(l.temp_colours, &l.palette),
             fallback: super::temperature::fallback(l.temp_colours, &l.palette),
             background: l.background.rgb(),
+            calm: !super::screen_glow::animations_on(),
+        })
+    }
+
+    /// What Sound's light output needs, for a Sound look (`None` for any other).
+    pub fn sound(&self) -> Option<super::sound_out::SoundLook> {
+        if self.kind != Kind::Sound {
+            return None;
+        }
+        Some(super::sound_out::SoundLook {
+            colours: super::sound::colours(&self.palette),
+            smooth: self.sound_smoothing,
             calm: !super::screen_glow::animations_on(),
         })
     }
@@ -616,6 +653,17 @@ impl Look {
                 to: super::temperature::fallback(l.temp_colours, &l.palette),
                 period_ms: super::temperature::FALLBACK_MS,
             },
+            // The light output is slice 4; until then, and wherever there is no level to show
+            // (the wallpaper sync, the facts), Sound is its quiet look: the floor colour,
+            // steady. Never a made-up level.
+            Kind::Sound => {
+                let floor = super::sound::colour_at(0.0, super::sound::colours(&l.palette));
+                Effect::Breathe {
+                    from: floor,
+                    to: floor,
+                    period_ms: super::temperature::FALLBACK_MS,
+                }
+            }
         }
     }
 }
@@ -770,6 +818,14 @@ pub fn effect_presets() -> Vec<Preset> {
                 ..Look::default()
             },
         ),
+        // Last: it follows how loud the PC plays, in the palette's colours (Bandit orange), Calm.
+        preset(
+            super::sound::NAME,
+            Look {
+                kind: Kind::Sound,
+                ..Look::default()
+            },
+        ),
     ]
 }
 
@@ -912,6 +968,7 @@ impl FileLook {
             temp_colours: d.temp_colours,
             cool_c: d.cool_c,
             hot_c: d.hot_c,
+            sound_smoothing: d.sound_smoothing,
         };
         if !SPEEDS.contains(&look.speed) || !WIDTHS.contains(&look.width_mm) {
             return Err("speed or width out of range".into());
@@ -1272,6 +1329,8 @@ mod tests {
                 Kind::ScreenGlow => "Screen".to_string(),
                 // Where the look has no reading to show (the facts), its fallback look.
                 Kind::Temperature => "Breathe".to_string(),
+                // Where there is no level to show, its quiet look: one steady colour.
+                Kind::Sound => "Breathe".to_string(),
                 k => format!("{k:?}"),
             };
             assert!(name.starts_with(&want), "{k:?}: {name}");
@@ -1513,7 +1572,6 @@ mod tests {
     /// the looks that were there are as they were.
     #[test]
     fn temperature_is_offered_with_one_preset_and_the_others_are_unchanged() {
-        assert_eq!(Kind::ALL.len(), 10);
         assert_eq!(Kind::ALL[9], Kind::Temperature);
         assert_eq!(
             &Kind::ALL[..9],
@@ -1552,5 +1610,68 @@ mod tests {
         }
         .effect(&RoomMap::default());
         assert!(matches!(e, Effect::Breathe { .. }), "{e:?}");
+    }
+
+    /// Sound's key: a store from before it loads Calm and saves without the key; Quick
+    /// round-trips.
+    #[test]
+    fn the_sound_key_round_trips_and_old_stores_are_unchanged() {
+        use super::super::sound::Smooth;
+        let old = serde_json::to_string(&Look::default()).unwrap();
+        assert!(!old.contains("sound"), "{old}");
+        let back: Look = serde_json::from_str(&old).unwrap();
+        assert_eq!(back.sound_smoothing, Smooth::Calm);
+        assert_eq!(serde_json::to_string(&back).unwrap(), old);
+        let look = Look {
+            kind: Kind::Sound,
+            sound_smoothing: Smooth::Quick,
+            ..Look::default()
+        };
+        let text = serde_json::to_string(&look).unwrap();
+        assert!(text.contains(r#""kind":"sound""#), "{text}");
+        assert!(text.contains(r#""sound_smoothing":"quick""#), "{text}");
+        assert_eq!(serde_json::from_str::<Look>(&text).unwrap(), look);
+    }
+
+    /// Sound is offered: the page's list ends with it, one built-in preset (Bandit orange,
+    /// Calm), and the looks that were there are as they were. Where there is no level to show
+    /// it is its quiet look, the palette's main colour at the floor, steady.
+    #[test]
+    fn sound_is_offered_with_one_preset_and_falls_back_to_its_quiet_look() {
+        assert_eq!(Kind::ALL.len(), 11);
+        assert_eq!(Kind::ALL[10], Kind::Sound);
+        let ours: Vec<_> = built_in()
+            .into_iter()
+            .filter(|p| p.look.kind == Kind::Sound)
+            .collect();
+        assert_eq!(ours.len(), 1);
+        assert_eq!(ours[0].name, "Sound");
+        assert_eq!(
+            ours[0].look,
+            Look {
+                kind: Kind::Sound,
+                ..Look::default()
+            }
+        );
+        assert_eq!(built_in().last().map(|p| p.name.as_str()), Some("Sound"));
+        assert!(!Kind::Sound.uses_speed() && !Kind::Sound.uses_colour());
+        assert!(Kind::Sound.uses_palette());
+        assert!(Kind::Sound.reads_sound());
+        assert!(!Kind::Temperature.reads_sound());
+        assert!(!Kind::Sound.reads_temperature());
+        assert_eq!(Kind::Sound.label(), "Sound");
+        let look = Look {
+            kind: Kind::Sound,
+            ..Look::default()
+        };
+        let floor =
+            super::super::sound::colour_at(0.0, super::super::sound::colours(&look.palette));
+        match look.effect(&RoomMap::default()) {
+            Effect::Breathe { from, to, .. } => {
+                assert_eq!(from, floor);
+                assert_eq!(to, floor);
+            }
+            e => panic!("{e:?}"),
+        }
     }
 }

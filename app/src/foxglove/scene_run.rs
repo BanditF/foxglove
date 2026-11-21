@@ -88,6 +88,7 @@ use super::scene_lamps::{LampStatus, LampWriter, Poster};
 use super::scene_output::{
     CaseTarget, Hsb, KeyboardEffect, KeyboardFrame, KeyboardLamps, LampTarget, Out, Outputs,
 };
+use super::sound_out::SoundLook;
 use super::temperature_out::TempLook;
 
 /// The lighting-lease connection a scene holds the keyboard under (no plugin has it: plugin
@@ -239,7 +240,7 @@ enum Ctl {
     /// Another look for the running scene, its name, and whether it reads the PC sensors'
     /// temperature (Temperature): said with the look, so a change between two looks that both
     /// read never ends and begins the listening.
-    Effect(String, Box<Effect>, Option<Box<TempLook>>),
+    Effect(String, Box<Effect>, Option<Box<Follows>>),
     /// A key was pressed at this row and column (#489): a ring from it.
     KeyRipple(usize, usize),
     /// The top layer changed (#489): a sweep in this colour.
@@ -266,6 +267,9 @@ enum Ctl {
     /// The running look reads the PC sensors' temperature (or no longer does): Foxglove listens
     /// to them only meanwhile, and only while nothing holds the scene (the listener rule).
     TempLook(Box<TempLook>),
+    /// The running look is Sound: the scene follows the output device's level meanwhile, and
+    /// only while nothing holds the scene (the same listener rule).
+    SoundLook(SoundLook),
     /// The PC sensors' reading changed: Temperature's colour follows.
     Reading,
     Stop,
@@ -530,10 +534,20 @@ pub fn running_look() -> Option<(String, Effect, Clock)> {
         .map(|r| (r.name.clone(), r.effect.clone(), r.clock))
 }
 
-/// Gives the running scene another look; `temperature` is the look's Temperature output when it
-/// is Temperature, so the scene keeps (or starts) listening to the PC sensors, and any other look
-/// stops it.
-pub fn set_look(name: &str, effect: Effect, temperature: Option<TempLook>) {
+/// What a look reads from outside the scene while it runs: the scene listens to that source
+/// only meanwhile.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Follows {
+    /// The PC sensors' temperature.
+    Temperature(TempLook),
+    /// How loud the PC is playing.
+    Sound(SoundLook),
+}
+
+/// Gives the running scene another look; `follows` is the look's own output when it is
+/// Temperature or Sound, so the scene keeps (or starts) listening to that source, and any other
+/// look stops it.
+pub fn set_look(name: &str, effect: Effect, follows: Option<Follows>) {
     if !may_run(&effect, super::screen_glow::allowed()) {
         eprintln!("Foxglove: look {name} not taken: Screen glow needs the user's yes");
         super::screen_glow::set_refused(true);
@@ -546,7 +560,7 @@ pub fn set_look(name: &str, effect: Effect, temperature: Option<TempLook>) {
         let _ = r.tx.send(Ctl::Effect(
             name.to_string(),
             Box::new(effect),
-            temperature.map(Box::new),
+            follows.map(Box::new),
         ));
         status().name = Some(name.to_string());
     }
@@ -606,6 +620,13 @@ pub fn layer_sweep(colour: Rgb) {
 /// said.
 pub fn set_temperature(look: TempLook) {
     tell(Ctl::TempLook(Box::new(look)));
+}
+
+/// The running scene's look is Sound: it follows the output device's level
+/// ([`super::sound_out`]); told right after a start. A look change says it with the look
+/// ([`set_look`]). A no-op when no scene runs; the scene's end ends the following.
+pub fn set_sound(look: SoundLook) {
+    tell(Ctl::SoundLook(look));
 }
 
 /// The PC sensors' reading changed (`temperature_feed::publish`): a running Temperature takes
@@ -790,6 +811,10 @@ fn control(
     let scheduler = Scheduler::paced(clock, MIN_INTERVAL, move |t| {
         let (outs, handed, pace) = {
             let mut o = frames.lock().unwrap_or_else(|e| e.into_inner());
+            if o.follows_sound() {
+                // The newest level, as the reader left it (nothing is read here).
+                o.set_sound_level(super::sound_feed::latest().peak, super::sound_feed::game());
+            }
             let outs = o.frame(t);
             let handed = o.take_handed_back(t);
             (outs, handed, o.pace(t))
@@ -854,6 +879,9 @@ fn control(
     // Listens to the PC sensors only while the look reads them and no gate holds the scene
     // (away, paused, another app holding the lights); ends with the scene, however it ends.
     let mut listener = super::temperature_feed::Listener::for_scene();
+    // The same rule for Sound's level: read only while the look is Sound and nothing holds
+    // the scene.
+    let mut sound_listener = super::sound_feed::listener();
     let ended = pump(rx, limit.map(|l| Instant::now() + l), |ctl| {
         match ctl {
             Ctl::Away(a) => {
@@ -939,8 +967,9 @@ fn control(
                     .unwrap_or_else(|e| e.into_inner())
                     .burst(sweep);
             }
-            Ctl::Effect(name, effect, temperature) => {
-                listener.set_reads(temperature.is_some());
+            Ctl::Effect(name, effect, follows) => {
+                listener.set_reads(matches!(follows.as_deref(), Some(Follows::Temperature(_))));
+                sound_listener.set_reads(matches!(follows.as_deref(), Some(Follows::Sound(_))));
                 super::lights_owner::retry("the scene's look changed");
                 let screen = is_screen(&effect);
                 // The wallpapers draw the new look on the same clock (#493); Screen glow leaves
@@ -961,16 +990,13 @@ fn control(
                 }
                 super::keyboard_facts::scene_look(&name, &effect);
                 let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
-                match temperature {
-                    Some(look) => {
+                match follows.map(|f| *f) {
+                    Some(Follows::Temperature(look)) => {
                         let (reading, game) = reading_now();
-                        o.set_effect_keeping_temperature(
-                            *effect,
-                            *look,
-                            reading,
-                            game,
-                            clock.now(),
-                        );
+                        o.set_effect_keeping_temperature(*effect, look, reading, game, clock.now());
+                    }
+                    Some(Follows::Sound(look)) => {
+                        o.set_effect_keeping_sound(*effect, look, clock.now());
                     }
                     None => o.set_effect(*effect),
                 }
@@ -1007,6 +1033,13 @@ fn control(
                     .unwrap_or_else(|e| e.into_inner())
                     .set_temperature(*look, reading, game, clock.now());
             }
+            Ctl::SoundLook(look) => {
+                sound_listener.set_reads(true);
+                outputs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_sound(look, clock.now());
+            }
             Ctl::Reading => {
                 let (reading, game) = reading_now();
                 outputs
@@ -1017,11 +1050,13 @@ fn control(
             Ctl::Stop => {}
         }
         // The sensors' listener follows the same gates as the frames.
-        listener.set_gates(super::temperature_feed::Gates {
+        let gates = super::temperature_feed::Gates {
             away: super::away::away(),
             paused: super::pause::paused(),
             held: reader.gates().scene_held(),
-        });
+        };
+        listener.set_gates(gates);
+        sound_listener.set_gates(gates);
         // A full-screen game, or capture failing, holds the scene itself: the lights fade to
         // their own colours (#1085) and then go back to them; the hold's end eases back.
         let now_held = reader.gates().scene_held();
@@ -1064,6 +1099,7 @@ fn control(
     give_back.ended = ended;
     // Ends the sensors' listening before the lights go back.
     drop(listener);
+    drop(sound_listener);
     drop(watch);
     // Stops the capture first: no picture is handed on after this (its threads end within 1 s).
     drop(reader);
