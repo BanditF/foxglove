@@ -295,6 +295,12 @@ impl RouterSide {
                     return;
                 }
             },
+            // A program outside Hideout asks for more than it may have (S1): the Apps page
+            // draws its header line from the router's queue.
+            Out::ToolAsk => {
+                self.0.wake();
+                return;
+            }
             // `hub.show` (v1.19): a verified same-user peer asked for this module's page.
             Out::Show { module } => {
                 hideout_shell::open_module(module);

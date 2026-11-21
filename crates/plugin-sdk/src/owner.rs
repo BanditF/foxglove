@@ -237,6 +237,13 @@ impl PeerProcess {
             false
         }
     }
+
+    /// The process's token facts (integrity, AppContainer), read from this same handle, so a
+    /// check on the token and the image name one process.
+    #[cfg(windows)]
+    pub fn peer(&self) -> std::io::Result<hideout_acl::Peer> {
+        self.inner.peer()
+    }
 }
 
 /// The file-name rule, apart from Windows so it is testable anywhere.
@@ -404,6 +411,12 @@ mod win {
                 windows_sys::Win32::System::Threading::GetExitCodeProcess(self.0 .0, &mut code)
             };
             ok != 0 && code == 259
+        }
+
+        /// The process's token facts (integrity, AppContainer), read from this same handle.
+        pub fn peer(&self) -> std::io::Result<hideout_acl::Peer> {
+            // SAFETY: `self.0 .0` is a valid process handle opened with query rights.
+            unsafe { hideout_acl::peer_of_process(self.0 .0) }
         }
 
         pub fn image(&self) -> Option<PathBuf> {

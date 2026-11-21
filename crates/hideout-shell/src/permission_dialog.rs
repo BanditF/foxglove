@@ -1133,6 +1133,9 @@ pub enum HeaderKind {
     MoreBuild,
     /// Two or more adopted apps wait for their first OK: one header, one dialog (UX cut 3).
     FirstRun,
+    /// A program outside Hideout asks for more than it may have (S1): the hub's own line, from
+    /// the router's queue; `name` is the program's own word for itself, quoted when drawn.
+    Tool,
 }
 
 /// A hub-drawn header line.
@@ -1195,6 +1198,11 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
                 NOT_NOW,
             )
         }
+        HeaderKind::Tool => (
+            crate::tool_dialog::header_title(cli.map_or(0, |c| c.0)),
+            crate::tool_dialog::header_body(name),
+            NOT_NOW,
+        ),
         HeaderKind::FirstRun => (
             first_run_title(cli.map_or(0, |c| c.0)),
             FIRST_RUN_BODY.into(),

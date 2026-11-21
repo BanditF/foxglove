@@ -160,11 +160,17 @@ fn capitalized(s: &str) -> String {
 }
 
 /// Whether a grant waits for the user's OK again when a follow-folder grant meets new bytes
-/// (#1465): every Sensitive item, plus `files`, `secrets` and every `channel.open:*`. The
-/// registry cannot know a channel's catalog risk, so all channel opens are held (fail closed).
-/// Offering a channel (`channel.offer:*`, `provide:*`) is not held.
+/// (#1465): every Sensitive item, plus `files`, `secrets`, every `channel.open:*` and every
+/// offer (`channel.offer:*`, `provide:*`). The registry cannot know a channel's catalog risk, so
+/// all channel opens are held (fail closed). Offering a channel or answering calls also waits
+/// for the user's OK on changed bytes.
 pub fn held_on_change(raw: &str) -> bool {
-    describe(raw).2 || raw == "files" || raw == "secrets" || raw.starts_with("channel.open:")
+    describe(raw).2
+        || raw == "files"
+        || raw == "secrets"
+        || raw.starts_with("channel.open:")
+        || raw.starts_with("channel.offer:")
+        || raw.starts_with("provide:")
 }
 
 /// Group, plain line and sensitivity of one permission string. An unknown body falls back to

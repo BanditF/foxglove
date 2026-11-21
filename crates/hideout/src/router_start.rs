@@ -180,6 +180,14 @@ pub fn start(
         hideout_registry::lab::LabMode::Off => {}
     }
     let mut router = Router::new(Settings::default(), approver(lab));
+    // What the user allowed to programs outside Hideout, kept by program file (S1).
+    router.load_tools(
+        hideout_registry::tools::ToolStore::at(home)
+            .load()
+            .into_iter()
+            .map(|t| (t.image_path, t.image_sha256, t.granted))
+            .collect(),
+    );
     let mut manifests = Vec::new();
     match hideout_registry::Registry::open_from_env(home) {
         Ok(reg) => {
@@ -306,10 +314,12 @@ pub fn start(
         }));
     }
     let s = sup.clone();
+    let tools = hideout_registry::tools::ToolStore::at(home);
     std::thread::Builder::new()
         .name("hideout-router-events".into())
         .spawn(move || {
             for event in rx {
+                keep_tools(&tools, &event);
                 crate::signin_signal::on_event(&event);
                 s.on_router(&event);
                 side.on_router(&event);
@@ -319,6 +329,23 @@ pub fn start(
         .expect("router events thread");
     watch_inventory(home, gone, hub.clone(), sup.clone(), fresh, apps);
     (hub, sup, feed)
+}
+
+/// Writes what the user allowed an outside program (or the voiding of it) to `tools.json`.
+fn keep_tools(store: &hideout_registry::tools::ToolStore, event: &hideout_router::Out) {
+    use hideout_router::Out;
+    let done = match event {
+        Out::ToolRemembered {
+            image_path,
+            image_sha256,
+            granted,
+        } => store.remember(image_path, image_sha256, granted),
+        Out::ToolVoided(path) => store.void_path(path),
+        _ => return,
+    };
+    if let Err(e) = done {
+        log::warn!("router: tools.json not written: {e}");
+    }
 }
 
 /// The inventory watch (§7.1, #1012.4, #1054): a module that leaves the inventory has its

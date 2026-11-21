@@ -17,11 +17,13 @@ mod router;
 pub mod server;
 pub mod tool_id;
 pub use tool_id::ToolId;
+mod tool_queue;
+pub use tool_queue::{AskItem, ToolAsk, ITEMS_MAX, QUEUE_MAX};
 
 pub mod secrets;
 pub use router::{
     fresh_secret, host_methods, Approver, ConnId, IdentityLookup, LaunchCheck, ModuleEntry, Origin,
-    Out, Router, ServiceCall, ServiceError, Settings, Triggers, CALL_TIMEOUT, HOST_CONSUMER,
-    MAX_HUB_QUEUED, MAX_INFLIGHT_PER_CALLER, MAX_INFLIGHT_PER_PROVIDER, MAX_LEASES_PER_CALLER,
-    NOT_STARTED, SHOW_GAP,
+    Out, Router, ServiceCall, ServiceError, Settings, Triggers, APPROVED_MAX, CALL_TIMEOUT,
+    HOST_CONSUMER, MAX_HUB_QUEUED, MAX_INFLIGHT_PER_CALLER, MAX_INFLIGHT_PER_PROVIDER,
+    MAX_LEASES_PER_CALLER, NOT_STARTED, SHOW_GAP,
 };

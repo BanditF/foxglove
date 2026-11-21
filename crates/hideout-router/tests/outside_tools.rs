@@ -75,6 +75,7 @@ const CLI_LIST: [&str; 6] = [
 fn connect(r: &mut Router, name: &str, v1: bool, perms: &[&str]) -> (ConnId, Value) {
     let c = r.connect(Origin::Pipe);
     r.set_peer_pid(c, 4242);
+    r.set_peer_identity(c, Some(tool(r"C:\Tools\t.exe", "aa")));
     let api = if v1 { json!("1.1") } else { json!({}) };
     let params = if v1 {
         json!({"client":{"name":name,"version":"1"},"api":api,"permissions":perms})
@@ -116,12 +117,12 @@ fn lighting_set_is_denied_with_the_ask_words() {
     let (code, why) = reason(&out, c);
     assert_eq!(code, 5);
     assert!(
-        why.starts_with("Hideout didn't let \u{201c}foxglove-cli\u{201d} change your keyboards"),
+        why.starts_with("Hideout hasn't let \u{201c}foxglove-cli\u{201d} change your keyboards"),
         "{why}"
     );
     assert!(
         why.ends_with(
-            "Programs outside Hideout can't be allowed this yet. To do it now, use the app's own page in Hideout."
+            " yet. Open Hideout, go to Apps and press Review\u{2026} on its line. If there is no line, close this program and start it again, then try again."
         ),
         "{why}"
     );
@@ -298,7 +299,8 @@ fn same_program_is_remembered() {
     let id = tool(r"C:\Tools\a.exe", "aa");
     connect_as(&mut r, "x", Some(id.clone()));
     let res = connect_as(&mut r, "x", Some(id));
-    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    // A free-only answer is not kept (the hub grants it afresh each time); the grants are the same.
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
     assert_eq!(res["granted"], json!(["devices.read"]));
 }
 
@@ -331,4 +333,475 @@ fn script_runner_not_remembered() {
     connect_as(&mut r, "x", Some(py.clone()));
     connect_as(&mut r, "x", Some(py));
     assert_eq!(asked.load(Ordering::SeqCst), 2);
+}
+
+// ---- S1 slice 3: the queue, the words, Allow ----
+
+/// A router whose approver grants the free set, with one program connected as `id` asking
+/// `perms` (v2 wire).
+fn connect_asking(
+    r: &mut Router,
+    name: &str,
+    id: Option<ToolId>,
+    perms: &[&str],
+) -> (ConnId, Vec<Out>, Value) {
+    let c = r.connect(Origin::Pipe);
+    r.set_peer_pid(c, 4242);
+    r.set_peer_identity(c, id);
+    let params = json!({"client":{"name":name,"version":"1"},"hub":"1.4","api":{},
+        "permissions":perms});
+    let out = call(r, c, 0, "initialize", params);
+    let result = sends(&out, c).remove(0)["result"].clone();
+    (c, out, result)
+}
+
+#[test]
+fn tool_refusal_r3_names_the_program_and_where_to_review() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "My Tool", Some(id), &["lighting.write"]);
+    let out = call(
+        &mut r,
+        c,
+        1,
+        "lighting.set",
+        json!({"device": "d", "on": true}),
+    );
+    let (code, why) = reason(&out, c);
+    assert_eq!(code, 5);
+    assert!(
+        why.starts_with("Hideout hasn't let \u{201c}My Tool\u{201d} change your keyboards"),
+        "{why}"
+    );
+    assert!(
+        why.ends_with(
+            " yet. Open Hideout, go to Apps and press Review\u{2026} on its line. If there is no line, close this program and start it again, then try again."
+        ),
+        "{why}"
+    );
+}
+
+#[test]
+fn tool_refusal_r4_when_the_program_cannot_be_told() {
+    let mut r = free_only();
+    let r4 = "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.";
+    // No identity at all.
+    let (c, _, _) = connect_asking(&mut r, "x", None, &["lighting.write"]);
+    let out = call(
+        &mut r,
+        c,
+        1,
+        "lighting.set",
+        json!({"device": "d", "on": true}),
+    );
+    assert_eq!(reason(&out, c).1, r4);
+    // A contained program has no identity the hub relies on, even when the file was read.
+    let c = r.connect(Origin::Pipe);
+    r.set_peer_pid(c, 4243);
+    r.set_peer_identity(c, Some(tool(r"C:\Tools.exe", "aa")));
+    r.set_peer_container(c, "S-1-15-2-1");
+    let params = json!({"client":{"name":"x","version":"1"},"hub":"1.4","api":{},
+        "permissions":["lighting.write"]});
+    call(&mut r, c, 0, "initialize", params);
+    let out = call(
+        &mut r,
+        c,
+        1,
+        "lighting.set",
+        json!({"device": "d", "on": true}),
+    );
+    assert_eq!(reason(&out, c).1, r4);
+    // Nothing was queued for either.
+    assert!(r.tool_asks().is_empty());
+}
+
+#[test]
+fn ask_class_items_are_queued_by_program_and_never_items_are_not() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools.exe", "aa");
+    let (_, out, _) = connect_asking(
+        &mut r,
+        "Friendly",
+        Some(id.clone()),
+        &[
+            "devices.read",
+            "lighting.write",
+            "behaviors.invoke",
+            "key.events",
+            "net",
+            "files",
+            "channel.open:keyboard.keys/events",
+        ],
+    );
+    assert!(out.contains(&Out::ToolAsk));
+    let asks = r.tool_asks();
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].id, id);
+    assert_eq!(asks[0].name, "Friendly");
+    let raws: Vec<&str> = asks[0].items.iter().map(|i| i.raw.as_str()).collect();
+    assert_eq!(raws, ["lighting.write", "behaviors.invoke"]);
+    let red: Vec<bool> = asks[0].items.iter().map(|i| i.red).collect();
+    assert_eq!(red, [false, true]);
+    assert!(!asks[0].runs_scripts);
+}
+
+#[test]
+fn nothing_is_queued_for_free_only_asks_or_unknown_programs() {
+    let mut r = free_only();
+    connect_asking(
+        &mut r,
+        "a",
+        Some(tool(r"C:\T.exe", "aa")),
+        &["devices.read"],
+    );
+    connect_asking(&mut r, "b", None, &["lighting.write"]);
+    assert!(r.tool_asks().is_empty());
+}
+
+#[test]
+fn queue_holds_five_programs_newest_first_through_the_router() {
+    let mut r = free_only();
+    for n in 0..7 {
+        connect_asking(
+            &mut r,
+            &format!("tool {n}"),
+            Some(tool(&format!(r"C:\T\{n}.exe"), "h")),
+            &["lighting.write"],
+        );
+    }
+    let names: Vec<String> = r.tool_asks().into_iter().map(|a| a.name).collect();
+    assert_eq!(names, ["tool 6", "tool 5", "tool 4", "tool 3", "tool 2"]);
+}
+
+#[test]
+fn allow_sends_grants_added_and_is_remembered_for_the_file() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools.exe", "aa");
+    let (c, _, res) = connect_asking(
+        &mut r,
+        "Friendly",
+        Some(id.clone()),
+        &["devices.read", "lighting.write", "behaviors.invoke"],
+    );
+    assert_eq!(res["granted"], json!(["devices.read"]));
+    let allow = [
+        hideout_contract::capability::Capability::parse("lighting.write").unwrap(),
+        // Not offered by the program: ignored.
+        hideout_contract::capability::Capability::parse("art.write").unwrap(),
+    ];
+    let out = r.set_tool_grants(&id, &allow);
+    let msgs = sends(&out, c);
+    assert_eq!(msgs.len(), 1, "{out:?}");
+    assert_eq!(msgs[0]["method"], "module.grants");
+    assert_eq!(msgs[0]["params"], json!({"added": ["lighting.write"]}));
+    assert!(out.contains(&Out::ToolRemembered {
+        image_path: id.image_path.clone(),
+        image_sha256: "aa".into(),
+        granted: vec!["lighting.write".into()],
+    }));
+    assert!(r.tool_asks().is_empty());
+    // The next connection of the same file is granted it without asking again; the other
+    // item is asked about again.
+    let (_, _, res) = connect_asking(
+        &mut r,
+        "Another name",
+        Some(id),
+        &["devices.read", "lighting.write", "behaviors.invoke"],
+    );
+    assert_eq!(res["granted"], json!(["devices.read", "lighting.write"]));
+    assert_eq!(r.tool_asks().len(), 1);
+    assert_eq!(r.tool_asks()[0].items.len(), 1);
+}
+
+#[test]
+fn not_now_drops_the_ask_and_grants_nothing() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "x", Some(id.clone()), &["lighting.write"]);
+    r.dismiss_tool(&id);
+    assert!(r.tool_asks().is_empty());
+    assert!(r.set_tool_grants(&id, &[]).is_empty());
+    let out = call(
+        &mut r,
+        c,
+        1,
+        "lighting.set",
+        json!({"device": "d", "on": true}),
+    );
+    assert_eq!(reason(&out, c).0, 5);
+}
+
+#[test]
+fn a_script_runner_is_allowed_for_now_and_asked_again() {
+    let mut r = free_only();
+    let py = tool(r"C:\Python312\python.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "script", Some(py.clone()), &["lighting.write"]);
+    assert!(r.tool_asks()[0].runs_scripts);
+    let out = r.set_tool_grants(
+        &py,
+        &[hideout_contract::capability::Capability::parse("lighting.write").unwrap()],
+    );
+    assert!(!out.iter().any(|o| matches!(o, Out::ToolRemembered { .. })));
+    assert_eq!(sends(&out, c).len(), 1);
+    let (_, _, res) = connect_asking(&mut r, "script", Some(py), &["lighting.write"]);
+    assert_eq!(res["granted"], json!([]));
+    assert_eq!(r.tool_asks().len(), 1);
+}
+
+#[test]
+fn a_contained_program_is_never_remembered() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools.exe", "aa");
+    let c = r.connect(Origin::Pipe);
+    r.set_peer_pid(c, 4243);
+    r.set_peer_identity(c, Some(id.clone()));
+    r.set_peer_container(c, "S-1-15-2-1");
+    let params = json!({"client":{"name":"x","version":"1"},"hub":"1.4","api":{},
+        "permissions":["devices.read","lighting.write"]});
+    call(&mut r, c, 0, "initialize", params);
+    assert!(r.tool_asks().is_empty());
+    // Even a stray Allow for that file reaches no contained connection and keeps nothing for
+    // it from the contained connection.
+    let out = r.set_tool_grants(
+        &id,
+        &[hideout_contract::capability::Capability::parse("lighting.write").unwrap()],
+    );
+    assert!(out.is_empty());
+}
+
+#[test]
+fn what_was_kept_binds_to_path_and_hash_and_a_changed_hash_voids_it() {
+    let mut r = free_only();
+    let old = tool(r"C:\Tools.exe", "aa");
+    r.load_tools(vec![(
+        old.image_path.clone(),
+        "aa".into(),
+        vec!["lighting.write".into(), "key.events".into()],
+    )]);
+    // The same bytes: granted from the record, nothing queued; a never item in the record
+    // stays out.
+    let (_, out, res) = connect_asking(
+        &mut r,
+        "x",
+        Some(old.clone()),
+        &["devices.read", "lighting.write", "key.events"],
+    );
+    assert_eq!(res["granted"], json!(["devices.read", "lighting.write"]));
+    assert!(!out.iter().any(|o| matches!(o, Out::ToolVoided(_))));
+    assert!(r.tool_asks().is_empty());
+    // The same path with other bytes: the record is void and the program is asked again.
+    let (_, out, res) = connect_asking(
+        &mut r,
+        "x",
+        Some(tool(r"C:\Tools.exe", "bb")),
+        &["devices.read", "lighting.write"],
+    );
+    assert_eq!(res["granted"], json!(["devices.read"]));
+    assert!(out.contains(&Out::ToolVoided(r"C:\Tools.exe".into())));
+    assert_eq!(r.tool_asks().len(), 1);
+    // The old bytes do not get their record back.
+    let (_, _, res) = connect_asking(&mut r, "x", Some(old), &["devices.read", "lighting.write"]);
+    assert_eq!(res["granted"], json!(["devices.read"]));
+}
+
+#[test]
+fn the_same_name_from_another_program_inherits_nothing_and_queues_apart() {
+    let mut r = free_only();
+    let a = tool(r"C:\Tools.exe", "aa");
+    connect_asking(&mut r, "Friendly", Some(a.clone()), &["lighting.write"]);
+    r.set_tool_grants(
+        &a,
+        &[hideout_contract::capability::Capability::parse("lighting.write").unwrap()],
+    );
+    let (_, _, res) = connect_asking(
+        &mut r,
+        "Friendly",
+        Some(tool(r"C:\Other.exe", "bb")),
+        &["lighting.write"],
+    );
+    assert_eq!(res["granted"], json!([]));
+    assert_eq!(r.tool_asks().len(), 1);
+}
+
+#[test]
+fn odd_names_stay_plain_text_in_the_queue_and_the_words() {
+    let mut r = free_only();
+    let name = "<b>x</b> \u{202e}evil\u{7} [link](http://e)";
+    let id = tool(r"C:\Tools.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, name, Some(id), &["lighting.write"]);
+    // The queue keeps the text as given; the words are cleaned and quoted.
+    assert_eq!(r.tool_asks()[0].name, name);
+    let out = call(
+        &mut r,
+        c,
+        1,
+        "lighting.set",
+        json!({"device": "d", "on": true}),
+    );
+    let (_, why) = reason(&out, c);
+    assert!(!why.contains('\u{7}') && !why.contains('\u{202e}'), "{why}");
+    assert!(
+        why.contains("\u{201c}") && why.contains("\u{201d}"),
+        "{why}"
+    );
+}
+
+#[test]
+fn a_blank_name_says_this_program_never_an_app() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "\u{200b} \u{202e}", Some(id), &["lighting.write"]);
+    let out = call(
+        &mut r,
+        c,
+        1,
+        "lighting.set",
+        json!({"device": "d", "on": true}),
+    );
+    let (_, why) = reason(&out, c);
+    assert!(why.starts_with("Hideout hasn't let this program "), "{why}");
+    assert!(!why.contains("An app"), "{why}");
+}
+
+// ---- S1 slice 3 review fixes ----
+
+fn cap(s: &str) -> hideout_contract::capability::Capability {
+    hideout_contract::capability::Capability::parse(s).unwrap()
+}
+
+fn allow_lighting(r: &mut Router, id: &ToolId, name: &str) {
+    connect_asking(r, name, Some(id.clone()), &["lighting.write"]);
+    r.set_tool_grants(id, &[cap("lighting.write")]);
+}
+
+fn lighting_call(r: &mut Router, c: ConnId) -> Vec<Out> {
+    call(r, c, 9, "lighting.set", json!({"device": "d", "on": true}))
+}
+
+#[test]
+fn free_only_programs_never_push_out_an_allowed_one() {
+    let mut r = free_only();
+    let a = tool(r"C:\A.exe", "aa");
+    allow_lighting(&mut r, &a, "a");
+    for n in 0..100 {
+        connect_asking(
+            &mut r,
+            "free",
+            Some(tool(&format!(r"C:\F\{n}.exe"), "h")),
+            &["devices.read"],
+        );
+    }
+    let (_, _, res) = connect_asking(&mut r, "a", Some(a), &["devices.read", "lighting.write"]);
+    assert_eq!(res["granted"], json!(["devices.read", "lighting.write"]));
+    assert!(r.tool_asks().is_empty());
+}
+
+#[test]
+fn allowed_programs_are_forgotten_oldest_first() {
+    let mut r = free_only();
+    let ids: Vec<ToolId> = (0..=hideout_router::APPROVED_MAX)
+        .map(|n| tool(&format!(r"C:\P\{n}.exe"), "h"))
+        .collect();
+    for (n, id) in ids.iter().enumerate() {
+        allow_lighting(&mut r, id, &format!("p{n}"));
+    }
+    let asked = ["devices.read", "lighting.write"];
+    // The newest and the second oldest are still allowed; reconnecting does not reorder.
+    for id in [&ids[1], ids.last().unwrap(), &ids[1]] {
+        let (_, _, res) = connect_asking(&mut r, "x", Some(id.clone()), &asked);
+        assert_eq!(res["granted"], json!(["devices.read", "lighting.write"]));
+    }
+    // The first one allowed was dropped: it is asked again.
+    let (_, _, res) = connect_asking(&mut r, "x", Some(ids[0].clone()), &asked);
+    assert_eq!(res["granted"], json!(["devices.read"]));
+    assert_eq!(r.tool_asks().len(), 1);
+}
+
+#[test]
+fn an_ask_pushed_out_of_the_queue_cannot_be_allowed() {
+    let mut r = free_only();
+    let ids: Vec<ToolId> = (0..7)
+        .map(|n| tool(&format!(r"C:\T\{n}.exe"), "h"))
+        .collect();
+    let mut conns = Vec::new();
+    for (n, id) in ids.iter().enumerate() {
+        let (c, _, _) = connect_asking(
+            &mut r,
+            &format!("t{n}"),
+            Some(id.clone()),
+            &["lighting.write"],
+        );
+        conns.push(c);
+    }
+    // The two oldest are no longer waiting; an Allow for one of them does nothing.
+    let out = r.set_tool_grants(&ids[0], &[cap("lighting.write")]);
+    assert!(out.is_empty(), "{out:?}");
+    assert_eq!(reason(&lighting_call(&mut r, conns[0]), conns[0]).0, 5);
+    // One still waiting can be allowed.
+    assert!(!r
+        .set_tool_grants(&ids[6], &[cap("lighting.write")])
+        .is_empty());
+}
+
+#[test]
+fn allow_grants_only_what_was_asked_and_drawn() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools.exe", "aa");
+    let (c1, _, _) = connect_asking(&mut r, "x", Some(id.clone()), &["lighting.write"]);
+    // The program asks for more after the dialog was drawn for the first list.
+    let (c2, _, _) = connect_asking(
+        &mut r,
+        "x",
+        Some(id.clone()),
+        &["lighting.write", "behaviors.invoke"],
+    );
+    let out = r.set_tool_grants(&id, &[cap("lighting.write")]);
+    assert_eq!(
+        sends(&out, c1)[0]["params"],
+        json!({"added": ["lighting.write"]})
+    );
+    assert_eq!(
+        sends(&out, c2)[0]["params"],
+        json!({"added": ["lighting.write"]})
+    );
+    let out = call(
+        &mut r,
+        c2,
+        2,
+        "behaviors.invoke",
+        json!({"device": "d", "behavior": "x"}),
+    );
+    assert_eq!(reason(&out, c2).0, 5);
+}
+
+#[test]
+fn a_contained_connection_is_left_out_when_the_same_file_is_allowed() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools.exe", "aa");
+    let (plain, _, _) = connect_asking(&mut r, "x", Some(id.clone()), &["lighting.write"]);
+    let c = r.connect(Origin::Pipe);
+    r.set_peer_pid(c, 4244);
+    r.set_peer_identity(c, Some(id.clone()));
+    r.set_peer_container(c, "S-1-15-2-1");
+    let params = json!({"client":{"name":"x","version":"1"},"hub":"1.4","api":{},
+        "permissions":["lighting.write"]});
+    call(&mut r, c, 0, "initialize", params);
+    let out = r.set_tool_grants(&id, &[cap("lighting.write")]);
+    assert_eq!(sends(&out, plain).len(), 1);
+    assert!(sends(&out, c).is_empty(), "{out:?}");
+    assert_eq!(reason(&lighting_call(&mut r, c), c).0, 5);
+}
+
+#[test]
+fn a_script_runners_allow_reaches_only_the_connection_that_asked() {
+    let mut r = free_only();
+    let py = tool(r"C:\Python312\python.exe", "aa");
+    let (first, _, _) = connect_asking(&mut r, "one", Some(py.clone()), &["lighting.write"]);
+    let (second, _, _) = connect_asking(&mut r, "two", Some(py.clone()), &["lighting.write"]);
+    // The waiting ask is the newest script's; only that connection gets what is allowed.
+    assert_eq!(r.tool_asks()[0].name, "two");
+    let out = r.set_tool_grants(&py, &[cap("lighting.write")]);
+    assert_eq!(sends(&out, second).len(), 1, "{out:?}");
+    assert!(sends(&out, first).is_empty(), "{out:?}");
+    assert_eq!(reason(&lighting_call(&mut r, first), first).0, 5);
 }

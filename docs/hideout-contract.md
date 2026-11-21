@@ -1473,31 +1473,79 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
 - Catalog, private and sideloaded modules show the permission dialog at enable.
 - An update that adds permissions keeps the old version running and shows "Update waiting for
   you" (§7.8). Never a modal at sign-in.
-- Outside tools ask in `initialize`. (#1142) Until a dialog for them ships, nothing asks: the
-  hub grants an outside tool only the free set, which is read-only device and PC state
+- Outside tools ask in `initialize`. (#1142) Until the user reviews a tool, the
+  hub grants it only the free set, which is read-only device and PC state
   (`devices.read`, `gpu.status`, and the fact reads in the hub's free list, `mic.state` among them),
-  and leaves everything else out. Each permission has a class for a tool: free, ask (no way to
-  allow it yet, so it is refused in words that say what to do next) or never (key-level
+  and leaves everything else out. Each permission has a class for a tool: free, ask (the user may allow it in the
+  tool dialog below; until then it is refused in words that say what to do next) or never (key-level
   permissions, `secrets`, network, files, wildcard agents and keys-class or unknown-class
   channels; only an app can hold these). The channel's class comes from the catalog, never from
   the tool. A tool's own name never grants anything: a name that says it is an MCP client only
   narrows what it may get. The name is only text to show, untrusted, cleaned and cut. What the
   hub remembers it allowed is tied to the program: the image file of the connecting process
   (its canonical path and the SHA-256 of the file), taken from a process handle the hub opens
-  when the connection is accepted, so a reused process id cannot pass for another program. The
+  when the connection is accepted (the file is read and hashed at the first line), so a reused process id cannot pass for another program. The
   same name from another file, or the same path with other bytes, inherits nothing. When the
   program cannot be told, or is a script runner (a data list of image names such as an
-  interpreter or shell, `TOOL_SCRIPT_RUNNERS`), nothing is remembered: each connection is
-  decided afresh. A lab hub (§8.2) keeps the older rule, which grants every
+  interpreter or shell, `TOOL_SCRIPT_RUNNERS`, whose list holds `autohotkey` as its only
+  name prefix; `python3` and `python3.13t` match through the rule that drops trailing
+  digits and dots, and a version letter such as `t` or `d`; `python_d` and `pwsh-preview` are
+  listed), nothing is remembered: each connection is
+  decided afresh. The same holds for a peer that runs contained in an AppContainer: it is
+  never remembered. A low-integrity peer never gets this far: it is refused when it is admitted. A lab hub (§8.2) keeps the older rule, which grants every
   non-sensitive permission, and says so once at start. Only this user's own processes reach
   the pipes (not remote clients, not low-integrity ones).
+  What the dialog and `tools.json` hold against: a program that only speaks the pipe protocol
+  cannot allow itself anything. A program running as the same user can edit `tools.json` or
+  operate the hub window, and Hideout does not defend against that.
+- (S1) **The outside-tool dialog.** A tool that asks for more than the free set is queued
+  (at most 5, one per program file, newest first). The Apps page shows a header line, "A program
+  outside Hideout asks for {n} permission{s}", with the body "It calls itself “{name}”.
+  Nothing is allowed until you review it." and the buttons Review… and Not now. A tool that
+  gives no name (empty, spaces or hidden characters only) is never shown as "An app": the body
+  is "It gives no name. Nothing is allowed until you review it." The header
+  never opens a dialog by itself; only Review… does. The dialog is hub-drawn (never by a
+  module panel) and titled "Allow a program outside Hideout?". It says "It calls itself
+  “{name}”. Hideout can't confirm that name.", "Program file: {file}" (or "not known"),
+  and "It asks to:" with one line per item. With no name the first line is "It gives no name,
+  so check the program file below." The file line drops hidden characters (controls, direction
+  marks, zero-width); a path over 160 characters shows its first 40, "…" and its last 110.
+  A tool must list a permission in `initialize` to ever be offered it. The footer is "Hideout remembers your answer for
+  this program file. If the file changes, it asks again.", or for a script runner "This program
+  runs scripts, so Hideout asks again the next time it connects." The identity is the program
+  that opened the connection, so other programs that start it can use what the user allows
+  (the dialog says: "Other programs that start this one can use what you allow too."). Buttons: **Not
+  now** (default, focused; Enter, Esc and closing answer it) and **Allow** (armed after 1 s).
+  Not now has the focus when the dialog opens; Enter answers the focused button, Esc and
+  closing always answer Not now. Before Allow is armed, Tab keeps the focus on Not now.
+  Not now drops the ask. It asks again the next time the program connects.
+  Allow stores the grants in `tools.json` (format `hideout-tools/1`) in the hub folder, bound
+  to the program file's canonical path and SHA-256. At most 64 programs are kept. When a 65th
+  is allowed, the program allowed longest ago is forgotten and asks again the next time it
+  connects. Removing an entry from `tools.json` with the hub stopped forgets it. Only a
+  user's Allow (or the loaded record) is kept: a connection that got only the free set leaves
+  no record. Every connection from that program file that is open now gets the allowed items
+  it asked for in `initialize`. A v2 connection is told with `module.grants {added}`; a v1
+  connection is not told, and its next call simply works. A tool only gets an item it listed
+  in `initialize`. For a script runner the Allow reaches only the connection that asked. A
+  path whose bytes change is voided and asks again, and so is an ask waiting for the old
+  bytes. The name is cleaned and cut to 40 characters, always quoted. The dialog and
+  `tools.json` protect against a program that only speaks the pipe protocol; a program running
+  as the user can edit `tools.json` or operate the hub window, and Hideout does not defend
+  against that.
+- (S1) **Words for a refused tool call.** R3 (ask-class, not yet reviewed): "Hideout hasn't let
+  “{name}” {does} yet. Open Hideout, go to Apps and press Review… on its line. If there
+  is no line, close this program and start it again, then try again." With no name it reads
+  "Hideout hasn't let this program {does} yet. …" R4 (program not known): "Hideout couldn't check which program this is, so it may only
+  read. Start it again from a normal window, not as administrator." R2 (never-class): "Hideout
+  never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
 - The cut-over from Foxglove carries every existing grant over silently. Only new permissions ask.
 - Grants are machine state: they are stored in `inventory.json` (`granted`), in canonical form,
   sorted, never in `hideout.toml`.
 - (#1155-B) The permission dialog is hub-drawn, never by a module panel. Its first section is the
   keyboard grant of §6.3 (title, plain list, footer, binding line with the path, **Allow** /
   **Not now**); Not now is the default, focused, and Enter, Esc and closing all answer it. The
-  dialog opens only on the user's own act (Turn on, Review...), never at sign-in, autostart, a
+  dialog opens only on the user's own act (Turn on, Review…), never at sign-in, autostart, a
   hub restart or an update; a start without that act gets a header line instead. "Update waiting
   for you" reuses the dialog.
 - (#1178) **The grant is bound to the list that was shown.** The dialog and `hideout modules
@@ -1548,13 +1596,13 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
     first, so the folder step finds the bytes already bound and does nothing. A signed update
     keeps everything, Sensitive items and the keyboard included, with no prompt.
   - **Changed bytes with no attestation** carry only what is not held back. Held back are every
-    Sensitive item, `files`, `secrets`, and every `channel.open:*` (the registry cannot know a
-    channel's catalog risk, so all opens wait; offers such as `channel.offer:*` and `provide:*`
-    carry). The folder step
+    Sensitive item, `files`, `secrets`, every `channel.open:*` (the registry cannot know a
+    channel's catalog risk, so all opens wait), and every offer (`channel.offer:*` and
+    `provide:*`). The folder step
     moves each held item from `granted` to `pending_permissions` and `last_choice`, voids
     the keyboard record (reason `changed`), and never tells the router to follow the keyboard to
     the new file (`attested_keyboard_move` ignores folder steps). The module keeps running with
-    what carried over. The Apps row reads "On, changed since you allowed it" with Review...,
+    what carried over. The Apps row reads "On, changed since you allowed it" with Review…,
     and the header and Allow dialog reuse the asks-for-more flow, with those items pre-checked
     as "Allowed before" and unconfirmed until the user confirms them. No new modal.
   - **An Allow never rebinds old Sensitive grants to new bytes.** `approve_listed` runs the
@@ -2125,10 +2173,19 @@ Rules:
   outside tool that wants a lab hub is given that hub's name.
 - **Modules** connect with their launch token.
 - **Outside tools** (`foxglove-cli`, the `hideout` CLI, `hideout mcp`, scripts) connect without a
-  token. Until a dialog for them ships, each is granted the free set only (§6.4); a refused
-  call is answered with words that say it is not allowed for a program outside Hideout.
+  token. Each is granted the free set until the user allows more in the tool dialog (§6.4); a
+  refused call is answered with words that say what to do next (R2, R3, R4 of §6.4).
   Whatever the hub remembers for one is keyed by its program file and that file's hash (§6.4),
   never by the name it sends.
+- **Tool identity is read lazily from one handle (S1).** The router opens one process handle
+  on the pipe's client when it accepts the connection. The admission check (token) and the
+  program's identity (path, then a size- and time-bounded SHA-256 re-checked against the path)
+  both come from that handle, so a reused process id cannot mix them. The program is read only
+  when the first line is an `initialize` without a launch token; an app's connection is never
+  read or hashed.
+  The tool dialog and `tools.json` protect against a program that only speaks the pipe protocol;
+  a program running as the user can edit `tools.json` or operate the hub window, and Hideout does
+  not defend against that.
 - **Legacy stdio plugins** (`transport = "stdio"`) are bridged by the hub.
 - **The bridge carries panels (v1.4).** A bridged connection is the module's connection: the
   hub reads its identity from the bridge, not a token, and treats its messages as any module's.

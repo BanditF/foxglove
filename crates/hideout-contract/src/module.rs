@@ -1399,7 +1399,7 @@ pub struct Head {
 /// isolates (U+061C, U+200E/F, U+202A–202E, U+2066–2069), zero-width and invisible characters
 /// (U+00AD, U+180E, U+200B–200D, U+2060–2064, U+FEFF), interlinear annotation marks
 /// (U+FFF9–FFFB) and the tag characters (U+E0000–E007F).
-fn hidden_in_name(c: char) -> bool {
+pub fn hidden_in_name(c: char) -> bool {
     c.is_control()
         || matches!(c,
             '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
