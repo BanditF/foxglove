@@ -870,9 +870,8 @@ mod ui {
                 .scan(self.machine.as_ref(), &self.home, installed, false);
             let mut click = None;
             let shown: Vec<Candidate> = self.state.shown().into_iter().cloned().collect();
-            if self.state.adding
-                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-            {
+            // Esc, or the window's close button, is the box's Cancel.
+            if self.state.adding && hideout_shell::dismiss::dismissed_taking_esc(ui.ctx()) {
                 click = Some(Click::Cancel);
             }
             if !shown.is_empty() && !self.quiet {
@@ -1216,6 +1215,43 @@ mod tests {
         let found = discover(&f, &hh(), &["gizmo".to_string()]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, "widget");
+    }
+
+    /// The window's close button cancels the open Add an app box, like Esc; a frame without it
+    /// leaves the box open.
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_close_button_cancels_the_add_box() {
+        use hideout_shell::egui;
+        let home = temp("close-box");
+        let mut d = super::ui::DiscoverUi {
+            machine: Box::new(Fake::default()),
+            picker: Box::new(Pick(None)),
+            home,
+            state: AddApp::default(),
+            quiet: false,
+        };
+        d.state.adding = true;
+        let t = hideout_shell::theme::tokens(true);
+        let ctx = egui::Context::default();
+        let mut open = Vec::new();
+        for close in [false, false, true] {
+            let mut raw = egui::RawInput::default();
+            if close {
+                raw.viewports
+                    .entry(egui::ViewportId::ROOT)
+                    .or_default()
+                    .events
+                    .push(egui::ViewportEvent::Close);
+            }
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let _ = d.ui(ui, &t, &[]);
+                });
+            });
+            open.push(d.state.adding);
+        }
+        assert_eq!(open, [true, true, false]);
     }
 
     fn temp(name: &str) -> PathBuf {

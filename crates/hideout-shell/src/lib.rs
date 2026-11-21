@@ -12,6 +12,7 @@
 
 pub mod autostart;
 pub mod dev_settings;
+pub mod dismiss;
 pub mod drag;
 pub mod flyout;
 pub mod icon;

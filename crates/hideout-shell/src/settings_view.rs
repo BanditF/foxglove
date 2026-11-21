@@ -241,7 +241,7 @@ fn remove_confirm(
         n.set_label(dev_settings::CONFIRM_TITLE);
         n.set_description(format!("{path}. {body}"));
     });
-    if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if modal.should_close() || crate::dismiss::dismissed(ctx) {
         answer = answer.or(Some(false));
     }
     answer
