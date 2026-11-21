@@ -39,6 +39,7 @@ use super::scene_looks::{
 };
 use super::screen_glow as glow;
 use super::settings_ui::{card, split_row};
+use super::sound_card::{self, SoundView};
 use super::temperature_card::{self as temp_card, TempView};
 use super::theme;
 
@@ -102,6 +103,8 @@ pub struct View {
     pub screen: ScreenView,
     /// Temperature: the reading's state and what refuses a start.
     pub temperature: TempView,
+    /// Sound: the level's state.
+    pub sound: SoundView,
 }
 
 /// What the page knows of Screen glow (#496).
@@ -150,6 +153,9 @@ pub fn status(v: &View) -> (String, Tone) {
         (None, false, _) if v.look.kind.reads_temperature() => {
             temp_card::status_line(false, &v.temperature, &v.look)
         }
+        // Sound: the level's state in the plan's words.
+        (Some(_), false, None) if v.sound.live => sound_card::status_line(true, &v.sound),
+        (None, false, _) if v.look.kind.reads_sound() => sound_card::status_line(false, &v.sound),
         (Some(name), false, None) => match &v.heal.suffix {
             Some(s) => (format!("Running: {name} · {s}"), Tone::Warn),
             None => (format!("Running: {name}"), Tone::Ok),
@@ -393,6 +399,7 @@ fn show(ui: &mut egui::Ui) {
         focused: st.focused.clone(),
         screen: screen_view(),
         temperature: temperature_view(),
+        sound: sound_view(),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -828,6 +835,22 @@ fn temperature_view() -> TempView {
 /// The running scene is the Temperature look (it listens to the sensors).
 static TEMP_LIVE: AtomicBool = AtomicBool::new(false);
 
+/// The running scene is the Sound look (it follows the output device's level).
+static SOUND_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// What the page knows of Sound now. Nothing is read here: the level is the one the running
+/// scene's reader last left.
+fn sound_view() -> SoundView {
+    let now = super::sound_feed::latest();
+    SoundView {
+        status: now.status,
+        level: now.peak.map(super::sound::level).unwrap_or(0.0),
+        game: super::sound_feed::game(),
+        live: SOUND_LIVE.load(Ordering::Relaxed) && super::scene_run::running().is_some(),
+        reduced: !glow::animations_on(),
+    }
+}
+
 /// Why a Temperature look cannot start now; `None` for any other look.
 fn temperature_gate(look: &Look) -> Option<temp_card::Gate> {
     if !look.kind.reads_temperature() {
@@ -851,11 +874,23 @@ fn begin(name: &str, look: &Look, room: &RoomMap) -> bool {
     let started = super::scene_run::start(name, look.effect(room), None);
     if started {
         TEMP_LIVE.store(reads, Ordering::Relaxed);
+        SOUND_LIVE.store(look.kind.reads_sound(), Ordering::Relaxed);
         if let Some(t) = look.temperature() {
             super::scene_run::set_temperature(t);
         }
+        if let Some(s) = look.sound() {
+            super::scene_run::set_sound(s);
+        }
     }
     started
+}
+
+/// What a look follows while it runs: Temperature's reading, Sound's level, or nothing.
+fn follows(look: &Look) -> Option<super::scene_run::Follows> {
+    use super::scene_run::Follows;
+    look.temperature()
+        .map(Follows::Temperature)
+        .or_else(|| look.sound().map(Follows::Sound))
 }
 
 /// The running scene takes this look; Temperature keeps (or starts) listening, any other look
@@ -870,7 +905,8 @@ fn take_look(name: &str, look: &Look, room: &RoomMap) {
         super::temperature_feed::set_source(&look.temp_source);
     }
     TEMP_LIVE.store(reads, Ordering::Relaxed);
-    super::scene_run::set_look(name, look.effect(room), look.temperature());
+    SOUND_LIVE.store(look.kind.reads_sound(), Ordering::Relaxed);
+    super::scene_run::set_look(name, look.effect(room), follows(look));
 }
 
 /// "Open Apps page": asks Hideout to show its Apps page (where the PC sensors app is turned on
@@ -919,6 +955,8 @@ pub fn startup() {
     RESUME.store(resume, Ordering::Relaxed);
     READY.store(true, Ordering::Relaxed);
     super::temperature_feed::on_state_change(retry_resume);
+    // Sound's state changed (playing, quiet, muted, no device): the page's line follows.
+    super::sound_feed::on_state_change(super::scene_run::repaint_page);
     // The same decision as a switch (it reads the active profile as it is now), unless the
     // demo scene already runs.
     if super::scene_run::running().is_none() {
@@ -1063,6 +1101,7 @@ fn stop_scene() {
         super::services::spawn_named("scene-stop", move || {
             super::scene_run::stop();
             TEMP_LIVE.store(false, Ordering::Relaxed);
+            SOUND_LIVE.store(false, Ordering::Relaxed);
             STOPPING.store(false, Ordering::Relaxed);
             // A profile switch while this stop ran (quick switches back to a game) gets its
             // scene now that the lights are back.
@@ -1119,7 +1158,7 @@ fn show_art(chosen: &Chosen) {
 
 /// When the preview wants its next frame: never while minimised or away, or for a still look.
 pub fn next_frame(kind: Kind, minimised: bool, away: bool) -> Option<Duration> {
-    (!minimised && !away && !matches!(kind, Kind::Gradient | Kind::ScreenGlow))
+    (!minimised && !away && !matches!(kind, Kind::Gradient | Kind::ScreenGlow | Kind::Sound))
         .then_some(PREVIEW_INTERVAL)
 }
 
@@ -2172,8 +2211,12 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
         });
     } else {
         let temperature = look.kind.reads_temperature();
+        let sound = look.kind.reads_sound();
         if temperature {
             temp_card::head(ui, look, &mut set);
+        }
+        if sound {
+            sound_card::head(ui);
         }
         if !temperature || look.temp_colours == super::temperature::Colours::Palette {
             ui.label(theme::caps_label(ui, "Palette"));
@@ -2215,7 +2258,8 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
                     }
                 })
             });
-            if !temperature {
+            // Temperature's scale and Sound's level bar draw the colours themselves.
+            if !temperature && !sound {
                 let (rect, _) =
                     ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), Sense::hover());
                 strip(ui.painter(), rect, &looks::palette(&look.palette));
@@ -2224,6 +2268,9 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
         if temperature {
             let asked = temp_card::tail(ui, look, &v.temperature, v.running.is_some(), &mut set);
             open_apps = asked.open_apps;
+        }
+        if sound {
+            sound_card::tail(ui, look, &v.sound, v.running.is_some(), &mut set);
         }
     }
     ui.add_space(4.0);
@@ -2477,6 +2524,7 @@ pub(crate) mod tests {
             yielded_to: None,
             focused: Vec::new(),
             screen: ScreenView::default(),
+            sound: SoundView::default(),
             temperature: TempView::default(),
         }
     }
@@ -2542,6 +2590,7 @@ pub(crate) mod tests {
             yielded_to: None,
             focused: Vec::new(),
             screen: ScreenView::default(),
+            sound: SoundView::default(),
             temperature: TempView::default(),
         }
     }
@@ -2561,6 +2610,7 @@ pub(crate) mod tests {
         let mut v = View {
             look: look.clone(),
             running: None,
+            sound: SoundView::default(),
             temperature: TempView {
                 status: Status::Reading,
                 hosted: true,
@@ -3058,6 +3108,7 @@ pub(crate) mod tests {
         let with = |status, hosted| View {
             look: look.clone(),
             running: None,
+            sound: SoundView::default(),
             temperature: TempView {
                 status,
                 hosted,

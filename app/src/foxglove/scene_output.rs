@@ -622,6 +622,12 @@ pub struct Outputs {
     /// Temperature's light output while the look is Temperature: the colour for the reading,
     /// drawn through `effect` each frame (the keyboard gets its target as its own effect).
     temp: Option<Driver>,
+    /// Sound's light output while the look is Sound: the colour for the level, drawn through
+    /// `effect` each frame (the keyboard gets frames, or in game mode one steady floor).
+    sound: Option<super::sound_out::Driver>,
+    /// Sound's colour last changed so recently that a slower device (the case) may not have
+    /// taken it yet: frames go on until this scene time, ms.
+    sound_until: i64,
 }
 
 /// A Screen glow look's own state, kept across a smoothing change.
@@ -672,6 +678,8 @@ impl Outputs {
             hand_back_reported: false,
             areas_shown: BTreeMap::new(),
             temp: None,
+            sound: None,
+            sound_until: 0,
         };
         o.set_room(room, cases);
         o
@@ -691,6 +699,9 @@ impl Outputs {
     pub fn pace(&self, t: SceneTime) -> Pace {
         if let Some(d) = &self.temp {
             return self.temperature_pace(d, t);
+        }
+        if let Some(d) = &self.sound {
+            return self.sound_pace(d, t);
         }
         let Some(g) = &self.glow else {
             return Pace::Tick;
@@ -733,6 +744,104 @@ impl Outputs {
         }
     }
 
+    /// Sound's frames (the still-screen rule, #1085): they tick while something changed outside
+    /// them or a burst or the ambient easing still moves, come at the lights' own 20 a second
+    /// while the level moves, and sleep once the colour is still, until the level changes.
+    fn sound_pace(&self, d: &super::sound_out::Driver, t: SceneTime) -> Pace {
+        if self.kick
+            || t.ms() < self.busy_until
+            || !self.bursts.is_empty()
+            || !self.ambient.settled()
+        {
+            return Pace::Tick;
+        }
+        if d.still() {
+            // Every device takes the last colour at its own interval before the sleep.
+            if t.ms() < self.sound_until {
+                return Pace::Tick;
+            }
+            return Pace::Idle;
+        }
+        match d.next_at() {
+            Some(at) => Pace::After(Duration::from_millis((at - t.ms()).max(1) as u64)),
+            None => Pace::Tick,
+        }
+    }
+
+    /// Sound runs with this look at scene time `t`. A look already running keeps its level and
+    /// takes the new colours; every device gets the next frame in full.
+    pub fn set_sound(&mut self, look: super::sound_out::SoundLook, t: SceneTime) {
+        match self.sound.as_mut() {
+            Some(d) => d.set_look(look),
+            None => self.sound = Some(super::sound_out::Driver::new(look)),
+        }
+        self.temp = None;
+        self.glow = None;
+        self.sent_case.clear();
+        self.sent_lamps.clear();
+        self.sent_keyboard = None;
+        self.refresh_sound(t);
+        self.kick = true;
+    }
+
+    /// Another look of the Sound scene (its palette or Smoothing was edited): the running
+    /// driver is kept, so the level carries on with no dip to the floor.
+    pub fn set_effect_keeping_sound(
+        &mut self,
+        effect: Effect,
+        look: super::sound_out::SoundLook,
+        t: SceneTime,
+    ) {
+        let keep = self.sound.take();
+        self.set_effect(effect);
+        self.sound = keep;
+        self.set_sound(look, t);
+    }
+
+    /// The newest peak (`None`: no level, the lights rest at the floor) and whether the
+    /// keyboard holds steady (game mode). Nothing is sent from here; the frames decide.
+    pub fn set_sound_level(&mut self, peak: Option<f32>, hold: bool) {
+        if let Some(d) = self.sound.as_mut() {
+            d.set_level(peak, hold);
+        }
+    }
+
+    /// Whether the look running is Sound.
+    pub fn follows_sound(&self) -> bool {
+        self.sound.is_some()
+    }
+
+    /// Draws Sound's colour for `t` as the scene's effect, and puts a changed hold on the
+    /// keyboard's own effect (sent once, by [`Outputs::frame`]).
+    fn refresh_sound(&mut self, t: SceneTime) {
+        let linger = self.linger_ms();
+        let Some(d) = self.sound.as_mut() else {
+            return;
+        };
+        let effect = d.effect_at(t.ms());
+        if effect != self.effect {
+            self.sound_until = self.sound_until.max(t.ms() + linger);
+        }
+        self.effect = effect;
+        if d.take_changed() {
+            self.keyboard_effect = self.own_keyboard_effect();
+            self.effect_sent = false;
+            self.sent_keyboard = None;
+            self.kick = true;
+        }
+    }
+
+    /// The scene as the keyboard's own effect, when it has one: the look's, Temperature's
+    /// target colour, or for Sound nothing (its frames follow the level) unless it holds.
+    fn own_keyboard_effect(&self) -> Option<KeyboardEffect> {
+        match &self.sound {
+            Some(d) => d
+                .keyboard_effect()
+                .and_then(|e| keyboard_effect(&e, &self.room, &self.keyboard_parts)),
+            None => keyboard_effect(&self.keyboard_source(), &self.room, &self.keyboard_parts),
+        }
+    }
+
     /// Temperature runs with this look and reading (`None`: no reading) at scene time `t`. A
     /// look already running takes the new ends and colours and eases to them; every device gets
     /// the next frame in full.
@@ -750,6 +859,7 @@ impl Outputs {
             }
             None => self.temp = Some(Driver::new(look, reading, game, t.ms())),
         }
+        self.sound = None;
         self.glow = None;
         self.sent_case.clear();
         self.sent_lamps.clear();
@@ -942,8 +1052,7 @@ impl Outputs {
         self.cases = cases;
         self.repace();
         // Placed again: a drag or a monitor change moves the effect too.
-        self.keyboard_effect =
-            keyboard_effect(&self.keyboard_source(), &self.room, &self.keyboard_parts);
+        self.keyboard_effect = self.own_keyboard_effect();
         self.effect_sent = false;
         self.kick = true;
     }
@@ -956,8 +1065,7 @@ impl Outputs {
         }
         self.keyboard_parts = parts;
         self.sent_keyboard = None;
-        self.keyboard_effect =
-            keyboard_effect(&self.keyboard_source(), &self.room, &self.keyboard_parts);
+        self.keyboard_effect = self.own_keyboard_effect();
         self.effect_sent = false;
         self.kick = true;
     }
@@ -1019,12 +1127,12 @@ impl Outputs {
     pub fn set_effect(&mut self, effect: Effect) {
         self.glow = glow_for(&effect, self.glow.take());
         self.temp = None;
+        self.sound = None;
         self.effect = effect;
         self.sent_case.clear();
         self.sent_lamps.clear();
         self.sent_keyboard = None;
-        self.keyboard_effect =
-            keyboard_effect(&self.keyboard_source(), &self.room, &self.keyboard_parts);
+        self.keyboard_effect = self.own_keyboard_effect();
         self.effect_sent = false;
         self.kick = true;
     }
@@ -1042,6 +1150,7 @@ impl Outputs {
             self.kick = true;
         }
         self.refresh_temperature(t);
+        self.refresh_sound(t);
         if std::mem::take(&mut self.kick) {
             self.busy_until = self.busy_until.max(t.ms() + self.linger_ms());
         }
@@ -1124,6 +1233,11 @@ impl Outputs {
             self.ambient.reset();
         } else {
             self.ambient.apply(&mut frame, &self.room);
+            // Sound: an area light still easing may take its last step on a frame its device
+            // is not due for; frames go on until every device had its turn.
+            if self.sound.is_some() && !self.ambient.settled() {
+                self.sound_until = self.sound_until.max(t.ms() + 2 * self.linger_ms());
+            }
             if self.glow.is_some() {
                 let places = self.room.devices.iter().flat_map(|d| d.lights.iter());
                 self.areas_shown = frame
@@ -1147,11 +1261,24 @@ impl Outputs {
                 continue;
             }
             if id == KEYBOARD {
+                // Sound in game mode: a keyboard that draws no effect of its own holds the
+                // floor in its frames too (a burst still draws over it).
+                let hold = self
+                    .sound
+                    .as_ref()
+                    .and_then(|d| d.hold())
+                    .filter(|_| !bursting);
                 let lights: Vec<(&str, &str, Rgb)> = frame
                     .lights
                     .iter()
                     .filter(|l| l.device.starts_with(KEYBOARD))
-                    .map(|l| (l.device.as_str(), l.light.as_str(), l.colour))
+                    .map(|l| {
+                        (
+                            l.device.as_str(),
+                            l.light.as_str(),
+                            hold.unwrap_or(l.colour),
+                        )
+                    })
                     .collect();
                 let Some(f) = keyboard_frame(&lights, &self.keyboard_parts) else {
                     continue;
@@ -2821,6 +2948,122 @@ mod tests {
         );
         // The case: its own interval, never per flip.
         assert!(sent.case <= 20_000 / 60, "{} case writes", sent.case);
+    }
+
+    // ---- Sound's light output (review/ux-plan-sound-effect.md, test 4) ----
+
+    fn sound_look() -> crate::foxglove::sound_out::SoundLook {
+        use crate::foxglove::sound::{colours, Smooth};
+        crate::foxglove::sound_out::SoundLook {
+            colours: colours("Bandit"),
+            smooth: Smooth::Calm,
+            calm: false,
+        }
+    }
+
+    #[test]
+    fn sound_sends_only_changes_at_twenty_a_second_and_sleeps_when_still() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        // A keyboard that could draw effects still gets frames: the level is not an effect.
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        o.set_sound(sound_look(), SceneTime(0));
+        assert!(o.follows_sound());
+        let mut sent = Sent::default();
+        // Silence: the floor goes out once and the frame thread sleeps.
+        let asleep = run_frames(&mut o, 0, 30_000, &mut sent);
+        assert!(asleep < 15_000, "asleep at {asleep}");
+        assert!(sent.effects.is_empty(), "{sent:?}");
+        assert_eq!(sent.keyboard_frames, 1, "the floor, once");
+        let before = (sent.keyboard_frames, sent.case, sent.lamps);
+        for ms in (asleep..40_000).step_by(33) {
+            sent.add(o.frame(SceneTime(ms)));
+        }
+        assert_eq!((sent.keyboard_frames, sent.case, sent.lamps), before);
+        // A level: the lights follow, at most 20 changes a second, then sleep again.
+        o.set_sound_level(Some(0.8), false);
+        assert_ne!(o.pace(SceneTime(40_000)), Pace::Idle, "a level wakes it");
+        let asleep = run_frames(&mut o, 40_000, 70_000, &mut sent);
+        assert!(asleep < 55_000, "asleep at {asleep}");
+        let frames = sent.keyboard_frames - before.0;
+        assert!(frames > 0);
+        assert!(
+            frames as i64 <= (asleep - 40_000) / 50 + 2,
+            "{frames} frames in {} ms",
+            asleep - 40_000
+        );
+        assert!(sent.case > before.1, "the case follows");
+        assert!(sent.effects.is_empty());
+        // The same level again: nothing.
+        let before = (sent.keyboard_frames, sent.case, sent.lamps);
+        o.set_sound_level(Some(0.8), false);
+        assert_eq!(o.pace(SceneTime(asleep)), Pace::Idle);
+        for ms in (asleep..asleep + 3_000).step_by(33) {
+            sent.add(o.frame(SceneTime(ms)));
+        }
+        assert_eq!((sent.keyboard_frames, sent.case, sent.lamps), before);
+        // No level (muted, nothing playing, no device): back to the floor, then asleep.
+        o.set_sound_level(None, false);
+        let asleep = run_frames(&mut o, 90_000, 130_000, &mut sent);
+        assert!(asleep < 115_000, "asleep at {asleep}");
+        assert!(sent.keyboard_frames > before.0);
+    }
+
+    #[test]
+    fn game_mode_holds_the_keyboard_steady_while_the_pc_lights_follow() {
+        // A keyboard that draws effects: one steady effect at the floor, no frames after it.
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        o.set_sound(sound_look(), SceneTime(0));
+        let mut sent = Sent::default();
+        run_frames(&mut o, 0, 30_000, &mut sent);
+        let before = (sent.keyboard_frames, sent.case);
+        o.set_sound_level(Some(0.8), true);
+        run_frames(&mut o, 30_000, 60_000, &mut sent);
+        assert_eq!(sent.effects.len(), 1, "{sent:?}");
+        let floor = sound_look().floor();
+        assert_eq!(sent.effects[0], vec![floor.0; 2]);
+        assert_eq!(sent.keyboard_frames, before.0, "no frames while it holds");
+        assert!(sent.case > before.1, "the PC's lights follow");
+        // The game ends: frames again, and the level shows.
+        o.set_sound_level(Some(0.8), false);
+        run_frames(&mut o, 60_000, 70_000, &mut sent);
+        assert_eq!(sent.effects.len(), 1);
+        assert!(sent.keyboard_frames > before.0);
+
+        // A keyboard without effects: its frames hold the floor, so one frame at the most.
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(false, Ordering::Relaxed);
+        o.set_sound(sound_look(), SceneTime(0));
+        let mut sent = Sent::default();
+        run_frames(&mut o, 0, 30_000, &mut sent);
+        let before = (sent.keyboard_frames, sent.case);
+        o.set_sound_level(Some(0.8), true);
+        run_frames(&mut o, 30_000, 60_000, &mut sent);
+        assert!(sent.effects.is_empty());
+        assert!(sent.keyboard_frames <= before.0 + 1, "{sent:?}");
+        assert!(sent.case > before.1, "the PC's lights follow");
+    }
+
+    #[test]
+    fn another_look_takes_sound_off_the_lights() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.set_sound(sound_look(), SceneTime(0));
+        assert!(o.follows_sound());
+        o.set_effect(scanline());
+        assert!(!o.follows_sound());
+        assert_eq!(o.effect(), &scanline());
+        // A level that arrives now changes nothing.
+        o.set_sound_level(Some(1.0), false);
+        assert_eq!(o.effect(), &scanline());
+        assert_eq!(o.pace(SceneTime(1_000)), Pace::Tick);
+        // And Temperature takes it off too.
+        o.set_sound(sound_look(), SceneTime(2_000));
+        o.set_temperature(temp_look(), Some(60.0), false, SceneTime(3_000));
+        assert!(!o.follows_sound());
     }
 
     #[test]
