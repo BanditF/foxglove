@@ -6,7 +6,7 @@
 //! the policy's next deadline. Notices ends by events only: a thread per instance blocks on its
 //! process handle; the router reports the pipe closing (no heartbeats, #281).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -313,6 +313,8 @@ pub fn set_launch_hook(f: Option<LaunchHook>) {
 }
 
 const NEEDS_OK: &str = "needs-ok";
+/// Internal: new bytes met a follow-folder grant after the keep step; run the step once more.
+const RETRY_KEPT: &str = "retry-kept";
 /// How [`Supervisor::launch`]'s answer starts when containment is on and the module may not
 /// run without one (§7.7).
 const NO_SANDBOX: &str = "no sandbox";
@@ -1802,13 +1804,46 @@ impl Supervisor {
         }
     }
 
+    /// Narrows the router's in-memory grants to what the file holds, for every module.
+    fn narrow_router_to(&self, reg: &Registry) {
+        let files: HashMap<String, Vec<String>> = reg
+            .inventory
+            .modules
+            .iter()
+            .map(|(k, m)| (k.clone(), m.granted.clone()))
+            .collect();
+        self.0.hub.act(|r| r.narrow_module_grants(&files));
+    }
+
     fn launch_hook(&self, stage: &str) {
         if let Some(f) = LAUNCH_HOOK.lock().unwrap().as_ref() {
             f(stage);
         }
     }
 
+    /// Starts `id`. A pinned check that finds new bytes under a follow-folder grant (they landed
+    /// after the first keep step) runs the keep step and the check once more, on the new bytes.
     fn launch(&self, id: &str, prepared: Option<Prepared>) -> Result<(), String> {
+        match self.launch_once(id, prepared) {
+            Err(e) if e == RETRY_KEPT => self.launch_once_final(id),
+            other => other,
+        }
+    }
+
+    fn launch_once_final(&self, id: &str) -> Result<(), String> {
+        self.launch_checked(id, None, false)
+    }
+
+    fn launch_once(&self, id: &str, prepared: Option<Prepared>) -> Result<(), String> {
+        self.launch_checked(id, prepared, true)
+    }
+
+    fn launch_checked(
+        &self,
+        id: &str,
+        prepared: Option<Prepared>,
+        may_retry: bool,
+    ) -> Result<(), String> {
         // A new build a follow-folder grant keeps is recorded (history, keyboard record) before
         // the check; any other change is left to the check, which refuses it.
         if let Ok(mut r) = Registry::open_from_env(&self.0.home) {
@@ -1817,6 +1852,9 @@ impl Supervisor {
             }
         }
         let reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
+        // What the router holds in memory follows the file after the keep step: items the step
+        // moved to waiting must not stay live in the router (#1465).
+        self.narrow_router_to(&reg);
         let l = reg.pre_launch(id).map_err(|e| match e.id() {
             Some(NEEDS_HUB) => NEEDS_HUB.to_string(),
             // Only a refusal because the app file is new or moved since the user allowed it
@@ -1869,6 +1907,18 @@ impl Supervisor {
         // The binding is checked against the pinned bytes, not the earlier by-name read: a file
         // swapped between `pre_launch` and the pin no longer matches and is not started (S7, F4).
         if let Some(why) = reg.binding_void_pinned(id, &pin.path, &sha256) {
+            if may_retry
+                && why == hideout_registry::keyboard::VoidReason::Changed
+                && reg
+                    .inventory
+                    .modules
+                    .get(id)
+                    .and_then(|m| m.bound.as_ref())
+                    .is_some_and(|b| b.follow.is_some())
+            {
+                // The pin is dropped on return; the caller runs the keep step again.
+                return Err(RETRY_KEPT.to_string());
+            }
             log::warn!("supervisor: {id}: the program changed before it started ({why:?})");
             return Err(NEEDS_OK.to_string());
         }
@@ -2525,6 +2575,15 @@ fn grant_listed_inner(
     let new = out.granted.clone();
     // The list the user answered: what the router matches the module's entry against later.
     let tag = list_code.to_string();
+    // First narrow the router to the file (what the keep step or a revoke left), so an item the
+    // file no longer grants cannot ride along with this Allow.
+    let file_grants: HashMap<String, Vec<String>> = reg
+        .inventory
+        .modules
+        .iter()
+        .map(|(k, m)| (k.clone(), m.granted.clone()))
+        .collect();
+    hub.act(|r| r.narrow_module_grants(&file_grants));
     hub.act(|r| {
         // A running instance takes the wider grant only if it is this very program.
         r.bind_module_grants(id, &out.bound_path, &out.bound_sha256);

@@ -1547,8 +1547,11 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   - **Signed updates are not affected.** `attest_update` moves the binding to the new file
     first, so the folder step finds the bytes already bound and does nothing. A signed update
     keeps everything, Sensitive items and the keyboard included, with no prompt.
-  - **Changed bytes with no attestation** carry only what is not Sensitive. The folder step
-    moves every Sensitive item from `granted` to `pending_permissions` and `last_choice`, voids
+  - **Changed bytes with no attestation** carry only what is not held back. Held back are every
+    Sensitive item, `files`, `secrets`, and every `channel.open:*` (the registry cannot know a
+    channel's catalog risk, so all opens wait; offers such as `channel.offer:*` and `provide:*`
+    carry). The folder step
+    moves each held item from `granted` to `pending_permissions` and `last_choice`, voids
     the keyboard record (reason `changed`), and never tells the router to follow the keyboard to
     the new file (`attested_keyboard_move` ignores folder steps). The module keeps running with
     what carried over. The Apps row reads "On, changed since you allowed it" with Review...,
@@ -1556,9 +1559,13 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
     as "Allowed before" and unconfirmed until the user confirms them. No new modal.
   - **An Allow never rebinds old Sensitive grants to new bytes.** `approve_listed` runs the
     folder step first, so an Allow made before the step ran cannot carry them over.
+  - **Bytes that land after the step are not carried by the launch check.** The check on the
+    pinned bytes treats any new hash as changed (only a dev-folder enrolment excuses it); the
+    launch then runs the folder step and the check once more, on the new bytes. The router's
+    in-memory grants are narrowed to the file after the step, and before an Allow widens them.
   - **A folder that syncs** with a cloud service, or whose state cannot be read, carries
     nothing: the step is refused (fail closed) and the existing changed flow runs, which stops
-    the app. The Keep row says why and how to stop it.
+    the app. The Keep row stays On with Turn off, and shows why nothing carries.
   - Dev-folder steps (`dev-folder` attestations) are a separate carry and are unchanged.
 - (#1178) **After a grant only narrowing.** Turn off (one item or all) acts at once and needs no
   confirmation: the router drops the grant (routes and the leases through them end) before the

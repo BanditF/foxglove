@@ -328,7 +328,9 @@ pub fn kept_changed(v: &View) -> bool {
                     .last()
                     .is_some_and(|a| a.by == hideout_registry::permission::FOLLOW_ATTESTED_BY)
         })
-        && asked_pending(v).iter().any(|i| i.sensitive)
+        && asked_pending(v)
+            .iter()
+            .any(|i| hideout_registry::permission::held_on_change(&i.raw))
 }
 
 /// The Permissions section of one module, or `None` when it has nothing to say.
@@ -468,7 +470,10 @@ fn keep_row(name: &str, v: &View) -> Option<KeepRow> {
     }
     let path = &v.listing.exe_path;
     let state = if keep_is_on(v) {
-        KeepState::On
+        match sync_line(v) {
+            Some(why) => KeepState::OnHeld(why.into()),
+            None => KeepState::On,
+        }
     } else if v.granted.is_empty() || v.bound.is_none() || v.void.is_some() {
         KeepState::Unavailable(keep_allow_first(name))
     } else if !hideout_registry::permission::on_local_fixed_drive(path) {
@@ -2752,6 +2757,46 @@ on = [\"open\", \"call\"]
             d.allowed().chosen.is_empty(),
             "nothing is allowed by itself"
         );
+    }
+
+    /// #1465: Keep is on but the folder syncs or cannot be read: the row stays On with Turn off
+    /// and shows why nothing carries, in place of the helper.
+    #[test]
+    fn a_kept_row_in_a_synced_folder_says_why_and_keeps_turn_off() {
+        use hideout_registry::dev_folder::DevProbes;
+        use hideout_registry::drive::SystemDrives;
+        use hideout_registry::sync_root::{SyncAnswer, SyncProbe};
+        #[derive(Clone, Copy)]
+        struct Fake(SyncAnswer);
+        impl SyncProbe for Fake {
+            fn check(&self, _: &str) -> SyncAnswer {
+                self.0
+            }
+        }
+        let mut f = fx("keep-synced", &["hub.notify", "ui.window"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        allow_keeping(&mut f, Opener::Change, true);
+        for (answer, line) in [
+            (SyncAnswer::Synced, KEEP_SYNCED),
+            (SyncAnswer::Unknown, KEEP_SYNC_UNKNOWN),
+        ] {
+            let mut reg = Registry::open(&f.home, false).unwrap();
+            reg.set_dev_probes(DevProbes {
+                drives: std::sync::Arc::new(SystemDrives),
+                sync: std::sync::Arc::new(Fake(answer)),
+            });
+            let v = reg.permission_view(ID).unwrap();
+            assert!(keep_is_on(&v));
+            let row = section_for(ID, &v).unwrap().keep.unwrap();
+            assert_eq!(row.state, KeepState::OnHeld(line.into()));
+            assert_eq!(row.word(), "On");
+            assert_eq!(
+                row.button(),
+                Some(hideout_shell::permission_dialog::TURN_OFF)
+            );
+            assert_eq!(row.helper(), line);
+            assert!(row.said().ends_with(line));
+        }
     }
 
     #[test]

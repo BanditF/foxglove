@@ -159,6 +159,14 @@ fn capitalized(s: &str) -> String {
         .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
 }
 
+/// Whether a grant waits for the user's OK again when a follow-folder grant meets new bytes
+/// (#1465): every Sensitive item, plus `files`, `secrets` and every `channel.open:*`. The
+/// registry cannot know a channel's catalog risk, so all channel opens are held (fail closed).
+/// Offering a channel (`channel.offer:*`, `provide:*`) is not held.
+pub fn held_on_change(raw: &str) -> bool {
+    describe(raw).2 || raw == "files" || raw == "secrets" || raw.starts_with("channel.open:")
+}
+
 /// Group, plain line and sensitivity of one permission string. An unknown body falls back to
 /// the raw string in the Sensitive group (§6.2's "Unknown: <raw>").
 pub fn describe(raw: &str) -> (Group, String, bool) {
@@ -739,20 +747,24 @@ impl Registry {
     /// Whether a grant of `id` is bound and the program no longer matches (or was already
     /// voided). Read-only; [`Registry::void_if_changed`] writes.
     pub fn binding_void(&self, id: &str) -> Option<VoidReason> {
-        self.binding_void_with(id, || self.program(id))
+        self.binding_void_with(id, || self.program(id), false)
     }
 
     /// [`Registry::binding_void`] against a program the caller already holds open and hashed
     /// (S7, F4): `path` and `sha256` come from the pinned handle, so the check is about the
-    /// bytes that are about to run, not a second read of the name.
+    /// bytes that are about to run, not a second read of the name. A changed hash is `Changed`
+    /// here even under a follow-folder grant: only [`Registry::keep_followed`] may carry a
+    /// follow across new bytes (and hold the held-back items), so bytes that arrived after it
+    /// ran are not excused (#1465). A dev enrolment still excuses.
     pub fn binding_void_pinned(&self, id: &str, path: &str, sha256: &str) -> Option<VoidReason> {
-        self.binding_void_with(id, || Ok((path.to_string(), sha256.to_string())))
+        self.binding_void_with(id, || Ok((path.to_string(), sha256.to_string())), true)
     }
 
     fn binding_void_with(
         &self,
         id: &str,
         program: impl FnOnce() -> Result<(String, String), Failure>,
+        pinned: bool,
     ) -> Option<VoidReason> {
         let m = self.inventory.modules.get(id)?;
         let Some(b) = m.bound.as_ref() else {
@@ -779,7 +791,9 @@ impl Registry {
                 {
                     Some(VoidReason::Moved)
                 } else if !hash.eq_ignore_ascii_case(&b.exe_sha256) {
-                    if self.follows(id, b, &path) || self.dev_enrolment(id, m, b, &path).is_some() {
+                    if (!pinned && self.follows(id, b, &path))
+                        || self.dev_enrolment(id, m, b, &path).is_some()
+                    {
                         None
                     } else {
                         Some(VoidReason::Changed)
@@ -903,7 +917,7 @@ impl Registry {
                 let moved: Vec<String> = m
                     .granted
                     .iter()
-                    .filter(|g| describe(g).2)
+                    .filter(|g| held_on_change(g))
                     .cloned()
                     .collect();
                 m.granted.retain(|g| !moved.contains(g));

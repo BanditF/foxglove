@@ -35,6 +35,10 @@ struct Fx {
 /// An adopted app that asks for two ordinary items and a Sensitive one, allowed with the
 /// folder choice on and the keyboard on.
 fn fx(name: &str) -> Fx {
+    fx_asking(name, &ALL)
+}
+
+fn fx_asking(name: &str, asks: &[&str]) -> Fx {
     let install = temp(&format!("{name}-install"));
     let exe = install.join("foxglove.exe");
     std::fs::write(&exe, b"build 1").unwrap();
@@ -45,7 +49,11 @@ fn fx(name: &str) -> Fx {
         format!(
             "id = \"{ID}\"\nname = \"Foxglove\"\nversion = \"1.0.0\"\nkind = \"adopted\"\n\
              family = \"foxglove\"\nhub = \"1.0\"\nrun = [\"{run}\"]\n\
-             api = {{ foxglove = \"1.0\" }}\npermissions = [\"hub.notify\", \"net\", \"ui.window\"]\n"
+             api = {{ foxglove = \"1.0\" }}\npermissions = [{}]\n",
+            asks.iter()
+                .map(|a| format!("\"{a}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     )
     .unwrap();
@@ -55,7 +63,9 @@ fn fx(name: &str) -> Fx {
     let list = reg.permission_list(ID).unwrap();
     let mut all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
     all.sort();
-    assert_eq!(all, ALL, "the app asks for these");
+    let mut want: Vec<String> = asks.iter().map(|a| a.to_string()).collect();
+    want.sort();
+    assert_eq!(all, want, "the app asks for these");
     reg.approve_listed(ID, list.code(), &all, &[], NOW, "dialog", true)
         .unwrap();
     reg.set_enabled(ID, true).unwrap();
@@ -196,4 +206,57 @@ fn a_folder_that_syncs_or_cannot_be_read_keeps_nothing() {
         assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
         assert_eq!(f.reg.permission_view(ID).unwrap().folder_sync, answer);
     }
+}
+
+#[test]
+fn files_secrets_and_channel_opens_wait_like_net_and_offers_do_not() {
+    let asks = [
+        "hub.notify",
+        "net",
+        "files",
+        "secrets",
+        "channel.open:foxglove.example-link/art",
+        "channel.offer:art",
+    ];
+    let mut f = fx_asking("held-set", &asks);
+    let before = granted(&f);
+    for a in asks {
+        assert!(before.iter().any(|g| g == a), "{a} was allowed");
+    }
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    assert!(f.reg.keep_followed(ID, LATER).unwrap());
+    assert_eq!(granted(&f), ["channel.offer:art", "hub.notify"]);
+    let mut waiting = f.reg.inventory.modules[ID].pending_permissions.clone();
+    waiting.sort();
+    assert_eq!(
+        waiting,
+        [
+            "channel.open:foxglove.example-link/art",
+            "files",
+            "net",
+            "secrets"
+        ]
+    );
+    assert!(hideout_registry::permission::held_on_change("secrets"));
+    assert!(!hideout_registry::permission::held_on_change(
+        "channel.offer:art"
+    ));
+}
+
+#[test]
+fn the_pinned_check_does_not_excuse_new_bytes_that_keep_followed_never_saw() {
+    let f = fx("pinned-swap");
+    let (path, _) = f.reg.current_program(ID).unwrap();
+    let other = foxglove_plugin_trust::sha256_hex(b"swapped after the keep step");
+    // Follow is on and keep_followed has not run: the new bytes are Changed, not carried.
+    assert!(f.reg.inventory.modules[ID]
+        .bound
+        .as_ref()
+        .unwrap()
+        .follow
+        .is_some());
+    assert_eq!(
+        f.reg.binding_void_pinned(ID, &path, &other),
+        Some(VoidReason::Changed)
+    );
 }

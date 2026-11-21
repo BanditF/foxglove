@@ -261,6 +261,9 @@ pub enum KeepAnswer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeepState {
     On,
+    /// On, but the folder syncs or could not be read: nothing carries. The reason replaces the
+    /// helper; Turn off stays so the user can end it here (#1465).
+    OnHeld(String),
     /// Off, with Turn on… offered.
     Off,
     /// Off, no button: the muted reason (a drive that is not local, or "Allow {name} first.").
@@ -279,7 +282,7 @@ pub struct KeepRow {
 impl KeepRow {
     pub fn word(&self) -> &'static str {
         match self.state {
-            KeepState::On => "On",
+            KeepState::On | KeepState::OnHeld(_) => "On",
             _ => "Off",
         }
     }
@@ -287,7 +290,7 @@ impl KeepRow {
     /// The button's text, where one is offered.
     pub fn button(&self) -> Option<&'static str> {
         match self.state {
-            KeepState::On => Some(TURN_OFF),
+            KeepState::On | KeepState::OnHeld(_) => Some(TURN_OFF),
             KeepState::Off => Some(TURN_ON_KEEP),
             KeepState::Unavailable(_) => None,
         }
@@ -295,7 +298,7 @@ impl KeepRow {
 
     pub fn button_said(&self) -> Option<&'static str> {
         match self.state {
-            KeepState::On => Some(KEEP_TURN_OFF_SAID),
+            KeepState::On | KeepState::OnHeld(_) => Some(KEEP_TURN_OFF_SAID),
             KeepState::Off => Some(KEEP_TURN_ON_SAID),
             KeepState::Unavailable(_) => None,
         }
@@ -304,15 +307,19 @@ impl KeepRow {
     /// The muted line under the label.
     pub fn helper(&self) -> String {
         match &self.state {
-            KeepState::Unavailable(r) => r.clone(),
+            KeepState::Unavailable(r) | KeepState::OnHeld(r) => r.clone(),
             _ => keep_helper(&self.name, &self.file),
         }
     }
 
     /// The row's accessible name.
     pub fn said(&self) -> String {
+        let line = match &self.state {
+            KeepState::OnHeld(r) => format!(", {r}"),
+            _ => String::new(),
+        };
         format!(
-            "{KEEP_LABEL}, {}, {}",
+            "{KEEP_LABEL}, {}, {}{line}",
             self.word().to_lowercase(),
             self.folder
         )
