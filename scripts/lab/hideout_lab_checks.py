@@ -349,10 +349,10 @@ class QuietHub(Hub):
         ok, _ = self.wait(lambda s: s.get('ok'), 30, read=lambda: self.do('state', check=False))
         if not ok:
             out = self.launcher.stdout.read() if self.launcher.poll() is not None else ''
-            self.stop()
+            self.stop(quit_first=False)
             raise RuntimeError(f'the lab hub did not answer on its pipe within 30 s: {out.strip()[:300]}')
         if f'folder {self.lab}' not in self.log():
-            self.stop()
+            self.stop(quit_first=False)  # not ours: never ask it to quit
             raise RuntimeError("the hub that answered is not this run's (no start line for this folder in its log)")
 
     def quit_cleanly(self):
@@ -361,15 +361,20 @@ class QuietHub(Hub):
         try:
             self.do('menu-pick', 'Quit Hideout', check=False, timeout=15)
             end = time.time() + 15
-            while time.time() < end and self.do('state', check=False, timeout=5).get('ok'):
+            while time.time() < end:
+                if not self.do('state', check=False, timeout=5).get('ok'):
+                    return True
                 time.sleep(0.25)
         except (subprocess.SubprocessError, OSError):
             pass  # the fallback below still ends it
+        print('WARN the hub did not quit through its tray in 15 s; its desktop is torn down (an unclean exit)', flush=True)
+        return False
 
-    def stop(self):
+    def stop(self, quit_first=True):
         if self.launcher is None:
             return
-        self.quit_cleanly()
+        if quit_first:
+            self.quit_cleanly()
         try:
             hidden_ps(stop_script(self.desktop)).wait(30)  # the launcher's own teardown, by name
             self.launcher.wait(30)

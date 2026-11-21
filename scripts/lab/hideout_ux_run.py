@@ -111,11 +111,12 @@ def uia_read(desktop, out_file, page, seconds=60):
 
 
 def run_checks(hub, check, desktop, exe):
-    s = hub.state()
+    hub.do('focus', 'Apps')
+    ok, s = hub.wait(lambda s: has(s, f'Add {NAME}'), 10)
     check('A3 the Found card offers Add Vulpes', has(s, f'Add {NAME}'),
           f'{[t for t in texts(s) if NAME in t][:3]}; page shows {texts(s)[:40]}')
     line = tray_status(s) or ''
-    check('A2 no app is shown as 0', not contains(s, '0 apps') and '0 apps' not in line, f'tray line {line!r}')
+    check('A2 no app is shown as 0', line == 'No apps yet' and not contains(s, '0 apps'), f'tray line {line!r}')
 
     # A4: Add opens the dialog (the app is added off); closing the window is Not now.
     hub.do('click', f'Add {NAME}')
@@ -206,7 +207,14 @@ def main():
     if lab == home.resolve() or home.resolve() in lab.parents:
         print(f"BLOCKED: {lab} is the user's hub folder\nRESULT BLOCKED", flush=True)
         sys.exit(2)
-    exe = hello_fixture(lab, args.probe)
+    if lab.exists() and any(lab.iterdir()):
+        print(f'BLOCKED: {lab} is not empty (a run needs a fresh scratch folder)' + chr(10) + 'RESULT BLOCKED', flush=True)
+        sys.exit(2)
+    try:
+        exe = hello_fixture(lab, args.probe)
+    except OSError as e:
+        print(f'BLOCKED: seeding {lab}: {e}' + chr(10) + 'RESULT BLOCKED', flush=True)
+        sys.exit(2)
     desktop = 'ql-ux' + os.urandom(3).hex()
     hub = QuietHub(args.app, lab, lab.parent / 'shots', desktop, {}, seconds=args.seconds,
                    allow_running=args.allow_running)
