@@ -1743,6 +1743,15 @@ mod widget_tests {
             ),
             (
                 "foxglove/pc_lights_ui.rs",
+                "&own_tip".into(),
+                None,
+                vec![pair(
+                    pc_lights_ui::OWN_EFFECT,
+                    pc_lights_ui::own_effect_tip(&[]),
+                )],
+            ),
+            (
+                "foxglove/pc_lights_ui.rs",
                 "MATCH_TIP".into(),
                 None,
                 vec![pair(

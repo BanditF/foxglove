@@ -361,6 +361,25 @@ pub trait LightingDevice: Send {
         None
     }
 
+    /// The effects the device plays by itself that Foxglove can start; none for most.
+    fn effects(&self) -> Vec<OnboardEffect> {
+        Vec::new()
+    }
+
+    /// The effect of its own the device plays now, as Foxglove last started it; `None` once a
+    /// static colour was set (or none was started).
+    fn effect(&self) -> Option<String> {
+        None
+    }
+
+    /// Starts one of [`Self::effects`] on some zones, each with the colours it plays
+    /// (`(index, colours)`): one for an effect in the zone's own colour, else the effect's
+    /// set. The device keeps playing it by itself, also once Foxglove is gone. The colours
+    /// [`Self::colors`] reports stay as they were.
+    fn set_effect(&mut self, _name: &str, _colors: &[(usize, Vec<Rgb>)]) -> Result<()> {
+        Err(DeviceError::Unsupported)
+    }
+
     /// One colour on every zone.
     fn set_all(&mut self, color: Rgb) -> Result<()> {
         let all: Vec<_> = (0..self.zones().len()).map(|i| (i, color)).collect();
@@ -414,6 +433,37 @@ pub fn restore_colors(known: &[Option<Rgb>], fallback: &[Option<Rgb>]) -> Vec<(u
         .map(|(i, c)| (i, c.or(fallback.get(i).copied().flatten()).unwrap_or(WHITE)))
         .collect()
 }
+
+/// An effect a device plays by itself, as its driver offers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnboardEffect {
+    /// Its name, as the catalog lists it ("breathing").
+    pub name: String,
+    /// It plays each zone's own colour; else [`SPECTRUM`].
+    pub own_colours: bool,
+}
+
+/// The colours a many-colour onboard effect runs through: six, a full turn of the hues.
+pub const SPECTRUM: [Rgb; 6] = [
+    Rgb { r: 255, g: 0, b: 0 },
+    Rgb {
+        r: 255,
+        g: 255,
+        b: 0,
+    },
+    Rgb { r: 0, g: 255, b: 0 },
+    Rgb {
+        r: 0,
+        g: 255,
+        b: 255,
+    },
+    Rgb { r: 0, g: 0, b: 255 },
+    Rgb {
+        r: 255,
+        g: 0,
+        b: 255,
+    },
+];
 
 pub const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 pub const WHITE: Rgb = Rgb {
@@ -469,11 +519,10 @@ pub fn test_zone(
 /// in [`calibrated::Calibrated`], so its colours pass through the device's calibration.
 pub fn open(found: &Found, writer: Box<dyn HidWriter>) -> Result<Box<dyn LightingDevice>> {
     let driver: Box<dyn LightingDevice> = match found.control {
-        Control::Driver(Protocol::OmenTracer) => Box::new(omen_tracer::OmenTracer::new(
-            found.name.clone(),
-            found.zones.clone(),
-            writer,
-        )?),
+        Control::Driver(Protocol::OmenTracer) => Box::new(
+            omen_tracer::OmenTracer::new(found.name.clone(), found.zones.clone(), writer)?
+                .with_effects(&found.caps.effects),
+        ),
         // The stub gets no writer: it can't send anything.
         Control::Driver(Protocol::WitmodLcd) => Box::new(witmod_lcd::WitmodLcd::new(
             found.name.clone(),

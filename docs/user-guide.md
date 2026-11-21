@@ -326,6 +326,12 @@ Foxglove controls them:
   **Identify** blinks the case for a moment; **Off** turns it dark. **Match keyboard** makes
   the case follow the keyboard's light colour you set in Foxglove, or the Windows accent colour when
   the keyboard follows that. Foxglove puts your colours back when the PC starts.
+  **Own effect** picks an effect the case plays by itself, also while Foxglove is closed:
+  **Breathing** in your zone colours, or **Colour cycle**, **Wave** or **Radial** in their own
+  colours. A scene draws over it while it runs. **Off** goes back to **Steady colours**.
+  **Colour cycle**, **Wave** and **Radial** can't show your colours: picking one turns
+  **Match keyboard** off, and **Apply colours** or turning **Match keyboard** on goes back to
+  **Steady colours**.
 - **Windows lighting**: any device Windows lists under Dynamic Lighting, such as a Logitech
   G502, a light strip or a headset. Its lamps are listed by what they are for ("Lamp 1 · Logo").
   You get a picker per lamp (up to 12 lamps; more lamps get one **All lamps** row), plus

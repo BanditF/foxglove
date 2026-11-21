@@ -42,6 +42,8 @@ pub(crate) fn row(d: &CatalogDevice, control: Control) -> Row {
         kind: d.kind,
         shape: d.shape,
         lamp_access: None,
+        effects: Vec::new(),
+        effect: None,
         calibration_hint: None,
     }
 }
@@ -65,6 +67,8 @@ pub(crate) fn lamp_array_row(key: &str, name: &str) -> Row {
         kind: Default::default(),
         shape: None,
         lamp_access: None,
+        effects: Vec::new(),
+        effect: None,
         calibration_hint: None,
     }
 }

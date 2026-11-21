@@ -68,7 +68,8 @@ zones = [
     { id = 6, name = "Front middle fan", position = [102, 285] },
     { id = 7, name = "Front top fan", position = [102, 165] },
 ]
-# The board's own modes and brightness byte (#423); Foxglove's driver sets static colours only.
+# The board's own modes and brightness byte (#423). Foxglove's driver starts all but blinking,
+# at the slowest speed.
 effects = ["breathing", "colour cycle", "blinking", "wave", "radial"]
 brightness = true
 # Neutral to start: each 45L is calibrated on the Lights page ("Calibrate…").
