@@ -95,6 +95,17 @@ class Graph(unittest.TestCase):
         found = hd.problems(m, Path(WS) / 'app')
         self.assertTrue(any(f.startswith('hideout 1.0.0: our own crate') for f in found), found)
 
+    def test_a_vendored_upstream_copy_keeps_upstreams_licence(self):
+        ok = local('patched', 'MIT OR Apache-2.0', folder='vendor')
+        m = clean_graph(patched=(ok, 'hideout-shell', None))
+        self.assertEqual(hd.problems(m, Path(WS) / 'app', vendor_dir=Path(WS) / 'vendor'), [])
+        # Without the vendor folder named it is our own crate, and a copyleft copy never passes.
+        self.assertEqual(len(hd.problems(m, Path(WS) / 'app')), 1)
+        gpl = local('patched', 'GPL-3.0-only', folder='vendor')
+        found = hd.problems(clean_graph(patched=(gpl, 'hideout-shell', None)),
+                            Path(WS) / 'app', vendor_dir=Path(WS) / 'vendor')
+        self.assertTrue(any('not on the hub allowlist' in f for f in found), found)
+
     def test_dev_dependencies_count_only_at_the_roots(self):
         bad_root_dev = clean_graph(**{'gpl-test': (pkg('gpl-test', 'GPL-3.0'), 'hideout-shell', 'dev')})
         self.assertEqual(len(hd.problems(bad_root_dev, Path(WS) / 'app')), 1)
