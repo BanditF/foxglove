@@ -300,16 +300,22 @@ pub struct Plain {
 pub fn plain(ctx: &egui::Context) -> Plain {
     start(ctx);
     let s = STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    plain_words(&s, &super::parts::Parts::current())
+    use foxglove_devices::facts::Value;
+    let link_up =
+        super::devices::bus().facts().get("keyboard.connected") == Some(Value::Bool(true));
+    plain_words(&s, link_up, &super::parts::Parts::current())
 }
 
 /// The rows; the first names the part the PC talks to ("Left half", "Keyboard", #559).
-fn plain_words(s: &Status, parts: &super::parts::Parts) -> Plain {
+/// `link_up`: the keyboard is here, whether or not its status has been read yet (#1412).
+fn plain_words(s: &Status, link_up: bool, parts: &super::parts::Parts) -> Plain {
     let mut rows = vec![(
         parts.name(0),
         match s.usb {
             Some(true) => "on USB",
             Some(false) => "on Bluetooth",
+            // Connected, but how is not read yet: never "not connected" (#1412).
+            None if link_up => "asking the keyboard…",
             None => "not connected",
         }
         .to_string(),
@@ -730,7 +736,7 @@ mod tests {
     #[test]
     fn the_link_in_plain_words() {
         let corne = crate::foxglove::fixtures::users_desk::board().parts();
-        let none = plain_words(&Status::default(), &corne);
+        let none = plain_words(&Status::default(), false, &corne);
         assert_eq!(
             none.rows,
             vec![
@@ -740,8 +746,14 @@ mod tests {
         );
         // A one-piece board (#559): the keyboard, never a half.
         let plank = crate::foxglove::fixtures::second_desk::board().parts();
-        let one = plain_words(&Status::default(), &plank);
+        let one = plain_words(&Status::default(), false, &plank);
         assert_eq!(one.rows[0], ("Keyboard".into(), "not connected".into()));
+        // The keyboard is here but its status is not read yet (#1412): asking, never away.
+        let asking = plain_words(&Status::default(), true, &corne);
+        assert_eq!(
+            asking.rows[0],
+            ("Left half".into(), "asking the keyboard…".into())
+        );
         assert!(one
             .rows
             .iter()
@@ -755,6 +767,7 @@ mod tests {
                 firmware: Some(conn(0, true)),
                 this_pc: Some(0),
             },
+            false,
             &corne,
         );
         assert_eq!(ok.rows[0].1, "on USB");
@@ -769,6 +782,7 @@ mod tests {
                 firmware: Some(conn(1, false)),
                 this_pc: Some(0),
             },
+            false,
             &corne,
         );
         assert_eq!(other.rows[2].1, "2 · another PC · waiting for its PC");
