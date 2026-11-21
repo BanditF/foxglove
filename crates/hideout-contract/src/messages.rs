@@ -266,17 +266,21 @@ pub struct FactsDemand {
 /// The method name of [`ModuleGrants`] (v1.22).
 pub const MODULE_GRANTS: &str = "module.grants";
 
-/// `module.grants` (H -> M notification, v1.22): the user's Allow just widened what the module
-/// holds while it runs. `added` lists the permissions (as the module's manifest spells them)
-/// it holds now and did not before; a call that was denied for want of one of them, a
-/// `facts.subscribe` above all, is worth sending again. Sent to the module's own connections
-/// only, and only when something was added: a turn-off is never announced this way (leases
-/// end with `lease.closed`). A module that doesn't know it ignores it.
+/// `module.grants` (H -> M notification, v1.22): what the module holds changed while it runs.
+/// `added` lists the permissions (as the module's manifest spells them) the user's Allow just
+/// gave this connection; a call that was denied for want of one of them, a `facts.subscribe`
+/// above all, is worth sending again. `ended` lists the module's own fact subscriptions that
+/// a turn-off just ended (then `added` is empty). Sent only to the connections it is about.
+/// It grants nothing by itself. A module that doesn't know it ignores it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleGrants {
-    /// Permissions the module holds now and did not before, sorted, each once.
+    /// Permissions the connection holds now and did not before, sorted, each once.
     pub added: Vec<String>,
+    /// Subscription ids (`facts.subscribe` results) of this connection that ended because the
+    /// grant behind them is gone, sorted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ended: Vec<u64>,
 }
 
 /// Crashes in ten minutes that stop a module (§7.7).

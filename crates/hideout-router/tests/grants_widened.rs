@@ -56,11 +56,15 @@ fn grants(out: &[Out], to: ConnId) -> Vec<Value> {
 }
 
 fn connect(r: &mut Router, id: &str, now: Instant) -> ConnId {
+    connect_api(r, id, json!({"foxglove": "1.13"}), now)
+}
+
+fn connect_api(r: &mut Router, id: &str, api: Value, now: Instant) -> ConnId {
     r.set_token(id, &format!("tok-{id}"));
     let c = r.connect(Origin::Pipe);
     let init = json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
         "id":id,"version":"0.1.0","instance":"i","token":format!("tok-{id}"),"hub":"1.5",
-        "api":{"foxglove":"1.13"}}});
+        "api":api}});
     let out = r.receive(c, &init.to_string(), now);
     assert!(sends(&out, c)[0].get("result").is_some(), "{out:?}");
     let reg = json!({"jsonrpc":"2.0","id":1,"method":"module.register","params":
@@ -293,8 +297,18 @@ fn a_turn_off_ends_the_running_modules_subscription_and_reads() {
     assert_eq!(m.changed(), [json!(true)]);
 
     let out = r.drop_module_grants(ID, None);
-    assert!(grants(&out, conn).is_empty());
+    // The module is told which of its subscriptions ended, and nothing was added.
+    let told = grants(&out, conn);
+    assert_eq!(told.len(), 1, "{out:?}");
+    assert_eq!(told[0]["added"], json!([]));
+    assert_eq!(told[0]["ended"].as_array().map(Vec::len), Some(1));
     m.pump(&mut r, out);
+    // Nothing is asked again on a turn-off; the ended subscription waits for the next Allow.
+    assert_eq!(m.answers.len(), 1);
+    assert_eq!(
+        m.session.denied_subscriptions(),
+        [json!({ "pattern": GAME })]
+    );
     let out = r.publish(GAME, json!(false));
     m.pump(&mut r, out);
     assert_eq!(
@@ -307,6 +321,130 @@ fn a_turn_off_ends_the_running_modules_subscription_and_reads() {
         .unwrap();
     m.pump(&mut r, Vec::new());
     assert_eq!(m.answers.last(), Some(&("facts.get".to_string(), false)));
+
+    // Allowed again: the subscription comes back by itself.
+    let out = r.set_module_grants(ID, s(&[READ_GAME]));
+    m.pump(&mut r, out);
+    assert_eq!(
+        m.answers.last(),
+        Some(&("facts.subscribe".to_string(), true))
+    );
+    let out = r.publish(GAME, json!(true));
+    m.pump(&mut r, out);
+    assert_eq!(m.changed(), [json!(true), json!(true)]);
+}
+
+/// A subscription the module ended itself is not brought back by a turn-off and an Allow.
+#[test]
+fn an_unsubscribed_pattern_is_not_asked_for_again() {
+    let mut session = Session::new(std::io::empty(), Vec::new());
+    let mut seen = Seen::default();
+    let id = session.subscribe(GAME).unwrap();
+    session
+        .handle(
+            json!({"jsonrpc":"2.0","id":id,"result":{"subscription":7}}),
+            &mut seen,
+        )
+        .unwrap();
+    session
+        .request("facts.unsubscribe", json!({"subscription": 7}))
+        .unwrap();
+    session.writer_mut().clear();
+    for params in [json!({"added":[],"ended":[7]}), json!({"added":["net"]})] {
+        session
+            .handle(
+                json!({"jsonrpc":"2.0","method":"module.grants","params":params}),
+                &mut seen,
+            )
+            .unwrap();
+    }
+    assert!(session.denied_subscriptions().is_empty());
+    assert!(session.writer_mut().is_empty());
+}
+
+/// With verified program images (the real hub): an Allow widens a running connection only when
+/// it runs the very program the Allow was bound to. Another build keeps what it has, hears
+/// nothing, and still loses what a turn-off takes.
+#[test]
+fn an_allow_bound_to_another_program_does_not_reach_the_running_one() {
+    let now = Instant::now();
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.set_launch_check(Box::new(|_, _| Ok(())));
+    r.set_identity_lookup(Box::new(|_, _| {
+        Some((r"C:\Mods\sensors.exe".to_string(), "AB12".to_string()))
+    }));
+    r.add_module(entry(ID, &["net"]));
+    let conn = connect(&mut r, ID, now);
+    let get = |r: &mut Router, n: u32| {
+        let out = r.receive(
+            conn,
+            &json!({"jsonrpc":"2.0","id":n,"method":"facts.get","params":{"key":GAME}}).to_string(),
+            now,
+        );
+        sends(&out, conn)[0].get("result").is_some()
+    };
+
+    // No binding recorded, then one for another file, then the same file with another hash.
+    let out = r.set_module_grants(ID, s(&["net", READ_GAME]));
+    assert!(grants(&out, conn).is_empty(), "{out:?}");
+    assert!(!get(&mut r, 10));
+    for (path, sha) in [
+        (r"C:\Mods\other.exe", "ab12"),
+        (r"C:\Mods\sensors.exe", "ff00"),
+    ] {
+        r.bind_module_grants(ID, path, sha);
+        let out = r.set_module_grants(ID, s(&["net", READ_GAME, "devices.read"]));
+        assert!(grants(&out, conn).is_empty(), "{out:?}");
+        assert!(!get(&mut r, 11));
+        r.set_module_grants(ID, s(&["net", READ_GAME]));
+    }
+
+    // The program the Allow is for (path and hash compare without case): it gets the grant.
+    r.bind_module_grants(ID, r"c:\mods\SENSORS.exe", "ab12");
+    let out = r.set_module_grants(ID, s(&["net", READ_GAME, "devices.read"]));
+    assert_eq!(
+        grants(&out, conn),
+        [json!({ "added": ["devices.read"] })],
+        "{out:?}"
+    );
+    assert!(get(&mut r, 12));
+
+    // Narrowing never waits on the binding.
+    r.bind_module_grants(ID, r"C:\Mods\other.exe", "ab12");
+    r.drop_module_grants(ID, None);
+    assert!(!get(&mut r, 13));
+}
+
+/// A turn-off also ends the app watches the grant no longer covers.
+#[test]
+fn a_turn_off_ends_an_app_watch() {
+    let now = Instant::now();
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry(ID, &["apps.watch:example-app.exe"]));
+    let conn = connect(&mut r, ID, now);
+    let out = r.receive(
+        conn,
+        &json!({"jsonrpc":"2.0","id":5,"method":"apps.watch","params":{"exe":"example-app.exe"}})
+            .to_string(),
+        now,
+    );
+    assert!(sends(&out, conn)[0].get("result").is_some(), "{out:?}");
+    assert_eq!(r.app_watchers("example-app"), 1);
+    r.drop_module_grants(ID, None);
+    assert_eq!(r.app_watchers("example-app"), 0);
+    let out = r.publish("apps.running.example-app", json!(true));
+    assert!(sends(&out, conn).is_empty(), "{out:?}");
+}
+
+/// A v1 connection's wire has no `module.grants`: it is never sent one.
+#[test]
+fn a_v1_connection_is_not_told() {
+    let now = Instant::now();
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry(ID, &[]));
+    let conn = connect_api(&mut r, ID, json!("1.13"), now);
+    let out = r.set_module_grants(ID, s(&[READ_GAME]));
+    assert!(grants(&out, conn).is_empty(), "{out:?}");
 }
 
 /// The session alone: only a denial is kept, at most 64 of them (the oldest goes first).

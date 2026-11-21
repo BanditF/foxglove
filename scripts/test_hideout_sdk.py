@@ -90,6 +90,27 @@ class SampleModule(unittest.TestCase):
         s.handle({"jsonrpc": "2.0", "method": "module.grants", "params": {"added": ["y"]}}, c)
         self.assertEqual(len(out.getvalue().splitlines()), sent)
 
+    def test_subscription_the_hub_ended_waits_for_the_next_allow(self):
+        out = io.BytesIO()
+        s, c = Session(io.BytesIO(), out), Counter()
+        kept = s.subscribe("keyboard.game_mode")
+        gone = s.subscribe("gpu.*")
+        s.handle({"jsonrpc": "2.0", "id": kept, "result": {"subscription": 3}}, c)
+        s.handle({"jsonrpc": "2.0", "id": gone, "result": {"subscription": 4}}, c)
+        # The module ended this one itself: it never comes back.
+        s.request("facts.unsubscribe", {"subscription": 4})
+        sent = len(out.getvalue().splitlines())
+        # A turn-off: nothing is sent, the ended subscription waits.
+        s.handle({"jsonrpc": "2.0", "method": "module.grants",
+                  "params": {"added": [], "ended": [3, 4, 9]}}, c)
+        self.assertEqual(len(out.getvalue().splitlines()), sent)
+        self.assertEqual(s.denied_subscriptions(), [{"pattern": "keyboard.game_mode"}])
+        # The next Allow: asked for again.
+        s.handle({"jsonrpc": "2.0", "method": "module.grants", "params": {"added": ["x"]}}, c)
+        lines = [json.loads(line) for line in out.getvalue().splitlines()][sent:]
+        self.assertEqual([(m["method"], m["params"]) for m in lines],
+                         [("facts.subscribe", {"pattern": "keyboard.game_mode"})])
+
     def test_denied_subscribes_kept_are_capped(self):
         s, c = Session(io.BytesIO(), io.BytesIO()), Counter()
         for n in range(70):

@@ -348,6 +348,9 @@ pub struct Session<R, W> {
     subscribing: HashMap<i64, Value>,
     /// The params of each `facts.subscribe` the hub denied: sent again on `module.grants`.
     denied_subs: Vec<Value>,
+    /// The params of each live subscription, by the hub's subscription id: one the hub ends
+    /// (`module.grants {ended}`) goes back to the denied ones.
+    live_subs: HashMap<u64, Value>,
 }
 
 /// Denied subscriptions a session keeps to send again (the oldest goes first).
@@ -362,6 +365,7 @@ impl<R: BufRead, W: Write> Session<R, W> {
             pending: HashMap::new(),
             subscribing: HashMap::new(),
             denied_subs: Vec::new(),
+            live_subs: HashMap::new(),
         }
     }
 
@@ -398,6 +402,10 @@ impl<R: BufRead, W: Write> Session<R, W> {
         self.pending.insert(id, method.to_string());
         if method == "facts.subscribe" {
             self.subscribing.insert(id, params);
+        } else if method == "facts.unsubscribe" {
+            if let Some(n) = params.get("subscription").and_then(Value::as_u64) {
+                self.live_subs.remove(&n);
+            }
         }
         Ok(id)
     }
@@ -417,8 +425,39 @@ impl<R: BufRead, W: Write> Session<R, W> {
     /// `module.grants` arrived: every denied subscription is asked for once more. One that is
     /// denied again waits for the next `module.grants`; nothing is sent on a timer.
     fn resubscribe(&mut self) -> Result<()> {
-        for params in std::mem::take(&mut self.denied_subs) {
-            self.request("facts.subscribe", params)?;
+        let mut again = std::mem::take(&mut self.denied_subs);
+        while !again.is_empty() {
+            let params = again.remove(0);
+            if let Err(e) = self.request("facts.subscribe", params.clone()) {
+                // Not sent: these still wait for the next `module.grants`.
+                self.denied_subs.push(params);
+                self.denied_subs.append(&mut again);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    fn keep_denied(&mut self, params: Value) {
+        if !self.denied_subs.contains(&params) {
+            if self.denied_subs.len() >= MAX_DENIED_SUBS {
+                self.denied_subs.remove(0);
+            }
+            self.denied_subs.push(params);
+        }
+    }
+
+    /// `module.grants`: subscriptions the hub ended wait for the next Allow; after an Allow
+    /// the waiting ones are asked for again.
+    fn grants_changed(&mut self, params: &Value) -> Result<()> {
+        let list = |k: &str| params.get(k).and_then(Value::as_array);
+        for n in list("ended").into_iter().flatten() {
+            if let Some(p) = n.as_u64().and_then(|n| self.live_subs.remove(&n)) {
+                self.keep_denied(p);
+            }
+        }
+        if list("added").is_some_and(|a| !a.is_empty()) {
+            self.resubscribe()?;
         }
         Ok(())
     }
@@ -505,18 +544,21 @@ impl<R: BufRead, W: Write> Session<R, W> {
                 .pending
                 .remove(&id)
                 .ok_or_else(|| SessionError::Protocol(format!("no request {id} is waiting")))?;
+            let subscribed = self.subscribing.remove(&id);
             let outcome = match (msg.get("result"), msg.get("error")) {
                 (Some(r), None) => Ok(r.clone()),
                 (None, Some(e)) => Err(RpcError::from_value(e)),
                 _ => return Err(SessionError::Protocol("one of result and error".into())),
             };
-            if let Some(params) = self.subscribing.remove(&id) {
-                let denied = matches!(&outcome, Err(e) if e.code == code::DENIED);
-                if denied && !self.denied_subs.contains(&params) {
-                    if self.denied_subs.len() >= MAX_DENIED_SUBS {
-                        self.denied_subs.remove(0);
+            if let Some(params) = subscribed {
+                match &outcome {
+                    Ok(r) => {
+                        if let Some(n) = r.get("subscription").and_then(Value::as_u64) {
+                            self.live_subs.insert(n, params);
+                        }
                     }
-                    self.denied_subs.push(params);
+                    Err(e) if e.code == code::DENIED => self.keep_denied(params),
+                    Err(_) => {}
                 }
             }
             return Ok(Incoming::Response {
@@ -531,7 +573,7 @@ impl<R: BufRead, W: Write> Session<R, W> {
             match method.as_str() {
                 "module.exit" => handler.exit(),
                 MODULE_GRANTS => {
-                    self.resubscribe()?;
+                    self.grants_changed(&params)?;
                     handler.notification(&method, params);
                 }
                 _ => handler.notification(&method, params),

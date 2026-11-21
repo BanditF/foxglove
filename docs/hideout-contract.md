@@ -25,17 +25,23 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
 - **1.22** (an Allow reaches a running module): a module connection's capabilities are read
-  from the module's grants at `initialize` and now follow the grants the hub holds in memory,
-  both ways, while the module runs. After the user's Allow the calls the module makes next are
-  checked against the wider grant, with no restart; after a turn-off (or a narrowing from the
-  file) they are checked against the narrower one at once, and a fact subscription the
-  connection may no longer hold ends. `module.grants {added}` (H → M notification, §8.8) tells
-  every connection of that module, and nobody else, which items an Allow added; nothing is sent
-  when nothing was added or on a narrowing. The notification grants nothing: it only says a
-  call that was denied is worth sending again, and the hub checks that call as any other. The
-  module SDKs keep each `facts.subscribe` the hub denied (64 at most, the oldest dropped) and
-  send them once more per `module.grants`, with no timer. Additive: the hub version stays
-  1.5; an older hub never sends it and an older module ignores it.
+  from the module's grants at `initialize` and now follow the grants the hub holds in memory
+  while the module runs. Wider: after the user's Allow the calls the module makes next are
+  checked against the wider grant, with no restart, on each connection whose verified program
+  (path and hash, §7.5) is the one the Allow was bound to; an instance of another build, or
+  one with no verified identity, keeps what it has until its next start. Narrower: after a
+  turn-off (or a narrowing from the file) the next calls of every connection are checked
+  against the narrower grant at once, and a fact subscription or app watch the connection may
+  no longer hold ends. Not touched by this: leases the module holds as a caller, channels it
+  has open and calls already under way. `module.grants {added, ended}` (H → M notification,
+  §8.8) tells the connections it is about, and nobody else: `added` is what an Allow just gave
+  the connection, `ended` the connection's own subscription ids a narrowing just ended. The
+  notification grants nothing: `added` only says a call that was denied is worth sending
+  again, and the hub checks that call as any other. The module SDKs keep each
+  `facts.subscribe` the hub denied or ended (64 at most, the oldest dropped) and send them
+  once more per `module.grants` with a non-empty `added`, with no timer. Not sent on a v1
+  connection. Additive: the hub version stays 1.5; an older hub never sends it and an older
+  module ignores it.
 - **1.21** (#1142, who holds a pause): a provider can name the callers it holds leases for
   outside the hub. `lease.holders {family, names}` → `{}` (M → H, §8.8): the hub keeps the list
   per module and family and adds the names to the fact `module.<provider>.lease_holders`
@@ -2376,7 +2382,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `facts.get`, `facts.list`, `facts.subscribe`, `facts.unsubscribe` | C → H | call | as Foxglove API v1 | as v1 | `facts.read:<pattern>`; (v1.7) `apps.watch:<name>.exe` for that app's `apps.*` facts (§4.6) |
 | `facts.set` | M → H | call | as v1 | as v1 | `facts.write:<pattern>`, or `facts:` in `provides` |
 | `facts.changed` | H → C | notification | as v1 | — | the subscription |
-| `module.grants` (v1.22) | H → M | notification | `{added}` (the grant items the user's Allow added to what this module holds, sorted) | — | sent to every connection of that module only, when an Allow widened its grants while it runs; never on a narrowing; grants nothing by itself |
+| `module.grants` (v1.22) | H → M | notification | `{added, ended?}` (`added`: the grant items the user's Allow just gave this connection, sorted; `ended`: this connection's subscription ids that a narrowing ended) | — | sent only to the connections it is about (never v1 ones): on an Allow, those running the program the Allow is bound to; on a narrowing, those that lost a subscription (`added` empty); grants nothing by itself |
 | `facts.demand` (v1.20) | H → M | notification | `{pattern, subscribers}` (`pattern` one the module registered; `subscribers` = live subscriptions overlapping it, the module's own excluded) | — | sent only to the owner, on the 0 ↔ non-zero edges and once after its register result if already non-zero |
 | `channel.open` | C → H | call | `{module, channel}` | `{pipe, nonce}` | `channel.open:<module>/<channel>` |
 | `channel.create` | H → M | call | `{channel, consumer, nonce}` | `{pipe}` | the provider offers it |

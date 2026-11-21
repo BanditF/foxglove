@@ -19,7 +19,7 @@ use super::{code, ok, ConnId, Out, Router, Who};
 use crate::checks::{watches_app, Caps};
 
 /// The app fact `apps.watch` follows.
-const RUNNING: &str = "apps.running.";
+pub(super) const RUNNING: &str = "apps.running.";
 
 /// The app label of an `exe` a module may watch (`obs64.exe` → `obs64`): a file name, not a
 /// path, ending in `.exe`, as the permission spells it (§6.1).

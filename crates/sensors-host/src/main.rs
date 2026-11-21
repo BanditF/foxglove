@@ -192,8 +192,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(line) => {
                 let incoming = session.handle_line(&line, &mut inbox)?;
                 if matches!(&incoming, Incoming::Notified { method } if method == MODULE_GRANTS) {
-                    // The user's Allow may have brought the game-mode grant: read the value
-                    // as it is now (the session subscribes again by itself).
+                    // The game-mode grant may have come (the user's Allow) or gone (a
+                    // turn-off): read the value as it is now. The session subscribes again by
+                    // itself after an Allow.
                     game_mode_get = session.request("facts.get", json!({"key": GAME_MODE_FACT}))?;
                 }
                 if let Incoming::Response {

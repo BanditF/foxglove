@@ -477,17 +477,19 @@ class ModuleDrain(Model):
 
 @dataclass(kw_only=True)
 class ModuleGrants(Model):
-    """`module.grants` (H -> M notification, v1.22): the user's Allow just widened what the module
-holds while it runs. `added` lists the permissions (as the module's manifest spells them)
-it holds now and did not before; a call that was denied for want of one of them, a
-`facts.subscribe` above all, is worth sending again. Sent to the module's own connections
-only, and only when something was added: a turn-off is never announced this way (leases
-end with `lease.closed`). A module that doesn't know it ignores it."""
+    """`module.grants` (H -> M notification, v1.22): what the module holds changed while it runs.
+`added` lists the permissions (as the module's manifest spells them) the user's Allow just
+gave this connection; a call that was denied for want of one of them, a `facts.subscribe`
+above all, is worth sending again. `ended` lists the module's own fact subscriptions that
+a turn-off just ended (then `added` is empty). Sent only to the connections it is about.
+It grants nothing by itself. A module that doesn't know it ignores it."""
 
     added: list[str]
+    ended: Optional[list[int]] = None
 
     FIELDS: ClassVar[dict] = {
         'added': ('added', ('list', 'str')),
+        'ended': ('ended', ('list', 'int')),
     }
     CLOSED: ClassVar[bool] = True
 

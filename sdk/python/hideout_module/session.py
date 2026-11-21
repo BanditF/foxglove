@@ -181,6 +181,9 @@ class Session:
         # ones are sent again when `module.grants` says an Allow widened the module's grants.
         self._subscribing = {}
         self._denied_subs = []
+        # Live subscriptions' params by the hub's subscription id: one the hub ends
+        # (`module.grants {ended}`) goes back to the denied ones.
+        self._live_subs = {}
 
     def _write(self, msg):
         line = json.dumps(msg, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -203,6 +206,8 @@ class Session:
             self.pending[id_] = method
             if method == "facts.subscribe":
                 self._subscribing[id_] = body
+            elif method == "facts.unsubscribe" and isinstance(body, dict):
+                self._live_subs.pop(body.get("subscription"), None)
             if wait:
                 self._waiters.add(id_)
         try:
@@ -259,11 +264,31 @@ class Session:
         with self._cond:
             return list(self._denied_subs)
 
-    def _resubscribe(self):
+    def _keep_denied(self, params):
+        # Under self._cond.
+        if params not in self._denied_subs:
+            del self._denied_subs[: max(0, len(self._denied_subs) - MAX_DENIED_SUBS + 1)]
+            self._denied_subs.append(params)
+
+    def _grants_changed(self, params):
+        params = params if isinstance(params, dict) else {}
         with self._cond:
+            for n in params.get("ended") or []:
+                ended = self._live_subs.pop(n, None) if isinstance(n, int) else None
+                if ended is not None:
+                    self._keep_denied(ended)
+            if not params.get("added"):
+                return
             again, self._denied_subs = self._denied_subs, []
-        for params in again:
-            self.request("facts.subscribe", params)
+        while again:
+            params = again.pop(0)
+            try:
+                self.request("facts.subscribe", params)
+            except BaseException:
+                # Not sent: these still wait for the next `module.grants`.
+                with self._cond:
+                    self._denied_subs = [params] + again + self._denied_subs
+                raise
 
     def handle(self, msg, handler):
         """Handles one message from the hub. Returns ("response", id, method, result | RpcError),
@@ -279,10 +304,12 @@ class Session:
                 sent = self.pending.pop(id_)
                 got = RpcError.from_json(msg["error"]) if "error" in msg else msg["result"]
                 asked = self._subscribing.pop(id_, None)
-                if asked is not None and isinstance(got, RpcError) and got.code == DENIED:
-                    if asked not in self._denied_subs:
-                        del self._denied_subs[: max(0, len(self._denied_subs) - MAX_DENIED_SUBS + 1)]
-                        self._denied_subs.append(asked)
+                if asked is not None:
+                    if isinstance(got, RpcError):
+                        if got.code == DENIED:
+                            self._keep_denied(asked)
+                    elif isinstance(got, dict) and isinstance(got.get("subscription"), int):
+                        self._live_subs[got["subscription"]] = asked
                 if id_ in self._waiters:
                     self._done[id_] = got
                     self._cond.notify_all()
@@ -292,7 +319,7 @@ class Session:
             if method == "module.exit":
                 handler.exit()
             elif method == MODULE_GRANTS:
-                self._resubscribe()
+                self._grants_changed(params)
                 handler.notification(method, params)
             else:
                 handler.notification(method, params)
