@@ -287,7 +287,13 @@ impl ModulesPage {
                 // holds the router there is none, and the module's page opens as before.
                 (Does::Review, _) => match self.perm.as_mut() {
                     Some(p) => {
-                        p.open(&id, crate::permission_actions::Opener::Review);
+                        // A kept app whose file changed is already on: Allow only adds (#1465).
+                        let how = if p.kept_changed(&id) {
+                            crate::permission_actions::Opener::More
+                        } else {
+                            crate::permission_actions::Opener::Review
+                        };
+                        p.open(&id, how);
                         false
                     }
                     None => true,
@@ -792,6 +798,11 @@ impl ModulesPage {
             for r in &mut rows {
                 let on = s.in_search.contains(&r.id).then(|| s.on.contains(&r.id));
                 hideout_shell::modules_list::search_words(r, on);
+            }
+        }
+        for r in &mut rows {
+            if self.perm.as_ref().is_some_and(|p| p.kept_changed(&r.id)) {
+                hideout_shell::modules_list::kept_changed_words(r);
             }
         }
         for r in &mut rows {

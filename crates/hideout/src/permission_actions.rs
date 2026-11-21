@@ -19,7 +19,8 @@ use hideout_shell::permission_dialog::{
     file_of, first_run_header, header, keep_allow_first, keep_changed_open, keep_history,
     keep_off_note, keep_void_line, Allowed, FirstRun, Group, HeaderKind, ItemWord, Keep,
     KeepAnswer, KeepConfirm, KeepRow, KeepState, KeyboardChoice, ListItem, PermAnswer, PermDialog,
-    PermHeader, Reason, Section, SectionItem, BUSY, KEEP_NOT_SAVED, KEEP_REFUSED, NOT_SAVED,
+    PermHeader, Reason, Section, SectionItem, BUSY, KEEP_NOT_SAVED, KEEP_REFUSED, KEEP_SYNCED,
+    KEEP_SYNC_UNKNOWN, NOT_SAVED,
 };
 use hideout_shell::permission_dialog_ui::{
     first_run_dialog_ui, keep_confirm_ui, perm_dialog_ui, perm_header_ui, section_ui,
@@ -191,6 +192,10 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
     let reg = Registry::open_from_env(home).map_err(|e| format!("{e:?}"))?;
     let v = reg.permission_view(id).map_err(|e| format!("{e:?}"))?;
     let after_void = v.void.is_some() || !v.last_choice.is_empty();
+    // #1465: the app file changed under "Keep my OK": the Sensitive items that waited are shown
+    // pre-checked as allowed before (still unconfirmed, so Allow counts them only after the user
+    // confirms them).
+    let kept = matches!(reason, None | Some(Reason::Kept)) && kept_changed(&v);
     let items: Vec<ListItem> = v
         .listing
         .items
@@ -203,7 +208,7 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
             // moved or network path) starts unchecked. Allow is still the user's click.
             let before = after_void
                 && allowable
-                && !i.sensitive
+                && (!i.sensitive || kept)
                 && v.same_place
                 && v.last_choice.contains(&i.raw)
                 && !v.declined.contains(&i.raw);
@@ -250,6 +255,7 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
         reason.is_none() && v.void.is_none() && v.bound.is_some() && !asked_pending(&v).is_empty();
     let reason = reason
         .or(v.void.map(|_| Reason::Void))
+        .or(kept.then_some(Reason::Kept))
         .or(more.then_some(Reason::More));
     let mut items = items;
     if reason == Some(Reason::More) {
@@ -289,12 +295,40 @@ fn keep_choice(v: &View) -> Option<Keep> {
         return None;
     }
     Some(
-        if hideout_registry::permission::on_local_fixed_drive(&v.listing.exe_path) {
-            Keep::offered(keep_is_on(v))
-        } else {
+        if !hideout_registry::permission::on_local_fixed_drive(&v.listing.exe_path) {
             Keep::refused()
+        } else {
+            match sync_line(v) {
+                Some(why) => Keep::refused_with(why),
+                None => Keep::offered(keep_is_on(v)),
+            }
         },
     )
+}
+
+/// Why "Keep my OK" is off for a folder a cloud service keeps in step, or one Hideout could not
+/// read (#1465); `None` for a folder that stays on this PC.
+fn sync_line(v: &View) -> Option<&'static str> {
+    use hideout_registry::sync_root::SyncAnswer;
+    match v.folder_sync {
+        SyncAnswer::Local => None,
+        SyncAnswer::Synced => Some(KEEP_SYNCED),
+        SyncAnswer::Unknown => Some(KEEP_SYNC_UNKNOWN),
+    }
+}
+
+/// The app file changed under "Keep my OK" (#1465): what carried over still runs, and Sensitive
+/// items wait for the OK again. The newest kept step is the folder's, and a Sensitive item waits.
+pub fn kept_changed(v: &View) -> bool {
+    v.void.is_none()
+        && v.bound.as_ref().is_some_and(|b| {
+            !b.void
+                && b.follow.is_some()
+                && b.attested
+                    .last()
+                    .is_some_and(|a| a.by == hideout_registry::permission::FOLLOW_ATTESTED_BY)
+        })
+        && asked_pending(v).iter().any(|i| i.sensitive)
 }
 
 /// The Permissions section of one module, or `None` when it has nothing to say.
@@ -424,6 +458,7 @@ fn keep_can_turn_on(v: &View) -> bool {
         && !v.granted.is_empty()
         && v.bound.as_ref().is_some_and(|b| !b.void)
         && hideout_registry::permission::on_local_fixed_drive(&v.listing.exe_path)
+        && sync_line(v).is_none()
 }
 
 /// The Permissions section's row for the choice; `None` for a module with no app path.
@@ -438,6 +473,8 @@ fn keep_row(name: &str, v: &View) -> Option<KeepRow> {
         KeepState::Unavailable(keep_allow_first(name))
     } else if !hideout_registry::permission::on_local_fixed_drive(path) {
         KeepState::Unavailable(KEEP_REFUSED.into())
+    } else if let Some(why) = sync_line(v) {
+        KeepState::Unavailable(why.into())
     } else {
         KeepState::Off
     };
@@ -477,6 +514,8 @@ pub fn header_kind(v: &View, enabled: bool, cli_seen: bool) -> Option<HeaderKind
     } else if v.bound.is_none() && v.adopted && !v.pending.is_empty() {
         // Slice 2 (allow means on): an Off adopted app asks too, because Allow turns it on.
         Some(HeaderKind::Ask)
+    } else if v.bound.is_some() && enabled && kept_changed(v) {
+        Some(HeaderKind::ChangedKept)
     } else if v.bound.is_some() && enabled && !asked_pending(v).is_empty() {
         Some(if dev_build(v) {
             HeaderKind::MoreBuild
@@ -794,6 +833,13 @@ impl PermUi {
         }
     }
 
+    /// Whether `id` is on and its file changed under "Keep my OK": Sensitive items wait (#1465).
+    pub fn kept_changed(&self, id: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.id == id && e.enabled && kept_changed(&e.view))
+    }
+
     /// Opens the dialog for `id` (only from the user's click).
     /// The opener the header line of `id` would use (More when it asks for more, Header when it
     /// waits for its first or a voided OK), else the Modules page's own Review...: Settings >
@@ -805,7 +851,9 @@ impl PermUi {
             .find(|e| e.id == id)
             .and_then(|e| header_kind(&e.view, e.enabled, false));
         match kind {
-            Some(HeaderKind::More | HeaderKind::MoreBuild) => Opener::More,
+            Some(HeaderKind::More | HeaderKind::MoreBuild | HeaderKind::ChangedKept) => {
+                Opener::More
+            }
             Some(_) => Opener::Header,
             None => Opener::Review,
         }
@@ -1285,7 +1333,10 @@ impl PermUi {
                     header(k, &e.id, name, cli.as_ref().map(|(n, w)| (*n, w.as_str())));
                 match perm_header_ui(ui, t, &h) {
                     Some((true, id)) => {
-                        let how = if matches!(k, HeaderKind::More | HeaderKind::MoreBuild) {
+                        let how = if matches!(
+                            k,
+                            HeaderKind::More | HeaderKind::MoreBuild | HeaderKind::ChangedKept
+                        ) {
                             Opener::More
                         } else {
                             Opener::Header
@@ -2663,6 +2714,46 @@ on = [\"open\", \"call\"]
         assert_eq!(note, Some(keep_changed_open(&view(&f).listing.name)));
     }
 
+    /// #1465: a changed file under "Keep my OK" keeps the app running, asks again for the
+    /// Sensitive items only, and shows them pre-checked as allowed before.
+    #[test]
+    fn a_changed_kept_build_asks_again_for_sensitive_items_and_keeps_the_rest() {
+        let mut f = fx("keep-changed", &["hub.notify", "net"]);
+        f.ui.open(ID, Opener::TurnOn);
+        let mut d = f.ui.dialog.clone().unwrap();
+        for i in d.items.iter_mut().filter(|i| i.allowable) {
+            i.checked = true;
+            i.confirmed = true;
+        }
+        let k = d.keep.as_mut().expect("the keep box is offered");
+        k.set_on(true);
+        k.understood = true;
+        assert!(f.ui.answer(PermAnswer::Allow(d.allowed())).is_some());
+        assert_eq!(view(&f).granted.len(), 2);
+        std::fs::write(&f.exe, b"program v2").unwrap();
+        let mut reg = Registry::open(&f.home, false).unwrap();
+        assert!(reg.keep_followed(ID, NOW).unwrap());
+        let v = view(&f);
+        assert!(v.void.is_none());
+        assert_eq!(v.granted.len(), 1);
+        assert!(v.granted.iter().all(|i| i.raw == "hub.notify"));
+        assert!(kept_changed(&v));
+        assert_eq!(header_kind(&v, true, true), Some(HeaderKind::ChangedKept));
+        // Off: no header, as for any app that is not running.
+        assert_eq!(header_kind(&v, false, true), None);
+        let h = header(HeaderKind::ChangedKept, ID, "Vulpes", None);
+        assert_eq!(h.title, "Vulpes changed since you allowed it");
+        // The dialog shows the waiting item pre-checked as allowed before, not yet confirmed.
+        let d = build_dialog(&f.home, ID, None).unwrap();
+        assert_eq!(d.reason, Some(Reason::Kept));
+        let net = d.items.iter().find(|i| i.raw == "net").unwrap();
+        assert!(net.checked && net.before && !net.confirmed);
+        assert!(
+            d.allowed().chosen.is_empty(),
+            "nothing is allowed by itself"
+        );
+    }
+
     #[test]
     fn a_kept_new_build_reads_in_the_history_and_a_moved_app_turns_the_choice_off() {
         let mut f = fx("keep-history", &["hub.notify", "ui.window"]);
@@ -2677,7 +2768,7 @@ on = [\"open\", \"call\"]
         assert_eq!(s.history.len(), 1);
         assert!(
             s.history[0].starts_with("New build on ")
-                && s.history[0].ends_with("Your OK stayed (kept for this folder)."),
+                && s.history[0].ends_with("Your OK stayed, except Sensitive and keyboard."),
             "{:?}",
             s.history
         );

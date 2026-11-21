@@ -181,7 +181,7 @@ fn a_new_build_in_the_same_folder_is_kept_and_recorded() {
 }
 
 #[test]
-fn a_kept_build_moves_an_on_keyboard_record_with_it() {
+fn a_kept_build_never_carries_an_on_keyboard_record() {
     let mut f = fx("keyboard");
     allow(&mut f, "dialog", true).unwrap();
     let (path, old) = f.reg.current_program(ID).unwrap();
@@ -189,9 +189,11 @@ fn a_kept_build_moves_an_on_keyboard_record_with_it() {
     std::fs::write(&f.exe, b"build 2").unwrap();
     let (_, new) = f.reg.current_program(ID).unwrap();
     assert!(f.reg.keep_followed(ID, LATER).unwrap());
+    // Changed bytes with no signed update: the keyboard waits for the OK again (#1465).
     let k = f.reg.inventory.modules[ID].keyboard.clone().unwrap();
-    assert!(k.allows(&path, &new));
+    assert!(!k.allows(&path, &new));
     assert!(!k.allows(&path, &old));
+    assert_eq!(k.state, hideout_registry::keyboard::GrantState::Void);
 }
 
 #[test]
@@ -616,29 +618,19 @@ fn keyboard_on_then_rebuild(f: &mut Fx, by: &str, follow: bool) -> String {
 }
 
 #[test]
-fn a_followed_build_yields_a_move_from_the_old_hash() {
+fn a_followed_build_yields_no_keyboard_move() {
     let mut f = fx("mv-follow");
-    let old = keyboard_on_then_rebuild(&mut f, "dialog", true);
+    keyboard_on_then_rebuild(&mut f, "dialog", true);
     assert!(
         f.reg.attested_keyboard_moves().is_empty(),
         "nothing recorded yet"
     );
+    // Bytes changed under the folder's grant (#1465): the router is never told to follow.
     assert!(f.reg.keep_followed(ID, LATER).unwrap());
-    let mv = f.reg.attested_keyboard_moves();
-    assert_eq!(mv.len(), 1);
-    assert_eq!(mv[0].id, ID);
-    assert_eq!(mv[0].ancestors.len(), 1);
-    assert_eq!(mv[0].ancestors[0].1, old);
-    assert_eq!(
-        mv[0].to,
-        f.reg.inventory.modules[ID].keyboard.clone().unwrap()
-    );
-    // A second kept build keeps the whole chain, oldest first.
+    assert!(f.reg.attested_keyboard_moves().is_empty());
     std::fs::write(&f.exe, b"build 3").unwrap();
     assert!(f.reg.keep_followed(ID, LATER).unwrap());
-    let mv = f.reg.attested_keyboard_moves();
-    assert_eq!(mv[0].ancestors.len(), 2);
-    assert_eq!(mv[0].ancestors[0].1, old);
+    assert!(f.reg.attested_keyboard_moves().is_empty());
 }
 
 #[test]
@@ -757,8 +749,8 @@ fn a_folder_step_needs_the_follow_still_set_by_the_dialog() {
     let mut f = fx("mv-forged");
     keyboard_on_then_rebuild(&mut f, "dialog", true);
     assert!(f.reg.keep_followed(ID, LATER).unwrap());
-    assert_eq!(f.reg.attested_keyboard_moves().len(), 1);
-    // The follow is cleared or set by anyone but the dialog: the folder step no longer counts.
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+    // The follow is cleared or set by anyone but the dialog: still nothing to follow.
     let mut cleared = Registry::open(&f.home, true).unwrap();
     cleared
         .inventory
@@ -896,7 +888,7 @@ fn stop_keeping_through_the_api_ends_the_folder_steps() {
     let mut f = fx("mv-stop");
     keyboard_on_then_rebuild(&mut f, "dialog", true);
     assert!(f.reg.keep_followed(ID, LATER).unwrap());
-    assert_eq!(f.reg.attested_keyboard_moves().len(), 1);
+    assert!(f.reg.attested_keyboard_moves().is_empty());
     assert!(f.reg.stop_keeping(ID).unwrap());
     assert!(f.reg.attested_keyboard_moves().is_empty());
 }

@@ -35,9 +35,20 @@ pub const SECTION_LABEL: &str = "Permissions";
 /// "Keep my OK after updates in this folder" (slice 4 of the rebuild-trust note,
 /// `review/ux-keep-ok-switch.md`). Plain words: "app", never "program", "hash", "grant",
 /// "follow" or an id.
-pub const KEEP_LABEL: &str = "Keep my OK after updates in this folder";
+pub const KEEP_LABEL: &str =
+    "Keep my OK after updates in this folder, except Sensitive and keyboard";
 /// Why the box is off and disabled: a network, removable or unreadable folder.
 pub const KEEP_REFUSED: &str = "Hideout keeps your OK only for a folder on this PC's own drive.";
+/// Why the box is off and disabled for a folder a cloud service keeps in step (#1465).
+pub const KEEP_SYNCED: &str = "This folder syncs with the cloud, so Hideout asks again after each \
+     update. To keep your OK, move the app to a folder that stays on this PC.";
+/// Why the box is off when Hideout could not tell whether the folder syncs (#1465).
+pub const KEEP_SYNC_UNKNOWN: &str = "Hideout couldn't check whether this folder syncs with the \
+     cloud, so it asks again after each update. Try again later.";
+/// The reason line of the Allow dialog, and the header body, for an app whose file changed under
+/// "Keep my OK" (#1465): the app keeps running with what carried over.
+pub const KEPT_CHANGED_BODY: &str = "Its app file changed. Sensitive items and the keyboard need \
+     your OK again. It runs without them until then.";
 /// Binding line 2 while the box is checked.
 pub const KEEP_BINDING: &str = "If the app asks for more or moves, Hideout asks again.";
 /// [`KEEP_BINDING`] for an app that asks for nothing.
@@ -63,8 +74,9 @@ pub fn file_of(path: &str) -> String {
 /// The helper under the label.
 pub fn keep_helper(name: &str, file: &str) -> String {
     format!(
-        "A new build of {name} saved here as {file} keeps what you allowed. Hideout asks again \
-         if the new build wants more, or if the app moves."
+        "A new build of {name} saved here as {file} keeps what you allowed, except Sensitive \
+         items and the keyboard. Hideout asks again for those, and if the new build wants more \
+         or the app moves."
     )
 }
 
@@ -79,14 +91,14 @@ pub fn keep_helper_nothing(name: &str, file: &str) -> String {
 /// After checking, in the attention colour.
 pub fn keep_warning(name: &str, file: &str) -> String {
     format!(
-        "Any app saved in this folder as {file} gets what you allowed {name}. Only do this for \
-         a folder where only you put apps."
+        "Any app saved in this folder as {file} gets what you allowed {name}, except Sensitive \
+         items and the keyboard. Only do this for a folder where only you put apps."
     )
 }
 
 /// The accessible name of the "I understand" under the box.
 pub fn keep_understand_said(name: &str, file: &str) -> String {
-    format!("{UNDERSTAND}: any app saved in this folder as {file} gets what you allowed {name}")
+    format!("{UNDERSTAND}: any app saved in this folder as {file} gets what you allowed {name}, except Sensitive items and the keyboard")
 }
 
 /// The polite note after Turn off.
@@ -105,14 +117,14 @@ pub fn keep_changed_open(name: &str) -> String {
     format!("{name} changed while you were choosing. Look at its list again, then choose.")
 }
 
-/// "New build on 17 Nov 2026, 20:40. Your OK stayed (kept for this folder)." and, when the
-/// new build asks for more, "...; 2 new things wait for it." `when` is the local time as
+/// "New build on 17 Nov 2026, 20:40. Your OK stayed, except Sensitive and keyboard." and, when the
+/// new build asks for more, "...; 2 things wait for it." `when` is the local time as
 /// words ("17 Nov 2026, 20:40").
 pub fn keep_history(when: &str, grew: usize) -> String {
-    let mut line = format!("New build on {when}. Your OK stayed (kept for this folder)");
+    let mut line = format!("New build on {when}. Your OK stayed, except Sensitive and keyboard");
     if grew > 0 {
         line.push_str(&format!(
-            "; {grew} new thing{} wait{} for it",
+            "; {grew} thing{} wait{} for it",
             if grew == 1 { "" } else { "s" },
             if grew == 1 { "s" } else { "" }
         ));
@@ -164,8 +176,14 @@ impl Keep {
 
     /// The box refused for a folder that is not on this PC's own drive.
     pub fn refused() -> Keep {
+        Keep::refused_with(KEEP_REFUSED)
+    }
+
+    /// The box off and disabled, with the reason said (a drive that is not local, a folder that
+    /// syncs, a folder whose sync state could not be read).
+    pub fn refused_with(reason: &str) -> Keep {
         Keep {
-            offer: KeepOffer::Refused(KEEP_REFUSED.into()),
+            offer: KeepOffer::Refused(reason.into()),
             on: false,
             understood: false,
         }
@@ -439,6 +457,9 @@ pub enum Reason {
     Void,
     /// A kept grant whose signed update asks for more (#1238): only the new items are marked.
     More,
+    /// The app file changed under "Keep my OK" (#1465): Sensitive items and the keyboard wait
+    /// for the OK again, shown as allowed before.
+    Kept,
 }
 
 /// The keyboard section (Foxglove only): off by default.
@@ -518,6 +539,9 @@ impl PermDialog {
         if self.reason == Some(Reason::More) {
             return format!("Let {} do more?", self.name);
         }
+        if self.reason == Some(Reason::Kept) {
+            return format!("{} changed since you allowed it", self.name);
+        }
         format!("Let {} run in Hideout?", self.name)
     }
 
@@ -592,6 +616,7 @@ impl PermDialog {
                 v
             }
             Some(Reason::Void) => vec![self.void_line()],
+            Some(Reason::Kept) => vec![KEPT_CHANGED_BODY.into()],
             Some(Reason::More) => vec![
                 format!("Since its update, {} also asks for these.", self.name),
                 "What you allowed before stays allowed.".into(),
@@ -1087,6 +1112,9 @@ pub enum HeaderKind {
     Ask,
     /// The program changed or moved since the allow.
     Changed,
+    /// The app file changed under "Keep my OK" (#1465): same heading as [`HeaderKind::Changed`],
+    /// but the app runs with what carried over.
+    ChangedKept,
     /// Allowed from the command line, not yet seen.
     Cli,
     /// A command-line grant waits for the user's confirmation (#1183); nothing is allowed yet.
@@ -1122,6 +1150,11 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
             format!("{name} changed since you allowed it"),
             "Its app file is new or was moved, so Hideout stopped it until you allow it again."
                 .into(),
+            NOT_NOW,
+        ),
+        HeaderKind::ChangedKept => (
+            format!("{name} changed since you allowed it"),
+            KEPT_CHANGED_BODY.into(),
             NOT_NOW,
         ),
         HeaderKind::Queued => {
@@ -1588,9 +1621,9 @@ mod tests {
             d.allowed().keep,
             "an Allow that leaves the box alone keeps it"
         );
-        assert!(d
-            .said()
-            .ends_with("Keep my OK after updates in this folder: on."));
+        assert!(d.said().ends_with(
+            "Keep my OK after updates in this folder, except Sensitive and keyboard: on."
+        ));
     }
 
     #[test]
@@ -1617,17 +1650,20 @@ mod tests {
         let plain = dialog().said();
         assert_eq!(
             d.said(),
-            format!("{plain} Keep my OK after updates in this folder: off.")
+            format!("{plain} Keep my OK after updates in this folder, except Sensitive and keyboard: off.")
         );
         d.keep.as_mut().unwrap().set_on(true);
-        assert!(d
-            .said()
-            .ends_with("Keep my OK after updates in this folder: on."));
+        assert!(d.said().ends_with(
+            "Keep my OK after updates in this folder, except Sensitive and keyboard: on."
+        ));
         let k = d.keep.as_ref().unwrap();
-        assert_eq!(k.said(), "Keep my OK after updates in this folder, checked");
+        assert_eq!(
+            k.said(),
+            "Keep my OK after updates in this folder, except Sensitive and keyboard, checked"
+        );
         assert_eq!(
             Keep::offered(false).said(),
-            "Keep my OK after updates in this folder, not checked"
+            "Keep my OK after updates in this folder, except Sensitive and keyboard, not checked"
         );
     }
 
@@ -1636,18 +1672,20 @@ mod tests {
         assert_eq!(file_of(r"C:\Apps\Fox\foxglove.exe"), "foxglove.exe");
         assert_eq!(
             keep_helper("Foxglove", "foxglove.exe"),
-            "A new build of Foxglove saved here as foxglove.exe keeps what you allowed. Hideout \
-             asks again if the new build wants more, or if the app moves."
+            "A new build of Foxglove saved here as foxglove.exe keeps what you allowed, except \
+             Sensitive items and the keyboard. Hideout asks again for those, and if the new \
+             build wants more or the app moves."
         );
         assert_eq!(
             keep_warning("Foxglove", "foxglove.exe"),
-            "Any app saved in this folder as foxglove.exe gets what you allowed Foxglove. Only \
-             do this for a folder where only you put apps."
+            "Any app saved in this folder as foxglove.exe gets what you allowed Foxglove, \
+             except Sensitive items and the keyboard. Only do this for a folder where only you \
+             put apps."
         );
         assert_eq!(
             keep_understand_said("Foxglove", "foxglove.exe"),
             "I understand: any app saved in this folder as foxglove.exe gets what you allowed \
-             Foxglove"
+             Foxglove, except Sensitive items and the keyboard"
         );
         assert_eq!(
             keep_off_note("Foxglove"),
@@ -1667,16 +1705,16 @@ mod tests {
     fn the_history_says_the_time_and_what_waits() {
         assert_eq!(
             keep_history("17 Nov 2026, 20:40", 0),
-            "New build on 17 Nov 2026, 20:40. Your OK stayed (kept for this folder)."
+            "New build on 17 Nov 2026, 20:40. Your OK stayed, except Sensitive and keyboard."
         );
         assert_eq!(
             keep_history("17 Nov 2026, 20:40", 2),
-            "New build on 17 Nov 2026, 20:40. Your OK stayed (kept for this folder); 2 new \
+            "New build on 17 Nov 2026, 20:40. Your OK stayed, except Sensitive and keyboard; 2 \
              things wait for it."
         );
         assert_eq!(
             keep_history("17 Nov 2026, 20:40", 1),
-            "New build on 17 Nov 2026, 20:40. Your OK stayed (kept for this folder); 1 new \
+            "New build on 17 Nov 2026, 20:40. Your OK stayed, except Sensitive and keyboard; 1 \
              thing waits for it."
         );
         assert_eq!(
@@ -1702,7 +1740,7 @@ mod tests {
         assert_eq!((on.word(), on.button()), ("On", Some("Turn off")));
         assert_eq!(
             on.said(),
-            r"Keep my OK after updates in this folder, on, C:\Apps\Fox"
+            r"Keep my OK after updates in this folder, except Sensitive and keyboard, on, C:\Apps\Fox"
         );
         assert_eq!(on.button_said(), Some("Turn off keep my OK after updates"));
         let off = row(KeepState::Off);

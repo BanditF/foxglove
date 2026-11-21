@@ -311,6 +311,21 @@ pub fn search_words(r: &mut Row, on: Option<bool>) {
     r.label = words::row_label(&r.name, state);
 }
 
+/// The row of an app that is on, whose file changed under "Keep my OK" (#1465): it runs with what
+/// carried over, and Review... opens the Allow dialog for the rest. Only a plain On row changes;
+/// anything that needs the user more (stopped, off, restarting) keeps its own words.
+pub fn kept_changed_words(r: &mut Row) {
+    if r.stopped || r.off || r.state != "On" {
+        return;
+    }
+    r.state = words::ON_CHANGED_KEPT.into();
+    r.label = words::row_label(&r.name, words::ON_CHANGED_KEPT);
+    r.primary = Some(Primary {
+        label: words::REVIEW_OK.into(),
+        does: Does::Review,
+    });
+}
+
 /// Turn on, Turn off and Update in Hideout: the buttons a search locks.
 fn toggles(d: Does) -> bool {
     matches!(d, Does::TurnOn | Does::TurnOff | Does::UpdateInHideout)
@@ -1219,6 +1234,23 @@ mod tests {
         }
         let r = row(&m("m.art", true), &with(&stopped(vec![])), None);
         assert_eq!(r.label, "Art, stopped after 5 crashes");
+    }
+
+    /// #1465: an On row whose file changed under "Keep my OK" says so and offers Review...;
+    /// a row that is off or stopped keeps its own words.
+    #[test]
+    fn a_kept_changed_row_says_so_and_offers_review() {
+        let on = with(&[("module.m.art.state", json!("running"))]);
+        let mut r = row(&m("m.art", true), &on, None);
+        assert_eq!(r.state, "On");
+        kept_changed_words(&mut r);
+        assert_eq!(r.state, "On \u{b7} changed since you allowed it");
+        assert_eq!(r.label, "Art, on \u{b7} changed since you allowed it");
+        let p = r.primary.unwrap();
+        assert_eq!((p.label.as_str(), p.does), ("Review\u{2026}", Does::Review));
+        let mut off = row(&m("m.art", false), &on, None);
+        kept_changed_words(&mut off);
+        assert_eq!(off.state, "Off");
     }
 
     /// Rows that need the user first, then A–Z, Off last.

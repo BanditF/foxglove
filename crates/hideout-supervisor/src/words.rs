@@ -71,6 +71,10 @@ pub fn off_changed() -> String {
     format!("Off \u{b7} {}", CHANGED_SINCE_ADDED.to_lowercase())
 }
 
+/// The row of an app that runs, whose file changed under "Keep my OK": Sensitive items and the
+/// keyboard wait for the OK again (#1465). The button is Review….
+pub const ON_CHANGED_KEPT: &str = "On \u{b7} changed since you allowed it";
+
 /// A version its publisher withdrew (state `revoked`, §7.8 v1.9, docs/hideout-revoked-ux.md).
 /// The short name, for tooltips and the tray tile.
 pub const WITHDRAWN: &str = "Withdrawn";
