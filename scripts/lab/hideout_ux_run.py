@@ -195,7 +195,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the hideout.exe under test')
     ap.add_argument('--probe', required=True, type=tool_arg('--probe'), help='hideout-ac-probe.exe (the hello fixture)')
-    ap.add_argument('--lab', required=True, help='a scratch HIDEOUT_CONFIG_DIR (created and seeded)')
+    ap.add_argument('--lab', required=True, type=tool_arg('--lab', kind='dir'), help='an existing, EMPTY scratch folder: the lab hub config dir (seeded by the run)')
     ap.add_argument('--seconds', type=int, default=300, help='hard time limit of the hidden hub (1..3600)')
     ap.add_argument('--allow-running', action='store_true', help='other hideout.exe processes may be running')
     args = ap.parse_args()
