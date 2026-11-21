@@ -171,6 +171,11 @@ pub fn open_module(module: &str) {
 
 /// Applies a pending tray change on the UI thread (`wake::Gate` runs it on every wake).
 fn tray_sync() {
+    // A lab pick runs the command on the lab pipe thread: the change stays pending for the
+    // wake the command's marks raise, which runs this on the UI thread.
+    if !tray::on_icon_thread() {
+        return;
+    }
     crate::lab_control::note_wake();
     if let Some((state, line, tip)) = crate::marks::take_change() {
         tray::set_state(state, &line, &tip);
