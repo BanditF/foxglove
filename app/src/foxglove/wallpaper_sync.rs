@@ -71,6 +71,9 @@ pub const PAUSED_BY: &str = "wallpaper_engine.paused_by";
 pub const LOCAL_HOLDERS: &str = "wallpaper_engine.local_holders";
 /// Set while leases are live but Wallpaper Engine quit and came back playing: they hold nothing.
 pub const PAUSE_STALE: &str = "wallpaper_engine.pause_stale";
+/// Set while a `play` failed and is owed (#1399): the wallpapers stay paused until the next
+/// Resume, release or start sends it again.
+pub const PLAY_OWED: &str = "wallpaper_engine.play_owed";
 
 /// The properties a wallpaper declares in its `project.json` to receive them (each one its
 /// manifest's `supports` names: `layer`, `gamemode`, `clock`, `foxglove_live`).
@@ -299,6 +302,8 @@ pub struct Synced {
     pub unchanged: usize,
     /// The last push that failed, why.
     pub failed: Option<String>,
+    /// Pushes that failed (#1399).
+    pub failed_count: usize,
 }
 
 /// What has been sent, per monitor, and the pushes that keep it current.
@@ -435,6 +440,7 @@ impl<A: Apply> Pusher<A> {
                     self.sent.remove(location);
                     eprintln!("Foxglove: wallpaper sync: can't reach {location}: {e}");
                     out.failed = Some(e);
+                    out.failed_count += 1;
                 }
             }
         }
@@ -1086,6 +1092,7 @@ fn run(
                     if engine_check(&mut leases, pusher.apply_mut()) {
                         mark.set(false);
                     }
+                    took_over(&mut leases, &mut mark, plays_now());
                     if matches!(
                         ctl,
                         Ctl::Pause {
@@ -1115,6 +1122,7 @@ fn run(
                 Next::Quit(ack) => {
                     // Play first (when it is ours to play), then tell the wallpapers we've gone.
                     let full = screen.now();
+                    took_over(&mut leases, &mut mark, plays_now());
                     if leases.end_all(pusher.apply_mut(), full).is_some() {
                         announce(&leases);
                     }
@@ -1131,6 +1139,7 @@ fn run(
             mark.set(leases.paused_by_lease());
             announce(&leases);
         }
+        took_over(&mut leases, &mut mark, plays_now());
         if leases.paused_by_lease() {
             // Paused for a lease: the newest state goes once it plays (the sent state is kept).
             continue;
@@ -1157,6 +1166,7 @@ fn run(
                 if let Some(e) = synced.failed.clone() {
                     s.failed(e);
                 }
+                s.failed_pushes = s.failed_pushes.saturating_add(synced.failed_count as u64);
                 h = (s.per_minute(Instant::now()), s.suppressed);
             });
             h
@@ -1218,6 +1228,26 @@ fn engine_check(leases: &mut Leases, apply: &mut impl Apply) -> bool {
         );
     }
     gone
+}
+
+/// A wallpaper reports itself playing now, or did since the last look (the report is taken
+/// every time, so an old one never ends a later pause).
+fn plays_now() -> bool {
+    let played = super::live_feed::take_played();
+    super::live_feed::wallpaper_playing() || played
+}
+
+/// A play is owed (#1399) but a paired wallpaper reports itself playing: the user pressed Play
+/// in the wallpaper app (a later pause is then theirs), so nothing is owed and Foxglove's pause
+/// is over. Checked at a wake and before quitting, never on a timer. Only "playing" counts: a
+/// "paused" report is also what Foxglove's own pause looks like, so it says nothing about the
+/// user.
+fn took_over(leases: &mut Leases, mark: &mut PauseMark, playing: bool) {
+    if playing && leases.user_took_over() {
+        eprintln!("Foxglove: wallpaper sync: the wallpapers play again; the owed play is dropped");
+        mark.set(leases.paused_by_lease());
+        announce(leases);
+    }
 }
 
 /// Runs one lease call; `true` when it sent `play`.
@@ -1305,6 +1335,11 @@ fn announce(leases: &Leases) {
     } else {
         facts.remove(PAUSE_STALE);
     }
+    if leases.play_owed() {
+        facts.set(PLAY_OWED, foxglove_devices::facts::Value::Bool(true));
+    } else {
+        facts.remove(PLAY_OWED);
+    }
     match leases.local_names() {
         n if n.is_empty() => {
             facts.remove(LOCAL_HOLDERS);
@@ -1320,6 +1355,7 @@ fn announce(leases: &Leases) {
         h.lease_dropped = leases.dropped;
         h.lease_stale = leases.stale;
         h.lease_engine_quit = leases.engine_quit;
+        h.failed_plays = leases.failed_plays;
     });
 }
 
@@ -1428,6 +1464,15 @@ pub fn reasons_now() -> Vec<String> {
 pub fn pause_stale_now() -> bool {
     matches!(
         super::devices::bus().facts().get(PAUSE_STALE),
+        Some(foxglove_devices::facts::Value::Bool(true))
+    )
+}
+
+/// Whether a `play` failed and is owed, as the `wallpaper_engine.play_owed` fact has it (#1399).
+#[cfg_attr(test, allow(dead_code))]
+pub fn play_owed_now() -> bool {
+    matches!(
+        super::devices::bus().facts().get(PLAY_OWED),
         Some(foxglove_devices::facts::Value::Bool(true))
     )
 }
@@ -1562,6 +1607,9 @@ impl Apply for Cli {
     }
 }
 
+// Part 2 of #1399 (not done here): this ignores the process's exit code, so a command Wallpaper
+// Engine refuses with a non-zero exit still reads as sent. Only a spawn error or the time limit
+// fail today.
 #[cfg(windows)]
 fn run_cli(exe: &std::path::Path, args: &[String], raw: &str) -> Result<(), String> {
     use std::os::windows::io::AsRawHandle;
@@ -2465,6 +2513,8 @@ mod tests {
         pushing: Sender<()>,
         /// Wallpaper Engine runs (#1142: a test can make it quit).
         down: Flag,
+        /// `play` fails (#1399).
+        fail_play: Flag,
     }
 
     impl Logged {
@@ -2475,6 +2525,7 @@ mod tests {
                 gate: std::sync::Arc::new((Mutex::new(open), std::sync::Condvar::new())),
                 pushing,
                 down: Flag::default(),
+                fail_play: Flag::default(),
             };
             (one, seen)
         }
@@ -2509,6 +2560,9 @@ mod tests {
         }
         fn control(&mut self, command: &str) -> Result<(), String> {
             self.log.lock().unwrap().push(command.to_string());
+            if command == "play" && self.fail_play.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("no answer in 5 s".into());
+            }
             Ok(())
         }
         fn interfaces(&mut self) -> Vec<(String, String)> {
@@ -2686,6 +2740,66 @@ mod tests {
         ));
         quit(&tx, worker);
         assert_eq!(apply.log(), ["pause", "play"]);
+    }
+
+    /// #1399: a failed play keeps the mark (a restart retries it) and the `play_owed` fact; the
+    /// next Resume sends it again and both go.
+    #[test]
+    fn a_failed_play_keeps_the_mark_and_the_fact_until_a_resume_plays() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let wait = Duration::from_secs(5);
+        let path = mark_path("owed");
+        let (apply, _pushing) = Logged::new(true);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_marked(apply.clone(), &state, &full, Some(path.clone()));
+        let (pause, paused) = pause_ctl(1, false);
+        tx.send(pause).unwrap();
+        let a = lease_of(paused.recv_timeout(wait).unwrap());
+        apply.fail_play.store(true, SeqCst);
+        let (release, released) = release_ctl(1, &a);
+        tx.send(release).unwrap();
+        match released.recv_timeout(wait).unwrap() {
+            Reply::Released(e) => assert_eq!((e.played, e.why), (false, Some("failed"))),
+            _ => panic!("a release answers Released"),
+        }
+        assert_eq!(status_of(&tx), (true, 0, true), "still paused, still ours");
+        assert!(path.is_file(), "the mark stays: a restart retries");
+        assert!(play_owed_now(), "the fact says so");
+        apply.fail_play.store(false, SeqCst);
+        tx.send(Wake::Control(Ctl::Resume)).unwrap();
+        assert_eq!(status_of(&tx), (true, 0, false));
+        assert!(!path.exists(), "played: no mark");
+        assert!(!play_owed_now(), "and the fact goes");
+        quit(&tx, worker);
+        assert_eq!(apply.log(), ["pause", "play", "play"]);
+    }
+
+    /// #1399: the user presses Play in the wallpaper app after a failed play: the debt, the
+    /// pause and the mark go with no command sent.
+    #[test]
+    fn the_user_playing_after_a_failed_play_clears_the_debt_and_the_mark() {
+        let mut leases = Leases::default();
+        let mut f = Logged::new(true).0;
+        f.fail_play
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let path = mark_path("took-over");
+        let mut mark = PauseMark::at(Some(path.clone()));
+        let (id, _) = leases.pause(&mut f, 1, "a", false).unwrap();
+        mark.set(true);
+        f.fail_play.store(true, std::sync::atomic::Ordering::SeqCst);
+        leases.release(&mut f, 1, &id, false).unwrap();
+        mark.set(leases.paused_by_lease());
+        assert!(leases.play_owed() && path.is_file());
+        took_over(&mut leases, &mut mark, false);
+        assert!(leases.play_owed(), "no report: nothing changes");
+        took_over(&mut leases, &mut mark, true);
+        assert!(!leases.play_owed() && !leases.paused_by_lease());
+        assert!(!path.exists(), "the mark is gone");
+        assert!(
+            leases.end_all(&mut f, false).is_none(),
+            "quit sends no play"
+        );
+        assert_eq!(f.log(), ["pause", "play"], "the one failed play, no more");
     }
 
     /// #1142: a failed pause leaves no mark.

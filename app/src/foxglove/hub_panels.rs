@@ -53,6 +53,10 @@ pub const WALLPAPER: &str = "wallpaper-engine";
 pub const RESUME_NODE: &str = "we-resume";
 /// The Resume button's words: they name what resumes, so a screen reader says it alone too.
 pub const RESUME: &str = "Resume wallpapers";
+/// The state line while a play failed and is owed (#1399): the wallpapers are still paused.
+pub const RESUME_FAILED: &str = "Couldn't resume wallpapers";
+/// The standalone tray's tooltip line for it: no wallpaper app's name, the tray has no data.
+pub const RESUME_FAILED_TIP: &str = "Couldn't resume wallpapers. Try again.";
 /// The most bytes of one caller's reason shown (in quotes, after the holder's name).
 const REASON_CUT: usize = 48;
 /// The most bytes of one holder's name shown (UX plan 5: names are cut at 32 with "...").
@@ -73,6 +77,10 @@ pub const AN_APP: &str = "an app";
 /// "Wallpapers paused by Arete".
 pub fn paused_by(who: &str) -> String {
     format!("Wallpapers paused by {who}")
+}
+/// "Try again, or press Play in <wallpaper app>." (#1399)
+pub fn resume_failed_sub(engine: &str) -> String {
+    format!("Try again, or press Play in {engine}.")
 }
 /// "Press Play in <wallpaper app>."
 pub fn press_play(engine: &str) -> String {
@@ -151,6 +159,8 @@ pub struct Wallpaper {
     pub after: Option<After>,
     /// The holders' own reasons (`wallpaper_engine.paused_by`), shown in quotes after the names.
     pub reasons: Vec<String>,
+    /// A play failed and is owed (#1399, `wallpaper_engine.play_owed`): paused, nobody holds it.
+    pub play_owed: bool,
     /// The allow list (S5b); `None` before Foxglove has read it (tests).
     pub allow: Option<super::we_panel::Inputs>,
 }
@@ -742,6 +752,13 @@ fn wallpaper_section(w: &Wallpaper) -> Value {
             press_play(&engine)
         };
         (PAUSED_BY_YOU.into(), "off", Some(sub), false)
+    } else if w.play_owed && !w.held() {
+        (
+            RESUME_FAILED.into(),
+            "active",
+            Some(resume_failed_sub(&engine)),
+            true,
+        )
     } else if w.held() {
         let sub = if w.full_screen {
             Some(FULL_SCREEN_SUB.to_string())
@@ -784,7 +801,10 @@ fn wallpaper_section(w: &Wallpaper) -> Value {
     }
     if resume {
         let mut button = ui::button("", &Button::new(RESUME, Press::Event(RESUME_NODE)));
-        button = ui::named(button, &resume_name(&who));
+        // Owed (#1399): no holder to name, the plain label says it (the state line says why).
+        if !(w.play_owed && !w.held()) {
+            button = ui::named(button, &resume_name(&who));
+        }
         // The button goes once pressed: the focus moves to the state line, which then says so.
         button["props"]["focus_after"] = Value::String(STATE_NODE.into());
         kids.push(button);

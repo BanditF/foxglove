@@ -160,10 +160,19 @@ pub fn watch(ctx: &egui::Context) {
 
 /// The standalone tray's Resume text, from who holds the wallpapers paused: `None` when nothing
 /// does (or the pause is stale: Wallpaper Engine restarted and plays). The words are the hub
-/// panel's, so the item's text (its accessible name) says whose pause it ends.
-pub fn we_resume_label(names: &[String], reasons: &[String], stale: bool) -> Option<String> {
-    if stale || (names.is_empty() && reasons.is_empty()) {
+/// panel's, so the item's text (its accessible name) says whose pause it ends. While a play
+/// failed and is owed (#1399) the item stays, with no holder to name.
+pub fn we_resume_label(
+    names: &[String],
+    reasons: &[String],
+    stale: bool,
+    owed: bool,
+) -> Option<String> {
+    if stale {
         return None;
+    }
+    if names.is_empty() && reasons.is_empty() {
+        return owed.then(|| super::hub_panels::RESUME.to_string());
     }
     Some(super::hub_panels::resume_name(
         &super::hub_panels::holder_words(names),
@@ -265,7 +274,10 @@ impl Controls {
         } else {
             super::wallpaper_sync::reasons_now()
         };
-        let label = we_resume_label(&names, &reasons, stale);
+        let owed = !stale
+            && !super::live_feed::wallpaper_playing()
+            && super::wallpaper_sync::play_owed_now();
+        let label = we_resume_label(&names, &reasons, stale, owed);
         let held = label.is_some();
         let shown = self.we_resume.as_ref().map(|(t, _)| t.as_str());
         if shown != label.as_deref() {
@@ -317,7 +329,13 @@ impl Controls {
                 }
             });
         }
-        line.map(|a| super::hub_panels::after_words(&a))
+        match line {
+            // A play owed shows for as long as it lasts, not only for `SHOW` (#1399).
+            _ if owed && names.is_empty() && reasons.is_empty() => {
+                Some(super::hub_panels::RESUME_FAILED_TIP.to_string())
+            }
+            line => line.map(|a| super::hub_panels::after_words(&a)),
+        }
     }
 
     /// The tray icon's tooltip: the status line and each half's battery (#373).
@@ -633,7 +651,7 @@ mod tests {
     #[test]
     fn an_ampersand_in_a_holder_name_stays_in_the_words() {
         let who = vec!["R&D tools".to_string()];
-        let label = we_resume_label(&who, &[], false).unwrap();
+        let label = we_resume_label(&who, &[], false, false).unwrap();
         assert_eq!(label, "Resume wallpapers, paused by R&D tools");
         assert_eq!(menu_text(&label), "Resume wallpapers, paused by R&&D tools");
     }
@@ -643,29 +661,52 @@ mod tests {
     fn a_nameless_caller_reads_an_app() {
         let who = vec!["An app".to_string()];
         assert_eq!(
-            we_resume_label(&who, &[], false).as_deref(),
+            we_resume_label(&who, &[], false, false).as_deref(),
             Some("Resume wallpapers, paused by an app")
         );
+    }
+
+    /// #1399: the item stays while a play is owed, with no holder in its words; the tooltip line
+    /// fits Windows' 127 characters next to the battery line.
+    #[test]
+    fn the_resume_item_stays_while_a_play_is_owed() {
+        let none: Vec<String> = Vec::new();
+        assert_eq!(
+            we_resume_label(&none, &none, false, true).as_deref(),
+            Some("Resume wallpapers")
+        );
+        assert_eq!(
+            we_resume_label(&none, &none, true, true),
+            None,
+            "stale: gone"
+        );
+        let tip = crate::foxglove::hub_panels::RESUME_FAILED_TIP;
+        assert_eq!(tip, "Couldn't resume wallpapers. Try again.");
+        let levels: std::collections::BTreeMap<String, u8> =
+            [("left".to_string(), 80u8), ("right".to_string(), 80u8)].into();
+        let full = crate::foxglove::battery::tooltip(tip, &levels);
+        assert!(full.contains(tip), "not cut: {full}");
+        assert!(full.encode_utf16().count() <= 127);
     }
 
     #[test]
     fn the_standalone_resume_names_whose_pause_it_ends() {
         let none: Vec<String> = Vec::new();
-        assert_eq!(we_resume_label(&none, &none, false), None);
+        assert_eq!(we_resume_label(&none, &none, false, false), None);
         let arete = vec!["Arete".to_string()];
         assert_eq!(
-            we_resume_label(&arete, &none, false).as_deref(),
+            we_resume_label(&arete, &none, false, false).as_deref(),
             Some("Resume wallpapers, paused by Arete")
         );
         assert_eq!(
-            we_resume_label(&arete, &none, false),
+            we_resume_label(&arete, &none, false, false),
             Some(crate::foxglove::hub_panels::resume_name("Arete"))
         );
         // A hold with no name still says what it ends.
         assert_eq!(
-            we_resume_label(&none, &["render".to_string()], false).as_deref(),
+            we_resume_label(&none, &["render".to_string()], false, false).as_deref(),
             Some("Resume wallpapers, paused by an app")
         );
-        assert_eq!(we_resume_label(&arete, &none, true), None);
+        assert_eq!(we_resume_label(&arete, &none, true, false), None);
     }
 }
