@@ -105,3 +105,14 @@ The private desktop only isolates windows the child creates itself. These go aro
   there with WinEvent hooks during the whole run, and fails only on events from the launch tree
   (unrelated windows or alt-tabs are INFO). Window-free tests: `python -m unittest test_quiet_launch`
   in `scripts/lab`.
+
+## Troubleshooting: `CreateProcessW failed, GetLastError=87` (fixed 11/20)
+
+Every `-Run` helper failed to start, so the proof's "UIA on the hidden desktop sees the proof window"
+check failed (12/13). Cause: the helper is spawned with no environment of its own, and Windows
+PowerShell turns `$null` into an **empty string** for a string parameter. An empty string is not a valid
+environment block (a single NUL, no terminator), so `CreateProcessW` answered `ERROR_INVALID_PARAMETER`.
+`Spawn` now treats null or empty as "inherit" (NULL block). Not the cause, each checked: the
+`lpDesktop` string (`winsta0\<name>`), handle inheritance, the token or the Claude-package shell
+(the main child, with a real env block, always started). Errors now print the API name, the numeric
+`GetLastError` and the system text; `-SelfTest` covers both (no process started). Proof is 13/13.

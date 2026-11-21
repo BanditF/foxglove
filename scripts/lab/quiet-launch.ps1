@@ -130,6 +130,10 @@ using System.Text;
 namespace QuietLaunch {
 public class Spawned { public IntPtr Process; public int Pid; }
 public static class Native {
+    // The message always carries the API name, the numeric code and the system text.
+    static System.Exception Err(string api, int code) {
+        return new System.ComponentModel.Win32Exception(code, api + " failed, GetLastError=" + code + " (" + new System.ComponentModel.Win32Exception(code).Message + ")");
+    }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct STARTUPINFO {
         public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
@@ -184,13 +188,13 @@ public static class Native {
 
     public static IntPtr NewDesktop(string name) {
         IntPtr d = CreateDesktopW(name, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
-        if (d == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "CreateDesktopW");
+        if (d == IntPtr.Zero) throw Err("CreateDesktopW", Marshal.GetLastWin32Error());
         return d;
     }
     public static void DropDesktop(IntPtr d) { if (d != IntPtr.Zero) CloseDesktop(d); }
     public static IntPtr NewJob() {
         IntPtr j = CreateJobObjectW(IntPtr.Zero, null);
-        if (j == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "CreateJobObjectW");
+        if (j == IntPtr.Zero) throw Err("CreateJobObjectW", Marshal.GetLastWin32Error());
         EXT_LIMIT li = new EXT_LIMIT();
         li.Basic.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         int n = Marshal.SizeOf(typeof(EXT_LIMIT));
@@ -198,7 +202,7 @@ public static class Native {
         try {
             Marshal.StructureToPtr(li, p, false);
             if (!SetInformationJobObject(j, 9, p, n))
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "SetInformationJobObject");
+                throw Err("SetInformationJobObject", Marshal.GetLastWin32Error());
         } finally { Marshal.FreeHGlobal(p); }
         return j;
     }
@@ -209,19 +213,22 @@ public static class Native {
         si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
         si.lpDesktop = "winsta0\\" + desktop;
         if (hide) { si.dwFlags = 0x1; si.wShowWindow = 0; } // STARTF_USESHOWWINDOW + SW_HIDE: console helpers only
-        uint flags = 0x400 | 0x08000000 | 0x4; // UNICODE_ENVIRONMENT | NO_WINDOW | SUSPENDED
+        uint flags = 0x08000000 | 0x4; // NO_WINDOW | SUSPENDED
         IntPtr envp = IntPtr.Zero;
-        if (env != null) envp = Marshal.StringToHGlobalUni(env);
+        // Root cause of the 11/20 'CreateProcessW' failures (GetLastError 87): PowerShell turns $null into an
+        // EMPTY STRING for a string parameter, and an empty string is not a valid environment block (it is one
+        // NUL, no terminator). Null or empty therefore means 'inherit the environment' (NULL block).
+        if (!string.IsNullOrEmpty(env)) { envp = Marshal.StringToHGlobalUni(env); flags |= 0x400; }
         PROCESS_INFORMATION pi;
         try {
             StringBuilder cmd = new StringBuilder(cmdline);
             if (!CreateProcessW(app, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, envp, cwd, ref si, out pi))
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessW");
+                throw Err("CreateProcessW", Marshal.GetLastWin32Error());
         } finally { if (envp != IntPtr.Zero) Marshal.FreeHGlobal(envp); }
         if (job != IntPtr.Zero && !AssignProcessToJobObject(job, pi.hProcess)) {
             int err = Marshal.GetLastWin32Error();
             TerminateProcess(pi.hProcess, 1); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
-            throw new System.ComponentModel.Win32Exception(err, "AssignProcessToJobObject");
+            throw Err("AssignProcessToJobObject", err);
         }
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
@@ -235,6 +242,7 @@ public static class Native {
         return (int)r;
     }
     public static uint ExitCode(IntPtr p) { uint c; GetExitCodeProcess(p, out c); return c; }
+    public static int ExitCodeInt(IntPtr p) { return unchecked((int)ExitCode(p)); }
     public static void KillProcess(IntPtr p) { TerminateProcess(p, 1); }
     public static void KillJob(IntPtr j) { TerminateJobObject(j, 1); }
     public static uint ActiveInJob(IntPtr j) {
@@ -307,6 +315,11 @@ if ($SelfTest) {
     $compiled = $true
     try { Initialize-Native } catch { $compiled = $false; $fail += "native source does not compile: $_" }
     Check $compiled 'P/Invoke source compiles'
+    # Errors carry the API name and GetLastError (before 11/20 they printed the bare API name).
+    $threw = ''
+    try { [void][QuietLaunch.Native]::Spawn('C:\no\such\file.exe', 'x', 'C:\Windows', (New-EnvBlock @{} @{}), 'ql-selftest', [IntPtr]::Zero, $true) } catch { $threw = "$($_.Exception.InnerException.Message)" }
+    Check ($threw -match 'CreateProcessW failed, GetLastError=\d+') 'a CreateProcessW failure prints the API name and GetLastError'
+    Check ($nativeSource.Contains('!string.IsNullOrEmpty(env)')) 'an empty environment string (PowerShell $null) means inherit, not a bad block'
     # Teardown rules in the text: job + handles only, never names or wildcards.
     $self = Get-Content -LiteralPath $PSCommandPath -Raw
     foreach ($w in ('Stop' + '-Process'), ('task' + 'kill'), ('Get-Process -' + 'Name'), ('Get-Process ' + '*'), ('pk' + 'ill')) {
@@ -366,7 +379,7 @@ function Invoke-OnDesktop([string]$desktopName, [string]$text, [int]$limitSec, [
         $s = [QuietLaunch.Native]::Spawn($psExe, $cl, $PSScriptRoot, $null, $desktopName, $runJob, $true)
         try {
             $r = [QuietLaunch.Native]::WaitFor($s.Process, $stopEv, [uint32]($limitSec * 1000))
-            if ($r -eq 0) { $code = [int][QuietLaunch.Native]::ExitCode($s.Process) }
+            if ($r -eq 0) { $code = [QuietLaunch.Native]::ExitCodeInt($s.Process) }
             else {
                 $code = if ($r -eq 258) { 4 } else { 5 }
                 if ($r -ne 258) { $script:stopped = $true }
