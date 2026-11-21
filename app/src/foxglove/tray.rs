@@ -274,7 +274,9 @@ impl Controls {
         } else {
             super::wallpaper_sync::reasons_now()
         };
-        let owed = !stale && super::wallpaper_sync::play_owed_now();
+        let owed = !stale
+            && !super::live_feed::wallpaper_playing()
+            && super::wallpaper_sync::play_owed_now();
         let label = we_resume_label(&names, &reasons, stale, owed);
         let held = label.is_some();
         let shown = self.we_resume.as_ref().map(|(t, _)| t.as_str());

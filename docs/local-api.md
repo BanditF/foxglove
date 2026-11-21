@@ -146,7 +146,8 @@ The params and results are in the schema. Notes:
   answer is `why: "failed"`: the wallpapers are still paused, Foxglove's pause still holds them
   (the pause mark stays), and the play is owed. It goes again, never on a timer, at the next
   Resume, the next last release or end of a connection, quitting, or the next start; Wallpaper
-  Engine quitting or the user's own pause ends the debt. The fact `wallpaper_engine.play_owed`
+  Engine quitting, a paired wallpaper reporting itself playing (the user pressed Play), or a lease
+  taken over the user's own pause ends the debt. The fact `wallpaper_engine.play_owed`
   is `true` while a play is owed and no lease holds the wallpapers, and the health view gains
   `failed pushes N` and `failed plays N` once they happen. A lease ends with its connection; quitting Foxglove plays first (under the
   same rules), then tells the wallpapers it has gone. Pushes wait while paused; the newest state goes

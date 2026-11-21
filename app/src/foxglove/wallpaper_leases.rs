@@ -313,6 +313,18 @@ impl Leases {
         self.we_paused
     }
 
+    /// The wallpapers play although a play is owed (#1399): the user pressed Play in the
+    /// wallpaper app, so Foxglove's pause is over and nothing is owed. `true` when this changed
+    /// anything. Leases that are live keep their own hold.
+    pub fn user_took_over(&mut self) -> bool {
+        if !self.owed || !self.live.is_empty() {
+            return false;
+        }
+        self.owed = false;
+        self.we_paused = false;
+        true
+    }
+
     /// A `play` failed and nothing holds the wallpapers paused now (#1399): the wallpapers stay
     /// paused until a trigger sends it again. While a new lease holds them, the holder is what
     /// shows; the debt waits behind it.
@@ -535,6 +547,17 @@ mod tests {
         assert!(l.engine_gone());
         assert!(!l.play_owed() && !l.paused_by_lease());
         assert_eq!(l.end_all(&mut &mut f, false), None);
+    }
+
+    #[test]
+    fn the_user_pressing_play_ends_the_debt_and_quitting_sends_nothing() {
+        let (mut f, mut l) = (up(), Leases::default());
+        assert!(!l.user_took_over(), "nothing owed");
+        owe(&mut f, &mut l);
+        assert!(l.user_took_over());
+        assert!(!l.play_owed() && !l.paused_by_lease());
+        assert_eq!(l.end_all(&mut &mut f, false), None);
+        assert_eq!(f.calls, ["pause"], "no play over what the user did");
     }
 
     #[test]

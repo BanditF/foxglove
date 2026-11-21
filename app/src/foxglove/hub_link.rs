@@ -853,7 +853,10 @@ fn wallpaper_now(holders: &[String]) -> Option<super::hub_panels::Wallpaper> {
         } else {
             super::wallpaper_sync::reasons_now()
         },
-        play_owed: !stale && super::wallpaper_sync::play_owed_now(),
+        // Not while a paired wallpaper plays: the user pressed Play, so nothing is owed.
+        play_owed: !stale
+            && !super::live_feed::wallpaper_playing()
+            && super::wallpaper_sync::play_owed_now(),
         allow: Some(super::we_panel::inputs_now(running)),
     })
 }

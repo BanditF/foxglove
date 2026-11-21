@@ -260,7 +260,11 @@ pub fn rows(h: &SyncHealth, now: Instant) -> Vec<HealthRow> {
         if h.failed_plays > 0 {
             parts.push(format!("failed plays {}", h.failed_plays));
         }
-        out.push(row("Wallpaper commands", Level::Warn, parts.join(", ")));
+        out.push(row(
+            "Wallpaper commands",
+            Level::Ok,
+            format!("{} since Foxglove started", parts.join(", ")),
+        ));
     }
     out
 }
@@ -365,11 +369,11 @@ mod tests {
         h.failed_pushes = 2;
         let r = rows(&h, Instant::now());
         assert_eq!(r.len(), 4);
-        assert_eq!(r[3].detail, "failed pushes 2");
+        assert_eq!(r[3].detail, "failed pushes 2 since Foxglove started");
         h.failed_plays = 1;
         assert_eq!(
             rows(&h, Instant::now())[3].detail,
-            "failed pushes 2, failed plays 1"
+            "failed pushes 2, failed plays 1 since Foxglove started"
         );
     }
 

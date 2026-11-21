@@ -1092,6 +1092,11 @@ fn run(
                     if engine_check(&mut leases, pusher.apply_mut()) {
                         mark.set(false);
                     }
+                    took_over(
+                        &mut leases,
+                        &mut mark,
+                        super::live_feed::wallpaper_playing(),
+                    );
                     if matches!(
                         ctl,
                         Ctl::Pause {
@@ -1121,6 +1126,11 @@ fn run(
                 Next::Quit(ack) => {
                     // Play first (when it is ours to play), then tell the wallpapers we've gone.
                     let full = screen.now();
+                    took_over(
+                        &mut leases,
+                        &mut mark,
+                        super::live_feed::wallpaper_playing(),
+                    );
                     if leases.end_all(pusher.apply_mut(), full).is_some() {
                         announce(&leases);
                     }
@@ -1137,6 +1147,11 @@ fn run(
             mark.set(leases.paused_by_lease());
             announce(&leases);
         }
+        took_over(
+            &mut leases,
+            &mut mark,
+            super::live_feed::wallpaper_playing(),
+        );
         if leases.paused_by_lease() {
             // Paused for a lease: the newest state goes once it plays (the sent state is kept).
             continue;
@@ -1225,6 +1240,18 @@ fn engine_check(leases: &mut Leases, apply: &mut impl Apply) -> bool {
         );
     }
     gone
+}
+
+/// A play is owed (#1399) but a paired wallpaper reports itself playing: the user pressed Play
+/// in the wallpaper app, so nothing is owed and Foxglove's pause is over. Checked at a wake and
+/// before quitting, never on a timer. Only "playing" counts: a "paused" report is also what
+/// Foxglove's own pause looks like, so it says nothing about the user.
+fn took_over(leases: &mut Leases, mark: &mut PauseMark, playing: bool) {
+    if playing && leases.user_took_over() {
+        eprintln!("Foxglove: wallpaper sync: the wallpapers play again; the owed play is dropped");
+        mark.set(leases.paused_by_lease());
+        announce(leases);
+    }
 }
 
 /// Runs one lease call; `true` when it sent `play`.
@@ -2749,6 +2776,34 @@ mod tests {
         assert!(!play_owed_now(), "and the fact goes");
         quit(&tx, worker);
         assert_eq!(apply.log(), ["pause", "play", "play"]);
+    }
+
+    /// #1399: the user presses Play in the wallpaper app after a failed play: the debt, the
+    /// pause and the mark go with no command sent.
+    #[test]
+    fn the_user_playing_after_a_failed_play_clears_the_debt_and_the_mark() {
+        let mut leases = Leases::default();
+        let mut f = Logged::new(true).0;
+        f.fail_play
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let path = mark_path("took-over");
+        let mut mark = PauseMark::at(Some(path.clone()));
+        let (id, _) = leases.pause(&mut f, 1, "a", false).unwrap();
+        mark.set(true);
+        f.fail_play.store(true, std::sync::atomic::Ordering::SeqCst);
+        leases.release(&mut f, 1, &id, false).unwrap();
+        mark.set(leases.paused_by_lease());
+        assert!(leases.play_owed() && path.is_file());
+        took_over(&mut leases, &mut mark, false);
+        assert!(leases.play_owed(), "no report: nothing changes");
+        took_over(&mut leases, &mut mark, true);
+        assert!(!leases.play_owed() && !leases.paused_by_lease());
+        assert!(!path.exists(), "the mark is gone");
+        assert!(
+            leases.end_all(&mut f, false).is_none(),
+            "quit sends no play"
+        );
+        assert_eq!(f.log(), ["pause", "play"], "the one failed play, no more");
     }
 
     /// #1142: a failed pause leaves no mark.
