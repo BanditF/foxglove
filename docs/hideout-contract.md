@@ -644,8 +644,8 @@ plug-ins** (no dylibs, no scripts in the hub).
   an app file with `kind = "service"`. Hideout resolves the relative `run[0]` next to the file
   (no `..`, root or drive; the resolved program must stay inside that folder, on a local fixed
   drive) and registers the app as `adopted` with that absolute path: the staged file is the
-  original text with only `kind` and `run[0]` changed. Folders inside the hub's own `modules`
-  folder are refused. Nothing is granted at add; the first-run OK asks for the permissions.
+  original text with only `kind` and `run[0]` changed. A folder inside the hub's own folder,
+  or a program inside it, is refused. Nothing is granted at add; the first-run OK asks for the permissions.
 - **Dev folders (#1297).** With dev mode on (`HIDEOUT_DEV_MODE=1`, and only that: it is a separate
   switch from unsigned sideload, §12.6), an adopted app inside a folder the user marked keeps
   its grants across a rebuild; sensitive growth and leaving the folder still ask again.

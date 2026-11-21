@@ -51,7 +51,7 @@ pub mod words {
     /// Also shown when the folder is on this PC but the app it names is on another drive.
     pub const NOT_THIS_PC: &str =
         "Hideout adds apps only from this PC's own drive. Choose a folder there.";
-    /// The folder is one Hideout keeps for its own files (below its `modules` folder).
+    /// The folder is one Hideout keeps for its own files (the hub's folder, or a program inside it).
     pub const INSIDE_HUB: &str =
         "Hideout keeps that folder for its own files. Choose the folder the app was installed in.";
     pub fn already(name: &str) -> String {
@@ -203,11 +203,12 @@ pub fn from_folder(m: &dyn Machine, home: &Path, at: &Path) -> Result<Candidate,
     })
 }
 
-/// Whether `p` is `base` or below it (component by component, case-insensitive).
+/// Whether `p` is `base` or below it (component by component; ASCII case only, so a look-alike
+/// letter in a folder name never counts as the same folder).
 fn inside(p: &Path, base: &Path) -> bool {
     let parts = |x: &Path| -> Vec<String> {
         x.components()
-            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
             .collect()
     };
     let (p, base) = (parts(p), parts(base));
@@ -215,7 +216,7 @@ fn inside(p: &Path, base: &Path) -> bool {
 }
 
 /// The program of a `service` app file in `folder`, as an absolute canonical path. In this
-/// order: the folder is not Hideout's own (`<home>\modules`); `run[0]` is a plain relative name
+/// order: the folder is not Hideout's own (`<home>` or below); `run[0]` is a plain relative name
 /// (the contract's stays-inside rule, enforced by the parse and checked again here: no `..`,
 /// root or drive); it is joined to the folder, resolved, and must be on a local fixed drive;
 /// the resolved program must still be below the folder (a link that leads out is refused).
@@ -225,9 +226,9 @@ fn service_program(
     folder: &Path,
     module: &Module,
 ) -> Result<PathBuf, String> {
-    let hub_modules = home.join("modules");
-    let hub_modules = m.canonical(&hub_modules).unwrap_or(hub_modules);
-    if inside(folder, &hub_modules) {
+    // The whole hub folder, resolved: its installed apps, records and settings are its own.
+    let hub = m.canonical(home).unwrap_or_else(|| home.to_path_buf());
+    if inside(folder, &hub) {
         return Err(words::INSIDE_HUB.into());
     }
     let run0 = module
@@ -245,6 +246,11 @@ fn service_program(
         .ok_or_else(|| words::NOT_THIS_PC.to_string())?;
     if exe.as_path() == folder || !inside(&exe, folder) {
         return Err(words::NOT_ADDABLE.into());
+    }
+    // A folder above the hub's must not name a program the hub installed (its hash would look
+    // genuine under an id and permissions the file made up).
+    if inside(&exe, &hub) {
+        return Err(words::INSIDE_HUB.into());
     }
     Ok(exe)
 }
@@ -272,6 +278,22 @@ fn adopted_text(text: &str, exe: &Path) -> Result<String, String> {
     }
     run.replace(0, exe);
     Ok(doc.to_string())
+}
+
+/// Whether `staged` parses to `was` with only `kind = adopted` and `run[0] = exe` changed.
+fn same_but_adopted(was: &Module, staged: &str, exe: Option<&Path>) -> bool {
+    let (Some(exe), Some(run)) = (exe.and_then(Path::to_str), was.run.as_ref()) else {
+        return false;
+    };
+    let mut want = was.clone();
+    want.kind = Kind::Adopted;
+    let mut run = run.clone();
+    if run.is_empty() {
+        return false;
+    }
+    run[0] = exe.to_string();
+    want.run = Some(run);
+    Module::parse(staged, &Context::default()).is_ok_and(|got| got == want)
 }
 
 /// The apps found on this PC that are not in Hideout yet (`installed` = the ids it already has):
@@ -344,7 +366,8 @@ pub fn add(
             let text = match Module::parse(text, &Context::default()) {
                 Ok(module) if module.kind == Kind::Service => {
                     match c.program.as_deref().map(|p| adopted_text(text, p)) {
-                        Some(Ok(t)) => t,
+                        // The rewrite must read back as the same app: only the two keys moved.
+                        Some(Ok(t)) if same_but_adopted(&module, &t, c.program.as_deref()) => t,
                         other => {
                             log::warn!("discover: {} not staged: {other:?}", c.id);
                             return Err(words::not_saved(&c.name));
@@ -1506,6 +1529,34 @@ mod tests {
         );
         assert_eq!(
             from_folder(&f, &home, &home.join("modules")).unwrap_err(),
+            words::INSIDE_HUB
+        );
+        // The hub folder itself, naming a program the hub installed, and a folder above it.
+        f.files.insert(
+            home.join("module.toml"),
+            (
+                String::new(),
+                Some(service_text(
+                    "vulpes.gadget",
+                    "modules/vulpes.gadget/0.1.0/svc.exe",
+                )),
+            ),
+        );
+        assert_eq!(
+            from_folder(&f, &home, &home).unwrap_err(),
+            words::INSIDE_HUB
+        );
+        let above = home.parent().unwrap().to_path_buf();
+        let down = format!(
+            "{}/modules/vulpes.gadget/0.1.0/svc.exe",
+            home.file_name().unwrap().to_string_lossy()
+        );
+        f.files.insert(
+            above.join("module.toml"),
+            (String::new(), Some(service_text("vulpes.gadget", &down))),
+        );
+        assert_eq!(
+            from_folder(&f, &home, &above).unwrap_err(),
             words::INSIDE_HUB
         );
         // A folder beside it is fine.
