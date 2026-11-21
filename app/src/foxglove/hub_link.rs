@@ -853,6 +853,7 @@ fn wallpaper_now(holders: &[String]) -> Option<super::hub_panels::Wallpaper> {
         } else {
             super::wallpaper_sync::reasons_now()
         },
+        play_owed: !stale && super::wallpaper_sync::play_owed_now(),
         allow: Some(super::we_panel::inputs_now(running)),
     })
 }
@@ -1027,13 +1028,16 @@ impl<W: Write> Link<W> {
         let mut wallpaper = (self.wallpaper)(&self.hub.holders);
         if let Some(w) = wallpaper.as_mut() {
             let now = Instant::now();
-            if self.after.shrank(&w.holders, w.held()) {
+            // A play owed (#1399) is a hold too: no "Resumed." shows while the wallpapers are
+            // still paused.
+            let held = w.held() || w.play_owed;
+            if self.after.shrank(&w.holders, held) {
                 super::we_after::clear_stop();
             }
-            let stop = !w.held() && super::we_after::take_stop(now);
+            let stop = !held && super::we_after::take_stop(now);
             w.after = self
                 .after
-                .update(&w.holders, w.held(), w.running, w.user_paused, stop, now);
+                .update(&w.holders, held, w.running, w.user_paused, stop, now);
         }
         self.hub.we_keys = wallpaper
             .as_ref()

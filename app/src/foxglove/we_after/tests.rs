@@ -94,3 +94,25 @@ fn a_stop_hint_is_used_once_and_goes_stale() {
         "an old stop is another's"
     );
 }
+
+/// #1399: a play owed counts as held (the link passes `held || owed`), so a Resume press is not
+/// answered "Resumed." while the wallpapers are still paused; the next press that works is.
+#[test]
+fn no_resumed_line_while_a_play_is_owed() {
+    let t0 = Instant::now();
+    let mut t = Tracker::default();
+    let held = names(&["Arete"]);
+    t.update(&held, true, true, false, false, t0);
+    t.resume_pressed(&held, t0);
+    // The play failed: nobody holds it, but it is owed.
+    assert_eq!(t.update(&[], true, true, false, false, t0), None);
+    assert!(!t.showing());
+    // A press that works: the owed state clears and the line follows.
+    let sec = Duration::from_secs(1);
+    t.resume_pressed(&[], t0 + sec);
+    assert_eq!(t.update(&[], true, true, false, false, t0 + sec), None);
+    assert_eq!(
+        t.update(&[], false, true, false, false, t0 + sec),
+        Some(After::Resumed(vec![]))
+    );
+}
