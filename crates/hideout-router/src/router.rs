@@ -298,6 +298,9 @@ struct Conn {
     /// The peer's AppContainer SID, when it runs in one (§7.7): what a channel's pipe lets in
     /// (v1.10, #1092).
     app_container: Option<String>,
+    /// The program behind the peer, read from the handle opened at connect (S1); `None` is the
+    /// valid unknown state.
+    identity: Option<crate::ToolId>,
 }
 
 /// Who waits for an answer.
@@ -375,7 +378,9 @@ pub const SHOW_GAP: Duration = Duration::from_secs(2);
 pub struct Router {
     settings: Settings,
     approve: Approver,
-    approved: HashMap<String, Vec<Capability>>,
+    /// What the user allowed an outside tool, by the program (image path and hash), never by
+    /// the name it gives itself. Only for a known program that is no script runner (S1).
+    approved: HashMap<crate::ToolId, Vec<Capability>>,
     modules: BTreeMap<String, ModuleEntry>,
     tokens: HashMap<String, String>,
     conns: HashMap<ConnId, Conn>,
@@ -922,6 +927,7 @@ impl Router {
                 caps: Caps::default(),
                 pid: None,
                 app_container: None,
+                identity: None,
             },
         );
         id
@@ -932,6 +938,19 @@ impl Router {
         if let Some(c) = self.conns.get_mut(&conn) {
             c.pid = Some(pid);
         }
+    }
+
+    /// Records which program `conn`'s peer is (the transport read it from the process handle it
+    /// opened at connect). `None` says it could not be told.
+    pub fn set_peer_identity(&mut self, conn: ConnId, id: Option<crate::ToolId>) {
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.identity = id;
+        }
+    }
+
+    /// The program recorded for `conn`.
+    pub fn peer_identity(&self, conn: ConnId) -> Option<crate::ToolId> {
+        self.conns.get(&conn).and_then(|c| c.identity.clone())
     }
 
     /// Records that `conn`'s peer runs in the AppContainer `sid` (read from its token by the
@@ -2812,7 +2831,18 @@ impl Router {
                 _ => true,
             })
             .collect();
-        let known = self.approved.entry(name.clone()).or_default().clone();
+        // Remembered by the program, not the name: an unknown program or a script runner is
+        // asked each time it connects and nothing is kept.
+        let key = self
+            .conns
+            .get(&conn)
+            .and_then(|c| c.identity.clone())
+            .filter(crate::ToolId::remembered);
+        let known = key
+            .as_ref()
+            .and_then(|k| self.approved.get(k))
+            .cloned()
+            .unwrap_or_default();
         let new: Vec<Capability> = asked
             .iter()
             .filter(|c| !known.contains(c))
@@ -2822,7 +2852,9 @@ impl Router {
         if !new.is_empty() {
             let yes = (self.approve)(&name, &new);
             granted.extend(yes.into_iter().filter(|c| new.contains(c)));
-            self.approved.insert(name.clone(), granted.clone());
+            if let Some(k) = key {
+                self.approved.insert(k, granted.clone());
+            }
         }
         let caps = Caps(granted.into_iter().filter(|c| asked.contains(c)).collect());
         let result = if v1 {

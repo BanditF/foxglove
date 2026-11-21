@@ -192,6 +192,53 @@ pub fn image_of(pid: u32) -> Option<PathBuf> {
     }
 }
 
+/// A process held by the handle opened when it was first seen, so its image can still be asked
+/// after its pid was given to another process (S1: the hub names an outside tool this way).
+/// Off Windows nothing can be opened.
+pub struct PeerProcess {
+    #[cfg(windows)]
+    inner: win::PeerProcess,
+}
+
+impl PeerProcess {
+    /// Opens `pid` now; `None` when it is gone or cannot be read.
+    pub fn open(pid: u32) -> Option<PeerProcess> {
+        #[cfg(windows)]
+        {
+            win::PeerProcess::open(pid).map(|inner| PeerProcess { inner })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
+            None
+        }
+    }
+
+    /// The full image path of the held process; `None` once it has exited.
+    pub fn image(&self) -> Option<PathBuf> {
+        #[cfg(windows)]
+        {
+            self.inner.image()
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    /// Whether the held process still runs.
+    pub fn alive(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.inner.alive()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+}
+
 /// The file-name rule, apart from Windows so it is testable anywhere.
 pub fn image_matches(image: &std::path::Path, expect: Expect) -> bool {
     image
@@ -332,28 +379,48 @@ mod win {
     }
 
     pub fn image_of(pid: u32) -> Option<PathBuf> {
-        // SAFETY: plain Win32 calls; the handle is closed by `Owned`.
-        let proc = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if proc.is_null() {
-            return None;
+        PeerProcess::open(pid)?.image()
+    }
+
+    /// A process handle held from the moment it was opened: a later pid reuse cannot change
+    /// what it names.
+    pub struct PeerProcess(Owned);
+
+    // SAFETY: a process handle may be used and closed from any thread.
+    unsafe impl Send for PeerProcess {}
+
+    impl PeerProcess {
+        pub fn open(pid: u32) -> Option<PeerProcess> {
+            // SAFETY: plain Win32 call; the handle is checked and closed by `Owned`.
+            let proc = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            (!proc.is_null()).then(|| PeerProcess(Owned(proc)))
         }
-        let proc = Owned(proc);
-        let mut code = 0u32;
-        // A process that exited but whose handle is still open elsewhere is not "alive".
-        if unsafe { windows_sys::Win32::System::Threading::GetExitCodeProcess(proc.0, &mut code) }
-            == 0
-            || code != 259
-        {
-            return None;
+
+        /// Whether the process is still running (an exited one whose handle is held is not).
+        pub fn alive(&self) -> bool {
+            let mut code = 0u32;
+            // SAFETY: a valid process handle and a valid out pointer.
+            let ok = unsafe {
+                windows_sys::Win32::System::Threading::GetExitCodeProcess(self.0 .0, &mut code)
+            };
+            ok != 0 && code == 259
         }
-        let mut buf = vec![0u16; 1024];
-        let mut len = buf.len() as u32;
-        if unsafe { QueryFullProcessImageNameW(proc.0, 0, buf.as_mut_ptr(), &mut len) } == 0 {
-            return None;
+
+        pub fn image(&self) -> Option<PathBuf> {
+            if !self.alive() {
+                return None;
+            }
+            let mut buf = vec![0u16; 1024];
+            let mut len = buf.len() as u32;
+            // SAFETY: a valid handle; `buf` is `len` wide characters.
+            if unsafe { QueryFullProcessImageNameW(self.0 .0, 0, buf.as_mut_ptr(), &mut len) } == 0
+            {
+                return None;
+            }
+            Some(PathBuf::from(std::ffi::OsString::from_wide(
+                &buf[..len as usize],
+            )))
         }
-        Some(PathBuf::from(std::ffi::OsString::from_wide(
-            &buf[..len as usize],
-        )))
     }
 
     enum Refusal {

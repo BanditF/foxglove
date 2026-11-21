@@ -17,6 +17,7 @@ hideout-contract = { path = "../hideout-contract" }
 hideout-registry = { path = "../hideout-registry", default-features = false }
 log = "0.4"
 serde_json = "1"
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 hideout-acl = { path = "../hideout-acl" }

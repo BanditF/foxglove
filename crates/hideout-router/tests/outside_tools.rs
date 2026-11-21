@@ -249,3 +249,86 @@ fn a_keys_or_unknown_channel_is_never_a_tools() {
         );
     }
 }
+
+// ---- S1 slice 2: what is remembered is the program, not the name ----
+
+use hideout_router::ToolId;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+fn tool(path: &str, hash: &str) -> ToolId {
+    ToolId {
+        image_path: path.into(),
+        image_sha256: hash.into(),
+    }
+}
+
+/// A router whose approver grants the free set and counts how often it was asked.
+fn counting() -> (Router, Arc<AtomicUsize>) {
+    let asked = Arc::new(AtomicUsize::new(0));
+    let n = asked.clone();
+    let mut r = Router::new(
+        Settings::default(),
+        Box::new(move |_, a| {
+            n.fetch_add(1, Ordering::SeqCst);
+            a.iter()
+                .filter(|c| tool_class(c, None) == ToolClass::Free)
+                .cloned()
+                .collect()
+        }),
+    );
+    r.add_module(entry(M, &[]));
+    (r, asked)
+}
+
+/// A connection whose program the transport named as `id`, then `initialize`.
+fn connect_as(r: &mut Router, name: &str, id: Option<ToolId>) -> Value {
+    let c = r.connect(Origin::Pipe);
+    r.set_peer_pid(c, 4242);
+    r.set_peer_identity(c, id);
+    let params = json!({"client":{"name":name,"version":"1"},"hub":"1.4","api":{},
+        "permissions":["devices.read"]});
+    let out = call(r, c, 0, "initialize", params);
+    sends(&out, c).remove(0)["result"].clone()
+}
+
+#[test]
+fn same_program_is_remembered() {
+    let (mut r, asked) = counting();
+    let id = tool(r"C:\Tools\a.exe", "aa");
+    connect_as(&mut r, "x", Some(id.clone()));
+    let res = connect_as(&mut r, "x", Some(id));
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert_eq!(res["granted"], json!(["devices.read"]));
+}
+
+#[test]
+fn same_name_other_image_inherits_nothing() {
+    let (mut r, asked) = counting();
+    connect_as(&mut r, "Friendly", Some(tool(r"C:\Tools\a.exe", "aa")));
+    // Same name, another file; and the same path with other bytes.
+    connect_as(&mut r, "Friendly", Some(tool(r"C:\Other\b.exe", "bb")));
+    connect_as(&mut r, "Friendly", Some(tool(r"C:\Tools\a.exe", "cc")));
+    assert_eq!(asked.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn unknown_identity_never_remembers() {
+    let (mut r, asked) = counting();
+    connect_as(&mut r, "x", None);
+    connect_as(&mut r, "x", None);
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+    // Nor does an unknown connection inherit what a known program was given.
+    connect_as(&mut r, "x", Some(tool(r"C:\Tools\a.exe", "aa")));
+    connect_as(&mut r, "x", None);
+    assert_eq!(asked.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn script_runner_not_remembered() {
+    let (mut r, asked) = counting();
+    let py = tool(r"C:\Python312\python.exe", "aa");
+    connect_as(&mut r, "x", Some(py.clone()));
+    connect_as(&mut r, "x", Some(py));
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+}

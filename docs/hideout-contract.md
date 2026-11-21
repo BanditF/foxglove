@@ -1481,7 +1481,14 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   permissions, `secrets`, network, files, wildcard agents and keys-class or unknown-class
   channels; only an app can hold these). The channel's class comes from the catalog, never from
   the tool. A tool's own name never grants anything: a name that says it is an MCP client only
-  narrows what it may get. A lab hub (§8.2) keeps the older rule, which grants every
+  narrows what it may get. The name is only text to show, untrusted, cleaned and cut. What the
+  hub remembers it allowed is tied to the program: the image file of the connecting process
+  (its canonical path and the SHA-256 of the file), taken from a process handle the hub opens
+  when the connection is accepted, so a reused process id cannot pass for another program. The
+  same name from another file, or the same path with other bytes, inherits nothing. When the
+  program cannot be told, or is a script runner (a data list of image names such as an
+  interpreter or shell, `TOOL_SCRIPT_RUNNERS`), nothing is remembered: each connection is
+  decided afresh. A lab hub (§8.2) keeps the older rule, which grants every
   non-sensitive permission, and says so once at start. Only this user's own processes reach
   the pipes (not remote clients, not low-integrity ones).
 - The cut-over from Foxglove carries every existing grant over silently. Only new permissions ask.
@@ -2094,6 +2101,8 @@ Rules:
 - **Outside tools** (`foxglove-cli`, the `hideout` CLI, `hideout mcp`, scripts) connect without a
   token. Until a dialog for them ships, each is granted the free set only (§6.4); a refused
   call is answered with words that say it is not allowed for a program outside Hideout.
+  Whatever the hub remembers for one is keyed by its program file and that file's hash (§6.4),
+  never by the name it sends.
 - **Legacy stdio plugins** (`transport = "stdio"`) are bridged by the hub.
 - **The bridge carries panels (v1.4).** A bridged connection is the module's connection: the
   hub reads its identity from the bridge, not a token, and treats its messages as any module's.

@@ -182,6 +182,43 @@ pub const TOOL_FREE_FACTS: &[&str] = &[
     "module.<id>.state",
 ];
 
+/// Image file names (without `.exe`, lower case) of programs that run whatever script they are
+/// handed. The hub never remembers a grant for one: the file says nothing about what runs in it.
+/// One list, here; the router reads it through [`tool_runs_scripts`].
+pub const TOOL_SCRIPT_RUNNERS: &[&str] = &[
+    "python",
+    "pythonw",
+    "py",
+    "pypy",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "powershell",
+    "powershell_ise",
+    "pwsh",
+    "cmd",
+    "wscript",
+    "cscript",
+    "mshta",
+    "java",
+    "javaw",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "bash",
+    "sh",
+    "wsl",
+];
+
+/// Whether the image file name `file` (for example `Python.EXE`) is a script runner.
+pub fn tool_runs_scripts(file: &str) -> bool {
+    let lower = file.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+    TOOL_SCRIPT_RUNNERS.contains(&stem)
+}
+
 /// Whether the fact pattern `pattern` (as asked in `facts.read:<pattern>`) lies wholly inside
 /// [`TOOL_FREE_FACTS`].
 pub fn tool_free_fact(pattern: &str) -> bool {

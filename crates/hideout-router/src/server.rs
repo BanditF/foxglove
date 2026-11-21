@@ -177,6 +177,8 @@ struct Shared {
     suffix: Mutex<String>,
     /// Who besides the current user may open the router pipe (contract §7.7).
     pipe_acl: Mutex<PipeAcl>,
+    /// How a pipe peer's program is named (S1); the system's unless a test sets another.
+    peers: Mutex<Arc<dyn crate::tool_id::PeerLookup>>,
 }
 
 /// The router pipe's AppContainer guests, and its keeper: the first instance, the only one
@@ -209,6 +211,7 @@ impl Hub {
             nudge: Mutex::new(nudge),
             suffix: Mutex::new(String::new()),
             pipe_acl: Mutex::new(PipeAcl::default()),
+            peers: Mutex::new(Arc::new(crate::tool_id::SystemLookup)),
         }));
         let weak = Arc::downgrade(&hub.0);
         std::thread::Builder::new()
@@ -216,6 +219,11 @@ impl Hub {
             .spawn(move || timer(weak, wake))
             .expect("router timer thread");
         hub
+    }
+
+    /// Replaces how a pipe peer's program is named (tests).
+    pub fn set_peer_lookup(&self, lookup: Arc<dyn crate::tool_id::PeerLookup>) {
+        *self.0.peers.lock().unwrap() = lookup;
     }
 
     /// Names this hub after its folder (#1010): `suffix` from [`folder_suffix`], empty (the
@@ -340,6 +348,15 @@ impl Hub {
         reader: impl Read + Send + 'static,
         mut writer: impl Write + Send + 'static,
     ) -> ConnId {
+        // The peer's process is opened now, at connect; its program is read from that handle
+        // before the first line is handled (S1).
+        let mut hold = match pid {
+            Some(pid) if origin == Origin::Pipe => {
+                let lookup = self.0.peers.lock().unwrap().clone();
+                Some(lookup.open(pid))
+            }
+            _ => None,
+        };
         let conn = {
             let mut r = self.0.router.lock().unwrap();
             let conn = r.connect(origin);
@@ -378,6 +395,14 @@ impl Hub {
         std::thread::Builder::new()
             .name(format!("hideout-router-r{conn}"))
             .spawn(move || {
+                if let Some(hold) = hold.as_mut() {
+                    let id = hold.identity();
+                    hub.act(|r| {
+                        r.set_peer_identity(conn, id);
+                        Vec::new()
+                    });
+                }
+                drop(hold);
                 let mut reader = BufReader::new(reader);
                 while let Ok(Some(line)) = read_line(&mut reader) {
                     let line = line.trim_end_matches(['\r', '\n']);
@@ -575,7 +600,8 @@ fn timer(hub: std::sync::Weak<Shared>, wake: Receiver<()>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Settings;
+    use crate::{Settings, ToolId};
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn hub() -> Hub {
@@ -626,5 +652,60 @@ mod tests {
         assert_eq!(folder_key(&upper), folder_key(&dir));
         assert!(!folder_key(&dir).starts_with("//?/"));
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// A lookup whose table can change after `open`: what was true at open is what is kept.
+    struct Table(Mutex<HashMap<u32, ToolId>>);
+
+    struct Snap(Option<ToolId>);
+    impl crate::tool_id::PeerHold for Snap {
+        fn identity(&mut self) -> Option<ToolId> {
+            self.0.clone()
+        }
+    }
+
+    struct TableLookup(Arc<Table>);
+    impl crate::tool_id::PeerLookup for TableLookup {
+        fn open(&self, pid: u32) -> Box<dyn crate::tool_id::PeerHold> {
+            Box::new(Snap(self.0 .0.lock().unwrap().get(&pid).cloned()))
+        }
+    }
+
+    /// A stream with no lines that stays open until its sender is dropped.
+    struct Silent(mpsc::Receiver<()>);
+    impl Read for Silent {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            let _ = self.0.recv();
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn pid_reuse_uses_handle_opened_at_connect() {
+        let id = |p: &str| ToolId {
+            image_path: p.into(),
+            image_sha256: "aa".into(),
+        };
+        let table = Arc::new(Table(Mutex::new(HashMap::from([(77, id(r"C:\A.exe"))]))));
+        let h = hub();
+        h.set_peer_lookup(Arc::new(TableLookup(table.clone())));
+        let (keep, rx) = mpsc::channel();
+        let conn = h.attach_in(Origin::Pipe, Some(77), None, Silent(rx), io::sink());
+        // The pid now belongs to another program; the connection keeps what was opened.
+        table.0.lock().unwrap().insert(77, id(r"C:\B.exe"));
+        let mut got = None;
+        for _ in 0..100 {
+            got = h.read(|r| r.peer_identity(conn));
+            if got.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(got, Some(id(r"C:\A.exe")));
+        // A peer with no pid, or no known program, stays unknown.
+        let (keep2, rx2) = mpsc::channel();
+        let none = h.attach_in(Origin::Pipe, None, None, Silent(rx2), io::sink());
+        assert_eq!(h.read(|r| r.peer_identity(none)), None);
+        drop((keep, keep2));
     }
 }

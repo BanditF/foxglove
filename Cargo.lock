@@ -2131,6 +2131,7 @@ dependencies = [
  "hideout-room-map",
  "log",
  "serde_json",
+ "sha2",
  "windows-sys 0.61.2",
 ]
 
