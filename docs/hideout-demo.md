@@ -60,6 +60,11 @@ so the path in the hub's record never changes and the Keep-my-OK switch, once th
 on, stays valid (0 clicks per rebuild). A dry run copies nothing. Rollback still starts the
 `-FoxgloveExe` you pass, as before. Grants and the trust default are unchanged.
 
+**PC sensors.** Add `-SensorsExe <sensors.exe>` to the same command to add the PC sensors app
+too. Its build is copied to `<demo>\apps\sensors\sensors.exe` and adopted from there with the id
+and permissions of `crates/sensors/module.toml`; nothing is granted by the script, so turn it on
+and answer its Allow on the Apps page. Without the switch the script leaves sensors alone.
+
 If a still-running Foxglove holds the fixed exe, the copy fails with a PROBLEM line: stop it, then
 run again.
 

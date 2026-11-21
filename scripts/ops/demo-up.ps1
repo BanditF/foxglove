@@ -11,6 +11,8 @@
 #   path is what gets adopted, so the path stays the same across rebuilds (Hideout's Keep-my-OK switch binds to it).
 #   If the hub already has Foxglove registered at another path, the script reports it and re-adopts (hub not running)
 #   or prints the exact manual step (hub running); it never leaves the hub on an older build quietly.
+#   ... -SensorsExe <sensors.exe>  also adds the PC sensors app (org.foxglove.sensors): the build is copied to
+#       <DemoHome>\apps\sensors\sensors.exe and adopted from there with the permissions of crates/sensors/module.toml.
 #   ... -Down     stops only the demo hub (by its pid file); with -Clean also deletes the demo folder.
 #
 # Isolation: HIDEOUT_CONFIG_DIR (the hub's files) and FOXGLOVE_CONFIG_DIR (Foxglove's data) are set to
@@ -22,6 +24,7 @@ param(
     [string]$HideoutExe,
     [string]$FoxgloveExe,               # a foxglove.exe of THIS build (its version goes into the manifest)
     [string]$FoxgloveVersion,           # default: app/Cargo.toml's version
+    [string]$SensorsExe,                # optional: a sensors.exe of this build; adds the PC sensors app
     [string]$DemoHome,                  # default: %TEMP%\hideout-demo
     [switch]$Adopt,
     [switch]$Launch,
@@ -71,6 +74,23 @@ function Set-AreteRun([string]$Text, [string]$Exe) {
     [regex]::Replace($Text, '(?m)^(\s*run\s*=\s*\[\s*)"[^"]*"', { param($m) $m.Groups[1].Value + '"' + $q + '"' })
 }
 
+# The PC sensors app's manifest as an adopted app: the repo's manifest (same id and permissions) with the kind
+# and run[0] replaced, because the hub adopts only `kind = "adopted"` with an absolute program.
+function New-SensorsManifest([string]$Text, [string]$Exe) {
+    $q = $Exe.Replace('\', '/')
+    $t = [regex]::Replace($Text, '(?m)^(\s*kind\s*=\s*)"[^"]*"', { param($m) $m.Groups[1].Value + '"adopted"' })
+    [regex]::Replace($t, '(?m)^(\s*run\s*=\s*\[\s*)"[^"]*"', { param($m) $m.Groups[1].Value + '"' + $q + '"' })
+}
+
+# Copies a build into its fixed app folder (skipped when it is that file or identical). $false when it could not.
+function Copy-Build([string]$From, [string]$To) {
+    if (Test-SamePath $From $To) { return $true }
+    New-Item -ItemType Directory -Force (Split-Path $To) | Out-Null
+    if ((Test-Path $To) -and ((Get-FileHash $From).Hash -eq (Get-FileHash $To).Hash)) { Write-Host "app folder: $To already holds this build"; return $true }
+    try { Copy-Item -Force $From $To -ErrorAction Stop; Write-Host "app folder: copied this build to $To"; $true }
+    catch { Write-Host "PROBLEM  : could not copy the build to $To (is that app still running? stop it, then run again): $($_.Exception.Message)"; $false }
+}
+
 function Test-Registered([string]$HubHome, [string]$Id) {
     $inv = Join-Path $HubHome 'inventory.json'
     if (-not (Test-Path $inv)) { return $false }
@@ -116,6 +136,9 @@ function Invoke-DemoUp {
     $adoptDir = Join-Path $demo 'adopt'
     $pidFile = Join-Path $demo 'hub.pid'
     $fixedExe = Join-Path $demo 'apps\foxglove\foxglove.exe'   # the one path adopted for Foxglove, whatever the build's own path
+    $sensorsId = 'org.foxglove.sensors'
+    $sensorsFixed = Join-Path $demo 'apps\sensors\sensors.exe'
+    $sensorsTmpl = Join-Path $script:Root 'crates\sensors\module.toml'
     $apply = $Adopt -or $Launch
     $problems = New-Object System.Collections.Generic.List[string]
     $mode = if ($Rollback) { 'ROLLBACK' } elseif ($Down) { 'DOWN' } elseif ($Launch) { 'LAUNCH' } elseif ($Adopt) { 'ADOPT only' } else { 'DRY RUN' }
@@ -164,6 +187,11 @@ function Invoke-DemoUp {
     elseif (-not (Test-Path $FoxgloveExe)) { $problems.Add("-FoxgloveExe not found: $FoxgloveExe") }
     elseif (-not (Test-Path $tmplPath)) { $problems.Add("Foxglove manifest template missing: $tmplPath") }
     else { Write-Host "foxglove : $fgVer  build = $FoxgloveExe  run[0] = $fixedExe  (--module; the build is copied there)" }
+    if ($SensorsExe) {
+        if (-not (Test-Path $SensorsExe)) { $problems.Add("-SensorsExe not found: $SensorsExe") }
+        elseif (-not (Test-Path $sensorsTmpl)) { $problems.Add("PC sensors manifest missing: $sensorsTmpl") }
+        else { Write-Host "sensors  : build = $SensorsExe  run[0] = $sensorsFixed  (the build is copied there)" }
+    }
     if (-not $HideoutExe) { $problems.Add('-HideoutExe is required') }
     elseif (-not (Test-Path $HideoutExe)) { $problems.Add("-HideoutExe not found: $HideoutExe") }
 
@@ -178,6 +206,16 @@ function Invoke-DemoUp {
     foreach ($id in 'vulpes', 'foxglove') {
         $what = if ($already[$id] -and -not ($id -eq 'foxglove' -and $fgMoved)) { 'already registered: skip' } else { 'register with hideout.exe --adopt' }
         Write-Host ('plan     : {0,-9} {1}' -f $id, $what)
+    }
+    $sensorsMoved = $false
+    if ($SensorsExe) {
+        $already[$sensorsId] = Test-Registered $hubHome $sensorsId
+        $sensorsMoved = $already[$sensorsId] -and -not (Test-SamePath (Get-RegisteredExe $hubHome $sensorsId) $sensorsFixed)
+        $what = if ($already[$sensorsId] -and -not $sensorsMoved) { 'already registered: skip' } else { 'register with hideout.exe --adopt' }
+        Write-Host ('plan     : {0,-9} {1}' -f 'sensors', $what)
+        if ($sensorsMoved -and $hubUp) {
+            $problems.Add("PC sensors is registered at another path and the demo hub is running, so it is not re-adopted. Manual step: demo-up.ps1 -DemoHome '$demo' -Down, then run again with -Adopt")
+        }
     }
     if ($fgMoved) {
         $was = if ($fgRegistered) { $fgRegistered } else { '(unreadable)' }
@@ -195,15 +233,8 @@ function Invoke-DemoUp {
     # --- apply ---
     New-Item -ItemType Directory -Force $hubHome, $fgData, $adoptDir | Out-Null
     # One fixed app folder: copy this build there (skipped when identical or already that file).
-    if (-not (Test-SamePath $FoxgloveExe $fixedExe)) {
-        New-Item -ItemType Directory -Force (Split-Path $fixedExe) | Out-Null
-        $same = (Test-Path $fixedExe) -and ((Get-FileHash $FoxgloveExe).Hash -eq (Get-FileHash $fixedExe).Hash)
-        if ($same) { Write-Host "app folder: $fixedExe already holds this build" }
-        else {
-            try { Copy-Item -Force $FoxgloveExe $fixedExe -ErrorAction Stop; Write-Host "app folder: copied this build to $fixedExe" }
-            catch { Write-Host "PROBLEM  : could not copy the build to $fixedExe (is that Foxglove still running? stop it, then run again): $($_.Exception.Message)"; return 1 }
-        }
-    }
+    if (-not (Copy-Build $FoxgloveExe $fixedExe)) { return 1 }
+    if ($SensorsExe -and -not (Copy-Build $SensorsExe $sensorsFixed)) { return 1 }
     $env:HIDEOUT_CONFIG_DIR = $hubHome; $env:FOXGLOVE_CONFIG_DIR = $fgData
     try {
         $utf8 = New-Object Text.UTF8Encoding $false
@@ -218,6 +249,14 @@ function Invoke-DemoUp {
             [IO.File]::WriteAllText((Join-Path $d 'module.toml'), $fgText, $utf8)
             $r = & $HideoutExe --adopt $d 2>&1; Write-Host "adopt foxglove: $r"; if ($LASTEXITCODE) { return 1 }
         }
+        if ($SensorsExe -and (-not $already[$sensorsId] -or $sensorsMoved)) {
+            $d = Join-Path $adoptDir 'sensors'; New-Item -ItemType Directory -Force $d | Out-Null
+            $sText = New-SensorsManifest (Get-Content -Raw -Encoding UTF8 $sensorsTmpl) $sensorsFixed
+            [IO.File]::WriteAllText((Join-Path $d 'module.toml'), $sText, $utf8)
+            $r = & $HideoutExe --adopt $d 2>&1; Write-Host "adopt sensors: $r"; if ($LASTEXITCODE) { return 1 }
+            Write-Host 'next     : in the hub, Apps page: turn PC sensors on and Allow what it asks for'
+        }
+        if ($SensorsExe) { Write-Host ('check    : inventory has {0}: {1}' -f $sensorsId, (Test-Registered $hubHome $sensorsId)) }
         foreach ($id in 'vulpes', 'foxglove') { Write-Host ('check    : inventory has {0}: {1}' -f $id, (Test-Registered $hubHome $id)) }
         if ($Launch) {
             $p = Start-Process -FilePath $HideoutExe -PassThru
