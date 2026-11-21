@@ -184,7 +184,9 @@ pub fn start(
     // build without `lab-switches` never is.
     let tools_ask = lab && std::env::var_os("HIDEOUT_LAB_TOOL_ASK").is_some_and(|v| v == "1");
     if tools_ask {
-        log::warn!("lab: HIDEOUT_LAB_TOOL_ASK=1; outside tools get the free set and ask for the rest");
+        log::warn!(
+            "lab: HIDEOUT_LAB_TOOL_ASK=1; outside tools get the free set and ask for the rest"
+        );
     }
     let mut router = Router::new(Settings::default(), approver(lab && !tools_ask));
     // What the user allowed to programs outside Hideout, kept by program file (S1).
