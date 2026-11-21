@@ -1,6 +1,6 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.22** (v1.21 plus `module.grants`, the hub telling a running module that the user's Allow widened what it holds, so a denied `facts.subscribe` is sent again; v1.21 was v1.20 plus `lease.holders`, a provider naming the callers it holds leases for outside the hub, #1142; v1.20 was v1.19 plus `facts.demand`, the hub telling the module that owns a fact pattern when the first subscriber arrives and the last leaves, #1328 follow-up; v1.19 was v1.18 plus `hub.show` and the app's read of `module.foxglove.state` over the verified hub pipe, H5.5; v1.18 was v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
+Status: spec, contract version **1.23** (v1.22 plus `owed` on `lease.holders`, a provider telling the hub it still owes a family a resume, so the tray keeps offering Resume after a failed one, #1420; v1.22 was v1.21 plus `module.grants`, the hub telling a running module that the user's Allow widened what it holds, so a denied `facts.subscribe` is sent again; v1.21 was v1.20 plus `lease.holders`, a provider naming the callers it holds leases for outside the hub, #1142; v1.20 was v1.19 plus `facts.demand`, the hub telling the module that owns a fact pattern when the first subscriber arrives and the last leaves, #1328 follow-up; v1.19 was v1.18 plus `hub.show` and the app's read of `module.foxglove.state` over the verified hub pipe, H5.5; v1.18 was v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
 and the user's Resume that ends them, #1142; v1.16 was v1.15 plus the tray menu's quick actions: an `action`
 panel is a tray menu item, a press on a cold module starts it and is delivered, and `tray` is a
 user source, #1234; v1.15 was v1.14 plus a cap on the leases one caller holds at one
@@ -18,12 +18,26 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)", every v1.19 one "(v1.19)", every v1.20 one "(v1.20)", every v1.21 one "(v1.21)", every v1.22 one "(v1.22)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)", every v1.19 one "(v1.19)", every v1.20 one "(v1.20)", every v1.21 one "(v1.21)", every v1.22 one "(v1.22)", every v1.23 one "(v1.23)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.23** (#1420, Resume after a failed resume): `lease.holders {family, names, owed?}` takes
+  an optional `owed`, a JSON bool, false when absent. With `owed: true` and no names the
+  family stays in the fact `module.<provider>.lease_holders` as `[]` ("nobody holds it, but
+  the provider still owes a resume"), so the tray's Resume item stays for a retry; with
+  `owed: false` and no names the family is removed as before. Within a provider's
+  fact, names (its own or the hub's callers') replace the `[]`; a reader that combines
+  providers, like the tray, shows names when any provider lists one. A
+  reader MUST NOT read `[]` as "held by someone". `owed` is not a lease and not a holder: it
+  ends with the module's connection, shares the 8-family cap, the 100 ms rate limit and the
+  route check of v1.21, and the hub never clears it by itself (the provider resends once the
+  retry settles). Anything but a JSON bool is −32602 ("owed is true or false"). Additive: a
+  hub older than v1.23 reads `lease.holders` by field and ignores `owed`, so the family
+  vanishes from the fact when the names do, as before. Contract crate: `LeaseHolders.owed`.
+  `hub` stays 1.5 (§8.7).
 - **1.22** (an Allow reaches a running module): a module connection's capabilities are read
   from the module's grants at `initialize` and now follow the grants the hub holds in memory
   while the module runs. Wider: after the user's Allow the calls the module makes next are
@@ -60,7 +74,7 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   No new permission: it only names holds of the module's own. Contract crate:
   `lease::LEASE_HOLDERS`, `LeaseHolders`; schema type `lease.LeaseHolders`. `hub` stays 1.5
   (§8.7): an older hub answers `lease.holders` −32601, which a provider takes as "the hub lists
-  hub callers only".
+  hub callers only". (v1.23) `owed` is described under 1.23 above.
 - **1.20** (OMEN sensors, the subscriber-demand signal): a module that owns a fact pattern
   learns whether anyone listens to it, so it can sample only then. `facts.demand {pattern,
   subscribers}` (H → M, §8.8) is a notification the hub sends to the module that registered
@@ -2226,7 +2240,11 @@ Rules:
   `lease.holders {family, names}` (M → H) for callers that reach it outside the hub; they are
   cleaned the same way, merged with the hub's own (each name once, sorted), and dropped with
   the provider's connection. They are the callers' own words, so a reader shows them as
-  names only.
+  names only. (v1.23) `lease.holders` may also say `owed: true`: the provider still owes the
+  family a resume (the last one failed). With no names anywhere the family is then kept as
+  `[]` instead of removed, which the tray reads as "Resume is still worth offering"; it is
+  never "held by someone", and names from any provider replace the `[]` as usual. It ends
+  with the provider's connection.
 - **Resume (v1.17, #1142).** The user can end every live lease of one family at a provider at
   once: from the hub's tray (for a family the hub has words for, `wallpaper-engine`: *Resume
   wallpapers*), or in the provider's own page, which calls `lease.end {family}` (M → H); the
@@ -2369,7 +2387,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `state.import` | H → M | call | `{blob, from_version}` | `{}` | — |
 | `module.exit` | H → M | notification | `{reason}` | — (exit 0 within 5 s, or the Job ends it) | — |
 | `lease.end` (v1.17) | M → H | request | `{family}` | `{ended}` | −32602 without a family; denied for a tool |
-| `lease.holders` (v1.21) | M → H | request | `{family, names}` (the provider's own callers' names; latest replaces, empty removes) | `{}` | −32602 for a bad family or names; denied for a tool |
+| `lease.holders` (v1.21) | M → H | request | `{family, names, owed?}` (the provider's own callers' names; latest replaces, empty removes unless `owed: true` (v1.23) keeps the family as `[]`) | `{}` | −32602 for a bad family, names or `owed`; denied for a tool |
 | `lease.end` (v1.18) | H → M | notification | `{family}` (after the user's Resume at the hub's tray: end the holds you keep outside the hub too) | — | — |
 | `lease.closed` (v1.3) | H → M | notification | `{lease, reason: "disconnect" \| "released" \| "revoked" \| "restart"}` ((v1.14) `restart`; an unknown reason means ended) | — | — |
 

@@ -43,9 +43,16 @@ const NOTES: &[&str] = &[
 ];
 
 /// Lease families the tray menu offers Resume for (#1142, contract §8.5 v1.17): the family, the
-/// item's words and how the holders are introduced. One item, only while a lease of it is held;
-/// the status line and the icon stay quiet (a pause somebody asked for doesn't need the user).
-const RESUMES: &[(&str, &str, &str)] = &[("wallpaper-engine", "Resume wallpapers", "paused by")];
+/// item's words, how the holders are introduced, and the words when nobody holds it but the
+/// provider still owes a resume (`owed`, v1.23, #1420: the family is in the fact as `[]`). One
+/// item, only while a lease of it is held or owed; the status line and the icon stay quiet (a
+/// pause somebody asked for doesn't need the user).
+const RESUMES: &[(&str, &str, &str, &str)] = &[(
+    "wallpaper-engine",
+    "Resume wallpapers",
+    "paused by",
+    "didn't resume last time",
+)];
 
 /// "Arete", "Arete and Render queue", "Arete and 2 more".
 fn holder_words(names: &[String]) -> String {
@@ -248,7 +255,7 @@ impl Marks {
 
     /// The menu's Resume item (#1142): its words while a family it has words for is held.
     pub fn resume_item(&self) -> Option<String> {
-        RESUMES.iter().find_map(|(family, words, by)| {
+        RESUMES.iter().find_map(|(family, words, by, owed)| {
             let mut names: Vec<String> = self
                 .holders
                 .values()
@@ -258,7 +265,12 @@ impl Marks {
                 .collect();
             names.sort();
             names.dedup();
-            (!names.is_empty()).then(|| format!("{words} ({by} {})", holder_words(&names)))
+            if !names.is_empty() {
+                return Some(format!("{words} ({by} {})", holder_words(&names)));
+            }
+            // Nobody holds it, but a provider still owes the resume: the family is there, empty.
+            let owed_here = self.holders.values().any(|f| f.contains_key(*family));
+            owed_here.then(|| format!("{words} ({owed})"))
         })
     }
 
@@ -659,6 +671,55 @@ mod tests {
         m.fact("module.other.lease_holders", &serde_json::Value::Null);
         assert_eq!(m.take_resume_change(), Some(None));
         assert!(!m.changed());
+    }
+
+    /// Owed (#1420): the provider still owes a resume, so its family is in the fact with no
+    /// names. The item stays with the owed words; names from any provider win; Resume still
+    /// reaches the provider; the status line and the dot stay quiet.
+    #[test]
+    fn an_owed_resume_keeps_the_item_with_its_own_words() {
+        let mut m = Marks::default();
+        let quiet = m.take_change().unwrap();
+        let _ = (m.take_safe_change(), m.take_search_change());
+        let key = "module.foxglove.lease_holders";
+        m.fact(key, &json!({"wallpaper-engine": []}));
+        assert_eq!(
+            m.take_resume_change(),
+            Some(Some("Resume wallpapers (didn't resume last time)".into()))
+        );
+        assert_eq!(
+            m.resume_targets(),
+            [("foxglove".to_string(), "wallpaper-engine".to_string())]
+        );
+        assert_eq!(m.take_change(), None, "status line and dot stay quiet");
+        assert_eq!(m.look(), quiet);
+        // The same words again are no change.
+        m.fact(key, &json!({"wallpaper-engine": []}));
+        assert_eq!(m.take_resume_change(), None);
+        // Names, from the same provider or another, win over the owed words.
+        m.fact(key, &json!({"wallpaper-engine": ["Arete"]}));
+        assert_eq!(
+            m.resume_item().unwrap(),
+            "Resume wallpapers (paused by Arete)"
+        );
+        m.fact(key, &json!({"wallpaper-engine": []}));
+        m.fact(
+            "module.other.lease_holders",
+            &json!({"wallpaper-engine": ["Zed"]}),
+        );
+        assert_eq!(
+            m.resume_item().unwrap(),
+            "Resume wallpapers (paused by Zed)"
+        );
+        assert_eq!(m.resume_targets().len(), 2, "both providers get Resume");
+        // Another family empty is not offered; the owed item goes with the fact.
+        m.fact("module.other.lease_holders", &serde_json::Value::Null);
+        m.fact(key, &json!({"lighting": []}));
+        assert_eq!(m.resume_item(), None);
+        assert!(m.resume_targets().is_empty());
+        m.fact(key, &json!({"wallpaper-engine": []}));
+        m.fact(key, &serde_json::Value::Null);
+        assert_eq!(m.take_resume_change(), Some(None));
     }
 
     /// Every state has a plain line; "No apps yet" is only for no modules at all (#8).

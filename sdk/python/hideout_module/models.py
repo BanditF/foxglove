@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal, Optional, Union
 from ._model import Model
 
 HUB = '1.5'
-SPEC = '1.22'
+SPEC = '1.23'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -172,14 +172,22 @@ class LeaseHolders(Model):
     """`lease.holders` (§8.8, v1.21): the family and the names of the provider's own callers (the
 ones that don't come through the hub). The hub cleans every name like a holder name (hidden
 characters dropped, at most [`HOLDER_NAME_MAX`] characters), keeps at most
-[`HOLDERS_MAX_NAMES`] and lists each once. A name is the caller's own word, never checked."""
+[`HOLDERS_MAX_NAMES`] and lists each once. A name is the caller's own word, never checked.
+
+`owed` (v1.23, optional, false when absent): the provider still owes the family a resume,
+as when a resume failed and the paused things stay paused. With `owed: true` and no names
+the family stays in the fact as `[]`, so the hub's tray can still offer Resume; with
+`owed: false` and no names the family is removed as before. It ends with the module's
+connection, and names from any provider win over it. A hub older than v1.23 ignores it."""
 
     family: str
     names: list[str]
+    owed: Optional[bool] = None
 
     FIELDS: ClassVar[dict] = {
         'family': ('family', 'str'),
         'names': ('names', ('list', 'str')),
+        'owed': ('owed', 'bool'),
     }
     CLOSED: ClassVar[bool] = True
 

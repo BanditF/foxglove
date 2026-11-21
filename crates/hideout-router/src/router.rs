@@ -417,7 +417,8 @@ pub struct Router {
     holders_shown: std::collections::BTreeSet<String>,
     /// The caller names each provider reported for holds it keeps outside the hub
     /// (`lease.holders`, v1.21): module -> family -> cleaned names. Merged into the
-    /// `lease_holders` fact; dropped with the module's connection.
+    /// `lease_holders` fact; dropped with the module's connection. An empty list is a family
+    /// the provider still owes a resume (`owed: true`, v1.23); it is kept as `[]`.
     local_holders: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     /// The connection that set each module's `local_holders` and when it last changed them: a
     /// closing connection takes its lists with it, and changes come at most one per
@@ -2086,13 +2087,15 @@ impl Router {
 
     /// `lease.holders` (v1.21): keeps `names` as the callers `module` holds `family` for outside
     /// the hub. Cleaned, each once, at most [`hideout_contract::lease::HOLDERS_MAX_NAMES`];
-    /// empty removes the list. `false` when the family is not one this module may list.
+    /// empty removes the list, unless `owed` (v1.23) keeps the family as `[]`. `Err` when the
+    /// family is not one this module may list.
     fn set_local_holders(
         &mut self,
         conn: ConnId,
         module: &str,
         family: &str,
         names: &[String],
+        owed: bool,
         now: Instant,
     ) -> Result<(), i64> {
         use hideout_contract::lease::{
@@ -2123,8 +2126,9 @@ impl Router {
         // The same list again changes nothing and costs nothing.
         let same = by.is_some_and(|b| b.0 == conn)
             && match self.local_holders.get(module).and_then(|f| f.get(family)) {
-                Some(old) => *old == clean,
-                None => clean.is_empty(),
+                // A kept `[]` (owed) is not the same as removing it.
+                Some(old) => *old == clean && (!clean.is_empty() || owed),
+                None => clean.is_empty() && !owed,
             };
         if same {
             return Ok(());
@@ -2137,7 +2141,7 @@ impl Router {
             self.local_holders.remove(module);
         }
         let fams = self.local_holders.entry(module.to_string()).or_default();
-        if clean.is_empty() {
+        if clean.is_empty() && !owed {
             fams.remove(family);
         } else if fams.contains_key(family) || fams.len() < HOLDERS_MAX_FAMILIES {
             fams.insert(family.to_string(), clean);
@@ -2381,18 +2385,23 @@ impl Router {
                     .get("names")
                     .and_then(Value::as_array)
                     .and_then(|a| a.iter().map(|n| n.as_str().map(String::from)).collect());
+                // (v1.23) Optional; a JSON bool or nothing.
+                let owed: Option<bool> = match params.get("owed") {
+                    None => Some(false),
+                    Some(v) => v.as_bool(),
+                };
                 let bad = |id: &Value| {
                     error(
                         id,
                         code::INVALID_PARAMS,
                         "invalid params",
-                        Some("family is a method family the module has a route in; names are strings"),
+                        Some("family is a method family the module has a route in; names are strings; owed is true or false"),
                     )
                 };
-                match (&module, family, names) {
-                    (Some(m), Some(f), Some(n)) if self.ready_conn(m).is_some() => {
+                match (&module, family, names, owed) {
+                    (Some(m), Some(f), Some(n), Some(o)) if self.ready_conn(m).is_some() => {
                         let m = m.clone();
-                        let reply = match self.set_local_holders(conn, &m, f, &n, now) {
+                        let reply = match self.set_local_holders(conn, &m, f, &n, o, now) {
                             Ok(()) => ok(&id, json!({})),
                             Err(code::RATE_LIMITED) => error(
                                 &id,
@@ -2404,11 +2413,11 @@ impl Router {
                         };
                         out.push(answer(reply));
                     }
-                    (Some(_), Some(_), Some(_)) => {
+                    (Some(_), Some(_), Some(_), Some(_)) => {
                         out.push(answer(denied(&id, Some("the module isn't ready"))))
                     }
-                    (Some(_), _, _) => out.push(answer(bad(&id))),
-                    (None, _, _) => {
+                    (Some(_), _, _, _) => out.push(answer(bad(&id))),
+                    (None, _, _, _) => {
                         out.push(answer(denied(&id, Some("only providers name holders"))))
                     }
                 }

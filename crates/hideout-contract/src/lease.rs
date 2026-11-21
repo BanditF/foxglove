@@ -17,8 +17,9 @@ pub const LEASE_END: &str = "lease.end";
 
 /// (v1.21) A provider tells the hub the names of the callers it holds leases for outside the
 /// hub, so the hub's `lease_holders` fact lists them with the hub's own (M -> H, §8.8):
-/// `{family, names}` -> `{}`. The latest call replaces the module's earlier list for that
-/// family; an empty list removes it; it ends with the module's connection.
+/// `{family, names, owed?}` -> `{}`. The latest call replaces the module's earlier list for that
+/// family; an empty list removes it unless `owed` is true (v1.23, see [`LeaseHolders`]); it
+/// ends with the module's connection.
 pub const LEASE_HOLDERS: &str = "lease.holders";
 
 /// The longest lease id, in bytes (v1.14).
@@ -49,11 +50,19 @@ pub struct LeaseEnd {
 /// ones that don't come through the hub). The hub cleans every name like a holder name (hidden
 /// characters dropped, at most [`HOLDER_NAME_MAX`] characters), keeps at most
 /// [`HOLDERS_MAX_NAMES`] and lists each once. A name is the caller's own word, never checked.
+///
+/// `owed` (v1.23, optional, false when absent): the provider still owes the family a resume,
+/// as when a resume failed and the paused things stay paused. With `owed: true` and no names
+/// the family stays in the fact as `[]`, so the hub's tray can still offer Resume; with
+/// `owed: false` and no names the family is removed as before. It ends with the module's
+/// connection, and names from any provider win over it. A hub older than v1.23 ignores it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LeaseHolders {
     pub family: String,
     pub names: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owed: bool,
 }
 
 /// Why a lease ended (§8.5).
@@ -150,6 +159,25 @@ mod tests {
         let c: LeaseClosed = serde_json::from_value(v).unwrap();
         assert_eq!(c.reason, "later");
         assert!(reason::ALL.contains(&reason::RESTART));
+    }
+
+    #[test]
+    fn holders_owed_is_optional_and_quiet_when_false() {
+        let v = serde_json::json!({"family": "wallpaper-engine", "names": []});
+        let h: LeaseHolders = serde_json::from_value(v).unwrap();
+        assert!(!h.owed);
+        assert_eq!(
+            serde_json::to_value(&h).unwrap(),
+            serde_json::json!({"family": "wallpaper-engine", "names": []})
+        );
+
+        let v = serde_json::json!({"family": "wallpaper-engine", "names": [], "owed": true});
+        let h: LeaseHolders = serde_json::from_value(v.clone()).unwrap();
+        assert!(h.owed);
+        assert_eq!(serde_json::to_value(&h).unwrap(), v);
+
+        let other = serde_json::json!({"family": "f", "names": [], "owed": false, "extra": 1});
+        assert!(serde_json::from_value::<LeaseHolders>(other).is_err());
     }
 
     #[test]
