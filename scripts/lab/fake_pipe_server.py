@@ -14,7 +14,7 @@ import sys
 import time
 from ctypes import wintypes
 
-NAME = re.compile(r'^\\\\\.\\pipe\\foxglove-[A-Za-z0-9_-]*\.[0-9a-z]+$')
+NAME = re.compile(r'^\\\\\.\\pipe\\foxglove-[A-Za-z0-9_-]*\.[0-9A-Za-z]+$')
 INVALID = wintypes.HANDLE(-1).value
 ERROR_PIPE_CONNECTED = 535
 PIPE_ACCESS_DUPLEX = 0x3
@@ -35,7 +35,7 @@ def _k32():
 
 
 def serve(name, seconds, connections):
-    if not NAME.match(name):
+    if not NAME.fullmatch(name):
         raise SystemExit('refusing: the name must be the lab pipe foxglove-<user>.<suffix>')
     k = _k32()
     h = k.CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FIRST_PIPE_INSTANCE, PIPE_REJECT_REMOTE_CLIENTS,
