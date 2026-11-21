@@ -338,6 +338,34 @@ def s1_checks(hub, check, exe, manifest):
     ok, s = hub.wait(lambda s: has(s, 'Update in Hideout'), 30)
     check('S1 a changed file is offered as "Update in Hideout"', ok, f'{texts(s)[14:60]}')
     hub.capture('S1-update')
+    if not ok:
+        return
+    # #1455: the row says "changed since you added it", and Update in Hideout stops the running app,
+    # registers the new file, asks again, and starts it again as the new version
+    row = [t for t in texts(s) if SENSORS_NAME in t and 'changed since you added it' in t]
+    check('S1 the row says changed since you added it', bool(row), f'{row[:2]}')
+    old = hub.pids(exe)
+    hub.do('click', 'Update in Hideout')
+    ok, s = hub.wait(dialog_open, 15)
+    check('S1 Update in Hideout opens the Allow dialog', ok, f'{texts(s)[:30]}')
+    stopped = not set(old) & set(hub.pids(exe))
+    check('S1 the old process was stopped by the update', stopped, f'old {old}; now {hub.pids(exe)}')
+    if not ok:
+        return
+    if has(s, 'I understand'):
+        hub.do('click', 'I understand')
+    hub.do('click', allow_label(hub.state()) or 'Allow')
+    ok, s = hub.wait(lambda s: (tray_status(s) or '') == '1 app is running' and not has(s, 'Update in Hideout'), 30)
+    check('S1 the app runs again after Allow, no Update left (tray: 1 app is running)', ok, repr(tray_status(s)))
+    new = hub.pids(exe)
+    check('S1 it is a new process, not the old one', bool(new) and not set(old) & set(new), f'old {old}; new {new}')
+    hub.capture('S1-updated')
+    # #1443: Add an app... looks at the folders again; the updated app must not be offered an Update again
+    hub.do('click', 'Add an app…')
+    time.sleep(2)
+    s = hub.state()
+    check('S1 reopening Add an app… offers no second Update', not has(s, 'Update in Hideout'),
+          f'{[t for t in texts(s) if "pdate" in t][:3]}')
 
 
 def main():
