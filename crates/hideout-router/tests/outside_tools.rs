@@ -1143,6 +1143,47 @@ fn forget_ends_the_channels_the_program_was_handed() {
     }
 }
 
+/// A program that opens very many channels only pushes out its own: another program's channel
+/// is still there for its Forget. And a provider that went takes its entries with it: a later
+/// Forget names no process of a pipe that no longer exists.
+#[test]
+fn many_channels_of_one_program_end_only_its_own_and_a_gone_provider_ends_none() {
+    let mut r = free_only();
+    let p = provider(&mut r, FEED, &[], &["status"]);
+    let perm = format!("channel.open:{FEED}/status");
+    let quiet = tool(r"C:\Tools\quiet.exe", "aa");
+    let (cq, _, _) = connect_asking(&mut r, "Quiet", Some(quiet.clone()), &[&perm]);
+    r.set_tool_grants(&quiet, &[cap(&perm)]);
+    let (_, create) = open_status(&mut r, cq, p);
+    let quiet_pid = create["params"]["consumer_pid"].clone();
+    r.receive(p, &pipe_answer(&create), Instant::now());
+
+    let busy = tool(r"C:\Tools\busy.exe", "bb");
+    let (c, _, _) = connect_asking(&mut r, "Busy", Some(busy.clone()), &[&perm]);
+    r.set_tool_grants(&busy, &[cap(&perm)]);
+    let mut ended = Vec::new();
+    for n in 0..40 {
+        // Each one from another process of the same program file.
+        r.set_peer_pid(c, 5000 + n);
+        let (_, create) = open_status(&mut r, c, p);
+        let out = r.receive(p, &pipe_answer(&create), Instant::now());
+        ended.extend(closed(&out, p, "channel.closed"));
+    }
+    assert!(!ended.is_empty(), "the program's own oldest are ended");
+    assert!(
+        ended.iter().all(|e| e["consumer_pid"] != quiet_pid),
+        "{ended:?}"
+    );
+    let out = r.forget_tool(&quiet.image_path);
+    assert_eq!(closed(&out, p, "channel.closed").len(), 1, "{out:?}");
+
+    // The provider goes and comes back: what it made before is gone with it.
+    r.disconnect(p);
+    let p = provider(&mut r, FEED, &[], &["status"]);
+    let out = r.forget_tool(&busy.image_path);
+    assert!(closed(&out, p, "channel.closed").is_empty(), "{out:?}");
+}
+
 /// A channel being made when the user presses Forget does not reach the program: the grant is
 /// not handed out, and the provider is told to drop the pipe it made.
 #[test]

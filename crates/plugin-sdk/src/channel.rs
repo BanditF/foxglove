@@ -219,6 +219,10 @@ impl ChannelPipe {
 /// `module`'s `channel`, and on a thread of its own waits up to [`ACCEPT_TIMEOUT`] for the
 /// consumer with `nonce`, then hands the connection to `stream`. Returns the pipe name to answer
 /// with (`{"pipe": name}`). A late or wrong consumer only closes the pipe (logged).
+///
+/// A pipe made here names no consumer process, so any `channel.closed` (v1.24) for `channel`
+/// closes it, whichever consumer the hub meant: every consumer of the channel is dropped and
+/// opens it again. [`serve_create`] names the consumer and closes only that one's pipe.
 pub fn serve(
     module: &str,
     channel: &str,

@@ -1661,8 +1661,13 @@ impl PermUi {
     pub(crate) fn forget_tool(&mut self, path: &str) {
         self.hub.act(|r| r.forget_tool(path));
         let hub = self.hub.clone();
-        let saved = hideout_registry::tools::ToolStore::at(&self.home)
-            .sync(|| hub.read(crate::router_start::kept_tools), None);
+        let store = hideout_registry::tools::ToolStore::at(&self.home);
+        let saved = if store.unread() {
+            // The start could not read the record: only this program's entry is taken out.
+            store.forget(path)
+        } else {
+            store.sync(|| hub.read(crate::router_start::kept_tools), None)
+        };
         let name = hideout_shell::tool_list::file_name(path);
         match &saved {
             Ok(()) => log::info!("permissions: the user forgot the outside program {name}"),
@@ -3629,6 +3634,46 @@ on = [\"open\", \"call\"]
         assert!(lighting_refused(&ui, open).is_some());
         let (_, granted) = tool_connects(&ui, &id);
         assert_eq!(granted, serde_json::json!(["devices.read"]));
+        let _ = std::fs::remove_dir_all(&ui.home);
+    }
+
+    /// A start that could not read the record never costs the other programs theirs: an
+    /// Allow and a Forget in that run change one record each.
+    #[cfg(windows)]
+    #[test]
+    fn a_start_that_could_not_read_the_record_keeps_the_other_programs() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (mut ui, rx, id) = tool_fx("forget-unread-start");
+        let store = hideout_registry::tools::ToolStore::at(&ui.home);
+        for (path, hash) in [(r"C:\Tools\one.exe", "11"), (r"C:\Tools\two.exe", "22")] {
+            store
+                .remember(path, hash, &["lighting.write".into()], None)
+                .unwrap();
+        }
+        {
+            // Another program has the file open while the hub starts.
+            let _held = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(ui.home.join("tools.json"))
+                .unwrap();
+            assert!(store.load_at_start().is_err());
+        }
+        // The router was loaded with none of them. One Allow:
+        allow_and_keep(&mut ui, &rx, &id, "2026-11-17T09:00:00Z");
+        let paths = |s: &hideout_registry::tools::ToolStore| -> Vec<String> {
+            s.load().into_iter().map(|t| t.image_path).collect()
+        };
+        assert_eq!(
+            paths(&store),
+            [r"C:\Tools\one.exe", r"C:\Tools\two.exe", T_EXE],
+            "both old records are still in the file"
+        );
+        // A Forget takes out only its own program.
+        ui.forget_tool(T_EXE);
+        assert_eq!(paths(&store), [r"C:\Tools\one.exe", r"C:\Tools\two.exe"]);
+        ui.forget_tool(r"C:\Tools\one.exe");
+        assert_eq!(paths(&store), [r"C:\Tools\two.exe"]);
         let _ = std::fs::remove_dir_all(&ui.home);
     }
 

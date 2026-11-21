@@ -58,6 +58,59 @@ impl ToolStore {
         read(&self.path).map(|f| f.tools).unwrap_or_default()
     }
 
+    /// The records on disk, or why they could not be read. Only a missing file is no records.
+    pub fn try_load(&self) -> io::Result<Vec<ToolRecord>> {
+        match read(&self.path) {
+            Ok(f) => Ok(f.tools),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The hub's one read at its start. A read that fails for a moment (another program has
+    /// the file open) is tried again for about a second. If the file still can't be read, the
+    /// error is returned and this store is marked [`Self::unread`] for the rest of the run:
+    /// the router then holds none of the records, so nothing may be written from what it
+    /// holds. A file that is not valid, or of an unknown format, is not waited for: it reads
+    /// as no records, as before.
+    pub fn load_at_start(&self) -> io::Result<Vec<ToolRecord>> {
+        let mut tries = 0;
+        loop {
+            match self.try_load() {
+                Ok(tools) => return Ok(tools),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::InvalidData | io::ErrorKind::Unsupported
+                    ) =>
+                {
+                    return Ok(Vec::new())
+                }
+                Err(e) if tries >= 20 => {
+                    let mut unread = UNREAD.lock().unwrap_or_else(|e| e.into_inner());
+                    if !unread.contains(&self.path) {
+                        unread.push(self.path.clone());
+                    }
+                    return Err(e);
+                }
+                Err(_) => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+    }
+
+    /// The hub could not read this file at its start ([`Self::load_at_start`]): for this run
+    /// the router does not hold what the file says, so the hub changes one record at a time
+    /// ([`Self::remember`], [`Self::forget`]) and never calls [`Self::sync`].
+    pub fn unread(&self) -> bool {
+        UNREAD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&self.path)
+    }
+
     /// Keeps `granted` for this program file. A record for the same path with another hash is
     /// replaced (the old file's answer is void), and the list is capped at [`MAX_TOOLS`].
     /// `allowed_at` is when the user answered.
@@ -97,7 +150,9 @@ impl ToolStore {
     /// Makes the file say what the router holds: one record per answer `memory` returns, in
     /// its order (oldest first), capped at [`MAX_TOOLS`]. Every write of the hub goes through
     /// here, so the file never holds an answer the router dropped: an Allow that is written
-    /// late cannot bring back a program the user forgot in between. `memory` is called while
+    /// late cannot bring back a program the user forgot in between. The one exception is a run
+    /// whose start could not read the file ([`Self::unread`]): the router then does not hold
+    /// the records, and the caller changes one record instead. `memory` is called while
     /// the store's lock is held and must only read. A record keeps the time it had; `stamp`
     /// (path, hash, time) sets the time of the answer the user just gave; any other new record
     /// has none. Nothing is written when the file already says the same.
@@ -179,6 +234,9 @@ impl ToolStore {
     }
 }
 
+/// The files the hub could not read at its start, for this run ([`ToolStore::unread`]).
+static UNREAD: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 /// What a record says for exactly this file: its granted strings, or `None` when no record
 /// has this path and this hash (a changed file is a different program).
 pub fn granted_for<'a>(
@@ -234,6 +292,8 @@ fn take_lock(path: &Path) -> io::Result<Guard> {
     use std::os::windows::fs::OpenOptionsExt;
     /// `ERROR_SHARING_VIOLATION`: another handle holds the file.
     const HELD: i32 = 32;
+    /// `ERROR_ACCESS_DENIED`: what a lock file answers while its removal is under way.
+    const GOING: i32 = 5;
     for _ in 0..50 {
         match std::fs::OpenOptions::new()
             .write(true)
@@ -243,7 +303,7 @@ fn take_lock(path: &Path) -> io::Result<Guard> {
             .open(path)
         {
             Ok(f) => return Ok(Guard(Some(f), path.to_path_buf())),
-            Err(e) if e.raw_os_error() == Some(HELD) => {
+            Err(e) if matches!(e.raw_os_error(), Some(HELD | GOING)) => {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             Err(e) => return Err(e),
@@ -450,6 +510,32 @@ mod tests {
         s.sync(|| vec![kept(r"C:\Tools\a.exe", "aa")], None)
             .unwrap();
         assert_eq!(s.load().len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A file the hub's start could not read is waited for, then marked for the run; one that
+    /// is only missing or not valid is not.
+    #[cfg(windows)]
+    #[test]
+    fn a_start_that_cannot_read_the_file_is_marked() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = home("start");
+        let s = ToolStore::at(&d);
+        assert!(s.load_at_start().unwrap().is_empty());
+        s.remember(r"C:\Tools\a.exe", "aa", &[], None).unwrap();
+        assert_eq!(s.load_at_start().unwrap().len(), 1);
+        assert!(!s.unread());
+        {
+            // Another program has the file open and shares it with nobody.
+            let _held = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(d.join("tools.json"))
+                .unwrap();
+            assert!(s.load_at_start().is_err());
+        }
+        assert!(s.unread());
+        assert!(!ToolStore::at(&home("start-other")).unread());
         let _ = std::fs::remove_dir_all(&d);
     }
 

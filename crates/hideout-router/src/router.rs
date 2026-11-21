@@ -393,6 +393,9 @@ struct ToolChannel {
 
 /// The most handed-out channels the hub keeps track of for Forget. One more ends the oldest.
 const TOOL_CHANNELS_MAX: usize = 256;
+/// The most of them for one program file. One more ends that file's oldest, so a program that
+/// opens many only ever pushes out its own.
+const TOOL_CHANNELS_PER_FILE: usize = 16;
 
 /// A lease a provider handed out (§8.5): who holds it.
 struct Lease {
@@ -2115,6 +2118,11 @@ impl Router {
             }
         }
         if let Who::Module { id, .. } = c.who {
+            // The pipes it made are gone with it: nothing is left to end, and a later Forget
+            // must not name a process id Windows may have given to another program.
+            if self.ready_conn(&id).is_none() {
+                self.tool_channels.retain(|k| k.module != id);
+            }
             // The lists this connection reported go with it, even when a swap's new instance
             // already holds the module (it names its own).
             if self.local_holders_by.get(&id).map(|b| b.0) == Some(conn) {
@@ -4635,10 +4643,23 @@ impl Router {
             pid,
         };
         self.tool_channels.retain(|k| k != &t);
+        let file = t.image_path.clone();
         self.tool_channels.push(t);
-        // Over the limit the oldest one ends, so none is ever left that Forget can't reach.
-        while self.tool_channels.len() > TOOL_CHANNELS_MAX {
-            let old = self.tool_channels.remove(0);
+        // Over a limit the oldest one ends, so none is ever left that Forget can't reach:
+        // first this program file's own oldest, and only then the oldest of all.
+        loop {
+            let of_file = |k: &ToolChannel| k.image_path.eq_ignore_ascii_case(&file);
+            let at = if self.tool_channels.iter().filter(|k| of_file(k)).count()
+                > TOOL_CHANNELS_PER_FILE
+            {
+                self.tool_channels.iter().position(of_file)
+            } else if self.tool_channels.len() > TOOL_CHANNELS_MAX {
+                Some(0)
+            } else {
+                None
+            };
+            let Some(at) = at else { break };
+            let old = self.tool_channels.remove(at);
             if let Some(p) = self.ready_conn(&old.module) {
                 channel_closed_to(p, &old.channel, old.pid, out);
             }

@@ -32,7 +32,7 @@ pub const NO_ITEMS: &str =
     "Hideout can't show what this program was allowed. Press Forget to remove it.";
 /// The note when Forget could not be saved a second time for the same row.
 pub const STILL_NOT_SAVED: &str =
-    "Hideout still couldn't save that. Close Hideout and open it again, then press Forget.";
+    "Hideout still couldn't save that. Quit Hideout and open it again, then press Forget.";
 /// The name of a file whose path leaves nothing to show.
 pub const NO_NAME: &str = "A program";
 
@@ -830,7 +830,7 @@ mod tests {
         l.after_forget(r"C:\b.exe", false, vec![]);
         assert_eq!(
             l.notes(),
-            ["Hideout still couldn't save that. Close Hideout and open it again, then press Forget."]
+            ["Hideout still couldn't save that. Quit Hideout and open it again, then press Forget."]
         );
         assert!(l.note.as_ref().is_some_and(|(_, act)| *act));
         assert_eq!(l.rows().len(), 2);

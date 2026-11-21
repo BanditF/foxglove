@@ -729,7 +729,9 @@ if os.name == "nt":
     def serve(module, channel, nonce, stream, timeout=ACCEPT_TIMEOUT_S, consumer=Consumer()):
         """A provider's `channel.create`: makes the pipe for `consumer`, waits on a thread for
         it with `nonce`, then calls `stream(conn)` there. Returns the pipe name to answer with.
-        Prefer `serve_create`, which passes the consumer the hub named."""
+        Prefer `serve_create`, which passes the consumer the hub named. A pipe made with no
+        consumer pid is closed by any `channel.closed` (v1.24) for `channel`, whichever
+        consumer the hub meant; `serve_create` closes only that consumer's pipe."""
         pipe = ChannelPipe.create(unique_pipe_name(module, channel), consumer)
         served = {"channel": channel, "pid": consumer.pid, "revoked": False, "conn": None}
         with _served_lock:

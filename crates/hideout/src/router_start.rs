@@ -183,7 +183,12 @@ pub fn start(
     // What the user allowed to programs outside Hideout, kept by program file (S1).
     router.load_tools(
         hideout_registry::tools::ToolStore::at(home)
-            .load()
+            .load_at_start()
+            .unwrap_or_else(|e| {
+                // The programs ask again in this run; the file keeps what it says.
+                log::warn!("router: tools.json could not be read at start: {e}");
+                Vec::new()
+            })
             .into_iter()
             .map(|t| (t.image_path, t.image_sha256, t.granted))
             .collect(),
@@ -353,6 +358,10 @@ pub(crate) fn kept_tools(r: &Router) -> Vec<hideout_registry::tools::Kept> {
 /// lock is held, so the file never says more than the router: an Allow written late does not
 /// bring back a program the user forgot meanwhile. Answers `Some` when the event was about
 /// that record, with the path of a program whose file changed (its record is void).
+///
+/// In a run whose start could not read `tools.json` the router does not hold what the file
+/// says, so only the one record the event is about is changed: the other programs' records
+/// stay as they are.
 pub(crate) fn keep_tools(
     store: &hideout_registry::tools::ToolStore,
     held: impl FnOnce() -> Vec<hideout_registry::tools::Kept>,
@@ -361,6 +370,23 @@ pub(crate) fn keep_tools(
 ) -> Option<Option<String>> {
     use hideout_router::Out;
     let (done, voided) = match event {
+        Out::ToolRemembered {
+            image_path,
+            image_sha256,
+            granted,
+        } if store.unread() => {
+            // Still only what the router holds now: a program forgotten meanwhile stays out.
+            let still = held().iter().any(|(p, h, _)| {
+                hideout_registry::tools::same_path(p, image_path) && h == image_sha256
+            });
+            let done = if still {
+                store.remember(image_path, image_sha256, granted, Some(now))
+            } else {
+                Ok(())
+            };
+            (done, None)
+        }
+        Out::ToolVoided(path) if store.unread() => (store.void_path(path), Some(path.clone())),
         Out::ToolRemembered {
             image_path,
             image_sha256,

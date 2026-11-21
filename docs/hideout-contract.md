@@ -1577,10 +1577,13 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   user stays. **The record never says more than the router.** `tools.json` is written from
   what the router holds, read while the record's lock is held, for an Allow, a voided file
   and a Forget alike, so a write that comes late cannot bring back a program the user forgot.
-  A lock left behind by a writer that is gone does not block later saves. If the record
+  A lock left behind by a writer that is gone does not block later saves. If the hub could
+  not read `tools.json` at its start (it tries for about a second), it holds none of the
+  records in that run and never writes the file from what it holds: an Allow, a voided file
+  and a Forget then change only their own record, and the other programs' records stay. If the record
   cannot be written the row stays, marked "Not allowed now", and the page says "Hideout
   forgot {name} for now but couldn't save that. Press Forget again."; a second failure for
-  the same program says "Hideout still couldn't save that. Close Hideout and open it again,
+  the same program says "Hideout still couldn't save that. Quit Hideout and open it again,
   then press Forget." What the router took away is not given back. Forget is reached only
   from the hub's own page: no method on any pipe forgets a program, so neither a tool nor an
   app can call it. The section reads `tools.json` again only when the hub wrote it or the
@@ -2327,8 +2330,14 @@ Rules:
   with no such pipe ignores the message. It grants nothing and has no answer. The hub checks
   again when the provider answers `channel.create`: a consumer that lost the grant meanwhile
   is refused and the provider is told `channel.closed` for the pipe it just made. The hub
-  keeps track of a bounded number of handed-out channels; past it the oldest is ended the
-  same way. Both SDKs close the pipes their `serve` helpers made by themselves; a provider
+  keeps track of a bounded number of handed-out channels, per program file and in all; past
+  a bound the oldest is ended the same way, a program file's own before any other's. When a
+  provider's connection ends, the hub forgets the channels that provider made: its pipes are
+  gone with it. **Only Forget ends a handed-out channel.** A channel handed out before the
+  hub restarted, before the program's file changed, or before a 65th Allow dropped the
+  oldest answer is not ended by the hub: the answer is gone and the program is asked again,
+  but a stream that is open lasts until either side closes it (the same holds for a lease).
+  Both SDKs close the pipes their `serve` helpers made by themselves; a provider
   that makes its pipes another way does it in its notification handler. A provider older
   than v1.24 ignores the notification: its stream then ends when either side closes it.
 - **The channel's wire (v1.4, #977).** Written down from the first SDKs; no new message.
