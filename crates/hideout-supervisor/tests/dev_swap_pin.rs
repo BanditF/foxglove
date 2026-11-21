@@ -3,6 +3,9 @@
 //! not started: the name lock sees another file at the name and refuses the launch. Own test
 //! binary because the launch hook is process-wide. `ping.exe` stands in for the app.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

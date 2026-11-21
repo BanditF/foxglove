@@ -107,10 +107,14 @@ Step 'scripts: demo-up tests' { powershell -NoProfile -ExecutionPolicy Bypass -F
         Step 'hub: dependency licences' { python scripts/check_hub_deps.py }
         Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
         # The installed hub is built without the `lab-switches` feature (scripts/build-hideout-installer.ps1):
-        # it must compile warning-free that way, and no crate in its graph may have the feature on.
+        # every crate that has the feature must compile warning-free and pass its tests that way, and no
+        # crate in the hub's graph may have the feature on. Tests that need a switch are gated on the
+        # feature; none may reach the user's own hub folder (they name their folder with
+        # HubPaths::in_folder, never through HIDEOUT_CONFIG_DIR, which this build ignores).
         Step 'hub: build without lab switches' {
-            cargo clippy -p hideout --no-default-features -- -D warnings
-            if (!$LASTEXITCODE) { cargo test -q -p hideout-registry -p hideout-shell --no-default-features --lib -- lab:: paths:: }
+            $off = '-p', 'hideout', '-p', 'hideout-registry', '-p', 'hideout-router', '-p', 'hideout-services', '-p', 'hideout-shell', '-p', 'hideout-supervisor', '--no-default-features'
+            cargo clippy @off --all-targets -- -D warnings
+            if (!$LASTEXITCODE) { cargo test -q @off --lib --bins --tests }
             if (!$LASTEXITCODE) {
                 foreach ($c in 'hideout-registry', 'hideout-router', 'hideout-shell', 'hideout-supervisor', 'hideout-services') {
                     $t = @(cargo tree --locked --offline -p hideout --no-default-features -e features -i $c)

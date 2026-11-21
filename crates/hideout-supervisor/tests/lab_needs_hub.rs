@@ -3,6 +3,9 @@
 //! not dropped at load. The lab hub lists it from its head, the supervisor reads it as
 //! `needs-hub` at hub start (§7.8), and it is never launched. Windowless; nothing runs.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

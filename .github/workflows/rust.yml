@@ -15,4 +15,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The installed hub's build (no lab-switches): the crates that have the feature, lint and tests.
+      - run: cargo clippy -p hideout -p hideout-registry -p hideout-router -p hideout-services -p hideout-shell -p hideout-supervisor --no-default-features --all-targets -- -D warnings
+      - run: cargo test -p hideout -p hideout-registry -p hideout-router -p hideout-services -p hideout-shell -p hideout-supervisor --no-default-features --lib --bins --tests
       - run: cargo build -p foxglove-link --no-default-features

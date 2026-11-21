@@ -777,8 +777,7 @@ impl Page for FormPage {
 }
 
 fn form_hub(dir: &std::path::Path) -> Hub {
-    let root = dir.as_os_str().to_owned();
-    let paths = HubPaths::resolve(|k| (k == "HIDEOUT_CONFIG_DIR").then(|| root.clone())).unwrap();
+    let paths = HubPaths::in_folder(dir);
     let shared = Arc::new(Shared {
         paths,
         prefs: Mutex::new(Prefs::default()),

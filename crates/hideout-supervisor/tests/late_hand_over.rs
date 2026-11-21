@@ -3,6 +3,9 @@
 //! is held, learnt as off and saved back as off; nothing starts beside the copy. The module is a
 //! copy of `cmd.exe` that must never start. Windowless. (Its own file: it sets process env.)
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

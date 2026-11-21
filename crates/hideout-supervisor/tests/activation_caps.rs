@@ -6,6 +6,9 @@
 //! does nothing), and its Job Object holds its manifest's `[limits]` clamped to the hub's
 //! maximum, read back from Windows. Turn off ends it.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

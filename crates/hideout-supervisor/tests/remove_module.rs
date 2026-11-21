@@ -4,6 +4,9 @@
 //! else); one that doesn't run is removed at once. Windowless: a copy of `ping.exe` installed as
 //! a developer-mode module; every process the test starts is ended by its handle.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

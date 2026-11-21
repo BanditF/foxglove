@@ -83,6 +83,16 @@ impl HubPaths {
         })
     }
 
+    /// A hub on `root` as its own folder, with that folder's own instance names. It reads no
+    /// environment, so it is the same in every build: tests use it, never [`Self::resolve`] with
+    /// a home variable, which a build without `lab-switches` answers with the user's own folder.
+    pub fn in_folder(root: &std::path::Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            overridden: true,
+        }
+    }
+
     /// From the process environment.
     pub fn from_env() -> Option<Self> {
         Self::resolve(|k| std::env::var_os(k))
