@@ -24,7 +24,7 @@ use super::theme;
 pub const NOT_RUNNING: &str = "Not running. The scale shows the last reading once it starts.";
 /// Start refused: the PC sensors app is off or not installed.
 pub const NEEDS_APP: &str =
-    "Temperature needs the PC sensors app. Turn it on in Hideout's Apps page.";
+    "Temperature needs the PC sensors app. Add it or turn it on in Hideout's Apps page.";
 /// Start refused: Foxglove has no permission to read the PC's readings.
 pub const NOT_ALLOWED: &str =
     "Foxglove isn't allowed to see your PC's readings. Allow it in Hideout's Apps page.";
@@ -799,7 +799,7 @@ mod tests {
         assert_eq!(
             idle(hosted(Status::AppOff)),
             (
-                "Temperature needs the PC sensors app. Turn it on in Hideout's Apps page.".into(),
+                "Temperature needs the PC sensors app. Add it or turn it on in Hideout's Apps page.".into(),
                 Tone::Warn
             )
         );
