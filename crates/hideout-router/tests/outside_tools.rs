@@ -805,3 +805,461 @@ fn a_script_runners_allow_reaches_only_the_connection_that_asked() {
     assert!(sends(&out, first).is_empty(), "{out:?}");
     assert_eq!(reason(&lighting_call(&mut r, first), first).0, 5);
 }
+
+// ---- Forget on the Apps page (#1470) ----
+
+const R5_TAIL: &str = ". This program was forgotten on Hideout's Apps page. Close this program and start it again, then allow it in Hideout.";
+
+fn subscribe(r: &mut Router, c: ConnId, pattern: &str) -> u64 {
+    let out = call(r, c, 5, "facts.subscribe", json!({"pattern": pattern}));
+    sends(&out, c)[0]["result"]["subscription"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{out:?}"))
+}
+
+/// Whether the permission check lets `c` change the lighting (no module answers the call in
+/// these tests, so any other answer than "no permission" is a yes).
+fn may_light(r: &mut Router, c: ConnId) -> bool {
+    let out = lighting_call(r, c);
+    sends(&out, c)
+        .iter()
+        .all(|m| m["error"]["code"].as_i64() != Some(5))
+}
+
+#[test]
+fn forget_narrows_live_connection_keeps_free_set() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\lights.exe", "aa");
+    let (c, _, _) = connect_asking(
+        &mut r,
+        "Lights",
+        Some(id.clone()),
+        &["devices.read", "lighting.write", "behaviors.invoke"],
+    );
+    r.set_tool_grants(&id, &[cap("lighting.write"), cap("behaviors.invoke")]);
+    assert!(may_light(&mut r, c));
+    // The path compares without regard to case, like the record.
+    r.forget_tool(r"c:\tools\LIGHTS.exe");
+    assert_eq!(reason(&lighting_call(&mut r, c), c).0, 5);
+    // What any program may have without asking stays.
+    let out = call(&mut r, c, 2, "devices.list", json!({}));
+    assert!(
+        sends(&out, c)
+            .iter()
+            .all(|m| m["error"]["code"].as_i64() != Some(5)),
+        "{out:?}"
+    );
+    // The record is gone: the next connection is asked about again and has only the free set.
+    let (_, _, res) = connect_asking(
+        &mut r,
+        "Lights",
+        Some(id),
+        &["devices.read", "lighting.write"],
+    );
+    assert_eq!(res["granted"], json!(["devices.read"]));
+    assert_eq!(r.tool_asks().len(), 1);
+}
+
+#[test]
+fn forget_ends_subscriptions_and_tells_v2() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\w.exe", "aa");
+    let perms = ["facts.read:weather.*", "facts.read:volume.*"];
+    let (c, _, _) = connect_asking(&mut r, "w", Some(id.clone()), &perms);
+    // A v1 connection of the same file.
+    let old = r.connect(Origin::Pipe);
+    r.set_peer_pid(old, 4243);
+    r.set_peer_identity(old, Some(id.clone()));
+    let params = json!({"client":{"name":"w","version":"1"},"api":"1.1","permissions":perms});
+    call(&mut r, old, 0, "initialize", params);
+    r.set_tool_grants(&id, &[cap("facts.read:weather.*")]);
+    let asked = subscribe(&mut r, c, "weather.*");
+    let free = subscribe(&mut r, c, "volume.*");
+    subscribe(&mut r, old, "weather.*");
+    let out = r.forget_tool(&id.image_path);
+    let told = sends(&out, c);
+    assert_eq!(told.len(), 1, "{out:?}");
+    assert_eq!(told[0]["method"], "module.grants");
+    assert_eq!(told[0]["params"], json!({"added": [], "ended": [asked]}));
+    assert_ne!(asked, free);
+    // A v1 connection loses the same and is not sent a message it does not know.
+    assert!(sends(&out, old).is_empty(), "{out:?}");
+    let out = call(
+        &mut r,
+        old,
+        6,
+        "facts.subscribe",
+        json!({"pattern": "weather.*"}),
+    );
+    assert!(sends(&out, old)[0].get("error").is_some(), "{out:?}");
+    // Pressing Forget again changes nothing and says nothing.
+    assert!(r.forget_tool(&id.image_path).is_empty());
+}
+
+#[test]
+fn forget_then_call_gets_r5() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\lights.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "Lights", Some(id.clone()), &["lighting.write"]);
+    r.set_tool_grants(&id, &[cap("lighting.write")]);
+    let (blank, _, _) = connect_asking(&mut r, " ", Some(id.clone()), &["lighting.write"]);
+    r.forget_tool(&id.image_path);
+    let (code, why) = reason(&lighting_call(&mut r, c), c);
+    assert_eq!(code, 5);
+    assert!(
+        why.starts_with("Hideout no longer lets \u{201c}Lights\u{201d} change your keyboards"),
+        "{why}"
+    );
+    assert!(why.ends_with(R5_TAIL), "{why}");
+    let (_, why) = reason(&lighting_call(&mut r, blank), blank);
+    assert!(
+        why.starts_with("Hideout no longer lets this program change your keyboards"),
+        "{why}"
+    );
+    // A never-class call keeps its own words.
+    let out = call(&mut r, c, 3, "keys.subscribe", json!({}));
+    let (_, never) = reason(&out, c);
+    assert!(!never.contains("forgotten"), "{never}");
+    // A connection opened after Forget was never allowed: the not-yet words, and it asks.
+    let (later, _, res) = connect_asking(&mut r, "Lights", Some(id.clone()), &["lighting.write"]);
+    assert_eq!(res["granted"], json!([]));
+    let (_, why) = reason(&lighting_call(&mut r, later), later);
+    assert!(why.starts_with("Hideout hasn't let "), "{why}");
+    // Allowed again: every open connection of the file has it back, and the words are gone.
+    let out = r.set_tool_grants(&id, &[cap("lighting.write")]);
+    assert_eq!(
+        sends(&out, c)[0]["params"],
+        json!({"added": ["lighting.write"]})
+    );
+    for conn in [c, later] {
+        assert!(may_light(&mut r, conn));
+    }
+}
+
+#[test]
+fn forget_leaves_another_program_alone() {
+    let mut r = free_only();
+    let a = tool(r"C:\Tools\a.exe", "aa");
+    let b = tool(r"C:\Tools\b.exe", "bb");
+    let (ca, _, _) = connect_asking(&mut r, "a", Some(a.clone()), &["lighting.write"]);
+    r.set_tool_grants(&a, &[cap("lighting.write")]);
+    let (cb, _, _) = connect_asking(&mut r, "b", Some(b.clone()), &["lighting.write"]);
+    r.set_tool_grants(&b, &[cap("lighting.write")]);
+    // A third program waits for the user: its ask stays where it is.
+    let w = tool(r"C:\Tools\w.exe", "cc");
+    connect_asking(&mut r, "w", Some(w), &["lighting.write"]);
+    let out = r.forget_tool(&a.image_path);
+    assert!(sends(&out, cb).is_empty(), "{out:?}");
+    assert_eq!(reason(&lighting_call(&mut r, ca), ca).0, 5);
+    assert!(may_light(&mut r, cb));
+    assert_eq!(r.tool_asks().len(), 1);
+    let (_, _, res) = connect_asking(&mut r, "b", Some(b), &["lighting.write"]);
+    assert_eq!(res["granted"], json!(["lighting.write"]));
+}
+
+#[test]
+fn forget_ends_a_lease_held_under_what_was_lost() {
+    let mut r = free_only();
+    let mut e = entry("example.lights", &[]);
+    e.granted = vec!["provide:lighting.*".into()];
+    e.catalog_provide = Some(vec!["lighting.*".into()]);
+    r.add_module(e);
+    r.set_token("example.lights", "tok");
+    let p = r.connect(Origin::Pipe);
+    let init = json!({"id":"example.lights","version":"0.1.0","instance":"i","token":"tok",
+        "hub":"1.3","api":{}});
+    let out = call(&mut r, p, 0, "initialize", init);
+    assert!(sends(&out, p)[0].get("result").is_some(), "{out:?}");
+    let reg = json!({"methods":["lighting.*"],"facts":[],"channels":[],"apis":{}});
+    call(&mut r, p, 1, "module.register", reg);
+    r.receive(
+        p,
+        r#"{"jsonrpc":"2.0","method":"module.ready","params":{"instance":"i"}}"#,
+        Instant::now(),
+    );
+    let id = tool(r"C:\Tools\lights.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "Lights", Some(id.clone()), &["lighting.write"]);
+    r.set_tool_grants(&id, &[cap("lighting.write")]);
+    let out = lighting_call(&mut r, c);
+    let fwd = sends(&out, p);
+    assert_eq!(fwd.len(), 1, "{out:?}");
+    let ans = json!({"jsonrpc":"2.0","id":fwd[0]["id"],"result":{"lease":"L1"}});
+    r.receive(p, &ans.to_string(), Instant::now());
+    let out = r.forget_tool(&id.image_path);
+    let closed: Vec<Value> = sends(&out, p)
+        .into_iter()
+        .filter(|m| m["method"] == "lease.closed")
+        .collect();
+    assert_eq!(closed.len(), 1, "{out:?}");
+    assert_eq!(
+        closed[0]["params"],
+        json!({"lease": "L1", "reason": "revoked"})
+    );
+}
+
+/// A ready provider `id` that provides `methods` and offers `channels`.
+fn provider(r: &mut Router, id: &str, methods: &[&str], channels: &[&str]) -> ConnId {
+    let mut e = entry(id, &[]);
+    e.granted = methods
+        .iter()
+        .map(|m| format!("provide:{m}"))
+        .chain(channels.iter().map(|c| format!("channel.offer:{c}")))
+        .collect();
+    e.catalog_provide = Some(methods.iter().map(|m| m.to_string()).collect());
+    e.channel_risk = channels
+        .iter()
+        .map(|c| (c.to_string(), "normal".to_string()))
+        .collect();
+    r.add_module(e);
+    r.set_token(id, "tok");
+    let p = r.connect(Origin::Pipe);
+    let init = json!({"id":id,"version":"0.1.0","instance":"i","token":"tok",
+        "hub":"1.3","api":{}});
+    let out = call(r, p, 0, "initialize", init);
+    assert!(sends(&out, p)[0].get("result").is_some(), "{out:?}");
+    let reg = json!({"methods":methods,"facts":[],"channels":channels,"apis":{}});
+    let out = call(r, p, 1, "module.register", reg);
+    assert!(sends(&out, p)[0].get("result").is_some(), "{out:?}");
+    r.receive(
+        p,
+        r#"{"jsonrpc":"2.0","method":"module.ready","params":{"instance":"i"}}"#,
+        Instant::now(),
+    );
+    p
+}
+
+fn closed(out: &[Out], p: ConnId, method: &str) -> Vec<Value> {
+    sends(out, p)
+        .into_iter()
+        .filter(|m| m["method"] == method)
+        .map(|m| m["params"].clone())
+        .collect()
+}
+
+/// A call under way when the user presses Forget does not make the program a lease holder
+/// afterwards: the lease ends at the provider and the caller is refused.
+#[test]
+fn forget_during_a_call_leaves_no_lease_behind() {
+    let mut r = free_only();
+    let p = provider(&mut r, "example.lights", &["lighting.*"], &[]);
+    let id = tool(r"C:\Tools\lights.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "Lights", Some(id.clone()), &["lighting.write"]);
+    r.set_tool_grants(&id, &[cap("lighting.write")]);
+    let out = lighting_call(&mut r, c);
+    let fwd = sends(&out, p);
+    assert_eq!(fwd.len(), 1, "{out:?}");
+    // Forget while the provider works: nothing is held yet, so nothing is closed yet.
+    let out = r.forget_tool(&id.image_path);
+    assert!(closed(&out, p, "lease.closed").is_empty(), "{out:?}");
+    let ans = json!({"jsonrpc":"2.0","id":fwd[0]["id"],"result":{"lease":"L1"}});
+    let out = r.receive(p, &ans.to_string(), Instant::now());
+    assert_eq!(
+        closed(&out, p, "lease.closed"),
+        [json!({"lease": "L1", "reason": "revoked"})],
+        "{out:?}"
+    );
+    let (code, why) = reason(&out, c);
+    assert_eq!(code, 5, "{out:?}");
+    assert!(why.contains("was forgotten"), "{why}");
+    // And nothing is held: a second Forget has no lease to close.
+    let out = r.forget_tool(&id.image_path);
+    assert!(closed(&out, p, "lease.closed").is_empty(), "{out:?}");
+    // The forgotten connection stays refused.
+    let out = lighting_call(&mut r, c);
+    assert_eq!(reason(&out, c).0, 5, "{out:?}");
+}
+
+const FEED: &str = "example.feed";
+
+fn open_status(r: &mut Router, c: ConnId, p: ConnId) -> (Vec<Out>, Value) {
+    let out = call(
+        r,
+        c,
+        7,
+        "channel.open",
+        json!({"module": FEED, "channel": "status"}),
+    );
+    let fwd = sends(&out, p);
+    assert_eq!(fwd.len(), 1, "{out:?}");
+    assert_eq!(fwd[0]["method"], "channel.create");
+    (out, fwd[0].clone())
+}
+
+fn pipe_answer(create: &Value) -> String {
+    json!({"jsonrpc":"2.0","id":create["id"],
+        "result":{"pipe": r"\\.\pipe\hideout-ch-1-0-a-b"}})
+    .to_string()
+}
+
+/// Forget ends the channels the program was handed: the provider is told to close them, also
+/// when the program has closed its connection to the hub and kept the stream.
+#[test]
+fn forget_ends_the_channels_the_program_was_handed() {
+    for hub_conn_open in [true, false] {
+        let mut r = free_only();
+        let p = provider(&mut r, FEED, &[], &["status"]);
+        let id = tool(r"C:\Tools\feed.exe", "aa");
+        let perm = format!("channel.open:{FEED}/status");
+        let (c, _, _) = connect_asking(&mut r, "Feed", Some(id.clone()), &[&perm]);
+        r.set_tool_grants(&id, &[cap(&perm)]);
+        let (_, create) = open_status(&mut r, c, p);
+        assert_eq!(create["params"]["consumer_pid"], 4242);
+        let out = r.receive(p, &pipe_answer(&create), Instant::now());
+        let got = sends(&out, c).remove(0);
+        assert!(got["result"]["nonce"].is_string(), "{got}");
+        if !hub_conn_open {
+            r.disconnect(c);
+        }
+        // Another program's channel is left alone.
+        let other = tool(r"C:\Tools\other.exe", "bb");
+        let (co, _, _) = connect_asking(&mut r, "Other", Some(other.clone()), &[&perm]);
+        r.set_tool_grants(&other, &[cap(&perm)]);
+        let (_, create) = open_status(&mut r, co, p);
+        r.receive(p, &pipe_answer(&create), Instant::now());
+
+        let out = r.forget_tool(&id.image_path);
+        assert_eq!(
+            closed(&out, p, "channel.closed"),
+            [json!({"channel": "status", "consumer_pid": 4242, "reason": "revoked"})],
+            "open={hub_conn_open} {out:?}"
+        );
+        // Once: a second Forget has nothing left to end.
+        let out = r.forget_tool(&id.image_path);
+        assert!(closed(&out, p, "channel.closed").is_empty(), "{out:?}");
+        if hub_conn_open {
+            // The forgotten connection can't open it again, and is told why.
+            let out = call(
+                &mut r,
+                c,
+                8,
+                "channel.open",
+                json!({"module": FEED, "channel": "status"}),
+            );
+            assert!(sends(&out, p).is_empty(), "{out:?}");
+            let (code, why) = reason(&out, c);
+            assert_eq!(code, 5);
+            assert!(why.contains("was forgotten"), "{why}");
+        }
+    }
+}
+
+/// A program that opens very many channels only pushes out its own: another program's channel
+/// is still there for its Forget. And a provider that went takes its entries with it: a later
+/// Forget names no process of a pipe that no longer exists.
+#[test]
+fn many_channels_of_one_program_end_only_its_own_and_a_gone_provider_ends_none() {
+    let mut r = free_only();
+    let p = provider(&mut r, FEED, &[], &["status"]);
+    let perm = format!("channel.open:{FEED}/status");
+    let quiet = tool(r"C:\Tools\quiet.exe", "aa");
+    let (cq, _, _) = connect_asking(&mut r, "Quiet", Some(quiet.clone()), &[&perm]);
+    r.set_tool_grants(&quiet, &[cap(&perm)]);
+    let (_, create) = open_status(&mut r, cq, p);
+    let quiet_pid = create["params"]["consumer_pid"].clone();
+    r.receive(p, &pipe_answer(&create), Instant::now());
+
+    let busy = tool(r"C:\Tools\busy.exe", "bb");
+    let (c, _, _) = connect_asking(&mut r, "Busy", Some(busy.clone()), &[&perm]);
+    r.set_tool_grants(&busy, &[cap(&perm)]);
+    let mut ended = Vec::new();
+    for n in 0..40 {
+        // Each one from another process of the same program file.
+        r.set_peer_pid(c, 5000 + n);
+        let (_, create) = open_status(&mut r, c, p);
+        let out = r.receive(p, &pipe_answer(&create), Instant::now());
+        ended.extend(closed(&out, p, "channel.closed"));
+    }
+    assert!(!ended.is_empty(), "the program's own oldest are ended");
+    assert!(
+        ended.iter().all(|e| e["consumer_pid"] != quiet_pid),
+        "{ended:?}"
+    );
+    let out = r.forget_tool(&quiet.image_path);
+    assert_eq!(closed(&out, p, "channel.closed").len(), 1, "{out:?}");
+
+    // The provider goes and comes back: what it made before is gone with it.
+    r.disconnect(p);
+    let p = provider(&mut r, FEED, &[], &["status"]);
+    let out = r.forget_tool(&busy.image_path);
+    assert!(closed(&out, p, "channel.closed").is_empty(), "{out:?}");
+}
+
+/// A channel being made when the user presses Forget does not reach the program: the grant is
+/// not handed out, and the provider is told to drop the pipe it made.
+#[test]
+fn forget_during_channel_open_hands_out_nothing() {
+    let mut r = free_only();
+    let p = provider(&mut r, FEED, &[], &["status"]);
+    let id = tool(r"C:\Tools\feed.exe", "aa");
+    let perm = format!("channel.open:{FEED}/status");
+    let (c, _, _) = connect_asking(&mut r, "Feed", Some(id.clone()), &[&perm]);
+    r.set_tool_grants(&id, &[cap(&perm)]);
+    let (_, create) = open_status(&mut r, c, p);
+    let out = r.forget_tool(&id.image_path);
+    assert!(closed(&out, p, "channel.closed").is_empty(), "{out:?}");
+    let out = r.receive(p, &pipe_answer(&create), Instant::now());
+    let reply = sends(&out, c).remove(0);
+    assert!(reply.get("result").is_none(), "{reply}");
+    assert!(!reply.to_string().contains("nonce"), "{reply}");
+    let (code, why) = reason(&out, c);
+    assert_eq!(code, 5);
+    assert!(why.contains("was forgotten"), "{why}");
+    assert_eq!(
+        closed(&out, p, "channel.closed"),
+        [json!({"channel": "status", "consumer_pid": 4242, "reason": "revoked"})],
+        "{out:?}"
+    );
+}
+
+/// What the Apps page and `tools.json` are written from: every answer the hub holds, oldest
+/// first, without the free set.
+#[test]
+fn approved_tools_lists_what_the_hub_holds() {
+    let mut r = free_only();
+    let a = tool(r"C:\Tools\a.exe", "aa");
+    let b = tool(r"C:\Tools\b.exe", "bb");
+    connect_asking(
+        &mut r,
+        "a",
+        Some(a.clone()),
+        &["lighting.write", "devices.read"],
+    );
+    r.set_tool_grants(&a, &[cap("lighting.write")]);
+    connect_asking(&mut r, "b", Some(b.clone()), &["art.write"]);
+    r.set_tool_grants(&b, &[cap("art.write")]);
+    let held = r.approved_tools();
+    assert_eq!(
+        held,
+        [
+            (a.clone(), vec!["lighting.write".to_string()]),
+            (b.clone(), vec!["art.write".to_string()])
+        ]
+    );
+    r.forget_tool(&a.image_path);
+    assert_eq!(r.approved_tools().len(), 1);
+    assert_eq!(r.approved_tools()[0].0, b);
+}
+
+#[test]
+fn the_apps_page_lists_only_what_a_program_can_be_allowed() {
+    let r = free_only();
+    let items = r.tool_items(&[
+        "lighting.write".into(),
+        "behaviors.invoke".into(),
+        "devices.read".into(),
+        "key.events".into(),
+        "not a permission".into(),
+        format!("channel.open:{KEYS}/events"),
+        format!("channel.open:{KEYS}/status"),
+    ]);
+    let raw: Vec<&str> = items.iter().map(|i| i.raw.as_str()).collect();
+    assert_eq!(
+        raw,
+        [
+            "lighting.write",
+            "behaviors.invoke",
+            &format!("channel.open:{KEYS}/status")
+        ]
+    );
+    assert!(!items[0].red && items[1].red);
+}

@@ -25,6 +25,8 @@ PARSE, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL = -32700, -32
 UNSUPPORTED, DISCONNECTED, BUSY, TIMEOUT, DENIED, BACKEND, VERSION, RATE_LIMITED = 1, 2, 3, 4, 5, 6, 7, 8
 # `module.grants` (H -> M, v1.22): an Allow widened the module's grants while it runs.
 MODULE_GRANTS = "module.grants"
+# `channel.closed` (H -> M, v1.24): a consumer lost a channel it was handed.
+CHANNEL_CLOSED = "channel.closed"
 # Denied subscriptions a session keeps to send again (the oldest goes first).
 MAX_DENIED_SUBS = 64
 
@@ -331,6 +333,15 @@ class Session:
                 handler.exit()
             elif method == MODULE_GRANTS:
                 self._grants_changed(params)
+                handler.notification(method, params)
+            elif method == CHANNEL_CLOSED:
+                # The pipes `channel.serve` made for that consumer end here; the handler
+                # still hears of it, for pipes it made itself.
+                if os.name == "nt" and isinstance(params, dict) and isinstance(params.get("channel"), str):
+                    from . import channel
+
+                    pid = params.get("consumer_pid")
+                    channel.close_revoked(params["channel"], pid if isinstance(pid, int) else None)
                 handler.notification(method, params)
             else:
                 handler.notification(method, params)

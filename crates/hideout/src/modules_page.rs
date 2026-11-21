@@ -159,6 +159,10 @@ struct FreshInner {
     waiting: bool,
     /// Modules whose Remove failed after they stopped (the supervisor says so).
     failed: Vec<String>,
+    /// The record of programs outside Hideout changed since the page last read it (#1470).
+    tools: bool,
+    /// The newest program whose file changed, so its record went.
+    tool_voided: Option<String>,
 }
 
 #[cfg(windows)]
@@ -180,6 +184,22 @@ impl Fresh {
     pub fn put_failed(&self, id: &str) -> bool {
         self.0.lock().unwrap().failed.push(id.into());
         true
+    }
+
+    /// The record of programs outside Hideout was written; `voided` is the path of a program
+    /// whose file changed.
+    pub fn put_tools(&self, voided: Option<&str>) {
+        let mut f = self.0.lock().unwrap();
+        f.tools = true;
+        if let Some(path) = voided {
+            f.tool_voided = Some(path.to_string());
+        }
+    }
+
+    /// Whether that record changed since the last take, with the newest voided path.
+    pub(crate) fn take_tools(&self) -> Option<Option<String>> {
+        let mut f = self.0.lock().unwrap();
+        std::mem::take(&mut f.tools).then(|| f.tool_voided.take())
     }
 
     pub(crate) fn take_failed(&self) -> Vec<String> {
@@ -721,6 +741,8 @@ impl ModulesPage {
             }
             if let Some(p) = self.perm.as_mut() {
                 p.refresh();
+                // What a kept program may do is worded from the apps that are here.
+                p.reload_tools();
             }
         }
         // A Remove that had to wait for the module to stop and then did not work.
@@ -975,20 +997,38 @@ impl hideout_shell::Page for ModulesPage {
                     .any(|o| matches!(o.offer, hideout_shell::done_card::Offer::SetUp(_)))
             });
         }
-        let clicked = page_ui_with_head(ui, t, &rows, top, &mut |ui| {
-            if let Some(c) = &card {
-                pressed = hideout_shell::done_card::card_ui(ui, t, c);
-            }
-            if let Some(g) = grant.as_mut() {
-                g.top(ui, t);
-            }
-            if let Some(p) = perm.as_mut() {
-                p.top(ui, t);
-            }
-            if let Some(d) = discover.as_mut() {
-                added = added.take().or(d.ui(ui, t, &ids));
-            }
-        });
+        let fresh = self.fresh.as_ref();
+        // The app rows and "Programs outside Hideout" scroll together: a long list never
+        // leaves rows below the window's edge with no way to reach them.
+        let clicked = hideout_shell::egui::ScrollArea::vertical()
+            .id_salt("hub.apps.scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let clicked = page_ui_with_head(ui, t, &rows, top, &mut |ui| {
+                    if let Some(c) = &card {
+                        pressed = hideout_shell::done_card::card_ui(ui, t, c);
+                    }
+                    if let Some(g) = grant.as_mut() {
+                        g.top(ui, t);
+                    }
+                    if let Some(p) = perm.as_mut() {
+                        p.top(ui, t);
+                    }
+                    if let Some(d) = discover.as_mut() {
+                        added = added.take().or(d.ui(ui, t, &ids));
+                    }
+                });
+                // Programs outside Hideout the user allowed, under the app rows (#1470). The
+                // record is read again only when the hub wrote it.
+                if let Some(p) = perm.as_mut() {
+                    if let Some(voided) = fresh.and_then(Fresh::take_tools) {
+                        p.tools_changed(voided.as_deref());
+                    }
+                    p.tools_ui(ui, t);
+                }
+                clicked
+            })
+            .inner;
         self.grant = grant;
         self.perm = perm;
         self.discover = discover;
@@ -2200,6 +2240,93 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The Apps page scrolls: with more kept programs than the window is high, the Forget
+    /// button that takes the focus after a Forget at the bottom of the list is on screen.
+    #[test]
+    fn the_apps_page_scrolls_to_the_programs_at_its_bottom() {
+        use hideout_shell::egui;
+        use hideout_shell::Page;
+        let home = std::env::temp_dir().join(format!("hideout-mp-{}-scroll", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        hideout_registry::Registry::open(&home, false).unwrap();
+        let mut router = hideout_router::Router::new(
+            hideout_router::Settings::default(),
+            Box::new(|tool, asked| crate::router_start::approve(tool, asked, false)),
+        );
+        let path = |i: usize| format!(r"C:\Tools\tool-{i}.exe");
+        router.load_tools(
+            (0..20)
+                .map(|i| {
+                    (
+                        path(i),
+                        "aa".to_string(),
+                        vec!["lighting.write".to_string()],
+                    )
+                })
+                .collect(),
+        );
+        let (events, _rx) = std::sync::mpsc::channel();
+        let hub = hideout_router::server::Hub::new(router, events);
+        let mut page = ModulesPage {
+            installed: Vec::new(),
+            facts: None,
+            actions: None,
+            safe_by_closes: false,
+            finder: None,
+            fresh: None,
+            grant: None,
+            perm: Some(crate::permission_actions::PermUi::new(&home, hub)),
+            discover: None,
+            restarts: Default::default(),
+            done: Default::default(),
+            ask: Default::default(),
+            told: Default::default(),
+        };
+        assert_eq!(page.perm.as_ref().unwrap().tools.rows().len(), 20);
+        let ctx = egui::Context::default();
+        let t = hideout_shell::theme::tokens(true);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+        let mut time = 0.0;
+        let mut frame = |page: &mut ModulesPage| {
+            time += 0.1;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| page.ui(ui, &t));
+                },
+            );
+        };
+        frame(&mut page);
+        // Forget on the last row (the oldest; the newest is first): the focus goes to the row
+        // above it, which is the page's last row now, far below a 700 point window.
+        page.perm.as_mut().unwrap().forget_tool(&path(0));
+        assert_eq!(page.perm.as_ref().unwrap().tools.focus(), Some(&*path(1)));
+        frame(&mut page);
+        let focused = ctx
+            .memory(|m| m.focused())
+            .expect("a Forget button has the focus");
+        let before = ctx.read_response(focused).unwrap().rect;
+        assert!(
+            before.bottom() > screen.bottom(),
+            "the list is longer than the window"
+        );
+        for _ in 0..40 {
+            frame(&mut page);
+        }
+        assert_eq!(ctx.memory(|m| m.focused()), Some(focused));
+        let after = ctx.read_response(focused).unwrap().rect;
+        assert!(
+            after.top() >= screen.top() && after.bottom() <= screen.bottom(),
+            "the focused button is on screen: {after:?}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The Found card's Update button is named for its app; the row's button is not.

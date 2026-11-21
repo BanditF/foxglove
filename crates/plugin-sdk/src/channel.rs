@@ -43,8 +43,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::PIPE_UNLIMITED_INSTANCES;
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
+    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
@@ -219,6 +219,10 @@ impl ChannelPipe {
 /// `module`'s `channel`, and on a thread of its own waits up to [`ACCEPT_TIMEOUT`] for the
 /// consumer with `nonce`, then hands the connection to `stream`. Returns the pipe name to answer
 /// with (`{"pipe": name}`). A late or wrong consumer only closes the pipe (logged).
+///
+/// A pipe made here names no consumer process, so any `channel.closed` (v1.24) for `channel`
+/// closes it, whichever consumer the hub meant: every consumer of the channel is dropped and
+/// opens it again. [`serve_create`] names the consumer and closes only that one's pipe.
 pub fn serve(
     module: &str,
     channel: &str,
@@ -250,13 +254,127 @@ fn serve_for(
     let name = pipe.name().to_string();
     let nonce = nonce.to_string();
     let label = channel.to_string();
-    std::thread::Builder::new()
+    let served = Served::add(channel, consumer.pid);
+    let mine = served.clone();
+    let spawned = std::thread::Builder::new()
         .name(format!("hideout-channel-{channel}"))
         .spawn(move || match pipe.accept_nonce(&nonce, ACCEPT_TIMEOUT) {
+            // Taken away while the consumer was on its way: it gets no frame.
+            Ok(conn) if !mine.open(&conn) => {
+                eprintln!("hideout channel {label}: closed before it opened")
+            }
             Ok(conn) => stream(conn),
-            Err(e) => eprintln!("hideout channel {label}: not opened: {e}"),
-        })?;
+            Err(e) => {
+                mine.gone();
+                eprintln!("hideout channel {label}: not opened: {e}")
+            }
+        });
+    if let Err(e) = spawned {
+        served.gone();
+        return Err(e);
+    }
     Ok(name)
+}
+
+/// One pipe [`serve`] made: what [`close_revoked`] looks through.
+struct Served {
+    channel: String,
+    /// The consumer's process, when `channel.create` named it.
+    pid: Option<u32>,
+    state: std::sync::Mutex<ServedState>,
+}
+
+enum ServedState {
+    /// The consumer has not connected yet.
+    Waiting,
+    /// Taken away before the consumer connected.
+    Revoked,
+    /// Connected: the pipe, for as long as any clone of the connection lives.
+    Open(std::sync::Weak<Owned>),
+    Gone,
+}
+
+static SERVED: std::sync::Mutex<Vec<std::sync::Arc<Served>>> = std::sync::Mutex::new(Vec::new());
+
+fn unpoisoned<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Served {
+    fn add(channel: &str, pid: Option<u32>) -> std::sync::Arc<Served> {
+        let s = std::sync::Arc::new(Served {
+            channel: channel.to_string(),
+            pid,
+            state: std::sync::Mutex::new(ServedState::Waiting),
+        });
+        let mut all = unpoisoned(&SERVED);
+        all.retain(|s| s.alive());
+        all.push(s.clone());
+        s
+    }
+
+    fn alive(&self) -> bool {
+        match &*unpoisoned(&self.state) {
+            ServedState::Waiting | ServedState::Revoked => true,
+            ServedState::Open(p) => p.strong_count() > 0,
+            ServedState::Gone => false,
+        }
+    }
+
+    /// The consumer connected. False when the channel was taken away meanwhile.
+    fn open(&self, conn: &ChannelConn) -> bool {
+        let mut st = unpoisoned(&self.state);
+        if matches!(*st, ServedState::Revoked) {
+            *st = ServedState::Gone;
+            return false;
+        }
+        *st = ServedState::Open(std::sync::Arc::downgrade(&conn.pipe.0));
+        true
+    }
+
+    fn gone(&self) {
+        *unpoisoned(&self.state) = ServedState::Gone;
+    }
+
+    fn revoke(&self) {
+        let mut st = unpoisoned(&self.state);
+        match &*st {
+            ServedState::Waiting => *st = ServedState::Revoked,
+            ServedState::Open(p) => {
+                if let Some(pipe) = p.upgrade() {
+                    // Ends a blocked read or write, and every later one: the consumer's end
+                    // is closed for it.
+                    unsafe {
+                        CancelIoEx(pipe.0, std::ptr::null());
+                        DisconnectNamedPipe(pipe.0);
+                    }
+                }
+                *st = ServedState::Gone;
+            }
+            ServedState::Revoked | ServedState::Gone => {}
+        }
+    }
+}
+
+/// The hub's `channel.closed` (§8.4, v1.24): ends every pipe [`serve`] or [`serve_create`]
+/// made for `channel` and that consumer, connected or still waiting for it. The stream's next
+/// read or write fails, so its function returns; a consumer that had not connected yet gets no
+/// frame. A pipe made without a consumer process ([`serve`], or a hub older than v1.10) is
+/// ended whatever `consumer_pid` says: closing one too many is the safe side. The session calls
+/// this by itself; a provider that makes its pipes another way ends them in its own
+/// `notification` handler.
+pub fn close_revoked(channel: &str, consumer_pid: Option<u32>) {
+    let hit: Vec<std::sync::Arc<Served>> = {
+        let mut all = unpoisoned(&SERVED);
+        all.retain(|s| s.alive());
+        all.iter()
+            .filter(|s| s.channel == channel && (s.pid.is_none() || s.pid == consumer_pid))
+            .cloned()
+            .collect()
+    };
+    for s in hit {
+        s.revoke();
+    }
 }
 
 /// The consumer's end (§8.4): connects to the `pipe` the hub answered `channel.open` with and
@@ -823,6 +941,68 @@ mod tests {
         assert!(
             connect(&n, "n-once").is_err(),
             "connect after close refused"
+        );
+    }
+
+    /// `channel.closed`: an open stream ends at the provider, and one whose consumer had not
+    /// connected yet never starts.
+    #[test]
+    fn a_revoked_channel_ends_and_a_waiting_one_never_starts() {
+        use std::sync::mpsc;
+        let me = Some(std::process::id());
+        let who = Consumer { pid: me, sid: None };
+        // Open: the stream writes until the pipe is gone.
+        let (done_tx, done) = mpsc::channel();
+        let name = serve_for(
+            "example.art",
+            "revoked-open",
+            "n1",
+            &who,
+            move |mut conn| {
+                let mut sent = 0u32;
+                while write_frame(&mut conn, b"frame").is_ok() {
+                    sent += 1;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                done_tx.send(sent).unwrap();
+            },
+        )
+        .unwrap();
+        let mut consumer = connect(&name, "n1").unwrap();
+        assert_eq!(
+            read_frame(&mut consumer).unwrap().as_deref(),
+            Some(&b"frame"[..])
+        );
+        // Another consumer's pipe of the same channel is left alone.
+        close_revoked("revoked-open", Some(1));
+        assert_eq!(
+            read_frame(&mut consumer).unwrap().as_deref(),
+            Some(&b"frame"[..])
+        );
+        close_revoked("revoked-open", me);
+        assert!(done.recv_timeout(Duration::from_secs(10)).unwrap() >= 2);
+        let ended = loop {
+            match read_frame(&mut consumer) {
+                Ok(Some(_)) => continue,
+                other => break other,
+            }
+        };
+        assert!(!matches!(ended, Ok(Some(_))));
+
+        // Waiting: taken away before the consumer connects.
+        let (ran_tx, ran) = mpsc::channel();
+        let name = serve_for("example.art", "revoked-waiting", "n2", &who, move |_conn| {
+            ran_tx.send(()).unwrap();
+        })
+        .unwrap();
+        close_revoked("revoked-waiting", me);
+        if let Ok(mut consumer) = connect(&name, "n2") {
+            assert!(!matches!(read_frame(&mut consumer), Ok(Some(_))));
+        }
+        // The sender is dropped without a send: the stream never ran.
+        assert_eq!(
+            ran.recv_timeout(Duration::from_secs(10)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
         );
     }
 

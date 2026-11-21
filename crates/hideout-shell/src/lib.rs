@@ -35,6 +35,7 @@ pub mod status;
 pub mod tabs;
 pub mod theme;
 pub mod tool_dialog;
+pub mod tool_list;
 
 #[cfg(windows)]
 pub mod bisect_bar;

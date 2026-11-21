@@ -98,6 +98,18 @@ pub struct ToolItem {
     pub red: bool,
 }
 
+impl ToolItem {
+    /// The item as a line of the dialog and of the Apps page's list: a sensitive one says so
+    /// in words, not by colour alone.
+    pub fn line(&self) -> String {
+        if self.red {
+            format!("\u{2022} Sensitive: {}", self.does)
+        } else {
+            format!("\u{2022} {}", self.does)
+        }
+    }
+}
+
 /// The open dialog for one waiting program.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolDialog {
@@ -161,7 +173,7 @@ impl ToolDialog {
             file_line(&self.id.image_path),
             ASKS.to_string(),
         ];
-        out.extend(self.items.iter().map(|i| i.does.clone()));
+        out.extend(self.items.iter().map(ToolItem::line));
         out.push(SAME_PROGRAM.to_string());
         out.push(self.footer().to_string());
         out
@@ -259,7 +271,7 @@ pub(crate) fn tool_dialog_ids(
             .show(ui, |ui| {
                 for i in &d.items {
                     let colour = if i.red { c(t.danger) } else { c(t.text) };
-                    ui.label(egui::RichText::new(format!("\u{2022} {}", i.does)).color(colour));
+                    ui.label(egui::RichText::new(i.line()).color(colour));
                 }
             });
         ui.add_space(8.0);
@@ -454,9 +466,13 @@ mod tests {
         );
         assert_eq!(lines[2], r"Program file: C:\Tools\t.exe");
         assert_eq!(lines[3], "It asks to:");
+        // A sensitive item says so in words, not by colour alone.
         assert_eq!(
             &lines[4..6],
-            ["change your keyboard's lighting", "press keys for you"]
+            [
+                "\u{2022} change your keyboard's lighting",
+                "\u{2022} Sensitive: press keys for you"
+            ]
         );
         assert_eq!(lines[6], SAME_PROGRAM);
         assert_eq!(

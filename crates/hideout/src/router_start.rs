@@ -183,7 +183,12 @@ pub fn start(
     // What the user allowed to programs outside Hideout, kept by program file (S1).
     router.load_tools(
         hideout_registry::tools::ToolStore::at(home)
-            .load()
+            .load_at_start()
+            .unwrap_or_else(|e| {
+                // The programs ask again in this run; the file keeps what it says.
+                log::warn!("router: tools.json could not be read at start: {e}");
+                Vec::new()
+            })
             .into_iter()
             .map(|t| (t.image_path, t.image_sha256, t.granted))
             .collect(),
@@ -315,11 +320,20 @@ pub fn start(
     }
     let s = sup.clone();
     let tools = hideout_registry::tools::ToolStore::at(home);
+    let tools_fresh = fresh.clone();
+    let tools_hub = hub.clone();
     std::thread::Builder::new()
         .name("hideout-router-events".into())
         .spawn(move || {
             for event in rx {
-                keep_tools(&tools, &event);
+                // The Apps page lists what is kept: it reads the record again when it changed.
+                let held = || tools_hub.read(kept_tools);
+                if let Some(voided) =
+                    keep_tools(&tools, held, &event, &hideout_supervisor::now_utc())
+                {
+                    tools_fresh.put_tools(voided.as_deref());
+                    side.wake();
+                }
                 crate::signin_signal::on_event(&event);
                 s.on_router(&event);
                 side.on_router(&event);
@@ -331,21 +345,63 @@ pub fn start(
     (hub, sup, feed)
 }
 
-/// Writes what the user allowed an outside program (or the voiding of it) to `tools.json`.
-fn keep_tools(store: &hideout_registry::tools::ToolStore, event: &hideout_router::Out) {
+/// What the router holds of programs outside Hideout, as `tools.json` keeps it: oldest first.
+pub(crate) fn kept_tools(r: &Router) -> Vec<hideout_registry::tools::Kept> {
+    r.approved_tools()
+        .into_iter()
+        .map(|(id, granted)| (id.image_path, id.image_sha256, granted))
+        .collect()
+}
+
+/// Makes `tools.json` say what the router holds after the user allowed an outside program
+/// (stamped `now`) or a program's answer went void. `held` reads the router while the record's
+/// lock is held, so the file never says more than the router: an Allow written late does not
+/// bring back a program the user forgot meanwhile. Answers `Some` when the event was about
+/// that record, with the path of a program whose file changed (its record is void).
+///
+/// In a run whose start could not read `tools.json` the router does not hold what the file
+/// says, so only the one record the event is about is changed: the other programs' records
+/// stay as they are.
+pub(crate) fn keep_tools(
+    store: &hideout_registry::tools::ToolStore,
+    held: impl FnOnce() -> Vec<hideout_registry::tools::Kept>,
+    event: &hideout_router::Out,
+    now: &str,
+) -> Option<Option<String>> {
     use hideout_router::Out;
-    let done = match event {
+    let (done, voided) = match event {
         Out::ToolRemembered {
             image_path,
             image_sha256,
             granted,
-        } => store.remember(image_path, image_sha256, granted),
-        Out::ToolVoided(path) => store.void_path(path),
-        _ => return,
+        } if store.unread() => {
+            // Still only what the router holds now: a program forgotten meanwhile stays out.
+            let still = held().iter().any(|(p, h, _)| {
+                hideout_registry::tools::same_path(p, image_path) && h == image_sha256
+            });
+            let done = if still {
+                store.remember(image_path, image_sha256, granted, Some(now))
+            } else {
+                Ok(())
+            };
+            (done, None)
+        }
+        Out::ToolVoided(path) if store.unread() => (store.void_path(path), Some(path.clone())),
+        Out::ToolRemembered {
+            image_path,
+            image_sha256,
+            ..
+        } => (
+            store.sync(held, Some((image_path, image_sha256, now))),
+            None,
+        ),
+        Out::ToolVoided(path) => (store.sync(held, None), Some(path.clone())),
+        _ => return None,
     };
     if let Err(e) = done {
         log::warn!("router: tools.json not written: {e}");
     }
+    Some(voided)
 }
 
 /// The inventory watch (§7.1, #1012.4, #1054): a module that leaves the inventory has its
@@ -779,13 +835,16 @@ permissions = [\"apps.watch:{label}.exe\"]
         let apps = hideout_appwatch::Control::new(
             &home,
             Box::new(move |changes| {
-                let _ = tx.lock().unwrap().send(changes.clone());
+                // The hub first, then the test's channel: what the test hears of, the hub
+                // already holds.
+                let told = changes.clone();
                 h.act(|r| {
                     changes
                         .into_iter()
                         .flat_map(|(k, v)| r.publish(&k, v))
                         .collect()
-                })
+                });
+                let _ = tx.lock().unwrap().send(told);
             }),
         );
         // No module names an app at the start: nothing is watched.
