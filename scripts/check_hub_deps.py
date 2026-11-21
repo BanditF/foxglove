@@ -109,12 +109,16 @@ def hub_graph(meta, roots=ROOTS):
     return seen
 
 
-def problems(meta, app_dir, roots=ROOTS):
-    """One line per rule broken, sorted; empty when the hub's graph is clean."""
+def problems(meta, app_dir, roots=ROOTS, vendor_dir=None):
+    """One line per rule broken, sorted; empty when the hub's graph is clean.
+
+    A path crate under `vendor_dir` is an upstream copy with a small marked patch (see
+    vendor/README.md): it keeps upstream's licence and is checked like a registry crate."""
     out = []
     for pkg in hub_graph(meta, roots).values():
         name = f"{pkg['name']} {pkg['version']}"
         local = pkg.get('source') is None
+        vendored = local and vendor_dir is not None and under(pkg['manifest_path'], vendor_dir)
         if local and under(pkg['manifest_path'], app_dir):
             out.append(f'{name}: a path dependency under app/ ({pkg["manifest_path"]})')
         for dep in pkg.get('dependencies', []):
@@ -125,12 +129,12 @@ def problems(meta, app_dir, roots=ROOTS):
             out.append(f'{name}: no licence field' + (f' (licence file {pkg["license_file"]})' if pkg.get('license_file') else ''))
             continue
         try:
-            ok = (lic.strip() == OWN_LICENCE) if local else licence_ok(lic)
+            ok = (lic.strip() == OWN_LICENCE) if local and not vendored else licence_ok(lic)
         except ValueError as e:
             out.append(f'{name}: {e}')
             continue
         if not ok:
-            out.append(f'{name}: licence {lic!r} is not on the hub allowlist' if not local
+            out.append(f'{name}: licence {lic!r} is not on the hub allowlist' if vendored or not local
                        else f'{name}: our own crate must be {OWN_LICENCE}, not {lic!r}')
     return sorted(set(out))
 
@@ -150,7 +154,8 @@ def main(argv=None):
     ap.add_argument('--platform', default=PLATFORM, help=f'the target triple to resolve for (default {PLATFORM})')
     args = ap.parse_args(argv)
     meta = json.loads(args.metadata.read_text(encoding='utf-8')) if args.metadata else cargo_metadata(args.platform)
-    found = problems(meta, Path(meta.get('workspace_root', REPO)) / 'app')
+    root = Path(meta.get('workspace_root', REPO))
+    found = problems(meta, root / 'app', vendor_dir=root / 'vendor')
     for line in found:
         print(f'hub deps: {line}')
     n = len(hub_graph(meta))

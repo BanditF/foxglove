@@ -4,7 +4,15 @@ resolver = "2"
 members = ["crates/*", "examples/hideout-module-rust", "examples/hideout-room-map"]
 # The app keeps its own workspace and lockfile, as upstream KeyPeek has them, so pulling
 # from srwi/keypeek stays clean. Build it with --manifest-path app/Cargo.toml.
-exclude = ["app"]
+exclude = ["app", "vendor"]
+
+# Hideout (#1381): two minimal vendored patches so AccessKit can be on in the hub without the
+# window-creation panic (Windows' atom table full) and for every window, not only the root.
+# Both are marked "HIDEOUT PATCH" in their sources; see vendor/README.md. `vendor` is excluded
+# above so the workspace's fmt, clippy and tests do not pick the copies up as members.
+[patch.crates-io]
+accesskit_windows = { path = "vendor/accesskit_windows" }
+eframe = { path = "vendor/eframe" }
 
 [profile.release]
 opt-level = "s"

@@ -83,8 +83,6 @@ dependencies = [
 [[package]]
 name = "accesskit_windows"
 version = "0.29.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2d63dd5041e49c363d83f5419a896ecb074d309c414036f616dc0b04faca971"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -1043,8 +1041,6 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.33.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "457481173e6db5ca9fa2be93a58df8f4c7be639587aeb4853b526c6cf87db4e6"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -2156,6 +2152,8 @@ dependencies = [
 name = "hideout-shell"
 version = "0.1.0"
 dependencies = [
+ "accesskit",
+ "accesskit_windows",
  "eframe",
  "foxglove-plugin",
  "hideout-acl",
@@ -2172,6 +2170,7 @@ dependencies = [
  "sha2",
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",
+ "windows 0.61.3",
  "windows 0.62.2",
  "winit",
 ]
