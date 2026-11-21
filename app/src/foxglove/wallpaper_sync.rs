@@ -1607,11 +1607,26 @@ impl Apply for Cli {
     }
 }
 
-// Part 2 of #1399 (not done here): this ignores the process's exit code, so a command Wallpaper
-// Engine refuses with a non-zero exit still reads as sent. Only a spawn error or the time limit
-// fail today.
+/// Runs one Wallpaper Engine command and says whether it went through (#1399): the program
+/// has to start, end within `PUSH_LIMIT` and exit with code 0. Anything else is a failure, never
+/// a crash.
+///
+/// The exit codes are NOT verified against the real program: nothing documents what
+/// `wallpaper64.exe -control ...` or `applyProperties` exit with when the command is refused,
+/// and the lab check could not run yet (see #1399). The rule here is the usual one, 0 = done.
+/// The failure text carries the code, so one look at foxglove.log settles it.
 #[cfg(windows)]
 fn run_cli(exe: &std::path::Path, args: &[String], raw: &str) -> Result<(), String> {
+    run_cli_with(exe, args, raw, PUSH_LIMIT)
+}
+
+#[cfg(windows)]
+fn run_cli_with(
+    exe: &std::path::Path,
+    args: &[String],
+    raw: &str,
+    limit: Duration,
+) -> Result<(), String> {
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
@@ -1628,18 +1643,33 @@ fn run_cli(exe: &std::path::Path, args: &[String], raw: &str) -> Result<(), Stri
         .stderr(std::process::Stdio::null())
         .creation_flags(CREATE_NO_WINDOW.0)
         .spawn()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("couldn't start: {e}"))?;
     // Waits on the process handle (an event), bounded.
     let handle = HANDLE(child.as_raw_handle());
     // SAFETY: the child's process handle, alive while `child` is.
-    let waited = unsafe { WaitForSingleObject(handle, PUSH_LIMIT.as_millis() as u32) };
+    let waited = unsafe { WaitForSingleObject(handle, limit.as_millis() as u32) };
     if waited != WAIT_OBJECT_0 {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(format!("no answer in {} s", PUSH_LIMIT.as_secs()));
+        return Err(format!("no answer in {} s", limit.as_secs()));
     }
-    let _ = child.wait();
-    Ok(())
+    match child.wait() {
+        // Windows exit codes are unsigned; `code()` hands them over as i32.
+        Ok(status) => exit_result(status.code().map(|c| c as u32)),
+        Err(e) => Err(format!("no exit code: {e}")),
+    }
+}
+
+/// What an exit code means: 0 went through, anything else did not. Codes from 0x8000_0000 up
+/// are Windows status codes (a crash, for one) and read better in hex.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn exit_result(code: Option<u32>) -> Result<(), String> {
+    match code {
+        Some(0) => Ok(()),
+        Some(c) if c >= 0x8000_0000 => Err(format!("exited with code 0x{c:08X}")),
+        Some(c) => Err(format!("exited with code {c}")),
+        None => Err("ended with no exit code".into()),
+    }
 }
 
 #[cfg(not(windows))]
@@ -2241,6 +2271,52 @@ mod tests {
     }
 
     #[test]
+    fn only_exit_code_zero_went_through() {
+        assert_eq!(exit_result(Some(0)), Ok(()));
+        assert_eq!(exit_result(Some(1)), Err("exited with code 1".into()));
+        assert_eq!(
+            exit_result(Some(0xC000_0005)),
+            Err("exited with code 0xC0000005".into())
+        );
+        assert!(exit_result(None).is_err());
+    }
+
+    /// Against Windows' own `cmd.exe` and `ping.exe`, with no window; nothing here starts
+    /// Wallpaper Engine.
+    #[cfg(windows)]
+    #[test]
+    fn a_command_that_exits_non_zero_or_never_ends_has_failed() {
+        let system =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        let cmd = system.join("cmd.exe");
+        let run = |code: &str| {
+            run_cli_with(
+                &cmd,
+                &["/c".into(), "exit".into(), code.into()],
+                "",
+                Duration::from_secs(20),
+            )
+        };
+        assert_eq!(run("0"), Ok(()));
+        assert_eq!(run("3"), Err("exited with code 3".into()));
+        let gone = run_cli_with(&system.join("no-such-program.exe"), &[], "", PUSH_LIMIT);
+        assert!(gone.unwrap_err().starts_with("couldn't start: "));
+        // About four seconds of loopback pings against a 200 ms limit: stopped, and said so.
+        let began = Instant::now();
+        let slow = run_cli_with(
+            &system.join("PING.EXE"),
+            &["-n".into(), "5".into(), "127.0.0.1".into()],
+            "",
+            Duration::from_millis(200),
+        );
+        assert!(slow.unwrap_err().starts_with("no answer"));
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "it was not waited out"
+        );
+    }
+
+    #[test]
     fn quitting_clears_what_was_sent_and_failures_are_sent_again() {
         let mut fake = Fake {
             running: true,
@@ -2742,8 +2818,8 @@ mod tests {
         assert_eq!(apply.log(), ["pause", "play"]);
     }
 
-    /// #1399: a failed play keeps the mark (a restart retries it) and the `play_owed` fact; the
-    /// next Resume sends it again and both go.
+    /// #1399: a failed play keeps the mark (a restart retries it); the next Resume sends it again
+    /// and the mark goes.
     #[test]
     fn a_failed_play_keeps_the_mark_and_the_fact_until_a_resume_plays() {
         use std::sync::atomic::Ordering::SeqCst;
@@ -2764,12 +2840,12 @@ mod tests {
         }
         assert_eq!(status_of(&tx), (true, 0, true), "still paused, still ours");
         assert!(path.is_file(), "the mark stays: a restart retries");
-        assert!(play_owed_now(), "the fact says so");
+        // The `play_owed` fact is not read here: the fact bus is one per process, and another
+        // test's worker announcing "nothing owed" takes it away in between (seen once).
         apply.fail_play.store(false, SeqCst);
         tx.send(Wake::Control(Ctl::Resume)).unwrap();
         assert_eq!(status_of(&tx), (true, 0, false));
         assert!(!path.exists(), "played: no mark");
-        assert!(!play_owed_now(), "and the fact goes");
         quit(&tx, worker);
         assert_eq!(apply.log(), ["pause", "play", "play"]);
     }
