@@ -150,3 +150,29 @@ Follow-up option (not built): a lab verb `tray-menu-model` that lists the menu's
 muda `Menu` the tray already owns (text, enabled, checked, id), and `menu-pick <text>` that
 posts the item's `WM_COMMAND` directly without a menu open. That checks what the menu says and
 what a pick does, on any desktop; it does not check that Windows draws the menu.
+
+
+## Settings > Developer checks on the hidden desktop (DF1, DF2, DF5)
+
+`scripts/lab/hideout_dev_checks.py` starts three lab hubs one after another, each through
+`quiet-launch.ps1` on its own `ql-df*` desktop (hard time limit, kill-on-close job, teardown by
+desktop name), and drives them over the global lab pipe from the default desktop. No window, tray
+icon or focus change reaches the user's desktop. Needs `FOXGLOVE_APP_OK=1`; run `game-check.ps1` first.
+
+```powershell
+$env:FOXGLOVE_APP_OK = '1'
+python scripts\lab\hideout_dev_checks.py --app "$bin\hideout.exe" --lab <empty folder> --folder <dev folder>
+```
+
+`--folder` must pass the dev-folder rules (not under AppData, Temp or Downloads). Runs, with the
+seed written to each run's `hideout.toml`:
+
+| Run | Env | Checks |
+|---|---|---|
+| `dev-on` | `HIDEOUT_DEV_MODE=1`, one folder | DF1: Remove asks first (title, Cancel focused, "No apps from here. Nothing else changes."), Cancel keeps the folder, "Remove folder" removes it and says "Removed." with `hideout.toml` emptied. DF2: "No apps from here yet". The footnote. |
+| `dev-off` | none, one folder | DF5: the two "Developer mode is off" lines; no Remove button. |
+| `unsigned-only` | `HIDEOUT_DEV_UNSIGNED=1`, no folder | DF5: no Developer section. |
+
+Not covered: "Add a folder..." (a native picker), apps listed under a folder (needs a built dev app),
+and how anything looks. The words are copied from `dev_settings.rs`; a window-free test
+(`scripts/test_hideout_dev_checks.py`) fails if they drift.
