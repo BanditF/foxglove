@@ -7,23 +7,39 @@
 use std::path::Path;
 use std::sync::mpsc;
 
+use hideout_contract::capability::{tool_class, Capability, ToolClass};
 use hideout_router::server::Hub;
 use hideout_router::{Router, Settings};
 use hideout_supervisor::driver::Supervisor;
 
 use crate::panel_feed::{self, HubFeed};
 
-/// Outside tools until the permission dialog exists (Phase 2): what isn't sensitive is granted
-/// when the tool connects, without asking (#1142: docs never say "approved" where no prompt
-/// ran); sensitive asks (red in the dialog, §6.1) are left out.
-fn approver() -> hideout_router::Approver {
-    Box::new(|tool, asked| {
+/// What an outside tool is granted when it connects (S1): only the free set
+/// (`capability::tool_class`: read-only state, nothing personal). Everything else is left out;
+/// the router says so in words when the tool then calls it. A lab hub (`lab`: own folder, own
+/// pipe, lab switches on, said once at start) keeps the old rule so window-free lab runs work:
+/// whatever is not sensitive is granted without asking.
+pub(crate) fn approve(tool: &str, asked: &[Capability], lab: bool) -> Vec<Capability> {
+    if lab {
         let (yes, no): (Vec<_>, Vec<_>) = asked.iter().cloned().partition(|c| !c.sensitive());
         if !no.is_empty() {
-            log::warn!("router: {tool} asked for sensitive {no:?}; needs the permission dialog");
+            log::warn!("router: {tool:?} asked for sensitive {no:?}; left out");
         }
-        yes
-    })
+        return yes;
+    }
+    let (yes, no): (Vec<_>, Vec<_>) = asked
+        .iter()
+        .cloned()
+        .partition(|c| tool_class(c, None) == ToolClass::Free);
+    if !no.is_empty() {
+        let no: Vec<String> = no.iter().map(|c| c.to_string()).collect();
+        log::info!("router: outside tool {tool:?} not granted {no:?}");
+    }
+    yes
+}
+
+fn approver(lab: bool) -> hideout_router::Approver {
+    Box::new(move |tool, asked| approve(tool, asked, lab))
 }
 
 /// What the tab strip asks of the supervisor.
@@ -146,19 +162,25 @@ pub fn start(
     suffix: &str,
     fresh: crate::modules_page::Fresh,
 ) -> (Hub, Supervisor, HubFeed) {
-    let mut router = Router::new(Settings::default(), approver());
-    let mut manifests = Vec::new();
-    // Lab mode (#1001, docs/hideout-lab.md): said once, refused with its reason.
-    match hideout_registry::lab::lab_mode_from_env(home) {
-        hideout_registry::lab::LabMode::On => log::warn!(
-            "lab: lab mode on; loading lab modules from {}",
-            hideout_registry::lab::LabMode::modules_dir(home).display()
-        ),
+    // Lab mode (#1001, docs/hideout-lab.md): said once, refused with its reason. A build
+    // without `lab-switches` has none.
+    let lab_mode = hideout_registry::lab::lab_mode_from_env(home);
+    let lab = matches!(lab_mode, hideout_registry::lab::LabMode::On);
+    match lab_mode {
+        hideout_registry::lab::LabMode::On => {
+            log::warn!(
+                "lab: lab mode on; loading lab modules from {}",
+                hideout_registry::lab::LabMode::modules_dir(home).display()
+            );
+            log::warn!("lab: outside tools keep the lab approver: everything not sensitive is granted without asking");
+        }
         hideout_registry::lab::LabMode::Refused(why) => {
             log::warn!("lab: lab mode refused: {why}; no lab modules loaded")
         }
         hideout_registry::lab::LabMode::Off => {}
     }
+    let mut router = Router::new(Settings::default(), approver(lab));
+    let mut manifests = Vec::new();
     match hideout_registry::Registry::open_from_env(home) {
         Ok(reg) => {
             for line in &reg.lab_report {
@@ -472,7 +494,7 @@ mod tests {
         };
         save(&["a.art", "b.beat"]);
         let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
-        let mut router = Router::new(Settings::default(), approver());
+        let mut router = Router::new(Settings::default(), approver(false));
         router.load_registry(&reg);
         assert!(router.knows_module("b.beat"));
         let (events, _rx) = mpsc::channel();
@@ -571,7 +593,7 @@ mod tests {
         };
         assert_eq!(names(&crate::modules_page::installed(&home)), ["Art"]);
 
-        let mut router = Router::new(Settings::default(), approver());
+        let mut router = Router::new(Settings::default(), approver(false));
         router.load_registry(&hideout_registry::Registry::open_from_env(&home).unwrap());
         let _ = router.watch_facts(vec![String::new()]);
         let (events, _rx) = mpsc::channel();
@@ -719,7 +741,7 @@ permissions = [\"apps.watch:{label}.exe\"]
             .spawn()
             .unwrap();
 
-        let router = Router::new(Settings::default(), approver());
+        let router = Router::new(Settings::default(), approver(false));
         let (events, _rx) = mpsc::channel();
         let hub = Hub::new(router, events);
         hub.set_folder_suffix(&hideout_router::server::folder_suffix(&home));
@@ -820,6 +842,101 @@ permissions = [\"apps.watch:{label}.exe\"]
                 ("OK".to_string(), "dismiss".to_string()),
                 ("Open log".into(), "open-log:m.art".into()),
             ]
+        );
+    }
+
+    fn caps(list: &[&str]) -> Vec<Capability> {
+        list.iter().map(|s| Capability::parse(s).unwrap()).collect()
+    }
+
+    /// S1: a tool is granted the free set and nothing else.
+    #[test]
+    fn approver_grants_only_free() {
+        let asked = caps(&[
+            "devices.read",
+            "facts.read:keyboard.connected",
+            "facts.read:module.foxglove.state",
+            "audio.inputs.read",
+            "gpu.status",
+            "facts.read:*",
+            "facts.read:keyboard.layer",
+            "lighting.write",
+            "art.write",
+            "profiles.write",
+            "app.windows",
+            "hub.notify",
+        ]);
+        let granted = approve("some-tool", &asked, false);
+        assert_eq!(
+            granted,
+            caps(&[
+                "devices.read",
+                "facts.read:keyboard.connected",
+                "facts.read:module.foxglove.state",
+                "audio.inputs.read",
+                "gpu.status",
+            ])
+        );
+        let mut boxed = approver(false);
+        assert_eq!(
+            boxed("t", &caps(&["devices.read", "lighting.write"])),
+            caps(&["devices.read"])
+        );
+    }
+
+    #[test]
+    fn approver_refuses_keys_channel_secrets_behaviors_mute_wallpaper() {
+        for s in [
+            "key.events",
+            "hid.raw",
+            "channel.open:keyboard.keys/events",
+            "secrets",
+            "secrets.ref:vault",
+            "behaviors.invoke",
+            "audio.inputs.mute",
+            "wallpaper.control",
+            "net",
+            "net.connect:127.0.0.1:80",
+            "files",
+            "ai.ask:*",
+            "facts.write:media.now",
+        ] {
+            assert!(
+                approve("some-tool", &caps(&[s]), false).is_empty(),
+                "{s} was granted"
+            );
+        }
+    }
+
+    /// Decision 1: a lab hub keeps the frictionless approver; sensitive items stay out.
+    #[test]
+    fn lab_hub_keeps_old_approver() {
+        let asked = caps(&[
+            "devices.read",
+            "lighting.write",
+            "art.write",
+            "app.windows",
+            "secrets",
+            "behaviors.invoke",
+            "key.events",
+            "net",
+        ]);
+        let granted = approve("lab-script", &asked, true);
+        assert_eq!(
+            granted,
+            caps(&[
+                "devices.read",
+                "lighting.write",
+                "art.write",
+                "app.windows",
+                "secrets",
+                "behaviors.invoke",
+            ])
+        );
+        // The same list on a normal hub gets only the free item.
+        assert_eq!(
+            approve("lab-script", &asked, false),
+            caps(&["devices.read"])
         );
     }
 }

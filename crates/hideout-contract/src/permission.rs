@@ -162,6 +162,42 @@ impl Permission {
     }
 }
 
+/// The fact patterns a program outside Hideout may read without asking (`capability::tool_class`).
+/// Device or PC state that only the hub or a first-party app writes. An entry without `*` is one
+/// exact key; an entry ending in `.*` covers that prefix; `<id>` stands for one app id (no `*`).
+/// Anything not covered here is not free: a new fact is never free by default.
+pub const TOOL_FREE_FACTS: &[&str] = &[
+    "keyboard.connected",
+    "keyboard.link",
+    "keyboard.right.battery",
+    "keyboard.game_mode",
+    "keyboard.profile",
+    "keyboard.profile_connected",
+    "keyboard.lighting.*",
+    "sensor.*",
+    "volume.*",
+    "mic.state",
+    "module.<id>.state",
+    "module.<id>.version",
+];
+
+/// Whether the fact pattern `pattern` (as asked in `facts.read:<pattern>`) lies wholly inside
+/// [`TOOL_FREE_FACTS`].
+pub fn tool_free_fact(pattern: &str) -> bool {
+    TOOL_FREE_FACTS.iter().any(|e| {
+        if let Some((pre, post)) = e.split_once("<id>") {
+            return pattern
+                .strip_prefix(pre)
+                .and_then(|r| r.strip_suffix(post))
+                .is_some_and(|id| !id.is_empty() && !id.contains('*'));
+        }
+        match e.strip_suffix('*') {
+            Some(prefix) => pattern.starts_with(prefix),
+            None => pattern == *e,
+        }
+    })
+}
+
 /// Plain words for a fact pattern in a consent line: (pattern, what reading it is, what
 /// publishing it is). Display only: a grant is always for the exact pattern string, whatever
 /// these words say, and a lookup is an exact, case-sensitive match of the whole pattern, so a

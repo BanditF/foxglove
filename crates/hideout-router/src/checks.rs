@@ -257,6 +257,26 @@ pub fn may_call(caps: &Caps, method: &str, params: &Value) -> bool {
     }
 }
 
+/// The permission a routed call needs, for the words of a refusal; `None` when it needs none.
+/// The same rows as [`may_call`].
+pub fn needed_capability(method: &str, params: &Value) -> Option<Capability> {
+    let arg = |k: &str| params.get(k).and_then(Value::as_str).unwrap_or_default();
+    match method {
+        "gpu.status" => Some(Capability::GpuStatus),
+        "gpu.request" => Some(Capability::GpuRequest(match arg("class") {
+            "chat" => GpuClass::Chat,
+            "image" => GpuClass::Image,
+            _ => GpuClass::Any,
+        })),
+        "ai.ask" => Some(Capability::AiAsk(arg("agent").into())),
+        "image.generate" => Some(Capability::ImageGenerate),
+        m if m.starts_with("modules.") => Some(Capability::ModulesManage),
+        m => methods::find(m)
+            .and_then(|row| row.permission)
+            .and_then(|p| Capability::parse(p).ok()),
+    }
+}
+
 /// Who may receive a provider's event: holders of this permission. `None` = not broadcast (an
 /// event carrying `to: <lease>` is not broadcast: the router delivers it to that lease's holder,
 /// §8.8).
