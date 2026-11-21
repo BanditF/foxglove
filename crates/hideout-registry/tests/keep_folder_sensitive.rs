@@ -209,7 +209,7 @@ fn a_folder_that_syncs_or_cannot_be_read_keeps_nothing() {
 }
 
 #[test]
-fn files_secrets_and_channel_opens_wait_like_net_and_offers_do_not() {
+fn files_secrets_channel_opens_and_offers_wait_like_net() {
     let asks = [
         "hub.notify",
         "net",
@@ -225,12 +225,13 @@ fn files_secrets_and_channel_opens_wait_like_net_and_offers_do_not() {
     }
     std::fs::write(&f.exe, b"build 2").unwrap();
     assert!(f.reg.keep_followed(ID, LATER).unwrap());
-    assert_eq!(granted(&f), ["channel.offer:art", "hub.notify"]);
+    assert_eq!(granted(&f), ["hub.notify"]);
     let mut waiting = f.reg.inventory.modules[ID].pending_permissions.clone();
     waiting.sort();
     assert_eq!(
         waiting,
         [
+            "channel.offer:art",
             "channel.open:foxglove.example-link/art",
             "files",
             "net",
@@ -238,9 +239,13 @@ fn files_secrets_and_channel_opens_wait_like_net_and_offers_do_not() {
         ]
     );
     assert!(hideout_registry::permission::held_on_change("secrets"));
-    assert!(!hideout_registry::permission::held_on_change(
+    assert!(hideout_registry::permission::held_on_change(
         "channel.offer:art"
     ));
+    assert!(hideout_registry::permission::held_on_change(
+        "provide:a.read"
+    ));
+    assert!(!hideout_registry::permission::held_on_change("hub.notify"));
 }
 
 #[test]

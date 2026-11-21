@@ -1548,9 +1548,9 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
     first, so the folder step finds the bytes already bound and does nothing. A signed update
     keeps everything, Sensitive items and the keyboard included, with no prompt.
   - **Changed bytes with no attestation** carry only what is not held back. Held back are every
-    Sensitive item, `files`, `secrets`, and every `channel.open:*` (the registry cannot know a
-    channel's catalog risk, so all opens wait; offers such as `channel.offer:*` and `provide:*`
-    carry). The folder step
+    Sensitive item, `files`, `secrets`, every `channel.open:*` (the registry cannot know a
+    channel's catalog risk, so all opens wait), and every offer (`channel.offer:*` and
+    `provide:*`). The folder step
     moves each held item from `granted` to `pending_permissions` and `last_choice`, voids
     the keyboard record (reason `changed`), and never tells the router to follow the keyboard to
     the new file (`attested_keyboard_move` ignores folder steps). The module keeps running with
