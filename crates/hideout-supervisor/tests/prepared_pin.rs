@@ -16,9 +16,11 @@ use serde_json::Value;
 
 const ID: &str = "dev.unregistered";
 
-fn home() -> PathBuf {
+/// One folder per test: the tests run side by side in one process, and a shared folder let one
+/// test's clean-up delete the other's files (#1400).
+fn home(test: &str) -> PathBuf {
     let home = std::env::temp_dir()
-        .join(format!("hideout-prepared-pin-{}", std::process::id()))
+        .join(format!("hideout-prepared-pin-{}-{test}", std::process::id()))
         .join("home");
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
@@ -63,7 +65,7 @@ fn writable(p: &std::path::Path) -> bool {
 
 #[test]
 fn a_refused_preflight_leaves_the_old_copy_running_and_nothing_pinned() {
-    let home = home();
+    let home = home("refused");
     let h = hub(&home);
     let sup = Supervisor::start(&home, h.clone());
     running(&sup);
@@ -80,7 +82,7 @@ fn a_refused_preflight_leaves_the_old_copy_running_and_nothing_pinned() {
 
 #[test]
 fn a_launch_refused_after_the_stop_releases_the_pinned_build() {
-    let home = home();
+    let home = home("released");
     let exe = home.join("new-build.exe");
     std::fs::write(&exe, b"build 2").unwrap();
     let h = hub(&home);
