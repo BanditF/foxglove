@@ -606,7 +606,7 @@ fn autostart_client(
             State::Off => "off",
             State::Foreign => "foreign",
         };
-        say_line(&s);
+        say_line(s);
         return Some(0);
     }
     match autostart::remove(&ctx, &mut folder, &mut approval) {
