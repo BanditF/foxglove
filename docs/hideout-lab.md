@@ -154,6 +154,23 @@ files are UTF-8 without a BOM. `uia_tree.ps1 -ProcessName hideout -Title "Hideou
 the window (the title is matched exactly). Slow verbs (`update-ready` and friends) take ~30 s: `Hub.do`
 waits up to 90 s for them.
 
+The same run also checks D1 (the dialog opens with Not now focused) and C3/C4 (More actions, Remove
+from Hideout…, the question names the app and Cancel is focused and keeps it, Remove drops the row, the
+tray line and the process).
+
+### PC sensors flow (`--only s1`)
+
+`hideout_ux_run.py --only s1 --app <hideout.exe> --sensors <sensors.exe> --lab <empty folder>` runs the
+demo's PC sensors path. It copies the hub exe to `<lab>\hub` and places `sensors.exe` and
+`crates/sensors/module.toml` in `<lab>\hub\apps\sensors` (what `scripts/ops/demo-up.ps1 -SensorsExe` does
+next to a build); the lab's config dir is `<lab>\cfg` and must stay outside the hub's exe folder (a
+service file below the hub's own folder is refused). A lab hub reads that `apps` folder through the same
+read-only code as a real one (`LabMachine` hands `hub_exe_dir` and `sub_folders` to the real machine).
+Checks: Found card "Add PC sensors", the dialog in plain words (no raw permission ids), Allow starts it
+("1 app is running"), the page shows Processor and Graphics card temperature as numbers (never 0; a missing
+value reads "Not reported"), and, after the placed file's version changes, **Add an app…** offers
+"Update in Hideout" (the list looks at the folders again only when that box opens or the held apps change).
+
 ## On-call steps
 
 Use a hub build from its own target dir and a lab folder outside `%LOCALAPPDATA%`. Never point

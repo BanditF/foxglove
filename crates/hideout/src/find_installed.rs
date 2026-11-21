@@ -586,6 +586,14 @@ impl Machine for LabMachine {
     fn is_local_fixed(&self, p: &Path) -> bool {
         self.files.is_local_fixed(p)
     }
+    // Apps shipped next to the hub's exe are files on disk, not registry records: a lab hub reads
+    // them the same way (read-only), so a lab can run a copy of hideout.exe with an `apps` folder.
+    fn hub_exe_dir(&self) -> Option<PathBuf> {
+        self.files.hub_exe_dir()
+    }
+    fn sub_folders(&self, dir: &Path) -> Vec<PathBuf> {
+        self.files.sub_folders(dir)
+    }
 }
 
 /// The machine discovery reads: the lab's fake registry when this hub runs in lab mode (the
@@ -832,6 +840,52 @@ mod tests {
             .registry_subkeys("x")
             .is_empty());
         assert!(LabMachine::parse(Some("{"), Box::new(NoFiles)).is_err());
+    }
+
+    #[test]
+    fn lab_machine_lists_the_apps_next_to_the_hub_exe_from_the_files_machine() {
+        struct Beside;
+        impl Machine for Beside {
+            fn registry_string(&self, _: &str, _: &str) -> Option<String> {
+                None
+            }
+            fn env(&self, _: &str) -> Option<String> {
+                None
+            }
+            fn is_file(&self, _: &Path) -> bool {
+                false
+            }
+            fn exe_version(&self, _: &Path) -> Option<String> {
+                None
+            }
+            fn read_text(&self, _: &Path) -> Option<String> {
+                None
+            }
+            fn registry_subkeys(&self, _: &str) -> Vec<String> {
+                Vec::new()
+            }
+            fn canonical(&self, p: &Path) -> Option<PathBuf> {
+                Some(p.to_path_buf())
+            }
+            fn is_local_fixed(&self, _: &Path) -> bool {
+                true
+            }
+            fn hub_exe_dir(&self) -> Option<PathBuf> {
+                Some(PathBuf::from(r"C:\lab\hub"))
+            }
+            fn sub_folders(&self, dir: &Path) -> Vec<PathBuf> {
+                vec![dir.join("sensors")]
+            }
+        }
+        let m = LabMachine::parse(None, Box::new(Beside)).unwrap();
+        assert_eq!(m.hub_exe_dir(), Some(PathBuf::from(r"C:\lab\hub")));
+        assert_eq!(
+            m.sub_folders(Path::new(r"C:\lab\hub\apps")),
+            vec![PathBuf::from(r"C:\lab\hub\apps\sensors")]
+        );
+        // A lab with no files machine finds no folder.
+        let blank = LabMachine::parse(None, Box::new(NoFiles)).unwrap();
+        assert_eq!(blank.hub_exe_dir(), None);
     }
 
     #[test]
