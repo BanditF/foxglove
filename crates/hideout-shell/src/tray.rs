@@ -394,8 +394,20 @@ pub fn set_state(state: State, status_line: &str, tooltip: &str) {
             let _ = t.icon.set_tooltip(Some(tooltip));
             t.status.set_text(status_line);
             t.pause.set_checked(state == State::Paused);
+            {
+                let mut m = MODEL.lock().unwrap_or_else(|e| e.into_inner());
+                m.glyph = format!("{state:?}");
+                m.line = status_line.to_string();
+                m.tooltip = tooltip.to_string();
+            }
+            refresh_items(t);
         }
     });
+}
+
+/// Whether this is the thread that owns the icon (the UI thread, after `install`).
+pub fn on_icon_thread() -> bool {
+    TRAY.with(|t| t.try_borrow().is_ok_and(|t| t.is_some()))
 }
 
 /// Puts **Start normally** under the status line in safe mode and takes it out after. A no-op
