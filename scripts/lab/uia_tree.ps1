@@ -18,7 +18,7 @@
 # Group, Text, ...), Name the exact accessible name, state `on` (selected or toggled on) or `off`.
 #
 # -Page <name> (Keyboard, Lights, Scenes, Screens, Plugins, App) opens that page first, through
-# UI Automation only: the sidebar entry of that name is selected or invoked with its UIA pattern
+# UI Automation only: the sidebar entry of that name is selected, invoked or (toggled buttons, only when off) toggled with its UIA pattern
 # (no mouse, no keys, no focus change), then the tree is read after a short settle. It changes the
 # page the Settings window shows, as a click would, so use a lab instance. Nothing else is acted on.
 #
@@ -27,7 +27,7 @@
 # -Handle (decimal or 0x hex native window handle from that list).
 #
 # Exit codes: 0 all expectations met (or none given), 2 an expectation is missing, 3 refused or
-# window not found or ambiguous or the -Page entry not found, 4 timed out (a hard limit: a hung window cannot block it). Nothing is clicked, typed or focused, and the tree is only read, except that -Page selects or invokes one sidebar entry through UIA.
+# window not found or ambiguous or the -Page entry not found, 4 timed out (a hard limit: a hung window cannot block it). Nothing is clicked, typed or focused, and the tree is only read, except that -Page selects, invokes or toggles one sidebar entry through UIA.
 param(
     [int]$ProcessId = 0,
     [string]$Title = 'Foxglove',
@@ -126,6 +126,7 @@ if ($SelfTest) {
     foreach ($w in ('Start' + '-Process'), ('Invoke' + '-Item'), ('Invoke' + '-Expression'), ('Process]::' + 'Start')) {
         Check (-not $self.Contains($w)) "the script never uses $w"
     }
+    Check ($self -match 'TogglePattern\]::Pattern, \[ref\]\$pat') 'the -Page lookup falls back to TogglePattern (sidebar buttons have no Select or Invoke)'
     if ($fail.Count) { $fail | ForEach-Object { Write-Host "FAIL: $_" }; exit 1 }
     Write-Host 'uia_tree self-test: ok'
     exit 0
@@ -230,8 +231,20 @@ $walk = {
             if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pat)) {
                 $pat.Invoke(); $entry = $e; break
             }
+            # Foxglove's sidebar buttons are AccessKit toggled buttons: UIA gives them TogglePattern
+            # only (no Select, no Invoke). Toggle only an entry that is off, so an already open page
+            # stays open.
+            if ($e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pat)) {
+                if ($pat.Current.ToggleState -ne 'On') { $pat.Toggle() }
+                $entry = $e; break
+            }
         }
-        if (-not $entry) { return @{ error = "no sidebar entry named '$page' that can be selected or invoked" } }
+        if (-not $entry) {
+            $seen = @(foreach ($e in @($hits[0].FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond))) {
+                "$($e.Current.ControlType.ProgrammaticName -replace '^ControlType\.', '') [" + (($e.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName -replace 'Identifiers\.Pattern$', '' }) -join ',') + ']'
+            }) -join '; '
+            return @{ error = "no sidebar entry named '$page' that can be selected, invoked or toggled (elements of that name: $seen)" }
+        }
         # One short settle for the page to redraw and the tree to update (a single wait, no loop).
         Start-Sleep -Milliseconds 700
     }

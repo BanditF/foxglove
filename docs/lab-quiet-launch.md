@@ -176,3 +176,7 @@ seed written to each run's `hideout.toml`:
 Not covered: "Add a folder..." (a native picker), apps listed under a folder (needs a built dev app),
 and how anything looks. The words are copied from `dev_settings.rs`; a window-free test
 (`scripts/test_hideout_dev_checks.py`) fails if they drift.
+
+## `uia_tree.ps1 -Page` on the hidden desktop
+
+The Foxglove tree is exposed on the quiet launcher's private desktop (about 140 nodes in the `Foxglove` window). Earlier "no UIA tree" reports came from the probe picking the wrong one of the process's three top-level windows (`Foxglove overlay` and the winit event target have no descendants). The `-Page Scenes` failure had a different cause: the sidebar entries are AccessKit toggled buttons, which UIA gives only a TogglePattern (no Select, no Invoke), so the lookup skipped them. `-Page` now toggles an entry that is off (an entry that is already on is left alone), and its error lists the patterns of the elements it found. Use `-Title Foxglove` (or `-Handle`) so the settings window is the one read.
