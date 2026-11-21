@@ -98,6 +98,8 @@ The private desktop only isolates windows the child creates itself. These go aro
   atom table. Per **desktop** (not shared): windows, window hooks (SetWindowsHookEx global and
   low-level hooks only see the desktop of the caller), and the foreground. The tray: Shell_TrayWnd
   lives on the default desktop, so tray icons usually do not appear for a program on the hidden desktop.
+  The tray verbs of a lab hub (`tray-click`, `tray-menu`) do not work there either: see
+  "Tray on the hidden desktop" below.
   RegisterHotKey collisions with the user's session are unverified.
 - The default-desktop proof is `scripts/lab/quiet-launch-proof.ps1` (opens a small window on the hidden
   desktop; On-call runs it from the user's interactive session; PASS/FAIL/INFO lines). It first
@@ -116,3 +118,35 @@ environment block (a single NUL, no terminator), so `CreateProcessW` answered `E
 `lpDesktop` string (`winsta0\<name>`), handle inheritance, the token or the Claude-package shell
 (the main child, with a real env block, always started). Errors now print the API name, the numeric
 `GetLastError` and the system text; `-SelfTest` covers both (no process started). Proof is 13/13.
+
+## Tray on the hidden desktop (measured 11/20): `tray-click` and `tray-menu` cannot work
+
+Measured with a lab hub (`hideout.exe --lab`, `HIDEOUT_LAB=1`, `HIDEOUT_LAB_CAPTURE=1`, a scratch
+`HIDEOUT_CONFIG_DIR`) started through `quiet-launch.ps1` on a hidden desktop: the hub runs, the
+lab pipe answers, the log says `tray icon registered`, and `state` works. Every tray verb is
+accepted (`ok: true`, the message is posted to tray-icon's window), but `tray.events` stays 0,
+`tray.menu` stays null and the flyout never opens.
+
+Why: tray-icon 0.24.2's window procedure (`platform_impl/windows/mod.rs`, `WM_USER_TRAYICON`)
+drops the message with `return 0` before it builds any event when either of two calls fails:
+
+1. `GetCursorPos`: measured on the hidden desktop it returns FALSE with `ERROR_ACCESS_DENIED` (5), as it does for any thread whose desktop is not the input desktop. This one alone drops every tray message.
+2. `get_tray_rect` (`Shell_NotifyIconGetRect`), not measured separately: there is no taskbar on the hidden desktop
+   (`Shell_TrayWnd` and Explorer live on the default desktop), so it has no icon rectangle to give.
+
+So neither `Click`/`DoubleClick` events (hence `tray.events`, the flyout and `open` commands) nor
+the right-click menu (`TrackPopupMenu`, which also needs the foreground) can happen. It is a limit
+of the desktop, not of the launcher; `tray.events` counts commands from left clicks only, so a
+right-click never moves it even on the default desktop.
+
+What this means for checks:
+- The H4.7 tray menu item check ("Free GPU" and the other menu texts) cannot be proctored on the
+  hidden desktop with these verbs. Tray-menu checks stay a sitting step on the default desktop
+  (On-call, with the user away from any game), or move to a menu-model verb (see below).
+- Everything that does not go through the tray icon works on the hidden desktop: `state`, `click`,
+  `focus`, `key`, `set-setting`, the update verbs, and `uia_tree.ps1`.
+
+Follow-up option (not built): a lab verb `tray-menu-model` that lists the menu's items from the
+muda `Menu` the tray already owns (text, enabled, checked, id), and `menu-pick <text>` that
+posts the item's `WM_COMMAND` directly without a menu open. That checks what the menu says and
+what a pick does, on any desktop; it does not check that Windows draws the menu.
