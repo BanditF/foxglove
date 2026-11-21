@@ -127,6 +127,18 @@ Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighti
   (3 and 4 aren't connected). The board can't be read back, so the app saves the colours it
   set (`[pc_lighting]`) and puts them back when the board arrives, unless an app its catalog
   entry names in `[[device.conflict]]` runs (OMEN Light Studio for the 45L).
+- **A board's own effects:** a driver may offer effects the device plays by itself
+  (`LightingDevice::effects`, each saying whether it uses the zone colours), from the names in
+  its catalog entry's `effects`. `omen_tracer` starts breathing (each zone in its colour),
+  colour cycle, wave and radial (a fixed six-colour spectrum, through the calibration), at the
+  board's slowest speed only; it never starts blinking, and faster speeds wait until the speeds
+  are timed against the flash limit. The Lights page shows an **Own effect** picker on any
+  device whose driver offers some; the pick is saved (`effect = "breathing"` in the device's
+  `[pc_lighting]` entry) and started again when the board arrives. A scene, a lease, Identify
+  and the calibrator draw steady colours over it, and it starts again when they end. Colours
+  picked by hand, Match keyboard and Off end an effect that doesn't use the zone colours. The
+  effect reports follow the public description of the board's protocol and aren't verified on
+  hardware yet (#90).
 - **LCD pump caps (#614):** `witmod_lcd`, for Witmod-firmware LCD pump caps (the 45L's
   `03F0:7397`). Every number it knows is the entry's `[device.witmod]` table: the vendor
   interface (usage page, usage), report ids and lengths, the claim op and how often the vendor's
@@ -167,8 +179,8 @@ Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighti
   `lighting-catalog.local.toml` next to the settings (same format, wins over the bundled entry
   for the same VID/PID); "Copy entry" puts it on the clipboard to share or contribute.
 
-Not yet: lighting leases (#73) for case boards, the board's own effects (breathing, colour
-cycle, themes), and the OMEN liquid cooler's ring and fans (`03F0:7397`), which keep their own
+Not yet: lighting leases (#73) for case boards, the board's own blinking effect, effect speeds
+and themes, and the OMEN liquid cooler's ring and fans (`03F0:7397`), which keep their own
 rainbow until a capture of HP's software shows the ring command (#614).
 
 ### Backends and where they live

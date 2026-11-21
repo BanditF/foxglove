@@ -56,6 +56,8 @@ pub enum Intent {
     Off(String),
     Identify(String),
     Match(String, bool),
+    /// The effect of its own a device plays by itself; `None`: steady colours.
+    Effect(String, Option<String>),
     /// Add a device: blink one zone (only ever from a click).
     TestZone {
         vid: u16,
@@ -191,6 +193,7 @@ pub fn act(ctx: &egui::Context, intent: Intent, devices: &[Row], draft: &mut Dra
             }
             pc_lights::send(Msg::Match(key, on));
         }
+        Intent::Effect(key, effect) => pc_lights::send(Msg::Effect { key, effect }),
         Intent::TestZone {
             vid,
             pid,
@@ -1052,6 +1055,9 @@ fn device(
                 Control::NotYet => false,
             };
             let colours = colours && zones(ui, row, draft, false, &mut asked);
+            if colours && driven {
+                own_effect(ui, row, busy, &mut asked);
+            }
             actions(ui, row, busy, driven, colours, draft, &mut asked);
             asked
         },
@@ -1212,6 +1218,92 @@ fn zones(
         }
     });
     true
+}
+
+/// The label of a device's own-effect picker, and its entry for none.
+pub const OWN_EFFECT: &str = "Own effect";
+pub const STEADY: &str = "Steady colours";
+
+/// An effect's catalog name as the picker shows it: "colour cycle" is "Colour cycle".
+fn effect_name(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// The own-effect picker's hover: what an own effect is, and which of these use the zone
+/// colours (from the driver's list, so no device's effects are named here).
+pub fn own_effect_tip(effects: &[pc_lighting::OnboardEffect]) -> String {
+    let names = |own: bool| {
+        effects
+            .iter()
+            .filter(|e| e.own_colours == own)
+            .map(|e| effect_name(&e.name))
+            .collect::<Vec<_>>()
+    };
+    let (zone, fixed) = (names(true), names(false));
+    let colours = match (zone.as_slice(), fixed.is_empty()) {
+        ([], _) => "It uses its own colours, so Apply colours ends it.".to_string(),
+        (_, true) => "It uses the colours above.".to_string(),
+        ([one], false) => format!(
+            "{one} uses the colours above; the others use their own, so Apply colours ends them."
+        ),
+        (many, false) => format!(
+            "{} use the colours above; the others use their own, so Apply colours ends them.",
+            many.join(", ")
+        ),
+    };
+    format!(
+        "The device plays this by itself, also while Foxglove is closed. A scene draws over it \
+         while it runs. {colours}"
+    )
+}
+
+/// The picker's entries: the words, the effect each asks for, and whether it is the pick.
+fn own_effect_entries(row: &Row) -> Vec<(String, Option<String>, bool)> {
+    let mut entries = vec![(STEADY.to_string(), None, row.effect.is_none())];
+    entries.extend(row.effects.iter().map(|e| {
+        let on = row.effect.as_deref() == Some(e.name.as_str());
+        (effect_name(&e.name), Some(e.name.clone()), on)
+    }));
+    entries
+}
+
+/// The open row's own-effect line (review/ux-plan-tracer-onboard-effects.md): a picker of the
+/// effects the device plays by itself, on a device whose driver offers some. A pick acts at
+/// once, like Match keyboard.
+fn own_effect(ui: &mut egui::Ui, row: &Row, busy: bool, out: &mut Vec<Intent>) {
+    if row.effects.is_empty() {
+        return;
+    }
+    let entries = own_effect_entries(row);
+    let shown = entries
+        .iter()
+        .find(|e| e.2)
+        .map_or(STEADY, |e| e.0.as_str())
+        .to_string();
+    let own_tip = own_effect_tip(&row.effects);
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        let label = ui.label(theme::caps_label(ui, OWN_EFFECT));
+        ui.add_enabled_ui(!busy, |ui| {
+            let combo = egui::ComboBox::from_id_salt(("pc-own-effect", &row.key))
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (words, effect, on) in entries {
+                        if ui.selectable_label(on, words).clicked() && !on {
+                            out.push(Intent::Effect(row.key.clone(), effect));
+                        }
+                    }
+                })
+                .response
+                .labelled_by(label.id);
+            theme::with_info(ui, combo, &own_tip);
+        });
+    });
 }
 
 /// The open row's last line: Match keyboard (with its ⓘ) on the left; Calibrate…, Off and
@@ -1450,6 +1542,19 @@ pub mod tests {
             kind: foxglove_devices::pc_lighting::DeviceKind::Case,
             shape: None,
             lamp_access: None,
+            // What the driver starts of the catalog's five: not blinking.
+            effects: [
+                ("breathing", true),
+                ("colour cycle", false),
+                ("wave", false),
+                ("radial", false),
+            ]
+            .map(|(name, own_colours)| pc_lighting::OnboardEffect {
+                name: name.into(),
+                own_colours,
+            })
+            .to_vec(),
+            effect: None,
             calibration_hint: None,
         }
     }
@@ -1500,6 +1605,8 @@ pub mod tests {
                         kind: pc_lighting::DeviceKind::Cooler,
                         shape: None,
                         lamp_access: None,
+                        effects: Vec::new(),
+                        effect: None,
                         calibration_hint: None,
                     },
                     Row {
@@ -1527,6 +1634,8 @@ pub mod tests {
                         kind: Default::default(),
                         shape: None,
                         lamp_access: Some(Default::default()),
+                        effects: Vec::new(),
+                        effect: None,
                         calibration_hint: None,
                     },
                 ],
@@ -1637,6 +1746,8 @@ pub mod tests {
             kind: Default::default(),
             shape: None,
             lamp_access: None,
+            effects: Vec::new(),
+            effect: None,
             calibration_hint: None,
         }
     }
@@ -2079,6 +2190,78 @@ pub mod tests {
         assert_eq!(zones_tip(&case), super::super::light_zones::TIP);
     }
 
+    /// The own-effect picker: only on a device whose driver offers effects, its entries in the
+    /// driver's order after Steady colours, the saved one picked, and its hover from the list.
+    #[test]
+    fn the_own_effect_picker_lists_what_the_driver_offers() {
+        let v = sample();
+        let mut row = v.pc.devices[0].clone();
+        let entries = own_effect_entries(&row);
+        let words: Vec<_> = entries.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(
+            words,
+            [
+                "Steady colours",
+                "Breathing",
+                "Colour cycle",
+                "Wave",
+                "Radial"
+            ]
+        );
+        assert_eq!(entries[0], ("Steady colours".into(), None, true));
+        assert_eq!(entries[2].1.as_deref(), Some("colour cycle"));
+        row.effect = Some("wave".into());
+        let picked: Vec<_> = own_effect_entries(&row)
+            .into_iter()
+            .filter(|e| e.2)
+            .collect();
+        assert_eq!(picked, [("Wave".into(), Some("wave".into()), true)]);
+        // The closed combo shows the pick.
+        let mut playing = v.clone();
+        playing.pc.devices[0].effect = Some("wave".into());
+        let open = |v: &View| {
+            frame_text(
+                v,
+                &mut Draft::default(),
+                &mut Wizard::default(),
+                true,
+                false,
+            )
+        };
+        assert!(open(&playing).contains("Wave\n"));
+        assert!(!open(&v).contains("Wave\n"));
+        assert!(
+            open(&v).contains("OWN EFFECT\nSteady colours\n"),
+            "{}",
+            open(&v)
+        );
+        // No picker on a device without own effects (the mouse, the cooler, the second desk).
+        let mut none = v.clone();
+        none.pc.devices[0].effects.clear();
+        assert!(!reachable(&none).contains("OWN EFFECT"));
+        assert!(!reachable(&sample_second_desk()).contains("OWN EFFECT"));
+        // The hover names which effects take the zone colours, from the list.
+        let fx = |own: &[bool]| -> Vec<_> {
+            own.iter()
+                .enumerate()
+                .map(|(i, own)| pc_lighting::OnboardEffect {
+                    name: format!("effect {i}"),
+                    own_colours: *own,
+                })
+                .collect()
+        };
+        assert!(own_effect_tip(&fx(&[true, true])).ends_with("It uses the colours above."));
+        assert!(own_effect_tip(&fx(&[false])).ends_with("so Apply colours ends it."));
+        assert!(own_effect_tip(&fx(&[true, true, false])).ends_with(
+            "Effect 0, Effect 1 use the colours above; the others use their own, so Apply \
+             colours ends them."
+        ));
+        assert!(!theme::repeats_label(
+            OWN_EFFECT,
+            &own_effect_tip(&row.effects)
+        ));
+    }
+
     /// What a click on a device's thumbnail asks for (#804): two frames, the press and the
     /// release, over the thumbnail where the first frame put it.
     fn click_thumb(v: &View, key: &str, busy: bool) -> Vec<Intent> {
@@ -2402,6 +2585,18 @@ pub mod tests {
                         "Apply colours",
                         "Match keyboard",
                         MATCH_TIP,
+                    ]),
+                    // The case board's own effects.
+                    s(&[
+                        "OWN EFFECT",
+                        "Steady colours",
+                        "Breathing",
+                        "Colour cycle",
+                        "Wave",
+                        "Radial",
+                        "The device plays this by itself, also while Foxglove is closed. A \
+                         scene draws over it while it runs. Breathing uses the colours above; \
+                         the others use their own, so Apply colours ends them.",
                     ]),
                     swatch_names.clone(),
                     // O23, O24, O29

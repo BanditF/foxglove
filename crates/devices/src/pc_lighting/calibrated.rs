@@ -6,7 +6,7 @@
 //! restore, an identify or a recalibration puts the same palette back through the current
 //! calibration.
 
-use super::{LampAccess, LightingDevice, ZoneSpec};
+use super::{LampAccess, LightingDevice, OnboardEffect, ZoneSpec};
 use crate::calibration::{self, Calibration};
 use crate::{Result, Rgb};
 
@@ -80,6 +80,23 @@ impl LightingDevice for Calibrated {
             }
         }
         Ok(())
+    }
+
+    fn effects(&self) -> Vec<OnboardEffect> {
+        self.inner.effects()
+    }
+
+    fn effect(&self) -> Option<String> {
+        self.inner.effect()
+    }
+
+    /// An effect's colours go through the zone's calibration like any colour.
+    fn set_effect(&mut self, name: &str, colors: &[(usize, Vec<Rgb>)]) -> Result<()> {
+        let sent: Vec<_> = colors
+            .iter()
+            .map(|(i, list)| (*i, list.iter().map(|&c| self.calibrated(*i, c)).collect()))
+            .collect();
+        self.inner.set_effect(name, &sent)
     }
 }
 
