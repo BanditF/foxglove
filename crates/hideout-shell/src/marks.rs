@@ -117,6 +117,16 @@ impl Marks {
         self.names.insert(id.into(), name.into());
     }
 
+    /// A module left the inventory (Remove from Hideout): the tray forgets everything it knew of it,
+    /// so "No apps yet" returns when it was the last one.
+    pub fn forget(&mut self, id: &str) {
+        self.names.remove(id);
+        self.states.remove(id);
+        self.failed.remove(id);
+        self.holders.remove(id);
+        self.needs.retain(|(n, _)| n != id);
+    }
+
     /// A hub on a folder of its own says "Hideout (lab)" in its tooltip.
     pub fn set_lab(&mut self, on: bool) {
         self.lab = on;
@@ -433,6 +443,12 @@ pub fn note_name(id: &str, name: &str) {
     wake_if_changed();
 }
 
+/// A module left the inventory (the hub calls it on a removal).
+pub fn note_removed(id: &str) {
+    with(|m| m.forget(id));
+    wake_if_changed();
+}
+
 /// A hub fact (the hub calls it for every fact). Wakes the UI thread only when the tray's look
 /// changes.
 pub fn note_fact(key: &str, value: &serde_json::Value) {
@@ -731,6 +747,23 @@ mod tests {
         m.fact(key, &json!({"wallpaper-engine": []}));
         m.fact(key, &serde_json::Value::Null);
         assert_eq!(m.take_resume_change(), Some(None));
+    }
+
+    /// Remove from Hideout: once the last module is forgotten the tray says "No apps yet" again.
+    #[test]
+    fn removing_the_last_module_brings_back_no_apps_yet() {
+        let mut m = Marks::default();
+        m.name("a.art", "Art");
+        m.name("b.fox", "Fox");
+        m.fact("module.a.art.state", &json!("running"));
+        m.fact("module.b.fox.state", &json!("off"));
+        assert_eq!(m.look().1, "1 app is running");
+        m.forget("a.art");
+        assert_eq!(m.look().1, "No app is running", "Fox is still known");
+        m.forget("b.fox");
+        assert_eq!(m.look().1, "No apps yet");
+        m.forget("never.was");
+        assert_eq!(m.look().1, "No apps yet");
     }
 
     /// Every state has a plain line; "No apps yet" is only for no modules at all (#8).

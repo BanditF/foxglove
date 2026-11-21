@@ -209,6 +209,7 @@ impl RouterSide {
     /// The module left the inventory (#1012.4): the shell closes its tabs and pop-outs.
     pub fn removed(&self, module: &str) {
         quick_actions::note_removed(module);
+        hideout_shell::marks::note_removed(module);
         self.0.push(Inbound::ModuleRemoved {
             module: module.to_string(),
         });
