@@ -28,7 +28,7 @@ pub const MODE_OFF_MORE: &str = "Apps from them ask for your OK at their next bu
 pub const ADDED: &str = "Added. Apps you allow from here keep what you allowed over rebuilds.";
 pub const ALREADY: &str = "That folder is already on the list.";
 pub const REMOVED: &str = "Removed.";
-pub const FAILED: &str = "Hideout couldn't save that. Nothing changed.";
+pub const FAILED: &str = "Hideout couldn't save that. Nothing changed. Try again.";
 
 /// The folder is off the list but the clean-up behind it failed: "Nothing changed" would be untrue.
 pub const REMOVED_NOT_TIDY: &str =
@@ -260,7 +260,9 @@ pub enum Problem {
 impl Problem {
     pub fn line(self) -> &'static str {
         match self {
-            Problem::Missing => "Hideout can't find that folder.",
+            Problem::Missing => {
+                "Hideout can't find that folder. Check that it still exists, or choose another."
+            }
             Problem::PlugIn => {
                 "Folders on a USB or other plug-in drive can't be dev folders. Choose one on this PC's own drive."
             }
@@ -283,8 +285,12 @@ impl Problem {
             Problem::Profile => {
                 "Your whole profile folder can't be a dev folder. Choose a project folder inside it."
             }
-            Problem::DropZone => "Folders in AppData, Temp or Downloads can't be dev folders.",
-            Problem::System => "System and shared folders can't be dev folders.",
+            Problem::DropZone => {
+                "Folders in AppData, Temp or Downloads can't be dev folders. Choose a project folder outside them."
+            }
+            Problem::System => {
+                "System and shared folders can't be dev folders. Choose a project folder of your own."
+            }
             Problem::WhoUnknown => "Hideout couldn't check who can change that folder. Try again.",
             Problem::FolderOpen => {
                 "Other accounts on this PC can change files in that folder. Choose one only you can change."
@@ -420,6 +426,33 @@ mod tests {
         );
     }
 
+    /// A refusal says what to do next: a second sentence that starts with a verb the person
+    /// can act on.
+    #[test]
+    fn every_refusal_says_what_to_do_next() {
+        let next = ["Choose ", "Try again.", "Check ", "Rename "];
+        for l in ALL.iter().map(|p| p.line()).chain([FAILED]) {
+            let last = l.trim_end_matches('.').rsplit(". ").next().unwrap();
+            assert!(l.contains(". "), "{l}");
+            assert!(
+                next.iter().any(|n| format!("{last}.").starts_with(n)),
+                "{l}"
+            );
+        }
+        assert_eq!(
+            Problem::Missing.line(),
+            "Hideout can't find that folder. Check that it still exists, or choose another."
+        );
+        assert_eq!(
+            Problem::DropZone.line(),
+            "Folders in AppData, Temp or Downloads can't be dev folders. Choose a project folder outside them."
+        );
+        assert_eq!(
+            Problem::System.line(),
+            "System and shared folders can't be dev folders. Choose a project folder of your own."
+        );
+    }
+
     #[test]
     fn a_listed_row_says_what_hideout_does_not_what_to_choose() {
         for p in ALL {
@@ -435,7 +468,10 @@ mod tests {
         assert_eq!(CONFIRM_TITLE, "Remove this dev folder?");
         assert_eq!((CONFIRM_CANCEL, CONFIRM_OK), ("Cancel", "Remove folder"));
         assert_eq!(REMOVE_BUTTON, "Remove\u{2026}");
-        assert_eq!(FAILED, "Hideout couldn't save that. Nothing changed.");
+        assert_eq!(
+            FAILED,
+            "Hideout couldn't save that. Nothing changed. Try again."
+        );
         assert_eq!(
             confirm_body(&[]),
             "No apps from here. Nothing else changes."

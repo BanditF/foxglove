@@ -43,9 +43,14 @@ pub mod words {
     pub const CANCEL: &str = "Cancel";
     pub const NO_FILE: &str =
         "Hideout can't find the app here. Choose the folder the app was installed in.";
-    pub const NOT_READ: &str = "That app's file could not be read.";
-    pub const NOT_ADDABLE: &str = "That app can't be added to Hideout.";
-    pub const NOT_THIS_PC: &str = "That folder is not on this PC.";
+    // Each refusal ends with a next step that Browse can do from where it is shown.
+    pub const NOT_READ: &str =
+        "That app's file could not be read. Reinstall the app, then try again.";
+    pub const NOT_ADDABLE: &str =
+        "That app can't be added to Hideout. Choose another app's folder.";
+    /// Also shown when the folder is on this PC but the app it names is on another drive.
+    pub const NOT_THIS_PC: &str =
+        "Hideout adds apps only from this PC's own drive. Choose a folder there.";
     pub fn already(name: &str) -> String {
         format!("{name} is already in Hideout.")
     }
@@ -1171,6 +1176,36 @@ mod tests {
         assert!(s.found.is_empty(), "same list: no new registry read");
         s.scan(&f, &["other".into()], false);
         assert_eq!(s.found.len(), 1);
+    }
+
+    /// A refused pick says what to do next, in exact words.
+    #[test]
+    fn a_refused_pick_says_what_to_do_next() {
+        assert_eq!(
+            words::NOT_READ,
+            "That app's file could not be read. Reinstall the app, then try again."
+        );
+        assert_eq!(
+            words::NOT_ADDABLE,
+            "That app can't be added to Hideout. Choose another app's folder."
+        );
+        assert_eq!(
+            words::NOT_THIS_PC,
+            "Hideout adds apps only from this PC's own drive. Choose a folder there."
+        );
+        for w in [
+            words::NO_FILE,
+            words::NOT_READ,
+            words::NOT_ADDABLE,
+            words::NOT_THIS_PC,
+        ] {
+            let last = w.trim_end_matches('.').rsplit(". ").next().unwrap();
+            assert!(w.contains(". "), "{w}");
+            assert!(
+                last.starts_with("Choose ") || last.ends_with("try again"),
+                "{w}"
+            );
+        }
     }
 
     /// No UI string names a product: the words module is generic.

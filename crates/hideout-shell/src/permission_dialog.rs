@@ -86,9 +86,10 @@ pub fn keep_allow_first(name: &str) -> String {
     format!("Allow {name} first.")
 }
 
-/// Shown when the list changed while the confirm was open.
+/// Shown on the app's entry when its list changed while the confirm was open (the confirm has
+/// closed by then).
 pub fn keep_changed_open(name: &str) -> String {
-    format!("{name} changed while this was open. Nothing was changed.")
+    format!("{name} changed while you were choosing. Nothing was saved. Look at its list again, then choose.")
 }
 
 /// "New build on 17 Nov 2026, 20:40. Your OK stayed (kept for this folder)." and, when the
@@ -1539,7 +1540,7 @@ mod tests {
         assert_eq!(keep_allow_first("Foxglove"), "Allow Foxglove first.");
         assert_eq!(
             keep_changed_open("Foxglove"),
-            "Foxglove changed while this was open. Nothing was changed."
+            "Foxglove changed while you were choosing. Nothing was saved. Look at its list again, then choose."
         );
         assert_eq!(KEEP_CONFIRM_TITLE, "Keep your OK for this folder?");
         assert_eq!((KEEP_CONFIRM_OK, CANCEL), ("Keep my OK", "Cancel"));
