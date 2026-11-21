@@ -606,22 +606,20 @@ fn autostart_client(
             State::Off => "off",
             State::Foreign => "foreign",
         };
-        say_line(&format!("{s}"));
+        say_line(&s);
         return Some(0);
     }
     match autostart::remove(&ctx, &mut folder, &mut approval) {
         Ok(Outcome::Changed) => {
-            say_line(&format!("removed the Hideout startup shortcut"));
+            say_line("removed the Hideout startup shortcut");
             Some(0)
         }
         Ok(Outcome::Unchanged) => {
-            say_line(&format!(
-                "nothing to remove (no Hideout startup shortcut for this exe)"
-            ));
+            say_line("nothing to remove (no Hideout startup shortcut for this exe)");
             Some(0)
         }
         Ok(Outcome::SkippedLabRun) => {
-            say_line(&format!("hideout: a test run writes nothing"));
+            say_line("hideout: a test run writes nothing");
             Some(2)
         }
         Err(e) => {
@@ -649,7 +647,7 @@ fn adopt_client(
     let folder = std::path::absolute(&folder).unwrap_or(folder);
     match adopt::run(&paths.root, &folder, &hideout_registry::catalogs::now_utc()) {
         Ok(line) => {
-            say_line(&format!("{line}"));
+            say_line(&line);
             Some(0)
         }
         Err(e) => {
