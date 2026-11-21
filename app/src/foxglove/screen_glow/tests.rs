@@ -440,13 +440,41 @@ fn the_words_are_the_designs() {
     );
     assert_eq!(tooltip_status(true), "Connected · Screen glow on");
     assert_eq!(tooltip_status(false), "Disconnected · Screen glow on");
+    let c = |screens, known, hdr| Counts {
+        screens,
+        known,
+        hdr,
+    };
+    let none = Counts::default();
     assert_eq!(
-        diagnostics_line(true, "held (full-screen game)", 0.0),
+        diagnostics_line(true, "held (full-screen game)", none, Rate::PerSecond(0.0)),
         "Screen glow: allowed · held (full-screen game) · 0 updates/s"
     );
     assert_eq!(
-        diagnostics_line(false, "stopped", 0.0),
-        "Screen glow: not allowed · stopped · 0 updates/s"
+        diagnostics_line(false, "stopped", none, Rate::None),
+        "Screen glow: not allowed · stopped"
+    );
+    assert_eq!(
+        diagnostics_line(true, "running", c(2, 2, 1), Rate::PerSecond(14.0)),
+        "Screen glow: allowed · running · 2 screens, 1 HDR · 14 updates/s"
+    );
+    assert_eq!(
+        diagnostics_line(true, "running", c(2, 2, 0), Rate::PerSecond(14.0)),
+        "Screen glow: allowed · running · 2 screens, 0 HDR · 14 updates/s"
+    );
+    // One screen has told, one hasn't: only the told one is counted.
+    assert_eq!(
+        diagnostics_line(true, "running", c(2, 1, 1), Rate::PerSecond(14.0)),
+        "Screen glow: allowed · running · 2 screens, 1 HDR · 14 updates/s"
+    );
+    // None has told yet: nothing about HDR.
+    assert_eq!(
+        diagnostics_line(true, "running", c(2, 0, 0), Rate::NotYet),
+        "Screen glow: allowed · running · 2 screens · updates/s not measured yet"
+    );
+    assert_eq!(
+        diagnostics_line(true, "running", c(1, 1, 0), Rate::NotYet),
+        "Screen glow: allowed · running · 1 screen, 0 HDR · updates/s not measured yet"
     );
     assert_eq!(
         [Smoothing::Quick, Smoothing::Even, Smoothing::Calm].map(smoothing_label),
@@ -460,4 +488,62 @@ fn the_words_are_the_designs() {
     // The smoothing default follows Windows' animation effects (on under test).
     assert_eq!(smoothing_for(None), Smoothing::Even);
     assert_eq!(smoothing_for(Some(Smoothing::Quick)), Smoothing::Quick);
+}
+
+/// A capture that answers one fixed HDR answer once it has given a picture.
+struct Formatted {
+    answer: Option<bool>,
+    shown: bool,
+}
+
+impl Capture for Formatted {
+    fn next(&mut self, _wait: Duration) -> Result<Got, String> {
+        self.shown = true;
+        Err("done".into())
+    }
+
+    fn hdr(&self) -> Option<bool> {
+        self.answer.filter(|_| self.shown)
+    }
+}
+
+#[test]
+fn a_capture_that_has_not_told_its_format_is_not_known() {
+    let mut hdr = Formatted {
+        answer: Some(true),
+        shown: false,
+    };
+    assert_eq!(hdr.hdr(), None);
+    let _ = hdr.next(Duration::ZERO);
+    assert_eq!(hdr.hdr(), Some(true));
+    let sdr = Formatted {
+        answer: Some(false),
+        shown: true,
+    };
+    assert_eq!(sdr.hdr(), Some(false));
+    // A capture that doesn't override it (the default) is not known.
+    struct Plain;
+    impl Capture for Plain {
+        fn next(&mut self, _wait: Duration) -> Result<Got, String> {
+            Ok(Got::Unchanged)
+        }
+    }
+    assert_eq!(Plain.hdr(), None);
+}
+
+#[test]
+fn the_tally_counts_only_screens_that_have_told() {
+    let t = Tally::new(3);
+    let counts = |screens, known, hdr| Counts {
+        screens,
+        known,
+        hdr,
+    };
+    assert_eq!(t.counts(), counts(3, 0, 0));
+    assert_eq!(t.set(0, None), None);
+    assert_eq!(t.set(0, Some(true)), Some(counts(3, 1, 1)));
+    assert_eq!(t.set(0, Some(true)), None);
+    assert_eq!(t.set(1, Some(false)), Some(counts(3, 2, 1)));
+    assert_eq!(t.set(9, Some(true)), None);
+    assert_eq!(t.counts(), counts(3, 2, 1));
 }

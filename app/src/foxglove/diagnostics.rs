@@ -413,7 +413,7 @@ pub(crate) fn sample() -> Facts {
         lights: vec!["zmk:1d50:615e: pomodoro (Normal)".into()],
         room: "monitor 597x336 at 0,0 (0 lights), keyboard left 124x90 at 134,486 (1 lights)".into(),
         scene: "demo scanline running 12 s, 180 case frames, 120 keyboard colours".into(),
-        screen_glow: "not allowed · stopped · 0 updates/s".into(),
+        screen_glow: "not allowed · stopped".into(),
         screen_readers: "on".into(),
         services: vec![
             "pc-lights: service stopped after 5 failures (Panicked: bad report)".into(),
