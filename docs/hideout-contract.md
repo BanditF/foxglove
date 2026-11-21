@@ -652,7 +652,8 @@ plug-ins** (no dylibs, no scripts in the hub).
   folder and program must still resolve below that `apps` folder (a link that leads out is skipped).
   An id Hideout already has, or another source found, is not listed again; an app whose program is
   missing is not offered. Adding registers it as `adopted`; nothing is allowed or started before the
-  first-run OK.
+  first-run OK. When the file's version or program differs from the record of an app added this way,
+  the card offers **Update in Hideout**; re-registering voids the grant and the Allow is asked again.
 - **Dev folders (#1297).** With dev mode on (`HIDEOUT_DEV_MODE=1`, and only that: it is a separate
   switch from unsigned sideload, §12.6), an adopted app inside a folder the user marked keeps
   its grants across a rebuild; sensitive growth and leaving the folder still ask again.
