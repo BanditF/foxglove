@@ -18,6 +18,7 @@ Where a file has an `SPDX-License-Identifier` header, that header decides.
 | `app/resources/plugins/` (plugin icons, empty-state art) | MIT, [LICENSE](LICENSE) | The owner's Bandit art, like the right-hand Bandit scenes (MIT although it sits under `app/`); see [docs/plugin-icons.md](docs/plugin-icons.md) |
 | `app/` | GPL-3.0-only, [app/LICENSE](app/LICENSE) | The Foxglove app: [KeyPeek](https://github.com/srwi/keypeek) by Stephan Rumswinkel, absorbed with its history (via BanditF/keypeek) and renamed. Our changes to it are GPL-3.0 too |
 | `app/vendor/eframe/`, `app/vendor/accesskit_windows/` | MIT OR Apache-2.0 (upstream's) | Copies of eframe 0.36.1 and accesskit_windows 0.32.1 with small marked patches so screen-reader support (AccessKit) can be on without a crash, #1376. Same licences as upstream; see [app/vendor/README.md](app/vendor/README.md) |
+| `vendor/eframe/`, `vendor/accesskit_windows/` | MIT OR Apache-2.0 (upstream's) | Copies of eframe 0.33.3 and accesskit_windows 0.29.2 with small marked patches (`HIDEOUT PATCH`) so the Hideout hub can have screen-reader support (AccessKit) without a crash, #1381. Same licences as upstream; see [vendor/README.md](vendor/README.md) |
 | `docs/upstream/` | not stated | The vendor's original README |
 
 **How the parts combine:** firmware builds use only MIT code and the art. The desktop app is
