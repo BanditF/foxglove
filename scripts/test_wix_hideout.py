@@ -161,6 +161,17 @@ class InstallerDialogs(unittest.TestCase):
             self.assertIn(s, txt)
         self.assertEqual(self.dlg['HideoutInstallDlg'].get('Title'), 'Install Hideout')
 
+    def test_focus_starts_on_the_accept_box_not_on_read_the_license(self):
+        # WiX 3: the first control that takes the keyboard, in source order, is where the focus
+        # starts. With "Read the license" first, Enter on the fresh page opened the license.
+        takes_keys = [x.get('Id') for x in self.dlg['HideoutInstallDlg'].findall('w:Control', NS)
+                      if x.get('Type') in ('PushButton', 'CheckBox') and x.get('TabSkip') != 'yes']
+        self.assertEqual(takes_keys, ['LicenseAccepted', 'ReadLicense', 'Install', 'Cancel'])
+        c = self.controls('HideoutInstallDlg')
+        self.assertIsNone(c['ReadLicense'].get('Default'))
+        # the places on the page keep the reading order: the button above the box
+        self.assertLess(int(c['ReadLicense'].get('Y')), int(c['LicenseAccepted'].get('Y')))
+
     def test_license_page_shows_the_rtf_and_goes_back(self):
         c = self.controls('HideoutLicenseDlg')
         self.assertEqual(c['License'].get('Type'), 'ScrollableText')
@@ -180,6 +191,11 @@ class InstallerDialogs(unittest.TestCase):
             self.assertEqual(c[cid].find('w:Condition', NS).text.strip(), 'REMOVE~="ALL"')
         self.assertEqual(c['TitleRemoved'].find('w:Condition', NS).text.strip(), 'NOT REMOVE~="ALL"')
         self.assertIn('Hideout is removed', self.all_text('ExitDialog'))
+        # ... and that the user's apps and settings stay, only then
+        self.assertEqual(c['DescriptionRemoved'].get('Text'), 'Your apps and their settings stay in your user folder.')
+        self.assertEqual(c['DescriptionRemoved'].find('w:Condition', NS).text.strip(), 'NOT REMOVE~="ALL"')
+        self.assertEqual((c['DescriptionRemoved'].get('X'), c['DescriptionRemoved'].get('Y')),
+                         (c['Description'].get('X'), c['Description'].get('Y')))
         # the launch condition and the box's visibility agree
         self.assertIn('NOT Installed', self.publishes(c['Finish'])[0][2])
         txt = self.all_text('ExitDialog')
