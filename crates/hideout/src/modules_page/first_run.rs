@@ -328,12 +328,11 @@ impl Fx {
     fn look(&mut self) {
         let d = self.page.discover.as_mut().unwrap();
         let ids: Vec<String> = self.page.installed.iter().map(|m| m.id.clone()).collect();
-        d.state.scan(&*d.machine, &ids, false);
+        d.state.scan(&*d.machine, &d.home, &ids, false);
         let shown: Vec<_> = d.state.shown().iter().map(|c| c.id.clone()).collect();
-        let why =
-            d.state.found.is_empty().then(|| {
-                crate::discover::from_folder(&*d.machine, &self.base.join("install")).err()
-            });
+        let why = d.state.found.is_empty().then(|| {
+            crate::discover::from_folder(&*d.machine, &d.home, &self.base.join("install")).err()
+        });
         assert_eq!(
             shown,
             vec![self.id.clone()],

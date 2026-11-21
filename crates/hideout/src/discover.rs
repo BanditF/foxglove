@@ -51,6 +51,9 @@ pub mod words {
     /// Also shown when the folder is on this PC but the app it names is on another drive.
     pub const NOT_THIS_PC: &str =
         "Hideout adds apps only from this PC's own drive. Choose a folder there.";
+    /// The folder is one Hideout keeps for its own files (below its `modules` folder).
+    pub const INSIDE_HUB: &str =
+        "Hideout keeps that folder for its own files. Choose the folder the app was installed in.";
     pub fn already(name: &str) -> String {
         format!("{name} is already in Hideout.")
     }
@@ -150,7 +153,7 @@ fn is_manifest_file(p: &Path) -> bool {
 
 /// The app described by the manifest in `at`: the folder, the manifest file, or a folder with
 /// the manifest one level down in `hideout\`. Plain-words error when it is not an addable app.
-pub fn from_folder(m: &dyn Machine, at: &Path) -> Result<Candidate, String> {
+pub fn from_folder(m: &dyn Machine, home: &Path, at: &Path) -> Result<Candidate, String> {
     // Local fixed drives only. Checked on the text first (no disk access, so a dead network
     // drive can't stall the page), then on the canonical path, which is what is read and added.
     if !is_local(at) || !m.is_local_fixed(at) {
@@ -171,20 +174,24 @@ pub fn from_folder(m: &dyn Machine, at: &Path) -> Result<Candidate, String> {
         .ok_or_else(|| words::NO_FILE.to_string())?;
     let module =
         Module::parse(&text, &Context::default()).map_err(|_| words::NOT_READ.to_string())?;
-    if module.kind != Kind::Adopted {
-        return Err(words::NOT_ADDABLE.into());
-    }
-    let program = module
-        .run
-        .as_ref()
-        .and_then(|r| r.first())
-        .map(|r| folder.join(r));
-    // The program is on a local fixed drive too (text and drive type, then resolved).
-    let program = match program {
-        Some(p) => {
-            Some(find_installed::local_path(m, &p).ok_or_else(|| words::NOT_THIS_PC.to_string())?)
+    let program = match module.kind {
+        Kind::Adopted => {
+            let program = module
+                .run
+                .as_ref()
+                .and_then(|r| r.first())
+                .map(|r| folder.join(r));
+            // The program is on a local fixed drive too (text and drive type, then resolved).
+            match program {
+                Some(p) => Some(
+                    find_installed::local_path(m, &p)
+                        .ok_or_else(|| words::NOT_THIS_PC.to_string())?,
+                ),
+                None => None,
+            }
         }
-        None => None,
+        Kind::Service => Some(service_program(m, home, &folder, &module)?),
+        _ => return Err(words::NOT_ADDABLE.into()),
     };
     Ok(Candidate {
         text: Some(text),
@@ -196,9 +203,80 @@ pub fn from_folder(m: &dyn Machine, at: &Path) -> Result<Candidate, String> {
     })
 }
 
+/// Whether `p` is `base` or below it (component by component, case-insensitive).
+fn inside(p: &Path, base: &Path) -> bool {
+    let parts = |x: &Path| -> Vec<String> {
+        x.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    let (p, base) = (parts(p), parts(base));
+    p.len() >= base.len() && p[..base.len()] == base[..]
+}
+
+/// The program of a `service` app file in `folder`, as an absolute canonical path. In this
+/// order: the folder is not Hideout's own (`<home>\modules`); `run[0]` is a plain relative name
+/// (the contract's stays-inside rule, enforced by the parse and checked again here: no `..`,
+/// root or drive); it is joined to the folder, resolved, and must be on a local fixed drive;
+/// the resolved program must still be below the folder (a link that leads out is refused).
+fn service_program(
+    m: &dyn Machine,
+    home: &Path,
+    folder: &Path,
+    module: &Module,
+) -> Result<PathBuf, String> {
+    let hub_modules = home.join("modules");
+    let hub_modules = m.canonical(&hub_modules).unwrap_or(hub_modules);
+    if inside(folder, &hub_modules) {
+        return Err(words::INSIDE_HUB.into());
+    }
+    let run0 = module
+        .run
+        .as_ref()
+        .and_then(|r| r.first())
+        .ok_or_else(|| words::NOT_READ.to_string())?;
+    let plain = Path::new(run0)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !plain {
+        return Err(words::NOT_ADDABLE.into());
+    }
+    let exe = find_installed::local_path(m, &folder.join(run0))
+        .ok_or_else(|| words::NOT_THIS_PC.to_string())?;
+    if exe.as_path() == folder || !inside(&exe, folder) {
+        return Err(words::NOT_ADDABLE.into());
+    }
+    Ok(exe)
+}
+
+/// A `service` app file as an `adopted` one: the same text with only `kind` and `run[0]`
+/// rewritten (`run[0]` = `exe`). A table edit, so every other byte, comment and key stays.
+fn adopted_text(text: &str, exe: &Path) -> Result<String, String> {
+    let exe = exe
+        .to_str()
+        .ok_or_else(|| "the program's path is not text".to_string())?;
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("module.toml: {e}"))?;
+    let kind = doc
+        .get_mut("kind")
+        .and_then(toml_edit::Item::as_value_mut)
+        .ok_or("module.toml: no kind")?;
+    let decor = kind.decor().clone();
+    *kind = toml_edit::Value::from("adopted");
+    *kind.decor_mut() = decor;
+    let run = doc
+        .get_mut("run")
+        .and_then(toml_edit::Item::as_array_mut)
+        .ok_or("module.toml: no run")?;
+    if run.is_empty() {
+        return Err("module.toml: run is empty".into());
+    }
+    run.replace(0, exe);
+    Ok(doc.to_string())
+}
+
 /// The apps found on this PC that are not in Hideout yet (`installed` = the ids it already has):
 /// self-registered ones first, then fallback-list products they did not already cover.
-pub fn discover(m: &dyn Machine, installed: &[String]) -> Vec<Candidate> {
+pub fn discover(m: &dyn Machine, home: &Path, installed: &[String]) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     for sub in m.registry_subkeys(MODULES_KEY) {
         let key = format!(r"{MODULES_KEY}\{sub}");
@@ -208,7 +286,7 @@ pub fn discover(m: &dyn Machine, installed: &[String]) -> Vec<Candidate> {
         else {
             continue;
         };
-        match from_folder(m, Path::new(&path)) {
+        match from_folder(m, home, Path::new(&path)) {
             // The key names the app; a manifest for another id is not that key's app.
             // An app whose program is gone is not offered: there is nothing to add.
             Ok(c) if c.id == sub && c.program.as_deref().is_some_and(|p| m.is_file(p)) => {
@@ -256,15 +334,30 @@ pub fn add(
     let done = match (&c.origin, &c.text) {
         (Origin::Folder(f), Some(text)) => {
             // Still the same file, byte for byte (name, program and permissions too)...
-            match from_folder(m, f) {
-                Ok(again) if again.text.as_deref() == Some(text.as_str()) => {}
+            match from_folder(m, home, f) {
+                Ok(again)
+                    if again.text.as_deref() == Some(text.as_str())
+                        && again.program == c.program => {}
                 _ => return Err(words::changed(&c.name)),
             }
+            // A service app file is registered as adopted: only `kind` and `run[0]` change.
+            let text = match Module::parse(text, &Context::default()) {
+                Ok(module) if module.kind == Kind::Service => {
+                    match c.program.as_deref().map(|p| adopted_text(text, p)) {
+                        Some(Ok(t)) => t,
+                        other => {
+                            log::warn!("discover: {} not staged: {other:?}", c.id);
+                            return Err(words::not_saved(&c.name));
+                        }
+                    }
+                }
+                _ => text.clone(),
+            };
             // ...and what is registered is the text the user was shown, staged and adopted
             // from there, so a swap after this point cannot reach the inventory.
             let dir = staging.join(format!("add-{}", c.id));
             let staged = std::fs::create_dir_all(&dir)
-                .and_then(|()| std::fs::write(dir.join("module.toml"), text))
+                .and_then(|()| std::fs::write(dir.join("module.toml"), &text))
                 .map_err(|e| format!("{}: {e}", dir.display()))
                 .and_then(|()| crate::adopt::run(home, &dir, now));
             let _ = std::fs::remove_dir_all(&dir);
@@ -332,19 +425,19 @@ pub struct AddApp {
 
 impl AddApp {
     /// Looks again when what Hideout already holds changed since the last look (or `force`).
-    pub fn scan(&mut self, m: &dyn Machine, installed: &[String], force: bool) {
+    pub fn scan(&mut self, m: &dyn Machine, home: &Path, installed: &[String], force: bool) {
         if !force && self.scanned_for.as_deref() == Some(installed) {
             return;
         }
-        self.found = discover(m, installed);
+        self.found = discover(m, home, installed);
         self.scanned_for = Some(installed.to_vec());
     }
 
     /// **Add an app…**: opens the box (and looks again, in case an app was installed since).
-    pub fn open_box(&mut self, m: &dyn Machine, installed: &[String]) {
+    pub fn open_box(&mut self, m: &dyn Machine, home: &Path, installed: &[String]) {
         self.adding = true;
         self.note = None;
-        self.scan(m, installed, true);
+        self.scan(m, home, installed, true);
     }
 
     pub fn cancel(&mut self) {
@@ -378,7 +471,7 @@ impl AddApp {
         now: &str,
     ) -> Option<String> {
         let folder = picker.pick_folder()?;
-        match from_folder(m, &folder) {
+        match from_folder(m, home, &folder) {
             Ok(c) if installed.contains(&c.id) => {
                 self.note = Some(Note::info(words::already(&c.name)));
                 None
@@ -497,7 +590,8 @@ mod ui {
                         .add_found(self.machine.as_ref(), &id, &self.home, &staging, &now)
                 }
                 Click::OpenBox => {
-                    self.state.open_box(self.machine.as_ref(), installed);
+                    self.state
+                        .open_box(self.machine.as_ref(), &self.home, installed);
                     None
                 }
                 Click::Browse => self.state.browse(
@@ -527,7 +621,8 @@ mod ui {
             t: &Tokens,
             installed: &[String],
         ) -> Option<String> {
-            self.state.scan(self.machine.as_ref(), installed, false);
+            self.state
+                .scan(self.machine.as_ref(), &self.home, installed, false);
             let mut click = None;
             let shown: Vec<Candidate> = self.state.shown().into_iter().cloned().collect();
             if self.state.adding
@@ -724,6 +819,11 @@ mod tests {
         )
     }
 
+    /// A hub folder for tests that never touch it.
+    fn hh() -> PathBuf {
+        PathBuf::from(r"C:\HubHome")
+    }
+
     fn dir(name: &str) -> PathBuf {
         PathBuf::from(format!(r"C:\Apps\{name}"))
     }
@@ -754,7 +854,7 @@ mod tests {
         let mut f = Fake::default();
         register(&mut f, "gizmo", "Gizmo", "2.0.1", false);
         register(&mut f, "widget", "Widget", "0.3.0", true);
-        let found = discover(&f, &[]);
+        let found = discover(&f, &hh(), &[]);
         let names: Vec<_> = found
             .iter()
             .map(|c| (c.id.as_str(), c.name.as_str()))
@@ -777,7 +877,7 @@ mod tests {
             (format!(r"{MODULES_KEY}\other"), String::new()),
             dir("gizmo").display().to_string(),
         );
-        let found = discover(&f, &[]);
+        let found = discover(&f, &hh(), &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, "gizmo");
     }
@@ -813,7 +913,7 @@ mod tests {
             dir("junk").join("module.toml"),
             (String::new(), Some("not toml {".into())),
         );
-        let found = discover(&f, &[]);
+        let found = discover(&f, &hh(), &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, "good");
     }
@@ -837,7 +937,7 @@ mod tests {
             PathBuf::from(r"C:\Apps\vulpes\venv\Scripts\arete.exe"),
             ("0.1.0".into(), None),
         );
-        let found = discover(&f, &[]);
+        let found = discover(&f, &hh(), &[]);
         let ids: Vec<_> = found.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["foxglove", "vulpes"]);
         let vulpes = found.iter().find(|c| c.id == "vulpes").unwrap();
@@ -854,7 +954,7 @@ mod tests {
         let mut f = Fake::default();
         register(&mut f, "gizmo", "Gizmo", "1.0.0", false);
         register(&mut f, "widget", "Widget", "1.0.0", false);
-        let found = discover(&f, &["gizmo".to_string()]);
+        let found = discover(&f, &hh(), &["gizmo".to_string()]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, "widget");
     }
@@ -895,7 +995,7 @@ mod tests {
         let (install, f) = app_on_disk("browse", "gizmo");
         let home = temp("browse-home");
         let mut s = AddApp::default();
-        s.open_box(&f, &[]);
+        s.open_box(&f, &hh(), &[]);
         assert!(s.adding);
         let id = s.browse(&f, &Pick(Some(install)), &home, &temp("stg"), &[], NOW);
         assert_eq!(id.as_deref(), Some("gizmo"));
@@ -964,7 +1064,7 @@ mod tests {
         let home = temp("found-home");
         let stg = temp("stg3");
         let mut s = AddApp::default();
-        s.scan(&f, &[], false);
+        s.scan(&f, &hh(), &[], false);
         assert_eq!(s.found.len(), 1);
         assert_eq!(
             s.add_found(&f, "gizmo", &home, &stg, NOW).as_deref(),
@@ -980,7 +1080,7 @@ mod tests {
         );
         g.files.remove(&gone.join("tool.exe"));
         let mut s2 = AddApp::default();
-        s2.scan(&g, &[], false);
+        s2.scan(&g, &hh(), &[], false);
         assert!(s2.found.is_empty());
     }
 
@@ -993,7 +1093,7 @@ mod tests {
             install.display().to_string(),
         );
         let mut s = AddApp::default();
-        s.scan(&f, &[], false);
+        s.scan(&f, &hh(), &[], false);
         assert_eq!(s.found.len(), 1);
         f.files.remove(&install.join("tool.exe"));
         std::fs::remove_file(install.join("tool.exe")).unwrap();
@@ -1014,7 +1114,7 @@ mod tests {
         let (install, mut f) = app_on_disk("net", "gizmo");
         f.remote.push(install.clone());
         assert_eq!(
-            from_folder(&f, &install).unwrap_err(),
+            from_folder(&f, &hh(), &install).unwrap_err(),
             words::NOT_THIS_PC.to_string()
         );
         // A local-looking path that resolves onto a remote drive is refused too.
@@ -1025,14 +1125,14 @@ mod tests {
             PathBuf::from(r"Z:\share\app"),
         );
         assert_eq!(
-            from_folder(&g, Path::new(r"C:\Apps\link")).unwrap_err(),
+            from_folder(&g, &hh(), Path::new(r"C:\Apps\link")).unwrap_err(),
             words::NOT_THIS_PC.to_string()
         );
         // And it never reaches discovery.
         let mut h = Fake::default();
         register(&mut h, "gizmo", "Gizmo", "1.0.0", false);
         h.remote.push(dir("gizmo"));
-        assert!(discover(&h, &[]).is_empty());
+        assert!(discover(&h, &hh(), &[]).is_empty());
     }
 
     #[test]
@@ -1045,7 +1145,7 @@ mod tests {
         );
         let home = temp("swap-home");
         let mut s = AddApp::default();
-        s.scan(&f, &[], false);
+        s.scan(&f, &hh(), &[], false);
         // Another app's manifest lands in the folder (the fake and the disk agree).
         let exe = install
             .join("tool.exe")
@@ -1074,7 +1174,7 @@ mod tests {
         );
         let home = temp("swap2-home");
         let mut s = AddApp::default();
-        s.scan(&f, &[], false);
+        s.scan(&f, &hh(), &[], false);
         // Same id and version, another program.
         let other = install
             .join("other.exe")
@@ -1102,7 +1202,7 @@ mod tests {
         );
         let home = temp("same-home");
         let mut s = AddApp::default();
-        s.scan(&f, &[], false);
+        s.scan(&f, &hh(), &[], false);
         let shown = s.found[0].text.clone().unwrap();
         // The disk file changes after the card; the fake still shows the old text (a swap
         // that lands after the re-read). The registered record is still the shown text.
@@ -1124,7 +1224,7 @@ mod tests {
         register(&mut f, "gizmo", "Gizmo", "1.0.0", false);
         f.remote.push(PathBuf::from("C:/Apps/x.exe"));
         assert_eq!(
-            from_folder(&f, &dir("gizmo")).unwrap_err(),
+            from_folder(&f, &hh(), &dir("gizmo")).unwrap_err(),
             words::NOT_THIS_PC.to_string()
         );
     }
@@ -1146,7 +1246,7 @@ mod tests {
                 )),
             ),
         );
-        let found = discover(&f, &[]);
+        let found = discover(&f, &hh(), &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "Gizmo");
         assert_eq!(found[0].folder(), dir("gizmo").display().to_string());
@@ -1157,7 +1257,7 @@ mod tests {
         let mut f = Fake::default();
         register(&mut f, "gizmo", "Gizmo", "1.0.0", false);
         let mut s = AddApp::default();
-        s.scan(&f, &[], false);
+        s.scan(&f, &hh(), &[], false);
         assert_eq!(s.shown().len(), 1);
         s.dismiss();
         assert!(s.shown().is_empty());
@@ -1169,13 +1269,318 @@ mod tests {
     fn scan_only_looks_again_when_the_installed_list_changes() {
         let mut f = Fake::default();
         let mut s = AddApp::default();
-        s.scan(&f, &[], false);
+        s.scan(&f, &hh(), &[], false);
         assert!(s.found.is_empty());
         register(&mut f, "gizmo", "Gizmo", "1.0.0", false);
-        s.scan(&f, &[], false);
+        s.scan(&f, &hh(), &[], false);
         assert!(s.found.is_empty(), "same list: no new registry read");
-        s.scan(&f, &["other".into()], false);
+        s.scan(&f, &hh(), &["other".into()], false);
         assert_eq!(s.found.len(), 1);
+    }
+
+    // ---- service app files (Add an app accepts them and registers them as adopted) ----
+
+    /// A service app file as an app ships it: relative `run[0]`, two permissions, a comment.
+    fn service_text(id: &str, run0: &str) -> String {
+        format!(
+            "# A service app.\nid = \"{id}\"\nname = \"Gadget\"\nversion = \"0.1.0\"\n\
+             kind = \"service\" # how it runs\nfamily = \"vulpes\"\nhub = \"1.5\"\n\
+             run = [\"{run0}\", \"--quiet\"]\n\
+             permissions = [\"facts.write:gadget.*\", \"facts.read:keyboard.game_mode\"]\n\
+             provides = [\"facts:gadget.*\"]\n\n[[ui.panels]]\nid = \"page\"\nslot = \"page\"\n\
+             title = \"Gadget\"\nicon = \"chart\"\n"
+        )
+    }
+
+    /// A real folder with `svc.exe` and a service app file, with a fake `Machine` that reads it.
+    fn service_on_disk(name: &str, id: &str, run0: &str) -> (PathBuf, Fake, String) {
+        let install = temp(name);
+        std::fs::write(install.join("svc.exe"), b"x").unwrap();
+        let text = service_text(id, run0);
+        std::fs::write(install.join("module.toml"), &text).unwrap();
+        let mut f = Fake::default();
+        f.files.insert(
+            install.join("module.toml"),
+            (String::new(), Some(text.clone())),
+        );
+        f.files
+            .insert(install.join("svc.exe"), ("0.1.0".into(), None));
+        (install, f, text)
+    }
+
+    #[test]
+    fn a_service_app_file_is_added_as_adopted_with_its_program_resolved_next_to_it() {
+        let (install, f, _) = service_on_disk("svc-add", "vulpes.gadget", "svc.exe");
+        let home = temp("svc-add-home");
+        let mut s = AddApp::default();
+        let id = s.browse(
+            &f,
+            &Pick(Some(install.clone())),
+            &home,
+            &temp("svc-stg"),
+            &[],
+            NOW,
+        );
+        assert_eq!(id.as_deref(), Some("vulpes.gadget"));
+        assert_eq!(
+            s.note,
+            Some(Note::info("Added Gadget. Choose what it may do."))
+        );
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        let rec = &reg.inventory.modules["vulpes.gadget"];
+        assert_eq!(rec.source, "adopted");
+        let m = hideout_contract::module::Module::parse(
+            &std::fs::read_to_string(reg.module_dir("vulpes.gadget", "0.1.0").join("module.toml"))
+                .unwrap(),
+            &Context::default(),
+        )
+        .unwrap();
+        assert_eq!(m.kind, Kind::Adopted);
+        let run = m.run.unwrap();
+        assert_eq!(Path::new(&run[0]), install.join("svc.exe"));
+        assert!(Path::new(&run[0]).is_absolute());
+        assert_eq!(run[1], "--quiet");
+        // Nothing granted: every permission is pending, nothing is allowed or on.
+        let view = reg.permission_view("vulpes.gadget").unwrap();
+        assert!(view.granted.is_empty());
+        assert!(view.adopted);
+        let mut pending = view.pending.clone();
+        pending.sort();
+        assert_eq!(
+            pending,
+            ["facts.read:keyboard.game_mode", "facts.write:gadget.*"]
+        );
+        assert!(!reg.hub.enabled("vulpes.gadget"));
+    }
+
+    #[test]
+    fn the_staged_text_is_the_original_except_kind_and_run_0() {
+        let (install, f, original) = service_on_disk("svc-text", "vulpes.gadget", "svc.exe");
+        let home = temp("svc-text-home");
+        let mut s = AddApp::default();
+        assert!(s
+            .browse(
+                &f,
+                &Pick(Some(install.clone())),
+                &home,
+                &temp("svc-stg2"),
+                &[],
+                NOW
+            )
+            .is_some());
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        let staged =
+            std::fs::read_to_string(reg.module_dir("vulpes.gadget", "0.1.0").join("module.toml"))
+                .unwrap();
+        let (a, b): (Vec<_>, Vec<_>) = (original.lines().collect(), staged.lines().collect());
+        assert_eq!(a.len(), b.len());
+        let mut changed = Vec::new();
+        for (x, y) in a.iter().zip(&b) {
+            if x != y {
+                changed.push((*x, *y));
+            }
+        }
+        assert_eq!(changed.len(), 2, "{changed:?}");
+        // The comment on the kind line stays.
+        assert_eq!(changed[0].0, "kind = \"service\" # how it runs");
+        assert_eq!(changed[0].1, "kind = \"adopted\" # how it runs");
+        assert!(changed[1].0.starts_with("run = [\"svc.exe\""));
+        assert!(changed[1].1.starts_with("run = ["));
+        assert!(changed[1].1.ends_with(", \"--quiet\"]"));
+        // Same keys and values otherwise (id, permissions, panels).
+        let before: toml_edit::DocumentMut = original.parse().unwrap();
+        let after: toml_edit::DocumentMut = staged.parse().unwrap();
+        for k in [
+            "id",
+            "name",
+            "version",
+            "family",
+            "hub",
+            "permissions",
+            "provides",
+            "ui",
+        ] {
+            assert_eq!(before[k].to_string(), after[k].to_string(), "{k}");
+        }
+    }
+
+    #[test]
+    fn a_run_that_leaves_the_folder_is_refused() {
+        let home = temp("svc-esc-home");
+        for run0 in [
+            "../svc.exe",
+            "sub/../../svc.exe",
+            "C:/Windows/x.exe",
+            "/x.exe",
+            "\\\\srv\\s\\x.exe",
+        ] {
+            let (install, f, _) = service_on_disk("svc-esc", "vulpes.gadget", run0);
+            let mut s = AddApp::default();
+            assert!(s
+                .browse(&f, &Pick(Some(install)), &home, &temp("svc-stg3"), &[], NOW)
+                .is_none());
+            let n = s.note.clone().unwrap();
+            assert!(n.error, "{run0}");
+            assert!(
+                n.text == words::NOT_READ || n.text == words::NOT_ADDABLE,
+                "{run0}: {}",
+                n.text
+            );
+        }
+        // A link inside the folder that leads out is refused after it is resolved.
+        let (install, mut f, _) = service_on_disk("svc-link", "vulpes.gadget", "svc.exe");
+        f.links.insert(
+            install.join("svc.exe"),
+            PathBuf::from(r"C:\Elsewhere\other.exe"),
+        );
+        assert_eq!(
+            from_folder(&f, &home, &install).unwrap_err(),
+            words::NOT_ADDABLE
+        );
+        // ...and onto another drive it is not this PC's.
+        f.remote.push(PathBuf::from(r"C:\Elsewhere"));
+        assert_eq!(
+            from_folder(&f, &home, &install).unwrap_err(),
+            words::NOT_THIS_PC
+        );
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert!(reg.inventory.modules.is_empty());
+    }
+
+    #[test]
+    fn other_kinds_are_still_not_addable() {
+        let home = temp("kinds-home");
+        for kind in ["content", "runtime", "firmware"] {
+            let install = temp(&format!("kind-{kind}"));
+            let text = format!(
+                "id = \"vulpes.thing\"\nname = \"Thing\"\nversion = \"1.0.0\"\nkind = \"{kind}\"\n\
+                 family = \"vulpes\"\nhub = \"1.1\"\n"
+            );
+            let mut f = Fake::default();
+            f.files
+                .insert(install.join("module.toml"), (String::new(), Some(text)));
+            let got = from_folder(&f, &home, &install).unwrap_err();
+            assert!(
+                got == words::NOT_ADDABLE || got == words::NOT_READ,
+                "{kind}: {got}"
+            );
+        }
+        // A content file the parser accepts is refused by word, not by accident.
+        let install = temp("kind-content-ok");
+        let text =
+            "id = \"vulpes.pack\"\nname = \"Pack\"\nversion = \"1.0.0\"\nkind = \"content\"\n\
+                    family = \"vulpes\"\nhub = \"1.1\"\nprovides = [\"content:art\"]\n";
+        let mut f = Fake::default();
+        f.files.insert(
+            install.join("module.toml"),
+            (String::new(), Some(text.into())),
+        );
+        match from_folder(&f, &home, &install) {
+            Err(w) => assert!(w == words::NOT_ADDABLE || w == words::NOT_READ, "{w}"),
+            Ok(_) => panic!("a content app must not be addable"),
+        }
+    }
+
+    #[test]
+    fn a_folder_inside_the_hubs_own_modules_folder_is_refused() {
+        let home = temp("svc-hub-home");
+        let inside_hub = home.join("modules").join("vulpes.gadget").join("0.1.0");
+        std::fs::create_dir_all(&inside_hub).unwrap();
+        let text = service_text("vulpes.gadget", "svc.exe");
+        let mut f = Fake::default();
+        f.files
+            .insert(inside_hub.join("module.toml"), (String::new(), Some(text)));
+        f.files
+            .insert(inside_hub.join("svc.exe"), ("0.1.0".into(), None));
+        assert_eq!(
+            from_folder(&f, &home, &inside_hub).unwrap_err(),
+            words::INSIDE_HUB
+        );
+        // The modules folder itself, and a different case of the path, too.
+        f.files.insert(
+            home.join("modules").join("module.toml"),
+            (
+                String::new(),
+                Some(service_text("vulpes.gadget", "svc.exe")),
+            ),
+        );
+        assert_eq!(
+            from_folder(&f, &home, &home.join("modules")).unwrap_err(),
+            words::INSIDE_HUB
+        );
+        // A folder beside it is fine.
+        let (install, g, _) = service_on_disk("svc-hub-ok", "vulpes.gadget", "svc.exe");
+        assert!(from_folder(&g, &home, &install).is_ok());
+        let mut s = AddApp::default();
+        assert!(s
+            .browse(
+                &f,
+                &Pick(Some(inside_hub)),
+                &home,
+                &temp("svc-stg4"),
+                &[],
+                NOW
+            )
+            .is_none());
+        assert_eq!(s.note, Some(Note::error(words::INSIDE_HUB)));
+        assert_eq!(
+            words::INSIDE_HUB,
+            "Hideout keeps that folder for its own files. Choose the folder the app was installed in."
+        );
+    }
+
+    #[test]
+    fn a_self_registered_service_folder_is_found_and_added() {
+        let (install, mut f, _) = service_on_disk("svc-reg", "vulpes.gadget", "svc.exe");
+        f.subkeys.push("vulpes.gadget".into());
+        f.reg.insert(
+            (format!(r"{MODULES_KEY}\vulpes.gadget"), String::new()),
+            install.display().to_string(),
+        );
+        let home = temp("svc-reg-home");
+        let mut s = AddApp::default();
+        s.scan(&f, &home, &[], false);
+        assert_eq!(s.found.len(), 1);
+        assert_eq!(s.found[0].id, "vulpes.gadget");
+        assert_eq!(
+            s.found[0].program.as_deref(),
+            Some(install.join("svc.exe").as_path())
+        );
+        assert_eq!(
+            s.add_found(&f, "vulpes.gadget", &home, &temp("svc-stg5"), NOW)
+                .as_deref(),
+            Some("vulpes.gadget")
+        );
+        // The program is gone: the card is not offered.
+        f.files.remove(&install.join("svc.exe"));
+        let mut t = AddApp::default();
+        t.scan(&f, &home, &[], false);
+        assert!(t.found.is_empty());
+    }
+
+    #[test]
+    fn a_service_file_that_changed_after_the_look_is_refused() {
+        let (install, mut f, _) = service_on_disk("svc-swap", "vulpes.gadget", "svc.exe");
+        f.subkeys.push("vulpes.gadget".into());
+        f.reg.insert(
+            (format!(r"{MODULES_KEY}\vulpes.gadget"), String::new()),
+            install.display().to_string(),
+        );
+        let home = temp("svc-swap-home");
+        let mut s = AddApp::default();
+        s.scan(&f, &home, &[], false);
+        // The program now resolves somewhere else inside the folder.
+        std::fs::write(install.join("other.exe"), b"y").unwrap();
+        f.files
+            .insert(install.join("other.exe"), ("0.1.0".into(), None));
+        f.links
+            .insert(install.join("svc.exe"), install.join("other.exe"));
+        assert!(s
+            .add_found(&f, "vulpes.gadget", &home, &temp("svc-stg6"), NOW)
+            .is_none());
+        assert_eq!(s.note, Some(Note::error(words::changed("Gadget"))));
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert!(reg.inventory.modules.is_empty());
     }
 
     /// A refused pick says what to do next, in exact words.
@@ -1198,6 +1603,7 @@ mod tests {
             words::NOT_READ,
             words::NOT_ADDABLE,
             words::NOT_THIS_PC,
+            words::INSIDE_HUB,
         ] {
             let last = w.trim_end_matches('.').rsplit(". ").next().unwrap();
             assert!(w.contains(". "), "{w}");
@@ -1224,6 +1630,7 @@ mod tests {
             words::NOT_READ,
             words::NOT_ADDABLE,
             words::NOT_THIS_PC,
+            words::INSIDE_HUB,
             words::NOT_NOW,
             words::LIST_NOT_READ,
         ];
