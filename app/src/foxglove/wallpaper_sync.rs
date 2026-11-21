@@ -1092,11 +1092,7 @@ fn run(
                     if engine_check(&mut leases, pusher.apply_mut()) {
                         mark.set(false);
                     }
-                    took_over(
-                        &mut leases,
-                        &mut mark,
-                        super::live_feed::wallpaper_playing(),
-                    );
+                    took_over(&mut leases, &mut mark, plays_now());
                     if matches!(
                         ctl,
                         Ctl::Pause {
@@ -1126,11 +1122,7 @@ fn run(
                 Next::Quit(ack) => {
                     // Play first (when it is ours to play), then tell the wallpapers we've gone.
                     let full = screen.now();
-                    took_over(
-                        &mut leases,
-                        &mut mark,
-                        super::live_feed::wallpaper_playing(),
-                    );
+                    took_over(&mut leases, &mut mark, plays_now());
                     if leases.end_all(pusher.apply_mut(), full).is_some() {
                         announce(&leases);
                     }
@@ -1147,11 +1139,7 @@ fn run(
             mark.set(leases.paused_by_lease());
             announce(&leases);
         }
-        took_over(
-            &mut leases,
-            &mut mark,
-            super::live_feed::wallpaper_playing(),
-        );
+        took_over(&mut leases, &mut mark, plays_now());
         if leases.paused_by_lease() {
             // Paused for a lease: the newest state goes once it plays (the sent state is kept).
             continue;
@@ -1242,10 +1230,18 @@ fn engine_check(leases: &mut Leases, apply: &mut impl Apply) -> bool {
     gone
 }
 
+/// A wallpaper reports itself playing now, or did since the last look (the report is taken
+/// every time, so an old one never ends a later pause).
+fn plays_now() -> bool {
+    let played = super::live_feed::take_played();
+    super::live_feed::wallpaper_playing() || played
+}
+
 /// A play is owed (#1399) but a paired wallpaper reports itself playing: the user pressed Play
-/// in the wallpaper app, so nothing is owed and Foxglove's pause is over. Checked at a wake and
-/// before quitting, never on a timer. Only "playing" counts: a "paused" report is also what
-/// Foxglove's own pause looks like, so it says nothing about the user.
+/// in the wallpaper app (a later pause is then theirs), so nothing is owed and Foxglove's pause
+/// is over. Checked at a wake and before quitting, never on a timer. Only "playing" counts: a
+/// "paused" report is also what Foxglove's own pause looks like, so it says nothing about the
+/// user.
 fn took_over(leases: &mut Leases, mark: &mut PauseMark, playing: bool) {
     if playing && leases.user_took_over() {
         eprintln!("Foxglove: wallpaper sync: the wallpapers play again; the owed play is dropped");
