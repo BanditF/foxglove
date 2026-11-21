@@ -573,7 +573,10 @@ mod tests {
     #[test]
     fn command_for_maps_ids_like_the_menu() {
         assert!(matches!(command_for(OPEN, || false), Some(Command::Open)));
-        assert!(matches!(command_for(PAUSE, || true), Some(Command::Pause(true))));
+        assert!(matches!(
+            command_for(PAUSE, || true),
+            Some(Command::Pause(true))
+        ));
         assert!(matches!(command_for(QUIT, || false), Some(Command::Quit)));
         assert!(command_for("nope", || false).is_none());
     }
