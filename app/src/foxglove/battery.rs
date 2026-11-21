@@ -122,11 +122,21 @@ pub fn tooltip(status: &str, levels: &BTreeMap<String, u8>) -> String {
 fn tooltip_for(status: &str, levels: &BTreeMap<String, u8>, board: &super::parts::Parts) -> String {
     let battery = tooltip_line_for(levels, board);
     // "Foxglove\n" and the "\n" before the battery line.
-    let room = 127usize.saturating_sub(10 + battery.chars().count());
-    let status = if status.chars().count() <= room {
+    // Windows counts UTF-16 units, not characters (an emoji is two).
+    let units = |s: &str| s.encode_utf16().count();
+    let room = 127usize.saturating_sub(10 + units(&battery));
+    let status = if units(status) <= room {
         status.to_string()
     } else {
-        let mut cut: String = status.chars().take(room.saturating_sub(1)).collect();
+        let mut cut = String::new();
+        let mut used = 0;
+        for c in status.chars() {
+            used += c.len_utf16();
+            if used > room.saturating_sub(1) {
+                break;
+            }
+            cut.push(c);
+        }
         cut.push('…');
         cut
     };
@@ -505,5 +515,21 @@ mod tests {
             None
         );
         assert!(!logitech_on());
+    }
+}
+
+#[cfg(test)]
+mod utf16_tooltip {
+    use super::*;
+
+    /// Windows counts UTF-16 units (an emoji is two), so a status of emoji is cut earlier than
+    /// the same number of letters, and the whole tooltip stays inside 127 units.
+    #[test]
+    fn the_status_is_cut_by_utf16_units() {
+        let levels = BTreeMap::new();
+        let board = super::super::parts::Parts::current();
+        let tip = tooltip_for(&"😀".repeat(100), &levels, &board);
+        assert!(tip.encode_utf16().count() <= 127, "{tip:?}");
+        assert!(tip.contains('…'));
     }
 }

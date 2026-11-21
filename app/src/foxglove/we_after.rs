@@ -124,7 +124,6 @@ impl Tracker {
     }
 
     /// Whether a line shows.
-    #[cfg(test)]
     pub fn showing(&self) -> bool {
         self.note.is_some()
     }

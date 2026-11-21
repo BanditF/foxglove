@@ -98,6 +98,24 @@ pub fn resumed(who: &str) -> String {
 pub fn stopped(who: &str) -> String {
     format!("{who} stopped, so its pause ended.")
 }
+/// The one line after a Resume or a stop ("Resumed. Arete can pause them again."), shared by the
+/// hub page and the standalone tray's tooltip. Real app names show as given; only the "an app"
+/// fallback is capitalised for the start of a sentence.
+pub fn after_words(after: &After) -> String {
+    // Real names show as given; only the "an app" fallback takes a capital at a sentence start.
+    let first = |words: String| {
+        if words == AN_APP {
+            sentence_start(&words)
+        } else {
+            words
+        }
+    };
+    match after {
+        After::Resumed(names) => resumed(&first(holder_words(names))),
+        After::Stopped(Some(n)) => stopped(&first(holder_words(std::slice::from_ref(n)))),
+        After::Stopped(None) => stopped(&sentence_start(AN_APP)),
+    }
+}
 /// "Resume wallpapers, paused by Arete": the button's accessible name.
 pub fn resume_name(who: &str) -> String {
     format!("{RESUME}, paused by {who}")
@@ -160,7 +178,14 @@ pub fn is_resume(panel: &str, node: &str) -> bool {
 /// "Arete", "Arete and Render queue", "Arete and 2 more"; "an app" when the hub named nobody
 /// (an older hub, or a caller of the local API).
 pub fn holder_words(names: &[String]) -> String {
-    let cut = |n: &String| cut_to(n, NAME_CUT);
+    // A caller that gave no name is stored as "An app": mid-sentence it is "an app".
+    let cut = |n: &String| {
+        if n.eq_ignore_ascii_case(AN_APP) {
+            AN_APP.to_string()
+        } else {
+            cut_to(n, NAME_CUT)
+        }
+    };
     match names {
         [] => AN_APP.into(),
         [a] => cut(a),
@@ -739,11 +764,7 @@ fn wallpaper_section(w: &Wallpaper) -> Value {
             After::Resumed(_) if w.full_screen => {
                 format!("Resumed. {FULL_SCREEN_SUB}")
             }
-            After::Resumed(names) => resumed(&sentence_start(&holder_words(names))),
-            After::Stopped(name) => stopped(&match name {
-                Some(n) => cut_to(n, NAME_CUT),
-                None => "An app".into(),
-            }),
+            other => after_words(other),
         };
         say = Some(sub.clone());
         (NONE_PAUSING.into(), "ok", Some(sub), false)
