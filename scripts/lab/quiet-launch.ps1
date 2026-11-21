@@ -376,7 +376,6 @@ function Invoke-OnDesktop([string]$desktopName, [string]$text, [int]$limitSec, [
     $runJob = [QuietLaunch.Native]::NewJob()
     $code = 5
     try {
-        $helperEnv = New-EnvBlock @{} ([Environment]::GetEnvironmentVariables())
         $s = [QuietLaunch.Native]::Spawn($psExe, $cl, $PSScriptRoot, $null, $desktopName, $runJob, $true)
         try {
             $r = [QuietLaunch.Native]::WaitFor($s.Process, $stopEv, [uint32]($limitSec * 1000))
