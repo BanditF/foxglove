@@ -174,7 +174,8 @@ read-only code as a real one (`LabMachine` hands `hub_exe_dir` and `sub_folders`
 Checks: Found card "Add PC sensors", the dialog in plain words (no raw permission ids), Allow starts it
 ("1 app is running"), the page shows Processor and Graphics card temperature as numbers (never 0; a missing
 value reads "Not reported"), and, after the placed file's version changes, **Add an app…** offers
-"Update in Hideout" (the list looks at the folders again only when that box opens or the held apps change).
+"Update in Hideout" (the list looks at the folders again only when that box opens or the held apps change). Then it clicks Update in Hideout: the running app is stopped, the Allow dialog opens, and after Allow
+the app runs again as a new process with no second Update offered (#1455).
 
 ## On-call steps
 
