@@ -118,6 +118,7 @@ impl Driver {
     }
 
     /// The colour shown now.
+    #[cfg(test)]
     pub fn colour(&self) -> Rgb {
         self.colour
     }
