@@ -646,6 +646,13 @@ plug-ins** (no dylibs, no scripts in the hub).
   drive) and registers the app as `adopted` with that absolute path: the staged file is the
   original text with only `kind` and `run[0]` changed. A folder inside the hub's own folder,
   or a program inside it, is refused. Nothing is granted at add; the first-run OK asks for the permissions.
+- **Apps next to Hideout.** The Found card also lists apps shipped beside `hideout.exe`: each
+  `<folder of hideout.exe>\apps\<x>\module.toml`, one level, read-only, at most 32 folders (by
+  name). Each file goes through the same checks as a browsed one (`adopted` or `service`), and its
+  folder and program must still resolve below that `apps` folder (a link that leads out is skipped).
+  An id Hideout already has, or another source found, is not listed again; an app whose program is
+  missing is not offered. Adding registers it as `adopted`; nothing is allowed or started before the
+  first-run OK.
 - **Dev folders (#1297).** With dev mode on (`HIDEOUT_DEV_MODE=1`, and only that: it is a separate
   switch from unsigned sideload, §12.6), an adopted app inside a folder the user marked keeps
   its grants across a rebuild; sensitive growth and leaving the folder still ask again.
@@ -1454,7 +1461,8 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
 
 ### 6.4 Approval
 
-- First-party modules shipped in the MSI are approved at install.
+- Apps in the `apps` folder next to hideout.exe are shown on the Found card and asked at Add; nothing is granted
+  without the user's Allow.
 - Catalog, private and sideloaded modules show the permission dialog at enable.
 - An update that adds permissions keeps the old version running and shows "Update waiting for
   you" (§7.8). Never a modal at sign-in.
@@ -1661,7 +1669,7 @@ the first failure, with its error id.
 | **disable** | Drain and stop the instance (§7.6). Its leases, holds and channels end; its panels hide. Files, data, settings, secrets and grants stay. |
 | **update** | Install the new version beside the old. If it adds permissions, wait (§6.4). Then hot swap (§7.6) at the right moment (§7.6, "when"). Record `previous`. |
 | **rollback** | Only if the previous folder exists: hot swap back to it, shallow verify first. A revoked version is refused (`trust.revoked`). |
-| **remove** | Stop it and end its Job Object. Delete its secrets, undo its `footprint`, delete its version folders, then `data\` per `[lifecycle] data` (`ask` without a terminal is `keep`). Remove the records. First-party modules shipped in the MSI offer **Turn off**, not Remove (UX7). |
+| **remove** | Stop it and end its Job Object. Delete its secrets, undo its `footprint`, delete its version folders, then `data\` per `[lifecycle] data` (`ask` without a terminal is `keep`). Remove the records. First-party modules installed by Hideout itself (not ones added from the `apps` folder next to hideout.exe, which are adopted) offer **Turn off**, not Remove (UX7). |
 
 **Permission steps (#1178).** `hideout modules permissions <id>` (read-only, works without the hub)
 prints every item (group, raw string, plain line, state), the program path and hash and the **list

@@ -151,6 +151,16 @@ pub trait Machine {
     /// Whether `p` is on one of this PC's fixed drives: not UNC, not a mapped network drive,
     /// not removable. Reads no files, so a dead network drive can't block on it.
     fn is_local_fixed(&self, p: &Path) -> bool;
+    /// The canonical folder of the running hub's own exe (where apps shipped next to it live);
+    /// `None` when unknown (the default: a machine that has no such folder).
+    fn hub_exe_dir(&self) -> Option<PathBuf> {
+        None
+    }
+    /// The sub-folders of `dir` (a link to a folder counts; it is resolved by the caller).
+    /// Empty when `dir` can't be read.
+    fn sub_folders(&self, _dir: &Path) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -706,6 +716,20 @@ mod real {
         }
         fn is_local_fixed(&self, p: &Path) -> bool {
             hideout_registry::permission::on_local_fixed_drive(&p.to_string_lossy())
+        }
+        fn hub_exe_dir(&self) -> Option<PathBuf> {
+            let exe = self.canonical(&std::env::current_exe().ok()?)?;
+            exe.parent().map(Path::to_path_buf)
+        }
+        fn sub_folders(&self, dir: &Path) -> Vec<PathBuf> {
+            std::fs::read_dir(dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .map(|e| e.path())
+                        .filter(|p| p.is_dir())
+                        .collect()
+                })
+                .unwrap_or_default()
         }
         fn registry_subkeys(&self, key: &str) -> Vec<String> {
             let k = wide(key.as_ref());
