@@ -236,6 +236,44 @@ fn changed_program_arguments_void_even_when_none_were_recorded() {
 }
 
 #[test]
+fn an_argument_added_to_the_same_program_voids_and_unchanged_empty_args_do_not() {
+    let mut f = fx("args3");
+    allow(&mut f, "dialog", false).unwrap();
+    assert!(f.bound().run_args.is_empty());
+    // Nothing changed, no arguments before or after: the grant stands.
+    assert_eq!(f.reg.binding_void(ID), None);
+    // The same exe bytes, one argument more: void.
+    let exe = f.exe.display().to_string();
+    f.readopt(&[&exe, "--evil"]);
+    assert_voids(&mut f, VoidReason::Changed);
+}
+
+#[test]
+fn an_adopted_record_with_grants_and_no_binding_is_void_and_goes_back_to_pending() {
+    let mut f = fx("legacy");
+    allow(&mut f, "dialog", false).unwrap();
+    let path = f.home.join("inventory.json");
+    f.reg.inventory.modules.get_mut(ID).unwrap().bound = None;
+    f.reg.inventory.save(&path).unwrap();
+    assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
+    assert_eq!(
+        f.reg.void_if_changed(ID, LATER).unwrap(),
+        Some(VoidReason::Changed)
+    );
+    let m = &f.reg.inventory.modules[ID];
+    assert!(m.granted.is_empty());
+    assert_eq!(m.pending_permissions, ["hub.notify", "ui.window"]);
+    assert_eq!(m.last_choice, ["hub.notify", "ui.window"]);
+    assert!(m.bound.is_none());
+    // Nothing left to void; a record with no grants and no binding is not void.
+    assert_eq!(f.reg.binding_void(ID), None);
+    // A record that is not adopted is unchanged by the rule.
+    f.reg.inventory.modules.get_mut(ID).unwrap().granted = vec!["hub.notify".into()];
+    f.reg.inventory.modules.get_mut(ID).unwrap().source = "sideload".into();
+    assert_eq!(f.reg.binding_void(ID), None);
+}
+
+#[test]
 fn changed_recorded_program_arguments_void() {
     let mut f = fx("args2");
     let exe = f.exe.display().to_string();

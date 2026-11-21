@@ -737,7 +737,11 @@ impl Registry {
         program: impl FnOnce() -> Result<(String, String), Failure>,
     ) -> Option<VoidReason> {
         let m = self.inventory.modules.get(id)?;
-        let b = m.bound.as_ref()?;
+        let Some(b) = m.bound.as_ref() else {
+            // Old data: an adopted record with grants and no binding would carry them to any
+            // program. Every Allow writes a binding, so this has no legitimate source.
+            return (m.source == ADOPTED && !m.granted.is_empty()).then_some(VoidReason::Changed);
+        };
         if b.void {
             return Some(VoidReason::Changed);
         }
@@ -746,7 +750,7 @@ impl Registry {
         }
         match program() {
             Ok((path, hash)) => {
-                if !b.run_args.is_empty() && self.run_args(id) != b.run_args {
+                if self.run_args(id) != b.run_args {
                     Some(VoidReason::Changed)
                 } else if !crate::keyboard::same_path(&path, &b.exe_path)
                     && self.dev_enrolment(id, m, b, &path).is_none()
