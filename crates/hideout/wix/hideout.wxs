@@ -68,10 +68,9 @@
       <Custom Action="RemoveAutostart" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
 
-    <!-- FR6 (review/ux-plan-first-run.md, Q1): a one-page install and a finish page. There is no
-         accept box (Hub/user choice, overriding the Q1 recommendation): the install page shows the
-         license behind a "Read the license" button that opens it on its own page, and Install is
-         never gated on it. The finish page has "Open Hideout now" ticked, which starts the hub as
+    <!-- FR6 (review/ux-plan-first-run.md, Q1): a one-page install and a finish page. The install
+         page shows the license behind a "Read the license" button that opens it on its own page,
+         and an accept box; Install stays disabled until the box is ticked. The finish page has "Open Hideout now" ticked, which starts the hub as
          the user with no arguments (never the tray flag, nothing at sign-in), and the line that apps
          already on the PC stay as they are. After a removal (REMOVE="ALL") the page says
          "Hideout is removed" and shows neither the line nor the box. -->
