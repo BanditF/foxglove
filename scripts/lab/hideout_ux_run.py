@@ -368,13 +368,187 @@ def s1_checks(hub, check, exe, manifest):
           f'{[t for t in texts(s) if "pdate" in t][:3]}')
 
 
+TOOL_TITLE = 'Allow a program outside Hideout?'
+TOOL_HEADER = 'A program outside Hideout asks for'
+KEEP_LABEL = 'Keep my OK after updates in this folder, except Sensitive and keyboard'
+
+
+def tool_dialog_open(state):
+    return has(state, TOOL_TITLE)
+
+
+def tool_asks(state):
+    """The Apps page's header line about a program waiting for the user, or None."""
+    return next((t for t in texts(state) if t.startswith(TOOL_HEADER)), None)
+
+
+def lab_cli_pipe(log):
+    r"""The lab hub's alias for outside tools, from its log: `\\.\pipe\foxglove-<user><suffix>`."""
+    m = re.search(r'serving (\\\\\.\\pipe\\hideout-\S+)', log)
+    return m.group(1).replace('pipe\\hideout-', 'pipe\\foxglove-') if m else None
+
+
+def run_cli(cli, pipe, *args):
+    """Runs the outside tool once, windowless, against the lab hub's pipe only; returns (code, output)."""
+    env = {**os.environ, 'FOXGLOVE_PIPE': pipe}
+    r = subprocess.run([str(cli), *args], env=env, capture_output=True, text=True, encoding='utf-8',
+                       errors='replace', timeout=30, creationflags=0x08000000)
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+def tools_fixture(root, hub_exe, cli_exe):
+    r"""`<root>\hub` holds the hub's exe copy, `<root>\cfg` the lab config, `<root>\tools\a` the outside tool.
+    Returns (hub exe copy, tool copy)."""
+    root = Path(root).resolve()
+    (root / 'hub').mkdir(parents=True, exist_ok=True)
+    app = root / 'hub' / 'hideout.exe'
+    shutil.copy2(hub_exe, app)
+    (root / 'tools' / 'a').mkdir(parents=True, exist_ok=True)
+    tool = root / 'tools' / 'a' / 'foxglove-cli.exe'
+    shutil.copy2(cli_exe, tool)
+    write_text(root / 'cfg' / 'lab-discover.json',
+               json.dumps({'registry': {}, 'env': {'LOCALAPPDATA': str(root / 'local')}}))
+    return app, tool
+
+
+def wait_ask(hub, want=True, seconds=15):
+    return hub.wait(lambda s: bool(tool_asks(s)) == want, seconds)
+
+
+def open_tool_dialog(hub):
+    hub.do('click', 'Review\u2026')
+    return hub.wait(tool_dialog_open, 10)
+
+
+def tools_checks(hub, check, tool):
+    """An outside tool (foxglove-cli) asks in the hub's own dialog, per program file (#1471).
+    The lab hub opts into the installed hub's rule with HIDEOUT_LAB_TOOL_ASK=1 (see the run's env)."""
+    root = Path(tool).parents[2]
+    pipe = lab_cli_pipe(hub.log())
+    check('T0 the log names the hub pipe the tool can reach', bool(pipe), repr(pipe))
+    if not pipe:
+        return
+    hub.wait(lambda s: has(s, 'Apps'), 20)
+    hub.do('focus', 'Apps')
+    code, out = run_cli(tool, pipe, 'profile')
+    ok, s = wait_ask(hub)
+    check('T1 a first run asks: the Apps page says a program outside Hideout asks', ok,
+          f'cli {code} {out[:80]!r}; {[t for t in texts(s) if "outside" in t][:2]}')
+    if not ok:
+        return
+    ok, s = open_tool_dialog(hub)
+    check('T2 Review opens the hub dialog for the program file',
+          ok and any('foxglove-cli.exe' in t for t in texts(s)), f'{[t for t in texts(s) if "Program file" in t][:2]}')
+    if not ok:
+        return
+    hub.capture('T2-tool-dialog')
+    # the window's close button is Not now
+    hub.do('close-window')
+    time.sleep(1)
+    hub.show_main()
+    s = hub.state()
+    check('T3 the close button dismisses the dialog', not tool_dialog_open(s),
+          'dialog still open' if tool_dialog_open(s) else 'gone')
+    ok, s = wait_ask(hub, True, 5)
+    check('T3 the ask is still waiting after the close (Not now, nothing allowed)', ok, f'{tool_asks(s)!r}')
+    # Deny (Not now): nothing is remembered
+    ok, s = open_tool_dialog(hub)
+    if ok:
+        hub.do('click', 'Not now')
+        ok, s = hub.wait(lambda s: not tool_dialog_open(s), 10)
+    check('T4 Not now (Deny) closes the dialog', ok, f'{texts(s)[:20]}')
+    run_cli(tool, pipe, 'profile')
+    ok, s = wait_ask(hub)
+    check('T4 Deny is not remembered: the same file still asks', ok, f'{tool_asks(s)!r}')
+    # Allow
+    ok, s = open_tool_dialog(hub)
+    if not ok:
+        check('T5 the dialog opens again', False, f'{texts(s)[:20]}')
+        return
+    time.sleep(1.5)  # Allow is armed after 1 s
+    hub.do('click', allow_label(hub.state()) or 'Allow')
+    ok, s = hub.wait(lambda s: not tool_dialog_open(s) and not tool_asks(s), 10)
+    check('T5 Allow closes the dialog and the ask is gone', ok, f'{tool_asks(s)!r}')
+    code, out = run_cli(tool, pipe, 'profile')
+    time.sleep(2)
+    s = hub.state()
+    check('T6 a second run of the same file does not ask again', not tool_asks(s),
+          f'cli {code} {out[:60]!r}; {tool_asks(s)!r}')
+    # a copy elsewhere is another program file
+    copy = root / 'tools' / 'b' / 'foxglove-cli.exe'
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(tool, copy)
+    run_cli(copy, pipe, 'profile')
+    ok, s = wait_ask(hub)
+    check('T7 a copy of the file in another folder asks', ok, f'{tool_asks(s)!r}')
+    ok, s = open_tool_dialog(hub)
+    if ok:
+        hub.do('click', 'Not now')
+        hub.wait(lambda s: not tool_dialog_open(s), 10)
+    # the allowed file, changed in place: the old Allow is void
+    with open(tool, 'ab') as f:
+        f.write(b'\0' * 16)
+    ok, s = wait_ask(hub, False, 5)
+    run_cli(tool, pipe, 'profile')
+    ok, s = wait_ask(hub)
+    check('T8 the same file with other bytes asks again', ok, f'{tool_asks(s)!r}')
+
+
+def keep_checks(hub, check, exe, manifest):
+    """#1465: Keep my OK on a changed app file asks again for what is sensitive (the Changed-row words)."""
+    hub.wait(lambda s: has(s, 'Apps'), 20)
+    hub.do('focus', 'Apps')
+    ok, s = hub.wait(lambda s: has(s, f'Add {SENSORS_NAME}'), 15)
+    if not ok:
+        check('K0 the Found card offers Add PC sensors', False, f'{texts(s)[:30]}')
+        return
+    hub.do('click', f'Add {SENSORS_NAME}')
+    ok, s = hub.wait(dialog_open, 10)
+    if not ok:
+        check('K0 Add opens the dialog', False, f'{texts(s)[:30]}')
+        return
+    if has(s, 'I understand'):
+        hub.do('click', 'I understand')
+    hub.do('click', KEEP_LABEL)
+    ok, s = hub.wait(lambda s: has(s, 'Keep my OK'), 5)
+    check('K1 ticking Keep asks to confirm', ok and has(s, 'Keep your OK for this folder?'), f'{texts(s)[-12:]}')
+    if ok:
+        hub.do('click', 'Keep my OK')
+    hub.do('click', allow_label(hub.state()) or 'Allow')
+    ok, s = hub.wait(lambda s: (tray_status(s) or '') == '1 app is running', 30)
+    check('K2 Allow with Keep starts the app', ok, repr(tray_status(s)))
+    bump_version(manifest)
+    with open(exe, 'ab') as f:  # the bytes change under the keep
+        f.write(b'\0' * 16)
+    hub.do('focus', 'Apps')
+    hub.do('click', 'Add an app\u2026')
+    ok, s = hub.wait(lambda s: contains(s, 'changed since you allowed it'), 30)
+    row = [t for t in texts(s) if 'changed' in t]
+    check('K3 the row says "On \u00b7 changed since you allowed it"', ok, f'{row[:3]}')
+    hub.capture('K3-changed')
+    log_before = len(hub.log())
+    if has(s, 'Review\u2026'):
+        hub.do('click', 'Review\u2026')
+    ok, s = hub.wait(dialog_open, 15)
+    check('K4 Review opens the Allow dialog again', ok, f'{texts(s)[:30]}')
+    check('K4 the dialog says its app file changed and what waits',
+          contains(s, 'Its app file changed'), f'{[t for t in texts(s) if "changed" in t][:3]}')
+    hub.capture('K4-dialog')
+    hub.do('key', 'esc', 'main')
+    time.sleep(1)
+    new_log = hub.log()[log_before:]
+    check('K5 nothing sensitive started before Allow: no grant line after the change',
+          not re.search(r'sensor\.|keyboard', new_log) or 'grant' not in new_log.lower(), new_log[-200:])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the hideout.exe under test')
     ap.add_argument('--probe', type=tool_arg('--probe'), help='hideout-ac-probe.exe (the hello fixture)')
     ap.add_argument('--lab', required=True, type=tool_arg('--lab', kind='dir'), help='an existing, EMPTY scratch folder: the lab hub config dir (seeded by the run)')
-    ap.add_argument('--only', default='first-run', choices=('first-run', 's1'), help='which flow to run')
-    ap.add_argument('--sensors', type=tool_arg('--sensors'), help='sensors.exe (for --only s1)')
+    ap.add_argument('--only', default='first-run', choices=('first-run', 's1', 'tools', 'keep'), help='which flow to run')
+    ap.add_argument('--sensors', type=tool_arg('--sensors'), help='sensors.exe (for --only s1, keep)')
+    ap.add_argument('--cli', type=tool_arg('--cli'), help='foxglove-cli.exe (for --only tools)')
     ap.add_argument('--seconds', type=int, default=300, help='hard time limit of the hidden hub (1..3600)')
     ap.add_argument('--allow-running', action='store_true', help='other hideout.exe processes may be running')
     args = ap.parse_args()
@@ -389,29 +563,38 @@ def main():
     if lab.exists() and any(lab.iterdir()):
         print(f'BLOCKED: {lab} is not empty (a run needs a fresh scratch folder)' + chr(10) + 'RESULT BLOCKED', flush=True)
         sys.exit(2)
-    if args.only == 's1' and not args.sensors:
-        ap.error('--only s1 needs --sensors <sensors.exe>')
-    if args.only != 's1' and not args.probe:
+    if args.only in ('s1', 'keep') and not args.sensors:
+        ap.error('--only s1 and --only keep need --sensors <sensors.exe>')
+    if args.only == 'tools' and not args.cli:
+        ap.error('--only tools needs --cli <foxglove-cli.exe>')
+    if args.only == 'first-run' and not args.probe:
         ap.error('--probe <hideout-ac-probe.exe> is needed for the first-run flow')
     module_toml = Path(__file__).resolve().parents[2] / 'crates' / 'sensors' / 'module.toml'
     try:
-        if args.only == 's1':
+        if args.only in ('s1', 'keep'):
             app, manifest = sensors_fixture(lab, args.app, args.sensors, module_toml)
             exe = Path(app).parent / 'apps' / 'sensors' / 'sensors.exe'
+        elif args.only == 'tools':
+            app, tool = tools_fixture(lab, args.app, args.cli)
         else:
             app, exe = args.app, hello_fixture(lab, args.probe)
     except (OSError, ValueError) as e:
         print(f'BLOCKED: seeding {lab}: {e}' + chr(10) + 'RESULT BLOCKED', flush=True)
         sys.exit(2)
     desktop = 'ql-ux' + os.urandom(3).hex()
-    cfg = lab / 'cfg' if args.only == 's1' else lab
-    hub = QuietHub(str(app), cfg, lab.parent / 'shots', desktop, {}, seconds=args.seconds,
+    cfg = lab / 'cfg' if args.only in ('s1', 'keep', 'tools') else lab
+    extra = {'HIDEOUT_LAB_TOOL_ASK': '1'} if args.only == 'tools' else {}
+    hub = QuietHub(str(app), cfg, lab.parent / 'shots', desktop, extra, seconds=args.seconds,
                    allow_running=args.allow_running)
     check = Checks()
     try:
         hub.start()
         if args.only == 's1':
             s1_checks(hub, check, exe, manifest)
+        elif args.only == 'keep':
+            keep_checks(hub, check, exe, manifest)
+        elif args.only == 'tools':
+            tools_checks(hub, check, tool)
         else:
             run_checks(hub, check, desktop, exe)
     except Exception as e:  # noqa: BLE001 (reported as the run's FAIL, the hub still stops)
