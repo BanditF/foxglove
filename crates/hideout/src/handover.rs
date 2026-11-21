@@ -354,7 +354,10 @@ impl PipeOpen {
             .map(|v| vec![std::path::PathBuf::from(v.listing.exe_path)])
             .unwrap_or_default();
         crate::find_installed::InstalledPeers {
-            found: crate::find_installed::find_all(&crate::find_installed::RealMachine),
+            found: crate::find_installed::find_all(&*crate::find_installed::machine_for(
+                &self.home,
+                Box::new(crate::find_installed::RealMachine),
+            )),
             adopted,
         }
     }

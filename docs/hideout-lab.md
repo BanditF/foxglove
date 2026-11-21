@@ -39,6 +39,21 @@ isn't needed. **Lab mode** loads them as they ship, only in a lab hub.
 
 ## A withdrawn version in the lab (#1026)
 
+### Fake discovery source (G1)
+
+In lab mode the Found card and the hand-over peer check read `<config>\lab-discover.json`
+instead of the user's real `HKCU` and environment, so an agent can press **Add** safely:
+
+```json
+{"registry": {"Software\Hideout\Modules\org.example.art": {"Path": "C:\lab\art"}},
+ "env": {"LOCALAPPDATA": "C:\lab\local"}}
+```
+
+Keys and names match case-insensitively. A missing file means nothing is found; a broken one is
+logged and also finds nothing, it never falls back to the real registry. Files named by the
+records are still read from disk, read-only, so point them at folders under the lab folder.
+Never read outside lab mode (lab mode refuses the user's own hub folder).
+
 Lab modules have no catalog, so a catalog can't revoke one. Instead a lab hub reads
 `<config>\lab-withdrawn.json` (lab mode only, never in the user's hub):
 

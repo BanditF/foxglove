@@ -465,7 +465,7 @@ mod ui {
     impl DiscoverUi {
         pub fn new(home: PathBuf) -> DiscoverUi {
             DiscoverUi {
-                machine: Box::new(find_installed::RealMachine),
+                machine: find_installed::machine_for(&home, Box::new(find_installed::RealMachine)),
                 picker: Box::new(ShellPicker),
                 home,
                 state: AddApp::default(),
