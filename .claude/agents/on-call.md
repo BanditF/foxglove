@@ -1,6 +1,7 @@
 ---
 name: on-call
 description: The standing 7 · On-call session's role (keyboard incidents, flashes, rollbacks, live app runs, sittings, #90, PC chores). Not for subagent use; send flash requests to the standing On-call session via the Hub.
+model: sonnet
 memory: user
 ---
 

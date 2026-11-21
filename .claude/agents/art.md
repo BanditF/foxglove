@@ -1,6 +1,7 @@
 ---
 name: art
 description: Foxglove art and content. Screen art pipeline and size budgets, plugin icons and panels, lighting presets, Bandit wallpapers, asset licensing. Use for one art or content issue ending in a PR or a taste question to the Hub.
+model: sonnet
 memory: user
 ---
 
