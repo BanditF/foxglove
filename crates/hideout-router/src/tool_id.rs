@@ -62,17 +62,20 @@ impl PeerHold for SystemHold {
     }
 }
 
-/// The canonical path without the `\?\` prefix; `None` for a network path.
+/// The canonical path without the `\\?\` prefix; `None` for a network path.
 fn canonical(p: &Path) -> Option<PathBuf> {
     let c = std::fs::canonicalize(p).ok()?;
-    let s = c.to_string_lossy();
-    if s.starts_with(r"\?\UNC\") {
+    plain_local(&c.to_string_lossy()).map(PathBuf::from)
+}
+
+/// A canonical path as plain text: the `\\?\` prefix dropped. `None` for a network path, in
+/// either spelling (`\\?\UNC\server\share` or `\\server\share`).
+fn plain_local(s: &str) -> Option<&str> {
+    if s.starts_with(r"\\?\UNC\") {
         return None;
     }
-    Some(match s.strip_prefix(r"\?\") {
-        Some(rest) => PathBuf::from(rest),
-        None => c,
-    })
+    let plain = s.strip_prefix(r"\\?\").unwrap_or(s);
+    (!plain.starts_with(r"\\")).then_some(plain)
 }
 
 /// The SHA-256 of the file, read while the file is open for reading only (on Windows that
@@ -123,9 +126,26 @@ mod tests {
         assert!(id(r"C:\Tools\mytool.exe").remembered());
     }
 
+    /// A network image has no identity, and a local one loses the `\\?\` prefix.
+    #[test]
+    fn a_network_image_has_no_identity() {
+        assert_eq!(plain_local(r"\\?\UNC\server\share\tool.exe"), None);
+        assert_eq!(plain_local(r"\\server\share\tool.exe"), None);
+        assert_eq!(
+            plain_local(r"\\?\C:\Tools\tool.exe"),
+            Some(r"C:\Tools\tool.exe")
+        );
+        assert_eq!(
+            plain_local(r"C:\Tools\tool.exe"),
+            Some(r"C:\Tools\tool.exe")
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn the_system_lookup_names_this_test_process() {
+        let own = canonical(&std::env::current_exe().unwrap()).unwrap();
+        assert!(!own.to_string_lossy().starts_with(r"\\"), "{own:?}");
         let mut hold = SystemLookup.open(std::process::id());
         let me = hold.identity().expect("own identity");
         let exe = canonical(&std::env::current_exe().unwrap()).unwrap();
