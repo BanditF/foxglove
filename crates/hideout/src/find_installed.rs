@@ -350,6 +350,9 @@ pub fn adopt(
     adopt_with(m, home, staging, found, now, crate::adopt::run)
 }
 
+/// How [`adopt`]'s error ends when what was registered is not the text it staged.
+pub(crate) const SWAPPED: &str = " changed while it was added";
+
 /// [`adopt`] with the registering step given (`crate::adopt::run`; a test swaps the staged
 /// file in it).
 fn adopt_with(
@@ -367,9 +370,12 @@ fn adopt_with(
         return Err(format!("{} names another app", p.name));
     }
     let dir = staging.join(&p.id);
-    // An earlier record of this id (and its grants) is not ours to drop on a failed check.
-    let fresh = !hideout_registry::Registry::open_from_env(home)
-        .is_ok_and(|r| r.inventory.modules.contains_key(&p.id));
+    // The ids registered before this call. An earlier record of this id (and its grants) is not
+    // ours to drop on a failed check; when the registry can't be read, nothing is dropped.
+    let before: Option<Vec<String>> = hideout_registry::Registry::open_from_env(home)
+        .ok()
+        .map(|r| r.inventory.modules.keys().cloned().collect());
+    let fresh = before.as_ref().is_some_and(|b| !b.contains(&p.id));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     std::fs::write(dir.join("module.toml"), &text)
         .map_err(|e| format!("manifest not saved: {e}"))?;
@@ -377,8 +383,12 @@ fn adopt_with(
     let _ = std::fs::remove_dir_all(&dir);
     // What the registry now holds must be the text made above, byte for byte: a swap of the
     // staged file between the write and the adopt code's read does not stay registered.
-    if out.is_ok() && !crate::discover::registered_matches(home, &p.id, &text, fresh) {
-        return Err(format!("{} changed while it was added", p.name));
+    if let Ok(line) = &out {
+        if !crate::discover::registered_matches(home, &p.id, &text, fresh) {
+            // The adopt code may have registered another id: that record does not stay either.
+            crate::discover::drop_stray(home, line, before.as_deref());
+            return Err(format!("{}{SWAPPED}", p.name));
+        }
     }
     out
 }
@@ -1299,6 +1309,53 @@ mod tests {
         assert!(
             has(&home).is_some(),
             "a record that was there is not dropped"
+        );
+    }
+
+    /// The staged file is swapped for one that names another id: neither id stays registered.
+    #[test]
+    fn a_staged_file_swapped_for_another_id_leaves_no_record() {
+        let install = temp("swap-id-install");
+        let exe = install.join("foxglove.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        let home = temp("swap-id-home");
+        let found = Found {
+            id: "foxglove".into(),
+            exe,
+            version: "0.3.0".into(),
+            source: Source::Record,
+            folder: None,
+            manifest: None,
+        };
+        let other = |home: &Path, dir: &Path, now: &str| {
+            let at = dir.join("module.toml");
+            let text = std::fs::read_to_string(&at).unwrap();
+            let swapped = text.replace("id = \"foxglove\"", "id = \"fennec\"");
+            assert_ne!(swapped, text);
+            std::fs::write(&at, swapped).unwrap();
+            let line = crate::adopt::run(home, dir, now);
+            assert!(
+                line.as_ref()
+                    .is_ok_and(|l| l.starts_with("registered fennec ")),
+                "{line:?}"
+            );
+            line
+        };
+        let e = adopt_with(
+            &Fake::default(),
+            &home,
+            &temp("swap-id-staging"),
+            &found,
+            "2026-11-21T08:00:00Z",
+            other,
+        )
+        .unwrap_err();
+        assert!(e.ends_with(SWAPPED), "{e}");
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert!(
+            reg.inventory.modules.is_empty(),
+            "{:?}",
+            reg.inventory.modules.keys()
         );
     }
 

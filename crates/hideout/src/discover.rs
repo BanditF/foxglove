@@ -538,7 +538,16 @@ pub fn add(
             staged
         }
         (Origin::Folder(_), None) => return Err(words::changed(&c.name)),
-        (Origin::Product(found), _) => find_installed::adopt(m, home, staging, found, now),
+        (Origin::Product(found), _) => {
+            match find_installed::adopt(m, home, staging, found, now) {
+                // Registered, but not the text that was staged: the same words as a changed file.
+                Err(why) if why.ends_with(find_installed::SWAPPED) => {
+                    log::warn!("discover: {} not added: {why}", c.id);
+                    return Err(words::changed(&c.name));
+                }
+                other => other,
+            }
+        }
     };
     match done {
         Ok(line) if line.starts_with(&format!("registered {} ", c.id)) => Ok(c.id.clone()),
@@ -565,7 +574,7 @@ pub fn add(
 /// The adopt code answered with another id than the card's: that record is removed again when
 /// it was not there before the call (`before`; unknown = nothing is removed). A record that
 /// existed is never dropped.
-fn drop_stray(home: &Path, line: &str, before: Option<&[String]>) {
+pub(crate) fn drop_stray(home: &Path, line: &str, before: Option<&[String]>) {
     let Some(other) = line
         .strip_prefix("registered ")
         .and_then(|r| r.split(' ').next())
