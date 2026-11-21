@@ -456,6 +456,27 @@ pub struct ChannelCreate {
     pub consumer_sid: Option<String>,
 }
 
+/// The method name of [`ChannelClosed`] (v1.24).
+pub const CHANNEL_CLOSED: &str = "channel.closed";
+
+/// `channel.closed` (H -> M notification, section 8.4, v1.24): the consumer a `channel.create`
+/// named may no longer hold `channel`. The provider closes every pipe of that channel it made
+/// for that consumer, connected or still waiting, and makes no new one from the same
+/// `channel.create`. Frames never pass through the hub, so only the provider can end the
+/// stream. Sent when the user forgets a program outside Hideout that was handed the channel.
+/// A provider with no such pipe ignores it. It grants nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelClosed {
+    pub channel: String,
+    /// The consumer's process id, as `channel.create` gave it; absent when that had none
+    /// (then: the pipes made without one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer_pid: Option<u32>,
+    /// Why: `"revoked"` (the user took the permission away). A reason the provider doesn't
+    /// know is treated the same.
+    pub reason: String,
+}
+
 /// `modules.enable`, `modules.disable`, `modules.reload`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModuleIdParams {
@@ -497,6 +518,8 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         "hub.notify" => typed::<HubNotify>(params),
         "channel.open" => typed::<ChannelOpen>(params),
         "channel.create" => typed::<ChannelCreate>(params),
+        // A consumer lost a channel it was handed (section 8.4, v1.24).
+        CHANNEL_CLOSED => typed::<ChannelClosed>(params),
         "modules.enable" | "modules.disable" | "modules.reload" => typed::<ModuleIdParams>(params),
         // The host services (§8.10, §8.11, v1.12).
         "net.open" => typed::<crate::services::NetOpen>(params),

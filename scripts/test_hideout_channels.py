@@ -339,6 +339,43 @@ class Pipes(unittest.TestCase):
         self.assertIsNone(conn.read_frame(), "the provider hung up")
         conn.close()
 
+    def test_a_revoked_channel_ends_and_a_waiting_one_never_starts(self):
+        """`channel.closed` (v1.24): an open stream ends at the provider, and one whose consumer
+        had not connected yet never starts."""
+        me = channel.Consumer(pid=os.getpid())
+        ended, ran = threading.Event(), threading.Event()
+
+        def stream(conn):
+            try:
+                while True:
+                    conn.write_frame(b"frame")
+                    time.sleep(0.005)
+            except OSError:
+                ended.set()
+
+        pipe = channel.serve("test.module", "revoked-open", "n1", stream, consumer=me)
+        with channel.connect(pipe, "n1") as conn:
+            self.assertEqual(conn.read_frame(), b"frame")
+            # Another consumer's pipe of the same channel is left alone.
+            channel.close_revoked("revoked-open", 1)
+            self.assertEqual(conn.read_frame(), b"frame")
+            channel.close_revoked("revoked-open", os.getpid())
+            self.assertTrue(ended.wait(10), "the stream ended")
+            try:
+                while conn.read_frame() is not None:
+                    pass
+            except OSError:
+                pass
+
+        pipe = channel.serve("test.module", "revoked-waiting", "n2", lambda conn: ran.set(), timeout=2, consumer=me)
+        channel.close_revoked("revoked-waiting", os.getpid())
+        try:
+            with channel.connect(pipe, "n2") as conn:
+                self.assertIsNone(conn.read_frame())
+        except OSError:
+            pass
+        self.assertFalse(ran.wait(0.5), "the stream never ran")
+
     def test_late_consumer_times_out(self):
         p = channel.ChannelPipe.create(channel.unique_pipe_name("test.module", "late"))
         name = p.name

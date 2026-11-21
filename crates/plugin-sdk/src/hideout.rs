@@ -40,6 +40,7 @@ pub use foxglove_plugin_api::hideout::messages::{
     InitializeModule, ModuleDrain, ModuleReady, ModuleRegister, NotifyLevel, PatchOp, PatchOpKind,
     RegisterResult, SettingsSet, UiAssetPut, UiEvent, UiPatch, UiWindowOpen,
 };
+pub use foxglove_plugin_api::hideout::messages::{ChannelClosed, CHANNEL_CLOSED};
 pub use foxglove_plugin_api::hideout::panel::{Node, Panel, Register};
 
 /// The most a message may be on the wire (§8.1).
@@ -583,6 +584,14 @@ impl<R: BufRead, W: Write> Session<R, W> {
                 "module.exit" => handler.exit(),
                 MODULE_GRANTS => {
                     self.grants_changed(&params)?;
+                    handler.notification(&method, params);
+                }
+                // (v1.24) A consumer lost a channel: the pipes `channel::serve` made for it
+                // end here; the handler still hears of it, for pipes it made itself.
+                CHANNEL_CLOSED => {
+                    if let Ok(p) = serde_json::from_value::<ChannelClosed>(params.clone()) {
+                        crate::channel::close_revoked(&p.channel, p.consumer_pid);
+                    }
                     handler.notification(&method, params);
                 }
                 _ => handler.notification(&method, params),

@@ -331,6 +331,9 @@ enum Waiter {
         caller: ConnId,
         id: Value,
         nonce: String,
+        /// What it asked to open: checked again when the provider answers.
+        module: String,
+        channel: String,
     },
     Host {
         module: String,
@@ -376,6 +379,21 @@ struct HostCall {
     deadline: Instant,
 }
 
+/// A channel the hub handed to a program outside Hideout (§8.4): the frames flow on the
+/// provider's pipe, not through the hub, so Forget has to tell the provider to end it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ToolChannel {
+    /// The program file it was handed to.
+    image_path: String,
+    module: String,
+    channel: String,
+    /// The program's process, as `channel.create` named it.
+    pid: Option<u32>,
+}
+
+/// The most handed-out channels the hub keeps track of for Forget. One more ends the oldest.
+const TOOL_CHANNELS_MAX: usize = 256;
+
 /// A lease a provider handed out (§8.5): who holds it.
 struct Lease {
     holder: ConnId,
@@ -405,6 +423,8 @@ pub struct Router {
     approved: HashMap<crate::ToolId, Vec<Capability>>,
     /// The order programs were allowed, oldest first: the order `tools.json` drops them in.
     approved_order: Vec<crate::ToolId>,
+    /// The channels handed to programs outside Hideout, oldest first (#1470).
+    tool_channels: Vec<ToolChannel>,
     /// Outside tools waiting for the user (S1): in memory, at most `QUEUE_MAX`.
     tool_queue: crate::tool_queue::ToolQueue,
     modules: BTreeMap<String, ModuleEntry>,
@@ -558,6 +578,20 @@ fn lease_closed_to(conn: ConnId, lease: &str, reason: &str, out: &mut Vec<Out>) 
     ));
 }
 
+/// `channel.closed {channel, consumer_pid?, reason: "revoked"}` to one provider connection
+/// (§8.4, v1.24).
+fn channel_closed_to(conn: ConnId, channel: &str, pid: Option<u32>, out: &mut Vec<Out>) {
+    let mut params = json!({"channel": channel, "reason": "revoked"});
+    if let Some(pid) = pid {
+        params["consumer_pid"] = json!(pid);
+    }
+    out.push(Out::Send(
+        conn,
+        json!({"jsonrpc": "2.0", "method": hideout_contract::messages::CHANNEL_CLOSED,
+               "params": params}),
+    ));
+}
+
 /// A refusal carrying a §15 id in `data.id` (and the reason for the UI).
 fn refusal(id: &Value, code: i64, message: &str, data_id: &str, reason: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id,
@@ -578,6 +612,7 @@ impl Router {
             approve,
             approved: HashMap::new(),
             approved_order: Vec::new(),
+            tool_channels: Vec::new(),
             tool_queue: Default::default(),
             modules: BTreeMap::new(),
             tokens: HashMap::new(),
@@ -1035,6 +1070,26 @@ impl Router {
         self.approved.insert(id, caps);
     }
 
+    /// Every answer the hub holds now, oldest first: the program and what the user allowed it
+    /// (not the free set). This is what a later connection of that file is given, so it is
+    /// what the Apps page lists and what `tools.json` is written from. Read only.
+    pub fn approved_tools(&self) -> Vec<(crate::ToolId, Vec<String>)> {
+        use hideout_contract::capability::{tool_class, ToolClass};
+        self.approved_order
+            .iter()
+            .filter_map(|id| {
+                let kept: Vec<String> = self
+                    .approved
+                    .get(id)?
+                    .iter()
+                    .filter(|c| tool_class(c, None) != ToolClass::Free)
+                    .map(|c| c.to_string())
+                    .collect();
+                Some((id.clone(), kept))
+            })
+            .collect()
+    }
+
     /// Forgets what was kept for `id`.
     fn forget_approved(&mut self, id: &crate::ToolId) {
         self.approved.remove(id);
@@ -1146,14 +1201,36 @@ impl Router {
     /// what any program outside Hideout may have without asking; the subscriptions and app
     /// watches that needed more end (a v2 connection is told with
     /// `module.grants {added: [], ended}`), and so do the leases it holds under what it lost
-    /// (`lease.closed`, reason `revoked`). Calls already under way finish, and an ask waiting
-    /// for the user stays. The program is asked about again the next time it connects.
+    /// (`lease.closed`, reason `revoked`). Every channel the hub handed that file under an
+    /// answer ends too: its provider is told `channel.closed`, whether or not the program
+    /// still has a connection to the hub. Calls already under way finish, but what they
+    /// return is checked against what the connection holds then: no lease and no channel
+    /// reaches it under what it lost. An ask waiting for the user stays. The program is asked
+    /// about again the next time it connects.
     pub fn forget_tool(&mut self, image_path: &str) -> Vec<Out> {
         use hideout_contract::capability::{tool_class, ToolClass};
         let mut out = Vec::new();
         let same = |id: &crate::ToolId| id.image_path.eq_ignore_ascii_case(image_path);
         self.approved.retain(|k, _| !same(k));
         self.approved_order.retain(|k| !same(k));
+        // The channels it was handed under an answer: only their providers can end them.
+        let (gone, kept): (Vec<ToolChannel>, Vec<ToolChannel>) =
+            std::mem::take(&mut self.tool_channels)
+                .into_iter()
+                .partition(|t| {
+                    let cap = Capability::ChannelOpen {
+                        module: t.module.clone(),
+                        channel: t.channel.clone(),
+                    };
+                    t.image_path.eq_ignore_ascii_case(image_path)
+                        && tool_class(&cap, self.channel_risk(&cap)) != ToolClass::Free
+                });
+        self.tool_channels = kept;
+        for t in gone {
+            if let Some(p) = self.ready_conn(&t.module) {
+                channel_closed_to(p, &t.channel, t.pid, &mut out);
+            }
+        }
         let mut live: Vec<ConnId> = self
             .conns
             .iter()
@@ -2926,6 +3003,23 @@ impl Router {
         )
     }
 
+    /// What a caller is told when it may not open `module`'s `channel`. A program outside
+    /// Hideout that was forgotten while connected is told that (R5).
+    fn channel_refusal(&self, conn: ConnId, module: &str, channel: &str) -> String {
+        if let Some(c) = self.conns.get(&conn) {
+            if let (Who::Tool { name, .. }, true) = (&c.who, c.forgotten) {
+                let cap = Capability::ChannelOpen {
+                    module: module.into(),
+                    channel: channel.into(),
+                };
+                let does = hideout_contract::capability::tool_phrase(&cap);
+                return self.tool_refusal_words(conn, name, false, &does);
+            }
+        }
+        let name = self.modules.get(module).map_or(module, |m| m.name.as_str());
+        format!("Needs permission to open {name}'s {channel}")
+    }
+
     /// What a program outside Hideout is told when a call needs a permission it doesn't have
     /// (S1). Never-class says only an app may (R2). Otherwise, when the hub can tell which
     /// program this is, it says the hub hasn't let it yet and where to review it (R3); when it
@@ -2943,6 +3037,11 @@ impl Router {
             Some(c) => hideout_contract::capability::tool_phrase(c),
             None => format!("call {method}"),
         };
+        self.tool_refusal_words(conn, name, never, &does)
+    }
+
+    /// [`Self::tool_refusal`] for what the program wanted to do, in words.
+    fn tool_refusal_words(&self, conn: ConnId, name: &str, never: bool, does: &str) -> String {
         if never {
             format!(
                 "Hideout never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
@@ -3861,8 +3960,33 @@ impl Router {
                 let result = self.take_lease(conn, c, &p.method, result, out);
                 out.push(Out::Send(c, envelope(&id, result)))
             }
-            Waiter::Channel { caller, id, nonce } => {
+            Waiter::Channel {
+                caller,
+                id,
+                nonce,
+                module,
+                channel,
+            } => {
+                let pid = self.conns.get(&caller).and_then(|c| c.pid);
+                // What the caller held when it asked may be gone by now (the user forgot the
+                // program while the provider made the pipe): the grant is not handed out, and
+                // the provider drops the pipe it made.
+                if self
+                    .conns
+                    .get(&caller)
+                    .is_some_and(|c| !c.caps.opens(&module, &channel))
+                {
+                    if result.is_ok() {
+                        channel_closed_to(conn, &channel, pid, out);
+                    }
+                    let reason = self.channel_refusal(caller, &module, &channel);
+                    out.push(Out::Send(caller, denied(&id, Some(&reason))));
+                    return;
+                }
                 let r = crate::channels::grant(result, &nonce, &self.provider(conn));
+                if r.is_ok() {
+                    self.keep_tool_channel(caller, &module, &channel, pid, out);
+                }
                 out.push(Out::Send(caller, envelope(&id, r)));
             }
             Waiter::Host {
@@ -3943,6 +4067,29 @@ impl Router {
             let disconnect = hideout_contract::lease::reason::DISCONNECT;
             lease_closed_to(provider_conn, &lease, disconnect, out);
             return result;
+        }
+        // (#1470) The caller is a program the user forgot while this call ran, and it may no
+        // longer make the call: it is not made the holder. The lease the provider made ends
+        // at once, and the caller is told what any later call of it is told.
+        if let Some(cc) = self.conns.get(&c) {
+            if cc.forgotten && !may_call(&cc.caps, method, &Value::Null) {
+                let who = cc.who.clone();
+                if self.leases.remove(&key).is_some() {
+                    self.sync_lease_holders(out);
+                }
+                lease_closed_to(
+                    provider_conn,
+                    &lease,
+                    hideout_contract::lease::reason::REVOKED,
+                    out,
+                );
+                let reason = self.needs_permission(c, &who, method, &Value::Null);
+                return Err(json!({
+                    "code": code::DENIED,
+                    "message": "denied",
+                    "data": {"reason": reason}
+                }));
+            }
         }
         if !self.leases.contains_key(&key) && self.leases_of(&provider, c) >= MAX_LEASES_PER_CALLER
         {
@@ -4384,11 +4531,7 @@ impl Router {
             return out.push(Out::Send(conn, denied(&id, Some(reason))));
         }
         if !caps.opens(&module, &channel) {
-            let name = self
-                .modules
-                .get(&module)
-                .map_or(module.as_str(), |m| m.name.as_str());
-            let reason = format!("Needs permission to open {name}'s {channel}");
+            let reason = self.channel_refusal(conn, &module, &channel);
             return out.push(Out::Send(conn, denied(&id, Some(&reason))));
         }
         let nonce = fresh_secret();
@@ -4396,6 +4539,8 @@ impl Router {
             caller: conn,
             id,
             nonce: nonce.clone(),
+            module: module.clone(),
+            channel: channel.clone(),
         };
         self.create_channel(&module, &channel, &consumer, nonce, waiter, now, out);
     }
@@ -4460,6 +4605,42 @@ impl Router {
                     Some(&reason),
                     out,
                 )
+            }
+        }
+    }
+
+    /// Notes a channel handed to a program outside Hideout, so that Forget can end it. Kept by
+    /// the program's file, not by its connection: the stream outlives the connection.
+    fn keep_tool_channel(
+        &mut self,
+        caller: ConnId,
+        module: &str,
+        channel: &str,
+        pid: Option<u32>,
+        out: &mut Vec<Out>,
+    ) {
+        if !matches!(
+            self.conns.get(&caller).map(|c| &c.who),
+            Some(Who::Tool { .. })
+        ) {
+            return;
+        }
+        let Some(id) = self.tool_identity(caller) else {
+            return;
+        };
+        let t = ToolChannel {
+            image_path: id.image_path,
+            module: module.to_string(),
+            channel: channel.to_string(),
+            pid,
+        };
+        self.tool_channels.retain(|k| k != &t);
+        self.tool_channels.push(t);
+        // Over the limit the oldest one ends, so none is ever left that Forget can't reach.
+        while self.tool_channels.len() > TOOL_CHANNELS_MAX {
+            let old = self.tool_channels.remove(0);
+            if let Some(p) = self.ready_conn(&old.module) {
+                channel_closed_to(p, &old.channel, old.pid, out);
             }
         }
     }

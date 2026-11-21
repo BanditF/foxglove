@@ -59,7 +59,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.23",
+  "spec": "1.24",
   "streams": {
     "nodes": [
       "canvas",
@@ -575,6 +575,33 @@
         "source"
       ],
       "title": "ActionInvoke",
+      "type": "object"
+    },
+    "messages.ChannelClosed": {
+      "description": "`channel.closed` (H -> M notification, section 8.4, v1.24): the consumer a `channel.create`\nnamed may no longer hold `channel`. The provider closes every pipe of that channel it made\nfor that consumer, connected or still waiting, and makes no new one from the same\n`channel.create`. Frames never pass through the hub, so only the provider can end the\nstream. Sent when the user forgets a program outside Hideout that was handed the channel.\nA provider with no such pipe ignores it. It grants nothing.",
+      "properties": {
+        "channel": {
+          "type": "string"
+        },
+        "consumer_pid": {
+          "description": "The consumer's process id, as `channel.create` gave it; absent when that had none\n(then: the pipes made without one).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "Why: `\"revoked\"` (the user took the permission away). A reason the provider doesn't\nknow is treated the same.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "reason"
+      ],
+      "title": "ChannelClosed",
       "type": "object"
     },
     "messages.ChannelCreate": {

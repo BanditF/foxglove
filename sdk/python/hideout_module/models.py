@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal, Optional, Union
 from ._model import Model
 
 HUB = '1.5'
-SPEC = '1.23'
+SPEC = '1.24'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -292,6 +292,26 @@ class ActionInvoke(Model):
     FIELDS: ClassVar[dict] = {
         'action': ('action', 'str'),
         'source': ('source', ('ref', 'ActionSource')),
+    }
+
+
+@dataclass(kw_only=True)
+class ChannelClosed(Model):
+    """`channel.closed` (H -> M notification, section 8.4, v1.24): the consumer a `channel.create`
+named may no longer hold `channel`. The provider closes every pipe of that channel it made
+for that consumer, connected or still waiting, and makes no new one from the same
+`channel.create`. Frames never pass through the hub, so only the provider can end the
+stream. Sent when the user forgets a program outside Hideout that was handed the channel.
+A provider with no such pipe ignores it. It grants nothing."""
+
+    channel: str
+    consumer_pid: Optional[int] = None
+    reason: str
+
+    FIELDS: ClassVar[dict] = {
+        'channel': ('channel', 'str'),
+        'consumer_pid': ('consumer_pid', ('opt', 'int')),
+        'reason': ('reason', 'str'),
     }
 
 
@@ -1099,6 +1119,7 @@ TYPES = {
     'lease.LeaseHolders': LeaseHolders,
     'legacy.Manifest': Manifest,
     'messages.ActionInvoke': ActionInvoke,
+    'messages.ChannelClosed': ChannelClosed,
     'messages.ChannelCreate': ChannelCreate,
     'messages.ChannelOpen': ChannelOpen,
     'messages.ChannelOpened': ChannelOpened,

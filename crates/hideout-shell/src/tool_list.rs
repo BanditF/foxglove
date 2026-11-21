@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! "Programs outside Hideout" at the bottom of the Apps page (#1470): the program files the
 //! user allowed to do more than read, newest first, each with a Forget button. Drawn by the hub
-//! from its own record. A file's name and path are untrusted plain text (the dialog's
+//! from what it holds and from its own record: every answer has a row, so every answer can be
+//! forgotten. A file's name and path are untrusted plain text (the dialog's
 //! [`file_line`] rules); nothing a program calls itself is shown here. The list is built from
 //! what the caller read; nothing here reads or hashes a file.
 //! Forget asks nothing and opens no dialog: the caller takes the answer away, then calls
@@ -22,6 +23,16 @@ pub const FORGET: &str = "Forget";
 pub const FORGET_HOVER: &str = "Hideout forgets what you allowed this program.";
 pub const MISSING: &str = "This file isn't here now. If it comes back unchanged, your answer still counts. Press Forget to remove it.";
 pub const DATE_UNKNOWN: &str = "Allowed in Hideout, date not known";
+/// In place of the count and the date on a row whose Forget was not saved: the program can do
+/// none of it in this run.
+pub const NOT_NOW: &str = "Not allowed now";
+/// In place of "It may:" on a row with nothing Hideout can list (an app that offered it is gone,
+/// say): the row is there so the answer can be forgotten.
+pub const NO_ITEMS: &str =
+    "Hideout can't show what this program was allowed. Press Forget to remove it.";
+/// The note when Forget could not be saved a second time for the same row.
+pub const STILL_NOT_SAVED: &str =
+    "Hideout still couldn't save that. Close Hideout and open it again, then press Forget.";
 /// The name of a file whose path leaves nothing to show.
 pub const NO_NAME: &str = "A program";
 
@@ -114,41 +125,48 @@ pub struct ToolRow {
     pub items: Vec<ToolItem>,
     /// "Allowed in Hideout on ..." or that the date is not known.
     pub date: String,
-    /// The file was not there when the list was read.
+    /// The file was looked for and is not there.
     pub missing: bool,
+    /// The record is still in the file but Hideout does not honour it in this run: a Forget
+    /// that could not be saved.
+    pub unsaved: bool,
 }
 
 impl ToolRow {
-    /// The row for one record. `items` are what the record lists that a program outside
-    /// Hideout can be allowed; a record with none is not listed.
-    pub fn new(
-        path: &str,
-        items: Vec<ToolItem>,
-        allowed_at: Option<&str>,
-        missing: bool,
-    ) -> Option<ToolRow> {
-        if items.is_empty() {
-            return None;
-        }
+    /// The row for one answer. `items` are what it lists that a program outside Hideout can be
+    /// allowed now; an answer with none still has a row, so it can be forgotten.
+    pub fn new(path: &str, items: Vec<ToolItem>, allowed_at: Option<&str>) -> ToolRow {
         let (red, plain): (Vec<ToolItem>, Vec<ToolItem>) = items.into_iter().partition(|i| i.red);
-        Some(ToolRow {
+        ToolRow {
             path: path.to_string(),
             name: file_name(path),
             file: file_line(path),
             items: red.into_iter().chain(plain).collect(),
             date: date_line(allowed_at),
-            missing,
-        })
+            missing: false,
+            unsaved: false,
+        }
     }
 
-    /// "2 allowed": the lines drawn.
-    pub fn count(&self) -> String {
-        format!("{} allowed", self.items.len())
+    /// "2 allowed": the lines drawn. Nothing for a row with no lines: never "0 allowed".
+    pub fn count(&self) -> Option<String> {
+        (!self.items.is_empty()).then(|| format!("{} allowed", self.items.len()))
     }
 
     /// The row's accessible name.
     pub fn said(&self) -> String {
-        let mut s = format!("{}, {}, {}", self.name, self.count(), self.date);
+        let mut s = self.name.clone();
+        if self.unsaved {
+            s.push_str(", ");
+            s.push_str(NOT_NOW);
+        } else {
+            if let Some(n) = self.count() {
+                s.push_str(", ");
+                s.push_str(&n);
+            }
+            s.push_str(", ");
+            s.push_str(&self.date);
+        }
         if self.missing {
             s.push_str(", file not here now");
         }
@@ -162,14 +180,19 @@ impl ToolRow {
 
     /// Every line the row shows, in order.
     pub fn lines(&self) -> Vec<String> {
-        let mut out = vec![
-            self.name.clone(),
-            self.file.clone(),
-            self.count(),
-            self.date.clone(),
-            MAY.to_string(),
-        ];
-        out.extend(self.items.iter().map(|i| format!("\u{2022} {}", i.does)));
+        let mut out = vec![self.name.clone(), self.file.clone()];
+        if self.unsaved {
+            out.push(NOT_NOW.to_string());
+        } else {
+            out.extend(self.count());
+            out.push(self.date.clone());
+        }
+        if self.items.is_empty() {
+            out.push(NO_ITEMS.to_string());
+        } else {
+            out.push(MAY.to_string());
+            out.extend(self.items.iter().map(ToolItem::line));
+        }
         if self.missing {
             out.push(MISSING.to_string());
         }
@@ -182,8 +205,10 @@ impl ToolRow {
 pub struct ToolList {
     /// Newest allowed first.
     rows: Vec<ToolRow>,
-    /// The line after a Forget.
-    note: Option<String>,
+    /// The line after a Forget, and whether it asks the user to act (the save failed).
+    note: Option<(String, bool)>,
+    /// The row whose last Forget could not be saved.
+    failed: Option<String>,
     /// The newest "file changed" line, and whether it was on screen yet.
     changed: Option<(String, bool)>,
     /// The last row was just forgotten: the heading and the note stay until the user leaves.
@@ -212,7 +237,15 @@ impl ToolList {
         !self.rows.is_empty() || self.keep_head || self.changed.is_some()
     }
 
-    /// Whether the "Hideout keeps 64 programs" line shows: only with a full list.
+    /// Marks the rows whose file was looked for and is not there.
+    pub fn set_missing(&mut self, missing: &[String]) {
+        for r in &mut self.rows {
+            r.missing = missing.contains(&r.path);
+        }
+    }
+
+    /// Whether the "Hideout keeps 64 programs" line shows: only with a full list. Every answer
+    /// has a row, so the rows are the answers kept.
     pub fn full(&self) -> bool {
         self.rows.len() >= FULL
     }
@@ -222,7 +255,7 @@ impl ToolList {
         self.changed
             .iter()
             .map(|(line, _)| line.clone())
-            .chain(self.note.clone())
+            .chain(self.note.iter().map(|(line, _)| line.clone()))
             .collect()
     }
 
@@ -240,18 +273,31 @@ impl ToolList {
     /// The user pressed Forget on the row for `path`. `saved` is whether the record was
     /// written; `now` are the rows read after it, oldest first. Saved: the row is gone, the
     /// note says so and the focus goes to the row that took its place, else the row above,
-    /// else nowhere. Not saved: the row stays, the note says what to do and the focus stays on
-    /// the same button.
+    /// else nowhere. Not saved: the row stays (as `now` has it: not allowed now), the note says
+    /// what to do, in other words the second time, and the focus stays on the same button.
     pub fn after_forget(&mut self, path: &str, saved: bool, now: Vec<ToolRow>) {
         let at = self.rows.iter().position(|r| r.path == path);
         let name = at.map_or_else(|| file_name(path), |i| self.rows[i].name.clone());
         if !saved {
-            self.note = Some(not_saved(&name));
+            let again = self.failed.as_deref() == Some(path);
+            let line = if again {
+                STILL_NOT_SAVED.to_string()
+            } else {
+                not_saved(&name)
+            };
+            self.note = Some((line, true));
+            self.failed = Some(path.to_string());
             self.focus = Some(path.to_string());
+            if now.iter().any(|r| r.path == path) {
+                self.set_rows(now);
+            } else if let Some(i) = at {
+                self.rows[i].unsaved = true;
+            }
             return;
         }
+        self.failed = None;
         self.set_rows(now);
-        self.note = Some(forgot(&name));
+        self.note = Some((forgot(&name), false));
         let at = at.unwrap_or(0);
         self.focus = self
             .rows
@@ -302,6 +348,21 @@ pub fn tool_list_ui(ui: &mut egui::Ui, t: &Tokens, list: &mut ToolList) -> Optio
     }
     let mut pressed = None;
     let focus = list.focus.take();
+    // A key held down repeats, and the focus moves to the next row's Forget: only a fresh press
+    // counts, so a held key forgets one program.
+    let held = ui.input(|i| {
+        i.events.iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Enter | egui::Key::Space,
+                    pressed: true,
+                    repeat: true,
+                    ..
+                }
+            )
+        })
+    });
     let said = section_said(list.rows.len());
     let section = ui.push_id("hub.tools", |ui| {
         ui.vertical(|ui| {
@@ -313,13 +374,23 @@ pub fn tool_list_ui(ui: &mut egui::Ui, t: &Tokens, list: &mut ToolList) -> Optio
                 ui.label(fine(ui, FULL_LINE).color(c(t.text_muted)));
             }
             // Polite live regions: a screen reader hears them without the focus moving.
-            for line in list.notes() {
+            let live = |ui: &mut egui::Ui, line: &str, colour: crate::theme::Rgb| {
                 ui.add_space(4.0);
-                let note = ui.label(RichText::new(&line).color(c(t.text_muted)));
+                let note = ui.label(RichText::new(line).color(c(colour)));
+                let said = line.to_string();
                 ui.ctx().accesskit_node_builder(note.id, |n| {
                     n.set_live(egui::accesskit::Live::Polite);
-                    n.set_label(line);
+                    n.set_label(said);
                 });
+                ui.is_rect_visible(note.rect)
+            };
+            if let Some((line, seen)) = list.changed.as_mut() {
+                // Read only once it was on screen: drawn below the window's edge is not seen.
+                *seen |= live(ui, line, t.text_muted);
+            }
+            if let Some((line, act)) = &list.note {
+                // The one note that asks the user to act stands out.
+                live(ui, line, if *act { t.attention } else { t.text_muted });
             }
             ui.add_space(8.0);
             for r in &list.rows {
@@ -333,28 +404,29 @@ pub fn tool_list_ui(ui: &mut egui::Ui, t: &Tokens, list: &mut ToolList) -> Optio
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
                                 // Room for the button, so a long path wraps beside it.
-                                let text_w = (ui.available_width() - 96.0).max(120.0);
+                                let text_w = (ui.available_width() - 96.0).max(0.0);
                                 ui.vertical(|ui| {
                                     ui.set_max_width(text_w);
                                     ui.label(RichText::new(&r.name).size(15.0).color(c(t.text)));
                                     ui.label(RichText::new(&r.file).color(c(t.text_muted)));
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label(RichText::new(r.count()).strong().color(c(t.ok)));
-                                        ui.label(RichText::new(&r.date).color(c(t.text_muted)));
-                                    });
-                                    ui.label(RichText::new(MAY).color(c(t.text)));
+                                    if r.unsaved {
+                                        ui.label(RichText::new(NOT_NOW).color(c(t.text_muted)));
+                                    } else {
+                                        ui.horizontal_wrapped(|ui| {
+                                            if let Some(n) = r.count() {
+                                                ui.label(RichText::new(n).strong().color(c(t.ok)));
+                                            }
+                                            ui.label(RichText::new(&r.date).color(c(t.text_muted)));
+                                        });
+                                    }
+                                    if r.items.is_empty() {
+                                        ui.label(RichText::new(NO_ITEMS).color(c(t.text_muted)));
+                                    } else {
+                                        ui.label(RichText::new(MAY).color(c(t.text)));
+                                    }
                                     for i in &r.items {
                                         let colour = if i.red { t.danger } else { t.text };
-                                        let item = ui.label(
-                                            RichText::new(format!("\u{2022} {}", i.does))
-                                                .color(c(colour)),
-                                        );
-                                        if i.red {
-                                            let said = format!("Sensitive: {}", i.does);
-                                            ui.ctx().accesskit_node_builder(item.id, |n| {
-                                                n.set_label(said);
-                                            });
-                                        }
+                                        ui.label(RichText::new(i.line()).color(c(colour)));
                                     }
                                     if r.missing {
                                         ui.label(fine(ui, MISSING).color(c(t.attention)));
@@ -371,8 +443,9 @@ pub fn tool_list_ui(ui: &mut egui::Ui, t: &Tokens, list: &mut ToolList) -> Optio
                                         });
                                         if focus.as_deref() == Some(r.path.as_str()) {
                                             b.request_focus();
+                                            b.scroll_to_me(None);
                                         }
-                                        if b.clicked() {
+                                        if b.clicked() && !held {
                                             pressed = Some(r.path.clone());
                                         }
                                         b.on_hover_text(FORGET_HOVER);
@@ -396,9 +469,6 @@ pub fn tool_list_ui(ui: &mut egui::Ui, t: &Tokens, list: &mut ToolList) -> Optio
         n.set_role(egui::accesskit::Role::Group);
         n.set_label(said);
     });
-    if let Some((_, seen)) = list.changed.as_mut() {
-        *seen = true;
-    }
     pressed
 }
 
@@ -419,9 +489,7 @@ mod tests {
             path,
             vec![item("change your keyboard's lighting", false)],
             Some("2026-11-17T09:00:00Z"),
-            false,
         )
-        .unwrap()
     }
 
     fn list(paths: &[&str]) -> ToolList {
@@ -433,21 +501,33 @@ mod tests {
     /// Draws the section once; returns the accessibility nodes' labels and descriptions and
     /// whether anything took space.
     fn draw(ctx: &egui::Context, l: &mut ToolList) -> (Vec<(String, String)>, f32) {
+        let (said, used, _) = draw_with(ctx, l, vec![]);
+        (said, used)
+    }
+
+    /// [`draw`] with input events; also the row whose Forget was pressed.
+    fn draw_with(
+        ctx: &egui::Context,
+        l: &mut ToolList,
+        events: Vec<egui::Event>,
+    ) -> (Vec<(String, String)>, f32, Option<String>) {
         ctx.enable_accesskit();
         let t = crate::theme::tokens(true);
         let mut used = 0.0;
+        let mut pressed = None;
         let out = ctx.run(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(900.0, 700.0),
                 )),
+                events,
                 ..Default::default()
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let before = ui.cursor().top();
-                    let _ = tool_list_ui(ui, &t, l);
+                    pressed = tool_list_ui(ui, &t, l);
                     used = ui.cursor().top() - before;
                 });
             },
@@ -463,7 +543,54 @@ mod tests {
                 )
             })
             .collect();
-        (said, used)
+        (said, used, pressed)
+    }
+
+    fn enter(repeat: bool) -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        }]
+    }
+
+    /// Forget asks nothing and the focus moves to the next row's Forget: a held key must not
+    /// walk down the list.
+    #[test]
+    fn a_held_key_forgets_one_program() {
+        let mut l = list(&[r"C:\a.exe", r"C:\b.exe", r"C:\c.exe"]);
+        let ctx = egui::Context::default();
+        l.focus = Some(r"C:\c.exe".into());
+        draw(&ctx, &mut l);
+        let mut forgot = Vec::new();
+        for frame in 0..6 {
+            // One fresh press, then the key repeats while it is held.
+            let (_, _, pressed) = draw_with(&ctx, &mut l, enter(frame > 0));
+            if let Some(path) = pressed {
+                let left: Vec<ToolRow> = l
+                    .rows()
+                    .iter()
+                    .rev()
+                    .filter(|r| r.path != path)
+                    .cloned()
+                    .collect();
+                l.after_forget(&path, true, left);
+                forgot.push(path);
+            }
+        }
+        assert_eq!(forgot, [r"C:\c.exe"]);
+        assert_eq!(l.rows().len(), 2);
+        // The key is let go. The focus is on the next row's button, and a fresh press there
+        // counts.
+        let mut up = enter(false);
+        if let egui::Event::Key { pressed, .. } = &mut up[0] {
+            *pressed = false;
+        }
+        assert_eq!(draw_with(&ctx, &mut l, up).2, None);
+        let (_, _, pressed) = draw_with(&ctx, &mut l, enter(false));
+        assert_eq!(pressed.as_deref(), Some(r"C:\b.exe"));
     }
 
     #[test]
@@ -476,9 +603,7 @@ mod tests {
                 item("make pictures", false),
             ],
             Some("2026-11-17T09:00:00Z"),
-            false,
-        )
-        .unwrap();
+        );
         assert_eq!(
             r.lines(),
             [
@@ -487,14 +612,25 @@ mod tests {
                 "3 allowed",
                 "Allowed in Hideout on 17 Nov 2026",
                 "It may:",
-                // The sensitive item first, the others in their own order.
-                "\u{2022} run your keyboard's actions",
+                // The sensitive item first and marked in words, the others in their own order.
+                "\u{2022} Sensitive: run your keyboard's actions",
                 "\u{2022} change your keyboard's lighting",
                 "\u{2022} make pictures",
             ]
         );
-        // A record with nothing a program can be allowed is not listed.
-        assert_eq!(ToolRow::new(r"C:\Tools\x.exe", vec![], None, false), None);
+        // An answer with nothing Hideout can list still has a row, so it can be forgotten:
+        // no count (never "0 allowed") and a line that says what to do.
+        let bare = ToolRow::new(r"C:\Tools\x.exe", vec![], None);
+        assert_eq!(
+            bare.lines(),
+            [
+                "x.exe",
+                r"Program file: C:\Tools\x.exe",
+                "Allowed in Hideout, date not known",
+                "Hideout can't show what this program was allowed. Press Forget to remove it.",
+            ]
+        );
+        assert_eq!(bare.said(), "x.exe, Allowed in Hideout, date not known");
         // The list shows the newest allowed first: the record's order, turned round.
         let l = list(&[r"C:\old.exe", r"C:\mid.exe", r"C:\new.exe"]);
         let names: Vec<&str> = l.rows().iter().map(|r| r.name.as_str()).collect();
@@ -506,6 +642,9 @@ mod tests {
             FULL_LINE,
             MISSING,
             FORGET_HOVER,
+            NOT_NOW,
+            NO_ITEMS,
+            STILL_NOT_SAVED,
             &forgot("a.exe"),
             &not_saved("a.exe"),
             &file_changed("a.exe"),
@@ -538,9 +677,7 @@ mod tests {
             r"C:\Tools\old.exe",
             vec![item("make pictures", false)],
             None,
-            false,
-        )
-        .unwrap();
+        );
         assert_eq!(r.date, "Allowed in Hideout, date not known");
         assert_eq!(
             r.said(),
@@ -671,6 +808,32 @@ mod tests {
             Some(r"C:\b.exe"),
             "the same button keeps the focus"
         );
+        // The program can do none of it in this run, and the row says so.
+        let b = l.rows()[0].clone();
+        assert!(b.unsaved && !l.rows()[1].unsaved);
+        assert_eq!(b.said(), "b.exe, Not allowed now");
+        assert_eq!(
+            b.lines(),
+            [
+                "b.exe",
+                r"Program file: C:\b.exe",
+                "Not allowed now",
+                "It may:",
+                "\u{2022} change your keyboard's lighting",
+            ]
+        );
+        let ctx = egui::Context::default();
+        let (said, _) = draw(&ctx, &mut l);
+        assert!(said.iter().any(|(l, _)| l == "Not allowed now"), "{said:?}");
+        assert!(!said.iter().any(|(l, _)| l == "1 allowed, b.exe"));
+        // A second failure says something new, with a new next step.
+        l.after_forget(r"C:\b.exe", false, vec![]);
+        assert_eq!(
+            l.notes(),
+            ["Hideout still couldn't save that. Close Hideout and open it again, then press Forget."]
+        );
+        assert!(l.note.as_ref().is_some_and(|(_, act)| *act));
+        assert_eq!(l.rows().len(), 2);
         // Pressed again and saved: the note is replaced.
         l.after_forget(r"C:\b.exe", true, vec![row(r"C:\a.exe")]);
         assert_eq!(l.rows().len(), 1);
@@ -678,6 +841,44 @@ mod tests {
             l.notes(),
             ["Hideout forgot b.exe. It can't do those things now, and it asks again the next time it starts."]
         );
+        assert!(l.note.as_ref().is_some_and(|(_, act)| !*act));
+        // A later failure on that row starts with the first words again.
+        l.after_forget(r"C:\a.exe", false, vec![]);
+        assert!(l.notes()[0].starts_with("Hideout forgot a.exe for now"));
+    }
+
+    /// The "file changed" line is read only once it was on screen.
+    #[test]
+    fn a_note_below_the_edge_is_not_seen_yet() {
+        let paths: Vec<String> = (0..3).map(|i| format!(r"C:\T\{i}.exe")).collect();
+        let mut l = ToolList::default();
+        l.set_rows(paths.iter().map(|p| row(p)).collect());
+        l.file_changed(r"C:\Tools\lights.exe");
+        let ctx = egui::Context::default();
+        let t = crate::theme::tokens(true);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+        let frame = |l: &mut ToolList, push: f32| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.add_space(push);
+                        let _ = tool_list_ui(ui, &t, l);
+                    });
+                },
+            );
+        };
+        // Drawn far below the window's bottom edge: leaving the page keeps it.
+        frame(&mut l, 2000.0);
+        l.left();
+        assert_eq!(l.notes().len(), 1);
+        // Drawn on screen: now it was read.
+        frame(&mut l, 0.0);
+        l.left();
+        assert!(l.notes().is_empty());
     }
 
     #[test]
@@ -733,9 +934,7 @@ mod tests {
                     item("run your keyboard's actions", true),
                 ],
                 Some("2026-11-17T09:00:00Z"),
-                false,
-            )
-            .unwrap(),
+            ),
         ]);
         let ctx = egui::Context::default();
         let (said, _) = draw(&ctx, &mut l);
@@ -747,7 +946,8 @@ mod tests {
         assert!(has(
             "gone.exe, 1 allowed, Allowed in Hideout on 17 Nov 2026, file not here now"
         ));
-        assert!(has("Sensitive: run your keyboard's actions"));
+        // The same words on screen and for a screen reader.
+        assert!(has("\u{2022} Sensitive: run your keyboard's actions"));
         assert!(has("\u{2022} change your keyboard's lighting"));
         // The button says which program, and its description is the path line.
         assert!(said.contains(&(

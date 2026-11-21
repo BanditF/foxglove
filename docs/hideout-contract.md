@@ -1,6 +1,6 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.23** (v1.22 plus `owed` on `lease.holders`, a provider telling the hub it still owes a family a resume, so the tray keeps offering Resume after a failed one, #1420; v1.22 was v1.21 plus `module.grants`, the hub telling a running module that the user's Allow widened what it holds, so a denied `facts.subscribe` is sent again; v1.21 was v1.20 plus `lease.holders`, a provider naming the callers it holds leases for outside the hub, #1142; v1.20 was v1.19 plus `facts.demand`, the hub telling the module that owns a fact pattern when the first subscriber arrives and the last leaves, #1328 follow-up; v1.19 was v1.18 plus `hub.show` and the app's read of `module.foxglove.state` over the verified hub pipe, H5.5; v1.18 was v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
+Status: spec, contract version **1.24** (v1.23 plus `channel.closed`, the hub telling a provider that a consumer lost a channel it was handed, so Forget ends the stream, #1470; v1.23 was v1.22 plus `owed` on `lease.holders`, a provider telling the hub it still owes a family a resume, so the tray keeps offering Resume after a failed one, #1420; v1.22 was v1.21 plus `module.grants`, the hub telling a running module that the user's Allow widened what it holds, so a denied `facts.subscribe` is sent again; v1.21 was v1.20 plus `lease.holders`, a provider naming the callers it holds leases for outside the hub, #1142; v1.20 was v1.19 plus `facts.demand`, the hub telling the module that owns a fact pattern when the first subscriber arrives and the last leaves, #1328 follow-up; v1.19 was v1.18 plus `hub.show` and the app's read of `module.foxglove.state` over the verified hub pipe, H5.5; v1.18 was v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
 and the user's Resume that ends them, #1142; v1.16 was v1.15 plus the tray menu's quick actions: an `action`
 panel is a tray menu item, a press on a cold module starts it and is delivered, and `tray` is a
 user source, #1234; v1.15 was v1.14 plus a cap on the leases one caller holds at one
@@ -18,12 +18,20 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)", every v1.19 one "(v1.19)", every v1.20 one "(v1.20)", every v1.21 one "(v1.21)", every v1.22 one "(v1.22)", every v1.23 one "(v1.23)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)", every v1.19 one "(v1.19)", every v1.20 one "(v1.20)", every v1.21 one "(v1.21)", every v1.22 one "(v1.22)", every v1.23 one "(v1.23)", every v1.24 one "(v1.24)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.24** (#1470, Forget ends channels): `channel.closed {channel, consumer_pid?, reason}`,
+  a new H → M notification (§8.4). The frames of a channel never pass through the hub, so only
+  the provider can end a stream: when the user forgets a program outside Hideout, the hub
+  tells the provider of every channel that program file was handed under what it lost. The
+  provider closes every pipe of that channel it made for that consumer, connected or still
+  waiting. `reason` is `"revoked"`. Additive: a provider older than v1.24 ignores the
+  notification, and its open stream then lasts until the provider or the program closes it;
+  both SDKs handle it by themselves for the pipes they made. No other message changes.
 - **1.23** (#1420, Resume after a failed resume): `lease.holders {family, names, owed?}` takes
   an optional `owed`, a JSON bool, false when absent. With `owed: true` and no names the
   family stays in the fact `module.<provider>.lease_holders` as `[]` ("nobody holds it, but
@@ -1539,23 +1547,44 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   "Programs outside Hideout" lists every kept program file, newest Allow first: the file name,
   "Program file: {file}" (the file line rules above), "{n} allowed", "Allowed in Hideout on
   {date}" (or "Allowed in Hideout, date not known", never a zero date), "It may:" with one line
-  per kept item in the dialog's words, and one **Forget** button. With nothing kept the section
-  is not drawn. A program that runs scripts is never listed. With 64 kept it adds "Hideout
-  keeps 64 programs. Allowing another one forgets the last one in this list." A file that is
-  not there now says so; the page only asks whether the file exists and never reads or hashes
-  a program. Forget has no confirm: it only takes away. The router forgets first, then the
-  record is written, as an app's Turn off. Every answer kept for that path goes. Every
-  connection of that program file that is open now keeps only the free set, at once; the fact
-  subscriptions and app watches that needed more end, and so do the leases it holds under
-  what it lost (`lease.closed`, reason `revoked`). A v2 connection is told with
-  `module.grants {added: [], ended}`; a v1 connection is not told. Calls already under way
-  finish. The program is asked about again the next time it connects, and an Allow then gives
-  the open connections their items back. An ask that waits for the user stays. If the record
-  cannot be written the row stays and the page says "Hideout forgot {name} for now but
-  couldn't save that. Press Forget again."; what the router took away is not given back.
-  Forget is reached only from the hub's own page: no method on any pipe forgets a program, so
-  neither a tool nor an app can call it. The section reads `tools.json` again only when the
-  hub wrote it, never on a timer.
+  per kept item in the dialog's words, and one **Forget** button. A sensitive item says so in
+  words, in the list and in the dialog: "• Sensitive: {does}", never by colour alone. With
+  nothing kept the section is not drawn. A program that runs scripts is never listed.
+  **Every answer the hub honours has a row.** The rows are what the router holds now, one per
+  program file, so an Allow that could not be saved is listed too (its date not known) and
+  can be forgotten; so is an answer with no item Hideout can word now (its app is gone), which
+  reads "Hideout can't show what this program was allowed. Press Forget to remove it." A
+  record in `tools.json` that the router does not hold is listed as "Not allowed now", so it
+  can be removed. The 64 are counted in kept programs, listable or not; with 64 kept the page
+  adds "Hideout keeps 64 programs. Allowing another one forgets the last one in this list."
+  A file that was looked for and is not there says so. The page never reads or hashes a
+  program. It looks only for a path on one of this PC's internal fixed drives, never follows
+  a link on the way, and says "not here" only when Windows answers that the file does not
+  exist; anything it can't tell shows nothing. The look runs off the window's thread and
+  never while the router is held, once per reading of the list. The Apps page scrolls, and
+  the row that takes the focus is scrolled into view. A key held down forgets one program:
+  only a fresh press counts. Forget has no confirm: it only takes away. The router forgets
+  first, then the record is written, as an app's Turn off. Every answer kept for that path
+  goes. Every connection of that program file that is open now keeps only the free set, at
+  once; the fact subscriptions and app watches that needed more end, and so do the leases it
+  holds under what it lost (`lease.closed`, reason `revoked`) and the channels that file was
+  handed under it (`channel.closed` to the provider, §8.4, whether or not the program still
+  has a connection to the hub). A v2 connection is told with `module.grants {added: [],
+  ended}`; a v1 connection is not told. Calls already under way finish, but what they return
+  is checked against what the connection holds then: no lease and no channel reaches a
+  connection under what it lost. The program is asked about again the next time it connects,
+  and an Allow then gives the open connections their items back. An ask that waits for the
+  user stays. **The record never says more than the router.** `tools.json` is written from
+  what the router holds, read while the record's lock is held, for an Allow, a voided file
+  and a Forget alike, so a write that comes late cannot bring back a program the user forgot.
+  A lock left behind by a writer that is gone does not block later saves. If the record
+  cannot be written the row stays, marked "Not allowed now", and the page says "Hideout
+  forgot {name} for now but couldn't save that. Press Forget again."; a second failure for
+  the same program says "Hideout still couldn't save that. Close Hideout and open it again,
+  then press Forget." What the router took away is not given back. Forget is reached only
+  from the hub's own page: no method on any pipe forgets a program, so neither a tool nor an
+  app can call it. The section reads `tools.json` again only when the hub wrote it or the
+  list of apps changed, never on a timer.
 - (S1) **Words for a refused tool call.** R3 (ask-class, not yet reviewed): "Hideout hasn't let
   “{name}” {does} yet. Open Hideout, go to Apps and press Review… on its line. If there
   is no line, close this program and start it again, then try again." With no name it reads
@@ -1563,7 +1592,7 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   read. Start it again from a normal window, not as administrator." R2 (never-class): "Hideout
   never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
   R5 (#1470; ask-class, on a connection that was open when the user pressed Forget for its
-  program and lost something): "Hideout no longer lets “{name}” {does}. This program was
+  program and lost something; also the answer to its `channel.open`): "Hideout no longer lets “{name}” {does}. This program was
   forgotten on Hideout's Apps page. Close this program and start it again, then allow it in
   Hideout." With no name it reads "Hideout no longer lets this program {does}. …" It holds
   until that program is allowed again; a connection opened after Forget gets R3.
@@ -2288,6 +2317,20 @@ Rules:
 - The hub returns `{pipe, nonce}` to the consumer and steps out.
 - The consumer connects and sends the nonce first. Then frames flow directly:
   `u32 little-endian length` + payload. Either side closing ends the channel.
+- **A channel taken away (v1.24, #1470).** The frames never pass through the hub, so only the
+  provider can end a stream. When the user forgets a program outside Hideout, the hub sends
+  the provider of every channel that program file was handed under what it lost
+  `channel.closed {channel, consumer_pid?, reason: "revoked"}`, where `consumer_pid` is the
+  one `channel.create` carried. The provider MUST close every pipe of that channel it made
+  for that consumer, connected or still waiting for it, and MUST NOT send it another frame;
+  a pipe it made with no consumer process is closed whatever `consumer_pid` says. A provider
+  with no such pipe ignores the message. It grants nothing and has no answer. The hub checks
+  again when the provider answers `channel.create`: a consumer that lost the grant meanwhile
+  is refused and the provider is told `channel.closed` for the pipe it just made. The hub
+  keeps track of a bounded number of handed-out channels; past it the oldest is ended the
+  same way. Both SDKs close the pipes their `serve` helpers made by themselves; a provider
+  that makes its pipes another way does it in its notification handler. A provider older
+  than v1.24 ignores the notification: its stream then ends when either side closes it.
 - **The channel's wire (v1.4, #977).** Written down from the first SDKs; no new message.
   - **Pipe name.** A provider answers `channel.create` with `\\.\pipe\hideout-ch-<rest>`:
     exactly that prefix (the local machine, lower-case `pipe`), then one or more ASCII letters,
@@ -2576,6 +2619,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `facts.demand` (v1.20) | H → M | notification | `{pattern, subscribers}` (`pattern` one the module registered; `subscribers` = live subscriptions overlapping it, the module's own excluded) | — | sent only to the owner, on the 0 ↔ non-zero edges and once after its register result if already non-zero |
 | `channel.open` | C → H | call | `{module, channel}` | `{pipe, nonce}` | `channel.open:<module>/<channel>` |
 | `channel.create` | H → M | call | `{channel, consumer, nonce}` | `{pipe}` | the provider offers it |
+| `channel.closed` (v1.24) | H → M | notification | `{channel, consumer_pid?, reason}` (the consumer may no longer hold the channel: the provider closes its pipes for it; `reason` is `"revoked"`) | — | the provider made the pipe |
 
 **Host services (v1.12)**
 

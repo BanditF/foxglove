@@ -343,6 +343,8 @@ if os.name == "nt":
     _k32.GetCurrentProcess.restype = ctypes.c_void_p
     _k32.LocalFree.argtypes = [ctypes.c_void_p]
     _k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    _k32.CancelIoEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    _k32.DisconnectNamedPipe.argtypes = [ctypes.c_void_p]
     _adv.OpenProcessToken.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
     _adv.GetTokenInformation.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
                                          ctypes.POINTER(wintypes.DWORD)]
@@ -567,6 +569,14 @@ if os.name == "nt":
             if h is not None:
                 _winapi.CloseHandle(h)
 
+        def disconnect(self):
+            """The provider's end: ends a blocked read or write and every later one, and
+            closes the consumer's end for it. The connection is still closed with `close`."""
+            h = self._h
+            if h is not None:
+                _k32.CancelIoEx(h, None)
+                _k32.DisconnectNamedPipe(h)
+
         def __enter__(self):
             return self
 
@@ -721,15 +731,49 @@ if os.name == "nt":
         it with `nonce`, then calls `stream(conn)` there. Returns the pipe name to answer with.
         Prefer `serve_create`, which passes the consumer the hub named."""
         pipe = ChannelPipe.create(unique_pipe_name(module, channel), consumer)
+        served = {"channel": channel, "pid": consumer.pid, "revoked": False, "conn": None}
+        with _served_lock:
+            _served.append(served)
 
         def run():
+            conn = None
             try:
-                conn = pipe.accept_nonce(nonce, timeout)
-            except OSError as e:
-                print(f"hideout channel {channel}: not opened: {e}", file=sys.stderr, flush=True)
-                return
-            with conn:
-                stream(conn)
+                try:
+                    conn = pipe.accept_nonce(nonce, timeout)
+                except OSError as e:
+                    print(f"hideout channel {channel}: not opened: {e}", file=sys.stderr, flush=True)
+                    return
+                with _served_lock:
+                    # Taken away while the consumer was on its way: it gets no frame.
+                    revoked = served["revoked"]
+                    if not revoked:
+                        served["conn"] = conn
+                if not revoked:
+                    stream(conn)
+            finally:
+                with _served_lock:
+                    served["conn"] = None
+                    _served.remove(served)
+                if conn is not None:
+                    conn.close()
 
         threading.Thread(target=run, name=f"hideout-channel-{channel}", daemon=True).start()
         return pipe.name
+
+    # The pipes `serve` made that are waiting or open: what `close_revoked` looks through.
+    _served = []
+    _served_lock = threading.Lock()
+
+    def close_revoked(channel, consumer_pid=None):
+        """The hub's `channel.closed` (v1.24): ends every pipe `serve` or `serve_create` made
+        for `channel` and that consumer, connected or still waiting for it. The stream's next
+        read or write raises, so `stream` returns; a consumer that had not connected yet gets
+        no frame. A pipe made without a consumer process is ended whatever `consumer_pid`
+        says. The session calls this by itself; a provider that makes its pipes another way
+        ends them in its own `notification` handler."""
+        with _served_lock:
+            for s in _served:
+                if s["channel"] == channel and (s["pid"] is None or s["pid"] == consumer_pid):
+                    s["revoked"] = True
+                    if s["conn"] is not None:
+                        s["conn"].disconnect()

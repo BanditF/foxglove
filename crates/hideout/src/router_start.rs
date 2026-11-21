@@ -316,12 +316,16 @@ pub fn start(
     let s = sup.clone();
     let tools = hideout_registry::tools::ToolStore::at(home);
     let tools_fresh = fresh.clone();
+    let tools_hub = hub.clone();
     std::thread::Builder::new()
         .name("hideout-router-events".into())
         .spawn(move || {
             for event in rx {
                 // The Apps page lists what is kept: it reads the record again when it changed.
-                if let Some(voided) = keep_tools(&tools, &event, &hideout_supervisor::now_utc()) {
+                let held = || tools_hub.read(kept_tools);
+                if let Some(voided) =
+                    keep_tools(&tools, held, &event, &hideout_supervisor::now_utc())
+                {
                     tools_fresh.put_tools(voided.as_deref());
                     side.wake();
                 }
@@ -336,11 +340,22 @@ pub fn start(
     (hub, sup, feed)
 }
 
-/// Writes what the user allowed an outside program (stamped `now`), or the voiding of it, to
-/// `tools.json`. Answers `Some` when the event was about that record, with the path of a
-/// program whose file changed (its record is void).
+/// What the router holds of programs outside Hideout, as `tools.json` keeps it: oldest first.
+pub(crate) fn kept_tools(r: &Router) -> Vec<hideout_registry::tools::Kept> {
+    r.approved_tools()
+        .into_iter()
+        .map(|(id, granted)| (id.image_path, id.image_sha256, granted))
+        .collect()
+}
+
+/// Makes `tools.json` say what the router holds after the user allowed an outside program
+/// (stamped `now`) or a program's answer went void. `held` reads the router while the record's
+/// lock is held, so the file never says more than the router: an Allow written late does not
+/// bring back a program the user forgot meanwhile. Answers `Some` when the event was about
+/// that record, with the path of a program whose file changed (its record is void).
 pub(crate) fn keep_tools(
     store: &hideout_registry::tools::ToolStore,
+    held: impl FnOnce() -> Vec<hideout_registry::tools::Kept>,
     event: &hideout_router::Out,
     now: &str,
 ) -> Option<Option<String>> {
@@ -349,12 +364,12 @@ pub(crate) fn keep_tools(
         Out::ToolRemembered {
             image_path,
             image_sha256,
-            granted,
+            ..
         } => (
-            store.remember(image_path, image_sha256, granted, Some(now)),
+            store.sync(held, Some((image_path, image_sha256, now))),
             None,
         ),
-        Out::ToolVoided(path) => (store.void_path(path), Some(path.clone())),
+        Out::ToolVoided(path) => (store.sync(held, None), Some(path.clone())),
         _ => return None,
     };
     if let Err(e) = done {
