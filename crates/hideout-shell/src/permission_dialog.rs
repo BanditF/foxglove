@@ -27,7 +27,7 @@ pub const LIST_CHANGED: [&str; 2] = [
     "Check the new list below, then choose again.",
 ];
 pub const BUSY: &str = "Hideout is busy. Try again in a moment.";
-pub const NOT_SAVED: &str = "Hideout couldn't save your choice. Nothing changed.";
+pub const NOT_SAVED: &str = "Hideout couldn't save your choice. Nothing changed. Try again.";
 pub const SECTION_LABEL: &str = "Permissions";
 
 /// "Keep my OK after updates in this folder" (slice 4 of the rebuild-trust note,
@@ -46,7 +46,7 @@ pub const TURN_ON_KEEP: &str = "Turn on\u{2026}";
 pub const KEEP_TURN_ON_SAID: &str = "Turn on keep my OK after updates, opens a confirm";
 pub const KEEP_TURN_OFF_SAID: &str = "Turn off keep my OK after updates";
 /// Shown when the choice could not be saved.
-pub const KEEP_NOT_SAVED: &str = "Hideout couldn't save your choice. Nothing was changed.";
+pub const KEEP_NOT_SAVED: &str = "Hideout couldn't save your choice. Nothing changed. Try again.";
 /// How many of the newest history lines show before "and N earlier".
 pub const HISTORY_SHOWN: usize = 3;
 

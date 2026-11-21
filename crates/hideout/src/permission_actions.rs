@@ -171,9 +171,9 @@ pub fn date_words(at: &str) -> String {
 /// First-run presentation (FR2): when Allow also starts the app, the button says so and the
 /// keyboard-sharing section stays out of the dialog (it is still offered from the app's
 /// Permissions, and nothing is recorded for it, so it is asked later, not declined now).
-fn present_first_run(d: &mut PermDialog, how: Opener, standalone: bool) {
+fn present_first_run(d: &mut PermDialog, how: Opener, standalone: bool, starts: bool) {
     if how.then() == Then::TurnOn {
-        d.view.starts = true;
+        d.view.starts = starts;
         d.view.handover = standalone;
         d.keyboard = None;
         if d.reason.is_none() && d.sensitive_count() > 0 && d.items.iter().all(|i| !i.before) {
@@ -828,7 +828,8 @@ impl PermUi {
                     d.mark_changes(p);
                 }
                 let copy = how.then() == Then::TurnOn && self.copy_open(id);
-                present_first_run(&mut d, how, copy);
+                let starts = self.starts_at_enable(id);
+                present_first_run(&mut d, how, copy, starts);
                 let asked = d.items.iter().filter(|i| i.allowable).count();
                 log::info!(
                     "permissions: {id}: dialog shown, list {}, {asked} asked, {} can't be allowed",
@@ -944,6 +945,17 @@ impl PermUi {
             .collect()
     }
 
+    /// Whether turning the app on launches it (activation `enable`, the default), not only on
+    /// demand. Unreadable manifest: true, as before.
+    fn starts_at_enable(&self, id: &str) -> bool {
+        Registry::open_from_env(&self.home)
+            .ok()
+            .and_then(|r| r.manifest(id))
+            .is_none_or(|m| {
+                m.activation_on.is_empty() || m.activation_on.iter().any(|a| a == "enable")
+            })
+    }
+
     /// Opens the first-run review (only from the user's click). Each section is the app's own
     /// dialog, checked exactly as the single dialog would check it.
     pub fn open_first_run(&mut self) {
@@ -953,7 +965,8 @@ impl PermUi {
             .filter_map(|id| build_dialog(&self.home, id, None).ok())
             .map(|mut d| {
                 let copy = self.copy_open(&d.id);
-                present_first_run(&mut d, Opener::Header, copy);
+                let starts = self.starts_at_enable(&d.id);
+                present_first_run(&mut d, Opener::Header, copy, starts);
                 d
             })
             .collect();
@@ -2089,6 +2102,23 @@ mod tests {
         assert_eq!(view(&f).granted.len(), 1);
         f.ui.turn_all_off(ID);
         assert!(view(&f).granted.is_empty());
+    }
+
+    /// An app that only starts on demand goes Idle after Allow, so its button is plain "Allow".
+    #[test]
+    fn an_on_demand_app_says_plain_allow() {
+        let mut f = fx_from("ondemand", |exe| {
+            format!(
+                "{}[activation]
+on = [\"open\", \"call\"]
+",
+                manifest(exe, &["ui.window"])
+            )
+        });
+        f.ui.open(ID, Opener::TurnOn);
+        let d = f.ui.dialog.clone().unwrap();
+        assert!(!d.view.starts);
+        assert_eq!(d.allow_label(), "Allow 1");
     }
 
     #[test]
