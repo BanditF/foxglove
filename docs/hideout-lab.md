@@ -136,6 +136,24 @@ module (§7.7).
 - **The crash bar and stopped card said the module id.** The hub's panel feed knows only the id;
   the panel host now names a module's panels by its manifest's `name`, as the toast does.
 
+## First-run flow on a hidden desktop (`hideout_ux_run.py`)
+
+`scripts/lab/hideout_ux_run.py --app <hideout.exe> --probe <hideout-ac-probe.exe> --lab <scratch folder>`
+(`FOXGLOVE_APP_OK=1`, game-check first) seeds a fixture app that says hello, starts the lab hub on its
+own `ql-*` desktop, and checks: the Found card, "No apps yet" (never "0 apps"), Add opens the dialog,
+window close = Not now, Esc = Not now, tray-model `Open Hideout`, the Allow label, Allow starting the app
+("1 app is running", "Vulpes is running." with Hide and Later, if you want) and a real UI Automation read
+(every focusable node named, window title `Hideout (lab) · Apps`). It leaves no process behind: the hub
+is quit through its tray first, the desktop's teardown is only the fallback.
+
+The fixture (`hello_fixture`) is what a Found card needs: product id `vulpes` (`products.json`), the
+record under `Software\Vulpes\Installer` with `App`, `Exe` (an image named `venv\Scripts\arete.exe`),
+`Version` (must equal what the program says in `module.ready`, here `hideout-ac-probe.exe`: 0.1.0) and
+`Manifest` (`module.toml` with `@EXE@` and `@VERSION@`, `kind = "adopted"`, `family = "vulpes"`). Seed
+files are UTF-8 without a BOM. `uia_tree.ps1 -ProcessName hideout -Title "Hideout (lab) · Apps"` reads
+the window (the title is matched exactly). Slow verbs (`update-ready` and friends) take ~30 s: `Hub.do`
+waits up to 90 s for them.
+
 ## On-call steps
 
 Use a hub build from its own target dir and a lab folder outside `%LOCALAPPDATA%`. Never point

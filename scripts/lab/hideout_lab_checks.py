@@ -217,7 +217,11 @@ class Hub:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
 
-    def do(self, *verb, check=True, timeout=30):
+    SLOW = ('update-ready', 'update-waiting', 'updating', 'quarantine')  # settle for ~30 s on a quiet desktop
+
+    def do(self, *verb, check=True, timeout=None):
+        if timeout is None:
+            timeout = 90 if verb and verb[0] in self.SLOW else 30
         r = subprocess.run([str(self.exe), '--lab-do', *map(str, verb)], env=self.env, capture_output=True,
                            text=True, encoding='utf-8', errors='replace', timeout=timeout)
         try:
@@ -345,15 +349,32 @@ class QuietHub(Hub):
         ok, _ = self.wait(lambda s: s.get('ok'), 30, read=lambda: self.do('state', check=False))
         if not ok:
             out = self.launcher.stdout.read() if self.launcher.poll() is not None else ''
-            self.stop()
+            self.stop(quit_first=False)
             raise RuntimeError(f'the lab hub did not answer on its pipe within 30 s: {out.strip()[:300]}')
         if f'folder {self.lab}' not in self.log():
-            self.stop()
+            self.stop(quit_first=False)  # not ours: never ask it to quit
             raise RuntimeError("the hub that answered is not this run's (no start line for this folder in its log)")
 
-    def stop(self):
+    def quit_cleanly(self):
+        """Quit Hideout the way its tray does, so the exit is a clean one: three unclean closes within
+        5 minutes set safe mode in the lab folder (#1033). Killing by desktop is only the fallback."""
+        try:
+            self.do('menu-pick', 'Quit Hideout', check=False, timeout=15)
+            end = time.time() + 15
+            while time.time() < end:
+                if not self.do('state', check=False, timeout=5).get('ok'):
+                    return True
+                time.sleep(0.25)
+        except (subprocess.SubprocessError, OSError):
+            pass  # the fallback below still ends it
+        print('WARN the hub did not quit through its tray in 15 s; its desktop is torn down (an unclean exit)', flush=True)
+        return False
+
+    def stop(self, quit_first=True):
         if self.launcher is None:
             return
+        if quit_first:
+            self.quit_cleanly()
         try:
             hidden_ps(stop_script(self.desktop)).wait(30)  # the launcher's own teardown, by name
             self.launcher.wait(30)
@@ -740,12 +761,12 @@ def state_steps(hub, check):
         exe = module_exe(hub.lab, mid)
         check('1093.2 it never runs', not (exe and hub.pids(exe)), f'{exe.name if exe else "no run"} not running')
         hub.show_main()
-        hub.do('focus', 'Modules')
+        hub.do('focus', 'Apps')  # the page is called Apps (was Modules)
         s = hub.state()
-        check('1093.2 its Modules row reads Needs a newer Hideout', has(s, name, prefix=True) and contains(s, NEEDS_HUB),
+        check('1093.2 its Apps row reads Needs a newer Hideout', has(s, name, prefix=True) and contains(s, NEEDS_HUB),
               f'{name}: {[t for t in texts(s) if name in t or NEEDS_HUB in t][:4]}')
         check('1093.2 the row offers Update Hideout', has(s, UPDATE_HIDEOUT), 'Update Hideout button')
-        hub.capture('1093-2-needs-hub-modules-row')
+        hub.capture('1093-2-needs-hub-apps-row')
         line = tray_line() or ''
         check('1093.2 the tray menu names it (red, root cause once)',
               line == f'{name} needs a newer Hideout' or 'needs a newer Hideout' in line, repr(line))
