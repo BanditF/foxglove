@@ -159,6 +159,14 @@ fn capitalized(s: &str) -> String {
         .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
 }
 
+/// Whether a grant waits for the user's OK again when a follow-folder grant meets new bytes
+/// (#1465): every Sensitive item, plus `files`, `secrets` and every `channel.open:*`. The
+/// registry cannot know a channel's catalog risk, so all channel opens are held (fail closed).
+/// Offering a channel (`channel.offer:*`, `provide:*`) is not held.
+pub fn held_on_change(raw: &str) -> bool {
+    describe(raw).2 || raw == "files" || raw == "secrets" || raw.starts_with("channel.open:")
+}
+
 /// Group, plain line and sensitivity of one permission string. An unknown body falls back to
 /// the raw string in the Sensitive group (§6.2's "Unknown: <raw>").
 pub fn describe(raw: &str) -> (Group, String, bool) {
@@ -257,6 +265,9 @@ pub struct View {
     /// The program changed or moved since the allow (or the binding was already voided).
     pub void: Option<VoidReason>,
     pub adopted: bool,
+    /// Whether a cloud service keeps the app's folder in step (adopted apps with a path; else
+    /// `Local`). `Unknown` when it could not be read: nothing is kept for such a folder.
+    pub folder_sync: crate::sync_root::SyncAnswer,
 }
 
 /// What an allow or deny did.
@@ -486,6 +497,7 @@ impl Registry {
             })
             .collect();
         granted.sort_by(|a, b| (a.group, &a.raw).cmp(&(b.group, &b.raw)));
+        let listing_path = listing.exe_path.clone();
         let same_place = m.source == ADOPTED
             && m.bound.as_ref().is_some_and(|b| {
                 // Args compared exactly (fail closed): a grant bound with no args does not
@@ -502,6 +514,11 @@ impl Registry {
             bound: m.bound.clone(),
             void: self.binding_void(id),
             adopted: m.source == ADOPTED,
+            folder_sync: if m.source == ADOPTED && !listing_path.is_empty() {
+                self.probes.sync.check(&listing_path)
+            } else {
+                crate::sync_root::SyncAnswer::Local
+            },
         })
     }
 
@@ -534,6 +551,9 @@ impl Registry {
         follow: bool,
     ) -> Result<Outcome, Failure> {
         self.reload_inventory()?;
+        // A new build the folder grant keeps is recorded first, so the Sensitive items it
+        // withholds are pending in the list this Allow is checked against (#1465).
+        self.keep_followed(id, now)?;
         // An Allow (or a Deny) writes a binding. Grants that are void (legacy, no binding, or
         // the program changed) must not ride into it unseen: move them back to waiting first,
         // so the list code changes and the dialog reopens with everything the binding covers.
@@ -727,20 +747,24 @@ impl Registry {
     /// Whether a grant of `id` is bound and the program no longer matches (or was already
     /// voided). Read-only; [`Registry::void_if_changed`] writes.
     pub fn binding_void(&self, id: &str) -> Option<VoidReason> {
-        self.binding_void_with(id, || self.program(id))
+        self.binding_void_with(id, || self.program(id), false)
     }
 
     /// [`Registry::binding_void`] against a program the caller already holds open and hashed
     /// (S7, F4): `path` and `sha256` come from the pinned handle, so the check is about the
-    /// bytes that are about to run, not a second read of the name.
+    /// bytes that are about to run, not a second read of the name. A changed hash is `Changed`
+    /// here even under a follow-folder grant: only [`Registry::keep_followed`] may carry a
+    /// follow across new bytes (and hold the held-back items), so bytes that arrived after it
+    /// ran are not excused (#1465). A dev enrolment still excuses.
     pub fn binding_void_pinned(&self, id: &str, path: &str, sha256: &str) -> Option<VoidReason> {
-        self.binding_void_with(id, || Ok((path.to_string(), sha256.to_string())))
+        self.binding_void_with(id, || Ok((path.to_string(), sha256.to_string())), true)
     }
 
     fn binding_void_with(
         &self,
         id: &str,
         program: impl FnOnce() -> Result<(String, String), Failure>,
+        pinned: bool,
     ) -> Option<VoidReason> {
         let m = self.inventory.modules.get(id)?;
         let Some(b) = m.bound.as_ref() else {
@@ -767,7 +791,9 @@ impl Registry {
                 {
                     Some(VoidReason::Moved)
                 } else if !hash.eq_ignore_ascii_case(&b.exe_sha256) {
-                    if self.follows(id, b, &path) || self.dev_enrolment(id, m, b, &path).is_some() {
+                    if (!pinned && self.follows(id, b, &path))
+                        || self.dev_enrolment(id, m, b, &path).is_some()
+                    {
                         None
                     } else {
                         Some(VoidReason::Changed)
@@ -799,12 +825,19 @@ impl Registry {
             && crate::keyboard::same_path(&folder, &f.folder)
             && file_name.eq_ignore_ascii_case(&f.file_name)
             && on_local_fixed_drive(path)
+            // A folder a cloud service keeps in step can be rewritten from elsewhere: nothing
+            // is kept there, and a reading that can't be made counts the same (fails closed).
+            && self.probes.sync.check(path) == crate::sync_root::SyncAnswer::Local
             && self.run_args(id) == b.run_args
     }
 
     /// Records a program change a follow-folder grant keeps (#1178 follow-up): the binding's
-    /// hash moves to the new file and `attested` gets an entry `by: "folder"`; an `on` keyboard
-    /// record for the old file moves with it. Does nothing (false) without a follow, with no
+    /// hash moves to the new file and `attested` gets an entry `by: "folder"`. A kept change
+    /// carries only what is not Sensitive (#1465): Sensitive grants go back to pending (the
+    /// choice kept in `last_choice`, so the dialog shows them as allowed before) and an `on`
+    /// keyboard record for the old file goes void. A signed update never gets here: the
+    /// updater or installer attests it first (`attest_update`), so the binding already names
+    /// the new file. A dev-folder step is unchanged: its record moves with it. Does nothing (false) without a follow, with no
     /// change, or with a change the follow does not keep (that one voids as before). Hub-side
     /// only; the turn-on check and the launch call it before they check the binding.
     pub fn keep_followed(&mut self, id: &str, now: &str) -> Result<bool, Failure> {
@@ -870,12 +903,36 @@ impl Registry {
             if n > 20 {
                 b.attested.drain(..n - 20);
             }
-            // The record moves with every kept step. On a dev-folder step it is the router's
-            // chain (`attested_keyboard_move`) that decides whether memory follows: it checks
-            // the enrolment again at that time, and a break there ends in a re-ask.
-            if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&old_path, &old)) {
-                k.sha256 = hash.clone();
-                k.path = path.clone();
+            if dev_step {
+                // The record moves with a dev-folder step. It is the router's chain
+                // (`attested_keyboard_move`) that decides whether memory follows: it checks
+                // the enrolment again at that time, and a break there ends in a re-ask.
+                if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&old_path, &old)) {
+                    k.sha256 = hash.clone();
+                    k.path = path.clone();
+                }
+            } else {
+                // Bytes changed under the folder's grant: Sensitive items and the keyboard
+                // wait for the user's OK again; the rest carries.
+                let moved: Vec<String> = m
+                    .granted
+                    .iter()
+                    .filter(|g| held_on_change(g))
+                    .cloned()
+                    .collect();
+                m.granted.retain(|g| !moved.contains(g));
+                m.pending_permissions.extend(moved.iter().cloned());
+                m.pending_permissions.sort();
+                m.pending_permissions.dedup();
+                m.last_choice.extend(moved);
+                m.last_choice.sort();
+                m.last_choice.dedup();
+                if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&old_path, &old)) {
+                    k.state = crate::keyboard::GrantState::Void;
+                    k.sha256.clear();
+                    k.reason = Some(crate::keyboard::VoidReason::Changed);
+                    k.at = now.into();
+                }
             }
             kept = true;
         })?;
@@ -1126,7 +1183,9 @@ impl Registry {
             };
             let by_ok = match a.by.as_str() {
                 "updater" | "installer" => true,
-                FOLLOW_ATTESTED_BY => self.follows(id, b, &b.exe_path),
+                // A folder step never carries the keyboard (#1465): bytes changed with no
+                // signed update behind them.
+                FOLLOW_ATTESTED_BY => false,
                 _ => folder.is_some(),
             };
             let paths_ok = match &folder {

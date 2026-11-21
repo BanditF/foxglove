@@ -418,7 +418,8 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                         r
                     })
                     .inner;
-                let waits = item.sensitive && grouped == Some(false);
+                let waits = (item.sensitive && grouped == Some(false))
+                    || (item.before && item.sensitive && !item.confirmed);
                 let said = if waits {
                     format!("{}, tick I understand first", item.said())
                 } else {
