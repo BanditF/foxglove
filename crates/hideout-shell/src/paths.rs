@@ -4,12 +4,15 @@
 //! `HIDEOUT_CONFIG_DIR`, when set, is the whole hub folder: a lab or test hub runs on its own
 //! folder and gets its own single-instance names (see `instance_suffix`). Otherwise
 //! `HIDEOUT_HOME` (the contract's test override), otherwise `%LOCALAPPDATA%\Hideout`. The
-//! installed build (no `lab-switches` feature) ignores both variables: it always uses the last.
+//! installed build (no `lab-switches` feature) ignores both variables, and it takes the
+//! Local AppData folder from Windows (the Known Folder API), not from the environment (#1460):
+//! nothing a starting process sets can move the installed hub's folder.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// `env(k)` as a path, none when unset or empty.
+#[cfg(any(feature = "lab-switches", not(windows)))]
 fn non_empty(env: &dyn Fn(&str) -> Option<OsString>, k: &str) -> Option<PathBuf> {
     env(k).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
@@ -26,6 +29,35 @@ fn home_override(_env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     None
 }
 
+/// The user's Local AppData folder. With `lab-switches` (tests, the lab) and off Windows: the
+/// `LOCALAPPDATA` variable.
+#[cfg(any(feature = "lab-switches", not(windows)))]
+fn local_app_data(env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    non_empty(env, "LOCALAPPDATA")
+}
+
+/// [`local_app_data`] in the installed build: what Windows says it is, whatever the
+/// environment says.
+#[cfg(all(windows, not(feature = "lab-switches")))]
+fn local_app_data(_env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    known_local_app_data()
+}
+
+/// `FOLDERID_LocalAppData` from the Known Folder API. It creates nothing.
+#[cfg(windows)]
+pub fn known_local_app_data() -> Option<PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+    // SAFETY: the returned string is copied, then freed with CoTaskMemFree as documented.
+    let dir = unsafe {
+        let p = SHGetKnownFolderPath(&FOLDERID_LocalAppData, KF_FLAG_DEFAULT, None).ok()?;
+        let dir = p.to_string().ok().map(PathBuf::from);
+        CoTaskMemFree(Some(p.0 as *const _));
+        dir
+    }?;
+    (!dir.as_os_str().is_empty()).then_some(dir)
+}
+
 /// The hub's folders, all under one root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HubPaths {
@@ -37,7 +69,7 @@ pub struct HubPaths {
 impl HubPaths {
     /// Resolves the root from an environment lookup (`std::env::var_os` in the hub, a map in tests).
     pub fn resolve(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<Self> {
-        let default = non_empty(&env, "LOCALAPPDATA").map(|base| base.join("Hideout"));
+        let default = local_app_data(&env).map(|base| base.join("Hideout"));
         if let Some(root) = home_override(&env) {
             // Naming the default folder is the default hub: same pipe and lock names (#1010).
             let overridden = default.as_ref().is_none_or(|d| {
@@ -129,24 +161,29 @@ mod tests {
         assert!(HubPaths::resolve(env(&[])).is_none());
     }
 
-    /// The installed build: both variables are ignored and the real default folder is used
-    /// (the test only computes the path, it writes nothing).
-    #[cfg(not(feature = "lab-switches"))]
+    /// The installed build: no variable moves the hub folder, `LOCALAPPDATA` included (#1460).
+    /// It is the folder Windows names (the test only computes the path, it writes nothing).
+    #[cfg(all(windows, not(feature = "lab-switches")))]
     #[test]
     fn the_installed_build_ignores_the_home_variables() {
-        let p = HubPaths::resolve(env(&[
-            ("HIDEOUT_CONFIG_DIR", r"C:\lab\cfg"),
-            ("HIDEOUT_HOME", r"C:\home"),
-            ("LOCALAPPDATA", r"C:\Users\u\AppData\Local"),
-        ]))
-        .unwrap();
-        assert_eq!(
-            p.root,
-            PathBuf::from(r"C:\Users\u\AppData\Local").join("Hideout")
-        );
-        assert!(!p.overridden);
-        assert_eq!(p.instance_suffix(), "");
-        assert!(HubPaths::resolve(env(&[("HIDEOUT_CONFIG_DIR", r"C:\lab\cfg")])).is_none());
+        let real = known_local_app_data().unwrap().join("Hideout");
+        assert!(real.is_absolute());
+        for vars in [
+            &[
+                ("HIDEOUT_CONFIG_DIR", r"C:\lab\cfg"),
+                ("HIDEOUT_HOME", r"C:\home"),
+                ("LOCALAPPDATA", r"C:\elsewhere\Local"),
+            ][..],
+            &[("LOCALAPPDATA", r"C:\elsewhere\Local")][..],
+            &[("LOCALAPPDATA", "")][..],
+            &[][..],
+        ] {
+            let p = HubPaths::resolve(env(vars)).unwrap();
+            assert_eq!(p.root, real, "{vars:?}");
+            assert_ne!(p.root, PathBuf::from(r"C:\elsewhere\Local").join("Hideout"));
+            assert!(!p.overridden);
+            assert_eq!(p.instance_suffix(), "");
+        }
     }
 
     #[test]

@@ -345,7 +345,14 @@ fn main() {
     use hideout_shell::paths::HubPaths;
     lab_flag();
     let Some(paths) = HubPaths::from_env() else {
-        eprintln!("hideout: neither HIDEOUT_CONFIG_DIR nor LOCALAPPDATA is set");
+        eprintln!(
+            "{}",
+            if cfg!(feature = "lab-switches") {
+                "hideout: neither HIDEOUT_CONFIG_DIR nor LOCALAPPDATA is set"
+            } else {
+                "hideout: Windows did not give this account's Local AppData folder. Sign out and in, then try again."
+            }
+        );
         std::process::exit(2);
     };
     if let Some(code) = capture_client(&paths, std::env::args_os().skip(1)) {
@@ -502,6 +509,10 @@ fn main() {
 /// its window (and `<out>-flyout.png` of an open flyout), prints its answer and exits; it opens
 /// no window and starts nothing. `None` for any other command line: the hub starts as usual.
 /// Exit 0 when every window was written, 1 otherwise.
+/// What the installed build says instead of naming switches it ignores.
+#[cfg(windows)]
+const NO_LAB_HERE: &str = "the installed Hideout has no lab hub; use a developer build";
+
 #[cfg(windows)]
 fn capture_client(
     paths: &hideout_shell::paths::HubPaths,
@@ -524,9 +535,13 @@ fn capture_client(
         }
         Err(e) => {
             say_line(&format!(
-                "error no lab hub with capture on for {} ({pipe}: {e}); start it with HIDEOUT_CONFIG_DIR and {}=1",
+                "error no lab hub with capture on for {} ({pipe}: {e}); {}",
                 paths.root.display(),
-                capture::ENV
+                if cfg!(feature = "lab-switches") {
+                    format!("start it with HIDEOUT_CONFIG_DIR and {}=1", capture::ENV)
+                } else {
+                    NO_LAB_HERE.to_string()
+                }
             ));
             Some(1)
         }
@@ -697,8 +712,13 @@ fn lab_do_client(
         }
         Err(e) => {
             let msg = format!(
-                "no lab hub with lab control for {} ({pipe}: {e}); start it with HIDEOUT_CONFIG_DIR and HIDEOUT_LAB=1",
-                paths.root.display()
+                "no lab hub with lab control for {} ({pipe}: {e}); {}",
+                paths.root.display(),
+                if cfg!(feature = "lab-switches") {
+                    "start it with HIDEOUT_CONFIG_DIR and HIDEOUT_LAB=1"
+                } else {
+                    NO_LAB_HERE
+                }
             );
             say_line(&format!(
                 "{}",
