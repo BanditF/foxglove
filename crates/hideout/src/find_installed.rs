@@ -422,6 +422,176 @@ impl Row {
     }
 }
 
+/// The lab's discovery source (G1): `<lab folder>\lab-discover.json`,
+/// `{"registry": {"<HKCU key>": {"<value>": "<string>"}}, "env": {"<NAME>": "<value>"}}`.
+/// In lab mode the Found card reads this instead of the user's real `HKCU` and environment, so
+/// an agent can press Add without touching the PC's records. Files are still read from disk,
+/// read-only, so a lab can point a record at a folder under its own lab folder.
+pub const LAB_DISCOVER_FILE: &str = "lab-discover.json";
+
+type Strs = std::collections::BTreeMap<String, String>;
+
+#[derive(Default)]
+struct LabDiscover {
+    registry: std::collections::BTreeMap<String, Strs>,
+    env: Strs,
+}
+
+fn strs(v: Option<&serde_json::Value>) -> Strs {
+    let mut out = Strs::new();
+    if let Some(o) = v.and_then(|v| v.as_object()) {
+        for (k, v) in o {
+            if let Some(s) = v.as_str() {
+                out.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn parse_lab(text: &str) -> Result<LabDiscover, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("{LAB_DISCOVER_FILE}: {e}"))?;
+    let mut d = LabDiscover {
+        env: strs(v.get("env")),
+        ..Default::default()
+    };
+    if let Some(o) = v.get("registry").and_then(|r| r.as_object()) {
+        for (k, vals) in o {
+            d.registry.insert(k.clone(), strs(Some(vals)));
+        }
+    }
+    Ok(d)
+}
+
+pub struct LabMachine {
+    data: LabDiscover,
+    files: Box<dyn Machine>,
+}
+
+fn key_norm(k: &str) -> String {
+    k.replace('/', "\\").trim_matches('\\').to_lowercase()
+}
+
+impl LabMachine {
+    /// `text` is the file's contents (`None` when absent: nothing is found).
+    pub fn parse(text: Option<&str>, files: Box<dyn Machine>) -> Result<LabMachine, String> {
+        let data = match text {
+            Some(t) => parse_lab(t)?,
+            None => LabDiscover::default(),
+        };
+        Ok(LabMachine { data, files })
+    }
+}
+
+impl Machine for LabMachine {
+    fn registry_string(&self, key: &str, value: &str) -> Option<String> {
+        let want = key_norm(key);
+        let (_, vals) = self
+            .data
+            .registry
+            .iter()
+            .find(|(k, _)| key_norm(k) == want)?;
+        let (_, v) = vals.iter().find(|(n, _)| n.eq_ignore_ascii_case(value))?;
+        Some(v.trim_end_matches('\\').to_string()).filter(|s| !s.is_empty())
+    }
+    fn env(&self, name: &str) -> Option<String> {
+        self.data
+            .env
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.clone())
+            .filter(|s| !s.is_empty())
+    }
+    fn is_file(&self, p: &Path) -> bool {
+        self.files.is_file(p)
+    }
+    fn exe_version(&self, p: &Path) -> Option<String> {
+        self.files.exe_version(p)
+    }
+    fn read_text(&self, p: &Path) -> Option<String> {
+        self.files.read_text(p)
+    }
+    fn registry_subkeys(&self, key: &str) -> Vec<String> {
+        let base = format!("{}\\", key_norm(key));
+        let mut out = Vec::new();
+        for k in self.data.registry.keys() {
+            let n = key_norm(k);
+            if let Some(rest) = n.strip_prefix(&base) {
+                let first = rest.split('\\').next().unwrap_or("");
+                // Original casing of the child name.
+                let orig = k.replace('/', "\\");
+                let orig = orig.trim_matches('\\');
+                let child = orig[base.len()..]
+                    .split('\\')
+                    .next()
+                    .unwrap_or(first)
+                    .to_string();
+                if !child.is_empty() && !out.contains(&child) {
+                    out.push(child);
+                }
+            }
+        }
+        out
+    }
+    fn canonical(&self, p: &Path) -> Option<PathBuf> {
+        self.files.canonical(p)
+    }
+    fn is_local_fixed(&self, p: &Path) -> bool {
+        self.files.is_local_fixed(p)
+    }
+}
+
+/// The machine discovery reads: the lab's fake registry when this hub runs in lab mode (the
+/// registry refuses the user's own hub folder), else `real`. A broken lab file reads as empty
+/// and is logged; it never falls back to the real registry.
+pub fn machine_for(home: &Path, real: Box<dyn Machine>) -> Box<dyn Machine> {
+    if !hideout_registry::lab::lab_mode_from_env(home).on() {
+        return real;
+    }
+    let path = home.join(LAB_DISCOVER_FILE);
+    let text = std::fs::read_to_string(&path).ok();
+    match LabMachine::parse(text.as_deref(), real) {
+        Ok(m) => Box::new(m),
+        Err(e) => {
+            log::warn!("lab discovery: {e}; nothing is found");
+            // `real` was moved into the failed parse; rebuild an empty lab machine on a blank PC.
+            Box::new(LabMachine {
+                data: LabDiscover::default(),
+                files: Box::new(NoFiles),
+            })
+        }
+    }
+}
+
+struct NoFiles;
+impl Machine for NoFiles {
+    fn registry_string(&self, _: &str, _: &str) -> Option<String> {
+        None
+    }
+    fn env(&self, _: &str) -> Option<String> {
+        None
+    }
+    fn is_file(&self, _: &Path) -> bool {
+        false
+    }
+    fn exe_version(&self, _: &Path) -> Option<String> {
+        None
+    }
+    fn read_text(&self, _: &Path) -> Option<String> {
+        None
+    }
+    fn registry_subkeys(&self, _: &str) -> Vec<String> {
+        Vec::new()
+    }
+    fn canonical(&self, p: &Path) -> Option<PathBuf> {
+        Some(p.to_path_buf())
+    }
+    fn is_local_fixed(&self, _: &Path) -> bool {
+        true
+    }
+}
+
 #[cfg(windows)]
 #[allow(unused_imports)]
 pub use real::RealMachine;
@@ -579,6 +749,38 @@ mod real {
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn lab_machine_reads_only_the_lab_file() {
+        let json = r#"{"registry":{"Software\\Hideout\\Modules\\org.x.a":{"Path":"C:\\lab\\a\\"}},"env":{"LOCALAPPDATA":"C:\\lab\\local"}}"#;
+        let m = LabMachine::parse(Some(json), Box::new(NoFiles)).unwrap();
+        let k = "software\\hideout\\modules\\ORG.x.a";
+        assert_eq!(m.registry_string(k, "path").as_deref(), Some("C:\\lab\\a"));
+        assert_eq!(
+            m.registry_string("Software\\Hideout\\Modules\\org.x.b", "Path"),
+            None
+        );
+        assert_eq!(
+            m.registry_subkeys("Software\\Hideout\\Modules"),
+            vec!["org.x.a".to_string()]
+        );
+        assert!(m.registry_subkeys("Software\\Other").is_empty());
+        assert_eq!(m.env("localappdata").as_deref(), Some("C:\\lab\\local"));
+        assert_eq!(m.env("PATH"), None);
+        assert!(LabMachine::parse(None, Box::new(NoFiles))
+            .unwrap()
+            .registry_subkeys("x")
+            .is_empty());
+        assert!(LabMachine::parse(Some("{"), Box::new(NoFiles)).is_err());
+    }
+
+    #[test]
+    fn machine_for_is_real_outside_lab_mode() {
+        // No HIDEOUT_LAB in the test binary: the real machine is returned untouched.
+        let home = std::env::temp_dir().join("hideout-g1-off");
+        let m = machine_for(&home, Box::new(NoFiles));
+        assert!(m.registry_subkeys("anything").is_empty());
+    }
 
     #[derive(Default)]
     struct Fake {
