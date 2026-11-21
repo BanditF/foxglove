@@ -86,6 +86,111 @@ thread_local! {
 /// The icon's message window (tray-icon's), for lab control (#1003); 0 while there is no icon.
 static MESSAGE_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// The menu pick for a menu id, if it is one of ours. `pause_now` reads the Pause item's state
+/// after the click toggled it.
+fn command_for(id: &str, pause_now: impl Fn() -> bool) -> Option<Command> {
+    Some(match id {
+        OPEN => Command::Open,
+        PAUSE => Command::Pause(pause_now()),
+        QUIT => Command::Quit,
+        START_NORMALLY => Command::StartNormally,
+        START_ROUND => Command::StartRound,
+        STOP_FINDING => Command::StopFinding,
+        RESUME => Command::Resume,
+        other => Command::QuickAction(quick_number(other)?),
+    })
+}
+
+type OnCommand = std::sync::Arc<dyn Fn(Command) + Send + Sync>;
+static ON_COMMAND: std::sync::OnceLock<OnCommand> = std::sync::OnceLock::new();
+
+/// One item of the tray menu as the lab reads it (#G3).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ModelItem {
+    pub id: String,
+    pub text: String,
+    pub enabled: bool,
+    pub checked: bool,
+}
+
+/// What the tray shows now, readable from any thread: the glyph's state, the menu's status
+/// line, the icon's tooltip and the menu's items in order (no separators). For the lab's
+/// `state` and `tray-menu-model`; the real icon and menu stay the source.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Model {
+    pub glyph: String,
+    pub line: String,
+    pub tooltip: String,
+    pub items: Vec<ModelItem>,
+}
+
+static MODEL: std::sync::Mutex<Model> = std::sync::Mutex::new(Model {
+    glyph: String::new(),
+    line: String::new(),
+    tooltip: String::new(),
+    items: Vec::new(),
+});
+
+/// The last model the UI thread wrote.
+pub fn model() -> Model {
+    MODEL.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Rewrites the model's items from the live menu. A no-op off the UI thread or before `install`.
+fn refresh_model() {
+    TRAY.with(|t| {
+        if let Ok(g) = t.try_borrow() {
+            if let Some(t) = g.as_ref() {
+                refresh_items(t);
+            }
+        }
+    });
+}
+
+fn refresh_items(t: &Tray) {
+    use tray_icon::menu::MenuItemKind as K;
+    let mut items = Vec::new();
+    for k in t.menu.items() {
+        match k {
+            K::MenuItem(m) => items.push(ModelItem {
+                id: m.id().0.clone(),
+                text: m.text(),
+                enabled: m.is_enabled(),
+                checked: false,
+            }),
+            K::Check(m) => items.push(ModelItem {
+                id: m.id().0.clone(),
+                text: m.text(),
+                enabled: m.is_enabled(),
+                checked: m.is_checked(),
+            }),
+            _ => {}
+        }
+    }
+    MODEL.lock().unwrap_or_else(|e| e.into_inner()).items = items;
+}
+
+/// Picks the menu item with this text from the model, as a click on it would, without a menu
+/// on screen (a hidden desktop opens none): lab control only. The same command the real pick
+/// sends.
+pub fn pick_by_text(text: &str) -> Result<String, String> {
+    let m = model();
+    let want = text.to_lowercase();
+    let item = m
+        .items
+        .iter()
+        .find(|i| i.text.to_lowercase() == want)
+        .ok_or_else(|| format!("the tray menu has no `{text}`"))?;
+    if !item.enabled {
+        return Err(format!("`{}` is greyed out", item.text));
+    }
+    let cmd = command_for(&item.id, || !item.checked)
+        .ok_or_else(|| format!("`{}` is not a command", item.text))?;
+    let f = ON_COMMAND.get().ok_or("the tray icon isn't registered")?;
+    f(cmd);
+    Ok(item.text.clone())
+}
+
 /// The icon's message window, any thread; 0 while there is no icon.
 pub fn message_window() -> isize {
     MESSAGE_WINDOW.load(std::sync::atomic::Ordering::Acquire)
@@ -176,23 +281,13 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
 
     let on_command = std::sync::Arc::new(on_command);
     let menu_cmd = on_command.clone();
+    refresh_model();
+    let _ = ON_COMMAND.set(on_command.clone());
     MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
-        let cmd = match ev.id.0.as_str() {
-            OPEN => Command::Open,
-            PAUSE => Command::Pause(
-                TRAY.with(|t| t.borrow().as_ref().is_some_and(|t| t.pause.is_checked())),
-            ),
-            QUIT => Command::Quit,
-            START_NORMALLY => Command::StartNormally,
-            START_ROUND => Command::StartRound,
-            STOP_FINDING => Command::StopFinding,
-            RESUME => Command::Resume,
-            other => match quick_number(other) {
-                Some(n) => Command::QuickAction(n),
-                None => return,
-            },
-        };
-        menu_cmd(cmd);
+        let pause_now = || TRAY.with(|t| t.borrow().as_ref().is_some_and(|t| t.pause.is_checked()));
+        if let Some(cmd) = command_for(ev.id.0.as_str(), pause_now) {
+            menu_cmd(cmd);
+        }
     }));
     TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| match ev {
         // A click opens the tray flyout (#991); a double click opens Hideout itself, and the
@@ -322,6 +417,7 @@ pub fn set_safe_mode(on: bool) {
             }
         }
     });
+    refresh_model();
 }
 
 /// The search's items (#1033): **Start round k** between rounds and **Stop finding** while it
@@ -357,6 +453,7 @@ pub fn set_search(s: Option<&hideout_supervisor::bisect::Tray>) {
             }
         }
     });
+    refresh_model();
 }
 
 /// The modules' quick actions (#1234): after Open Hideout and the search's items, a separator
@@ -426,6 +523,7 @@ pub fn set_quick_actions(items: &[crate::quick_actions::Item]) {
             }
         }
     });
+    refresh_model();
 }
 
 /// **Resume wallpapers (paused by Arete)** (#1142) right after Open Hideout and the search's
@@ -458,6 +556,7 @@ pub fn set_resume(label: Option<&str>) {
             }
         }
     });
+    refresh_model();
 }
 
 /// Removes the icon now (before a quick exit, so no ghost icon stays in the tray).
@@ -469,6 +568,21 @@ pub fn remove() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The id→command map the real menu and the lab's model pick share (#G3).
+    #[test]
+    fn command_for_maps_ids_like_the_menu() {
+        assert!(matches!(command_for(OPEN, || false), Some(Command::Open)));
+        assert!(matches!(command_for(PAUSE, || true), Some(Command::Pause(true))));
+        assert!(matches!(command_for(QUIT, || false), Some(Command::Quit)));
+        assert!(command_for("nope", || false).is_none());
+    }
+
+    /// Off the UI thread and before install the model is empty and a pick is refused.
+    #[test]
+    fn model_pick_is_refused_without_a_menu() {
+        assert!(pick_by_text("Open Hideout").is_err());
+    }
 
     /// `LEAVE_TIMER_ID` is tray-icon 0.24's private constant: a bump must re-check it.
     #[test]

@@ -15,6 +15,11 @@
 //! - **Tray menu** (`menu-key <key>`, `menu-pick <text>`): keys posted to the open menu window
 //!   (`#32768`, the menu's own keyboard loop), or the picked item's `WM_COMMAND` posted to the
 //!   tray window, which muda's subclass turns into the `MenuEvent` the hub handles.
+//! - **Tray model** (`tray-menu-model`, and `menu-pick` with no menu open): the glyph's state,
+//!   the status line, the tooltip and the menu's items as the app holds them, read from the
+//!   tray module's mirror of its real menu; `menu-pick` then runs the item's command through
+//!   the app's own command handler. This is for a hidden desktop, where no menu opens (no cursor).
+//!   `state.tray` carries `glyph`, `line`, `tooltip` and `items` too.
 //! - **Window** (`key <chord>`, `text <text>`, `click <name>`, `focus <name>`, `open-flyout`,
 //!   `close-flyout`, `close-window`): keys and text go into the next egui pass of the target
 //!   window as input events (an egui plugin's input hook, before the hub's frame reads input);
@@ -670,6 +675,16 @@ pub trait Host: Send + 'static {
     }
     /// The open tray menu's items, if one is open.
     fn menu(&self) -> Option<Vec<MenuItem>>;
+    /// What the tray shows now (glyph, status line, tooltip, menu items), kept by the tray
+    /// module; needs no open menu, so it works on a desktop with no cursor (#G3).
+    fn tray_model(&self) -> crate::tray::Model {
+        crate::tray::model()
+    }
+    /// Picks the model's menu item with this text, as a click on it would, without a menu on
+    /// screen.
+    fn tray_pick_model(&self, text: &str) -> Result<String, String> {
+        crate::tray::pick_by_text(text)
+    }
     /// Posts a key (a virtual-key code) to the open tray menu.
     fn menu_key(&self, vk: u16) -> Result<(), String>;
     /// Chooses the open tray menu's item `id`: closes the menu and posts its `WM_COMMAND`.
@@ -704,7 +719,7 @@ const WM_RBUTTONUP: u32 = 0x0205;
 
 /// The verbs and their arguments, for `--lab-do help` and errors.
 pub const HELP: &str = "verbs: state | frames <ms> [<from_t>] | tray-click | tray-double-click [<gap_ms>] | \
-tray-menu | tray-key-select | menu-key <down|up|left|right|enter|esc|home|end> | menu-pick <text> | \
+tray-menu | tray-menu-model | tray-key-select | menu-key <down|up|left|right|enter|esc|home|end> | menu-pick <text> | \
 key <chord> [main|flyout] | text <text> | click <name>[#n]|@<i> [main|flyout] | focus <tab or page> | \
 open-flyout | close-flyout | close-window | set-setting <module> <name> <value> | \
 update-ready <module> [<reason>] | update-waiting <module> <permission>... | updating <module> | \
@@ -818,10 +833,14 @@ fn run_verb(
             host.menu_key(vk)?;
             Ok(done(lab, verb))
         }
+        // The tray as the app holds it (glyph, line, tooltip, items), no open menu needed.
+        "tray-menu-model" => Ok(serde_json::json!({"verb": verb, "tray": host.tray_model()})),
         "menu-pick" => {
-            let items = host
-                .menu()
-                .ok_or("no tray menu is open (tray-menu first)")?;
+            // No menu open (a hidden desktop opens none): pick from the model.
+            let Some(items) = host.menu() else {
+                let picked = host.tray_pick_model(rest)?;
+                return Ok(serde_json::json!({"verb": verb, "picked": picked, "model": true}));
+            };
             let want = rest.to_lowercase();
             let item = items
                 .iter()
@@ -1015,6 +1034,7 @@ fn default_window(host: &dyn Host, main_on: bool, fly_open: bool) -> Win {
 
 fn state(lab: &Lab, host: &dyn Host) -> serde_json::Value {
     let (main_on, fly_open, fly_visible) = host.windows();
+    let model = host.tray_model();
     let i = lab.lock();
     let tree = |w: &str| -> serde_json::Value {
         match i.trees.get(w) {
@@ -1076,6 +1096,10 @@ fn state(lab: &Lab, host: &dyn Host) -> serde_json::Value {
             "events": lab.tray_events.load(Ordering::Acquire),
             "last": i.last_tray,
             "menu": host.menu(),
+            "glyph": model.glyph,
+            "line": model.line,
+            "tooltip": model.tooltip,
+            "items": model.items,
         },
         "loop": {"wakes": WAKES.load(Ordering::Relaxed), "root_passes": i.root_passes},
     })
@@ -1473,6 +1497,16 @@ mod tests {
         assert_eq!(*fake.picked.lock().unwrap(), vec![7]);
         assert!(!answer_ok(&answer("menu-pick Hideout", &lab, &fake)));
         assert!(!answer_ok(&answer("menu-pick Nope", &lab, &fake)));
+        // No menu open: the model answers, and a pick falls back to it (empty here: no tray).
+        let nomenu = Fake::default();
+        let m = json(&answer("tray-menu-model", &lab, &nomenu));
+        assert_eq!(m["ok"], true);
+        assert!(m["tray"]["items"].is_array() && m["tray"]["glyph"].is_string());
+        assert!(!answer_ok(&answer("menu-pick Open Hideout", &lab, &nomenu)));
+        let s = json(&answer("state", &lab, &nomenu));
+        for k in ["glyph", "line", "tooltip", "items"] {
+            assert!(!s["tray"][k].is_null(), "state.tray.{k}");
+        }
         assert!(!answer_ok(&answer("menu-key sideways", &lab, &fake)));
         assert!(!answer_ok(&answer("bogus", &lab, &fake)));
         // Window verbs refuse a window that isn't on screen, and post nothing.

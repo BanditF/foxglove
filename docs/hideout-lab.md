@@ -203,7 +203,8 @@ passes. The accessible tree is built only after the first request. `hideout.log`
 | `tray-menu` | `WM_RBUTTONDOWN`, `WM_RBUTTONUP`: tray-icon opens the tray menu. Default desktop only: on a quiet-launch hidden desktop tray-icon drops the message (`GetCursorPos` is denied), see `lab-quiet-launch.md`. The same holds for every tray verb. |
 | `tray-key-select` | What the shell sends for Enter or Space on the icon (Win+B, arrows). With notify version 0, which tray-icon 0.24 uses, that is the right-button pair, so it opens the menu. |
 | `menu-key <down\|up\|left\|right\|enter\|esc\|home\|end>` | Posts the key to the open tray menu's window (`#32768`), for the menu's own keyboard loop. |
-| `menu-pick <text>` | Closes the open tray menu and posts the item's `WM_COMMAND` to the tray window, which muda turns into the menu event. |
+| `menu-pick <text>` | Closes the open tray menu and posts the item's `WM_COMMAND` to the tray window, which muda turns into the menu event. With no menu open (a hidden desktop opens none) it picks from the tray model instead and runs the item's command through the app's own handler. |
+| `tray-menu-model` | The tray as the app holds it, no open menu or cursor needed: `glyph` (the state), `line` (the menu's status line), `tooltip` and `items` (id, text, enabled, checked). `state.tray` carries the same four fields. |
 | `key <chord> [main\|flyout]` | A chord (`ctrl+k`, `shift+tab`, `esc`, `enter`, `down`, `f6`) as key press and release in the window's next egui pass. Without a window named: the foreground one, else an open flyout, else the main window. |
 | `text <text>` | A text event, for typing into the focused field. |
 | `click <name>[#n] \| @<i> [main\|flyout]` | AccessKit Focus and Click on the node with that accessible name (or text), on the `n`-th node with it, or on node `i` of `state`. This is what a screen reader or UI Automation sends. |
