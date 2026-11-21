@@ -203,12 +203,25 @@ fn an_allow_starts_a_module_that_waited_for_the_ok_and_the_row_never_blames_a_cr
     sup.start_again(id);
     assert!(sup.pid(id).is_none());
     assert_eq!(fact("failed"), Some(serde_json::json!("ok")));
-    // The user's Allow for the new file, then Turn on: it runs, no Start again.
+    // The user's Allow for the new file, then Turn on: it runs, no Start again. An Allow on a
+    // list shown before the old grants went back to waiting is refused once (the list changed,
+    // so the dialog reopens with everything it binds); the Allow on the new list goes through.
     let list = Registry::open_from_env(&home)
         .unwrap()
         .permission_list(id)
         .unwrap();
     let shown: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    assert_eq!(
+        sup.grant_listed(id, list.code(), &shown, &[], "dialog")
+            .unwrap_err(),
+        "permission.list_changed"
+    );
+    let list = Registry::open_from_env(&home)
+        .unwrap()
+        .permission_list(id)
+        .unwrap();
+    let shown: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    assert_eq!(shown, all);
     sup.grant_listed(id, list.code(), &shown, &[], "dialog")
         .unwrap();
     sup.turn_on(id).unwrap();

@@ -1462,6 +1462,8 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
 
 ### 6.4 Approval
 
+- An Allow or Not now on a record whose grants are void first moves those grants back to waiting,
+  so the dialog always shows everything it binds.
 - Apps in the `apps` folder next to hideout.exe are shown on the Found card and asked at Add; nothing is granted
   without the user's Allow.
 - Catalog, private and sideloaded modules show the permission dialog at enable.

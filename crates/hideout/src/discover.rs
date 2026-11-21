@@ -528,6 +528,11 @@ pub fn add(
             }
             // What the registry now holds must be the staged text, byte for byte.
             if staged.is_ok() && !registered_matches(home, &c.id, &text, fresh) {
+                // The adopt code may have registered another id than the card's: that stray
+                // record made by this call does not stay either.
+                if let Ok(line) = &staged {
+                    drop_stray(home, line, before.as_deref());
+                }
                 return Err(words::changed(&c.name));
             }
             staged

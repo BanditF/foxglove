@@ -534,6 +534,12 @@ impl Registry {
         follow: bool,
     ) -> Result<Outcome, Failure> {
         self.reload_inventory()?;
+        // An Allow (or a Deny) writes a binding. Grants that are void (legacy, no binding, or
+        // the program changed) must not ride into it unseen: move them back to waiting first,
+        // so the list code changes and the dialog reopens with everything the binding covers.
+        if self.binding_void(id).is_some() && self.void_if_changed(id, now)?.is_some() {
+            return Err(list_changed(list_code, self.permission_list(id)?.code()));
+        }
         let list = self.permission_list(id)?;
         if !list.matches(list_code) {
             return Err(list_changed(list_code, list.code()));
@@ -743,6 +749,10 @@ impl Registry {
             return (m.source == ADOPTED && !m.granted.is_empty()).then_some(VoidReason::Changed);
         };
         if b.void {
+            return Some(VoidReason::Changed);
+        }
+        // A binding with no program hash that still holds grants binds them to nothing.
+        if m.source == ADOPTED && b.exe_sha256.is_empty() && !m.granted.is_empty() {
             return Some(VoidReason::Changed);
         }
         if m.source != ADOPTED || b.exe_sha256.is_empty() {
