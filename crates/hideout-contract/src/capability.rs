@@ -190,6 +190,79 @@ impl fmt::Display for Capability {
     }
 }
 
+/// What a program outside Hideout may do with a permission (S1). The hub grants `Free` itself,
+/// refuses `Never`, and says so for `Ask` (nothing can allow it yet).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolClass {
+    Free,
+    Ask,
+    Never,
+}
+
+/// The class of `cap` for an outside tool. `risk` is the catalog's class of the channel a
+/// `channel.open` names (`None` when the hub doesn't know it). Every variant is listed, so a new
+/// one has to be placed here on purpose; nothing unknown is `Free`.
+pub fn tool_class(cap: &Capability, risk: Option<&str>) -> ToolClass {
+    use ToolClass::{Ask, Free, Never};
+    match cap {
+        Capability::Kept(p) => match p {
+            Permission::FactsRead(pat) => {
+                if crate::permission::tool_free_fact(pat) {
+                    Free
+                } else {
+                    Ask
+                }
+            }
+            Permission::DevicesRead => Free,
+            // It reads all of `mic.*`, the microphone's name included; the mute state alone is
+            // free as `facts.read:mic.state`.
+            Permission::AudioInputsRead
+            | Permission::FactsWrite(_)
+            | Permission::LightingWrite
+            | Permission::BehaviorsInvoke
+            | Permission::ScreensWrite
+            | Permission::ArtWrite
+            | Permission::ProfilesWrite
+            | Permission::FocusWrite
+            | Permission::AudioInputsMute
+            | Permission::AppWindows
+            | Permission::WallpaperControl
+            | Permission::AppsWatch(_) => Ask,
+            Permission::KeyEvents
+            | Permission::HidRaw
+            | Permission::Net
+            | Permission::NetConnect { .. }
+            | Permission::NetListenUdp(_)
+            | Permission::NetListenTcp(_)
+            | Permission::Files
+            | Permission::Secrets => Never,
+        },
+        Capability::GpuStatus => Free,
+        Capability::LightingLease
+        | Capability::GpuRequest(_)
+        | Capability::ImageGenerate
+        | Capability::HubNotify
+        | Capability::UiWindow => Ask,
+        Capability::AiAsk(a) => {
+            if a == "*" {
+                Never
+            } else {
+                Ask
+            }
+        }
+        // Only the catalog's own normal and sensitive classes; keys and unknown are never.
+        Capability::ChannelOpen { .. } => match risk {
+            Some("normal") | Some("sensitive") => Ask,
+            _ => Never,
+        },
+        Capability::Provide(_)
+        | Capability::ChannelOffer(_)
+        | Capability::DeviceHid(_)
+        | Capability::SecretsRef(_)
+        | Capability::ModulesManage => Never,
+    }
+}
+
 /// Where a module's files came from, for the never-list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -270,6 +343,118 @@ mod tests {
             Capability::parse("facts.write:*").unwrap_err().id,
             ErrorId::PermissionNever
         );
+    }
+
+    fn cap(s: &str) -> Capability {
+        Capability::parse(s).unwrap()
+    }
+
+    /// Every variant has a class, and the ones that matter are pinned.
+    #[test]
+    fn tool_class_every_variant() {
+        use ToolClass::{Ask, Free, Never};
+        let rows: &[(&str, Option<&str>, ToolClass)] = &[
+            ("devices.read", None, Free),
+            ("facts.read:keyboard.connected", None, Free),
+            ("facts.read:module.foxglove.state", None, Free),
+            ("facts.read:keyboard.layer", None, Ask),
+            ("facts.read:keyboard.layers", None, Ask),
+            ("facts.read:*", None, Ask),
+            ("facts.read:module.*", None, Ask),
+            ("facts.read:media.*", None, Ask),
+            ("facts.write:media.*", None, Ask),
+            ("lighting.write", None, Ask),
+            ("lighting.lease", None, Ask),
+            ("behaviors.invoke", None, Ask),
+            ("screens.write", None, Ask),
+            ("art.write", None, Ask),
+            ("profiles.write", None, Ask),
+            ("focus.write", None, Ask),
+            ("app.windows", None, Ask),
+            ("wallpaper.control", None, Ask),
+            ("apps.watch:example.exe", None, Ask),
+            ("audio.inputs.read", None, Ask),
+            ("facts.read:mic.state", None, Free),
+            ("facts.read:mic.endpoint_name", None, Ask),
+            ("facts.read:module.foxglove.version", None, Ask),
+            ("audio.inputs.mute", None, Ask),
+            ("gpu.status", None, Free),
+            ("gpu.request:any", None, Ask),
+            ("image.generate", None, Ask),
+            ("ai.ask:agent", None, Ask),
+            ("ai.ask:*", None, Never),
+            ("hub.notify", None, Ask),
+            ("ui.window", None, Ask),
+            ("key.events", None, Never),
+            ("hid.raw", None, Never),
+            ("net", None, Never),
+            ("net.connect:127.0.0.1:4455", None, Never),
+            ("net.listen:udp:127.0.0.1:4455", None, Never),
+            ("net.listen:tcp:127.0.0.1:4455", None, Never),
+            ("files", None, Never),
+            ("secrets", None, Never),
+            ("secrets.ref:vault", None, Never),
+            ("provide:example.*", None, Never),
+            ("channel.offer:art", None, Never),
+            ("device.hid:1", None, Never),
+            ("modules.manage", None, Never),
+            ("channel.open:m/c", Some("normal"), Ask),
+            ("channel.open:m/c", Some("sensitive"), Ask),
+            ("channel.open:m/c", Some("keys"), Never),
+            ("channel.open:m/c", Some("surprise"), Never),
+            ("channel.open:m/c", None, Never),
+        ];
+        for (text, risk, want) in rows {
+            assert_eq!(tool_class(&cap(text), *risk), *want, "{text} {risk:?}");
+        }
+    }
+
+    /// Nothing Free changes anything: only reads, no key level, nothing red.
+    #[test]
+    fn free_set_is_read_only() {
+        let free = [
+            "devices.read",
+            "gpu.status",
+            "facts.read:keyboard.link",
+            "facts.read:keyboard.lighting.*",
+            "facts.read:sensor.cpu",
+            "facts.read:volume.master",
+            "facts.read:mic.state",
+            "facts.read:module.hideout.modules.state",
+        ];
+        for s in free {
+            let c = cap(s);
+            assert_eq!(tool_class(&c, None), ToolClass::Free, "{s}");
+            assert!(!c.sensitive() && !c.is_key_level(), "{s}");
+            let text = c.to_string();
+            assert!(
+                text == "gpu.status" || text.starts_with("facts.read:") || text.ends_with(".read"),
+                "{s}"
+            );
+        }
+        // Wide, wildcard or look-alike patterns are not free.
+        for s in [
+            "facts.read:*",
+            "facts.read:module.*",
+            "facts.read:module.*.state",
+            "facts.read:module..state",
+            "facts.read:sensorx",
+            "facts.read:keyboard.*",
+            "facts.read:keyboard.layer",
+            "facts.read:mic.*",
+            "facts.read:mic.endpoint_name",
+            "facts.read:module.foxglove.version",
+            "audio.inputs.read",
+            "facts.write:sensor.cpu",
+        ] {
+            if let Ok(c) = Capability::parse(s) {
+                assert_ne!(tool_class(&c, None), ToolClass::Free, "{s}");
+            }
+        }
+        // The data list holds only read-side fact space.
+        assert!(crate::permission::TOOL_FREE_FACTS
+            .iter()
+            .all(|e| !e.starts_with('*') && !e.starts_with("apps.") && !e.starts_with("media.")));
     }
 
     /// #1120: `wallpaper.control` is for the user's own tools, never an MCP client's.

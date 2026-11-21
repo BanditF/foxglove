@@ -2071,13 +2071,17 @@ impl Router {
     /// A holder name as the fact lists it: hidden characters dropped, "An app" when nothing is
     /// left, cut at [`hideout_contract::lease::HOLDER_NAME_MAX`] characters.
     fn clean_holder_name(raw: &str) -> String {
+        Self::clean_name_to(raw, hideout_contract::lease::HOLDER_NAME_MAX)
+    }
+
+    /// [`Router::clean_holder_name`] cut at `max` characters.
+    fn clean_name_to(raw: &str, max: usize) -> String {
         // Control characters other than whitespace are dropped too (a name is one line).
         let raw: String = raw
             .chars()
             .filter(|c| !c.is_control() || c.is_whitespace())
             .collect();
         let name = hideout_contract::module::display_name(&raw, "An app");
-        let max = hideout_contract::lease::HOLDER_NAME_MAX;
         if name.chars().count() <= max {
             return name;
         }
@@ -2498,7 +2502,7 @@ impl Router {
             ))),
             m => {
                 if !may_call(&caps, m, &params) {
-                    let reason = self.needs_permission(&who, m);
+                    let reason = self.needs_permission(&who, m, &params);
                     out.push(answer(denied(&id, Some(&reason))));
                     return;
                 }
@@ -2574,7 +2578,10 @@ impl Router {
 
     /// The refusal text for a call the caller has no permission for: names the module the call
     /// goes to and says where to allow it.
-    fn needs_permission(&self, who: &Who, method: &str) -> String {
+    fn needs_permission(&self, who: &Who, method: &str, params: &Value) -> String {
+        if let Who::Tool { name, .. } = who {
+            return self.tool_refusal(name, method, params);
+        }
         let target = self
             .routes
             .iter()
@@ -2593,7 +2600,7 @@ impl Router {
             });
         let target = target
             .and_then(|t| self.modules.get(&t).map(|m| m.name.clone()))
-            .unwrap_or_else(|| "this module".into());
+            .unwrap_or_else(|| "this app".into());
         let caller = match who {
             Who::Tool { name, .. } => name.clone(),
             Who::Module { id, .. } => self
@@ -2605,6 +2612,38 @@ impl Router {
         format!(
             "{caller} needs permission to call {method} on {target}. Allow it in Hideout's permissions for {caller}."
         )
+    }
+
+    /// What a program outside Hideout is told when a call needs a permission it doesn't have
+    /// (S1): ask-class says nothing can allow it yet, never-class says only an app may. The name
+    /// is the tool's own word, cleaned and quoted; it never decides anything.
+    fn tool_refusal(&self, name: &str, method: &str, params: &Value) -> String {
+        use hideout_contract::capability::{tool_class, ToolClass};
+        let cap = crate::checks::needed_capability(method, params);
+        let never = cap
+            .as_ref()
+            .is_some_and(|c| tool_class(c, None) == ToolClass::Never);
+        let does = match &cap {
+            Some(Capability::Kept(p)) => p.describe(),
+            Some(Capability::HubNotify) => "show notifications from Hideout".into(),
+            Some(Capability::UiWindow) => "open a window in Hideout".into(),
+            Some(Capability::GpuStatus) => "see how busy your graphics card is".into(),
+            Some(Capability::GpuRequest(_)) => "use your graphics card".into(),
+            Some(Capability::ImageGenerate) => "make pictures".into(),
+            Some(Capability::AiAsk(_)) => "ask an AI agent".into(),
+            Some(Capability::ModulesManage) => "manage your apps".into(),
+            Some(_) | None => format!("call {method}"),
+        };
+        if never {
+            format!(
+                "Hideout never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
+            )
+        } else {
+            let name = Self::clean_name_to(name, 40);
+            format!(
+                "Hideout didn't let \u{201c}{name}\u{201d} {does}. Programs outside Hideout can't be allowed this yet. To do it now, use the app's own page in Hideout."
+            )
+        }
     }
 
     fn initialize(&mut self, conn: ConnId, id: &Value, params: &Value, out: &mut Vec<Out>) {
@@ -2759,6 +2798,19 @@ impl Router {
             .filter_map(Value::as_str)
             .filter_map(|s| Capability::parse(s).ok())
             .filter(|c| check_grantable(c, holder).is_ok())
+            // Keys-class and unknown-class channels are never a tool's, whatever approves.
+            .filter(|c| match c {
+                Capability::ChannelOpen { module, channel } => {
+                    let risk = self
+                        .modules
+                        .get(module)
+                        .and_then(|m| m.channel_risk.get(channel))
+                        .map(String::as_str);
+                    hideout_contract::capability::tool_class(c, risk)
+                        != hideout_contract::capability::ToolClass::Never
+                }
+                _ => true,
+            })
             .collect();
         let known = self.approved.entry(name.clone()).or_default().clone();
         let new: Vec<Capability> = asked
@@ -3909,6 +3961,19 @@ impl Router {
             .map(String::as_str);
         if mcp && risk == Some("keys") {
             let reason = "Key presses are never shared with AI agents";
+            return out.push(Out::Send(conn, denied(&id, Some(reason))));
+        }
+        // Any program outside Hideout: a keys-class or unknown-class channel is an app's alone.
+        if matches!(who, Who::Tool { .. })
+            && hideout_contract::capability::tool_class(
+                &Capability::ChannelOpen {
+                    module: module.clone(),
+                    channel: channel.clone(),
+                },
+                risk,
+            ) == hideout_contract::capability::ToolClass::Never
+        {
+            let reason = "Hideout never lets a program outside Hideout open this. Only an app you allowed in Hideout can.";
             return out.push(Out::Send(conn, denied(&id, Some(reason))));
         }
         if !caps.opens(&module, &channel) {
