@@ -476,7 +476,7 @@ fn client_as(
         }
         _ => usage("usage: --modules permissions|grant|deny|revoke <id> ..."),
     };
-    print!("{text}");
+    crate::say(&text);
     Some(code)
 }
 

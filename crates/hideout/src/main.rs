@@ -504,15 +504,15 @@ fn capture_client(
     let pipe = capture::pipe_name(paths);
     match capture::request(&pipe, &out) {
         Ok(reply) => {
-            print!("{reply}");
+            say(&reply);
             Some(if capture::answer_ok(&reply) { 0 } else { 1 })
         }
         Err(e) => {
-            println!(
+            say_line(&format!(
                 "error no lab hub with capture on for {} ({pipe}: {e}); start it with HIDEOUT_CONFIG_DIR and {}=1",
                 paths.root.display(),
                 capture::ENV
-            );
+            ));
             Some(1)
         }
     }
@@ -595,7 +595,7 @@ fn autostart_client(
     ) {
         (Ok(f), Ok(a)) => (f, a),
         (Err(e), _) | (_, Err(e)) => {
-            println!("hideout: {e}");
+            say_line(&format!("hideout: {e}"));
             return Some(2);
         }
     };
@@ -606,24 +606,24 @@ fn autostart_client(
             State::Off => "off",
             State::Foreign => "foreign",
         };
-        println!("{s}");
+        say_line(s);
         return Some(0);
     }
     match autostart::remove(&ctx, &mut folder, &mut approval) {
         Ok(Outcome::Changed) => {
-            println!("removed the Hideout startup shortcut");
+            say_line("removed the Hideout startup shortcut");
             Some(0)
         }
         Ok(Outcome::Unchanged) => {
-            println!("nothing to remove (no Hideout startup shortcut for this exe)");
+            say_line("nothing to remove (no Hideout startup shortcut for this exe)");
             Some(0)
         }
         Ok(Outcome::SkippedLabRun) => {
-            println!("hideout: a test run writes nothing");
+            say_line("hideout: a test run writes nothing");
             Some(2)
         }
         Err(e) => {
-            println!("hideout: {e}");
+            say_line(&format!("hideout: {e}"));
             Some(1)
         }
     }
@@ -647,11 +647,11 @@ fn adopt_client(
     let folder = std::path::absolute(&folder).unwrap_or(folder);
     match adopt::run(&paths.root, &folder, &hideout_registry::catalogs::now_utc()) {
         Ok(line) => {
-            println!("{line}");
+            say_line(&line);
             Some(0)
         }
         Err(e) => {
-            println!("hideout: {e}");
+            say_line(&format!("hideout: {e}"));
             Some(1)
         }
     }
@@ -677,7 +677,7 @@ fn lab_do_client(
     let pipe = lab_control::pipe_name(paths);
     match lab_control::request(&pipe, &line.join(" ")) {
         Ok(reply) => {
-            print!("{reply}");
+            say(&reply);
             Some(if lab_control::answer_ok(&reply) { 0 } else { 1 })
         }
         Err(e) => {
@@ -685,7 +685,10 @@ fn lab_do_client(
                 "no lab hub with lab control for {} ({pipe}: {e}); start it with HIDEOUT_CONFIG_DIR and HIDEOUT_LAB=1",
                 paths.root.display()
             );
-            println!("{}", serde_json::json!({"ok": false, "error": msg}));
+            say_line(&format!(
+                "{}",
+                serde_json::json!({"ok": false, "error": msg})
+            ));
             Some(1)
         }
     }
@@ -697,9 +700,59 @@ fn main() {
     std::process::exit(2);
 }
 
+/// Writes a command-line answer to stdout and ignores a failed write. A parent that captured
+/// stdout and closed the pipe early must not turn the answer into a panic (#1394): the verb has
+/// run, and the exit code says how it went.
+pub(crate) fn say(text: &str) {
+    let _ = put(&mut std::io::stdout().lock(), text);
+}
+
+/// [`say`] with a line end.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn say_line(text: &str) {
+    say(&format!(
+        "{text}
+"
+    ));
+}
+
+fn put(w: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
+    w.write_all(text.as_bytes())?;
+    w.flush()
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    /// A closed stdout pipe (a parent that captured the output and went away) is an error the
+    /// answer ignores, never a panic (#1394); an open one gets the text as given. No answer in
+    /// the hub's command lines goes through the panicking print macros.
+    #[test]
+    fn a_closed_stdout_is_ignored_not_a_panic() {
+        struct Closed;
+        impl std::io::Write for Closed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from_raw_os_error(109))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(put(&mut Closed, "{\"ok\":true}\n").is_err());
+        let mut open = Vec::new();
+        put(&mut open, "{\"ok\":true}\n").unwrap();
+        assert_eq!(open, b"{\"ok\":true}\n");
+        let (a, b) = (" print", "ln!(");
+        for (name, src) in [
+            ("main.rs", include_str!("main.rs")),
+            ("control.rs", include_str!("control.rs")),
+        ] {
+            for bare in [format!("{a}{b}"), format!("{a}!(")] {
+                assert!(!src.contains(&bare), "{name} prints with{bare}..)");
+            }
+        }
+    }
 
     /// `--capture` never starts a hub: with no lab hub it answers an error and exits 1; any
     /// other command line falls through to the hub.

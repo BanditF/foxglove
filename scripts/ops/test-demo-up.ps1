@@ -109,6 +109,35 @@ try {
     $o = & $ps -NoProfile -File $script_ -AreteModuleDir $mdir -HideoutExe $mock -FoxgloveExe $fox -DemoHome $home2 -Launch 2>&1 | Out-String
     Check '-Launch: starts the hub and records its pid' ($LASTEXITCODE -eq 0 -and $o -match 'started demo hub pid' -and (Test-Path (Join-Path $home2 'hub.pid')))
 
+    # -SensorsExe: the PC sensors app is copied to its fixed folder and adopted with the repo manifest's id and permissions
+    $sens = Join-Path $tmp 'sensors.exe'; Set-Content $sens 'sensors build'
+    $home4 = Join-Path $tmp 'demo4'
+    $withS = @('-NoProfile', '-File', $script_, '-AreteModuleDir', $mdir, '-HideoutExe', $mock, '-FoxgloveExe', $fox, '-DemoHome', $home4, '-SensorsExe', $sens)
+    $o = & $ps @withS 2>&1 | Out-String
+    Check '-SensorsExe dry run: planned, nothing written' ($LASTEXITCODE -eq 0 -and $o -match 'plan\s+: sensors\s+register' -and -not (Test-Path $home4))
+    $o = & $ps -NoProfile -File $script_ -AreteModuleDir $mdir -HideoutExe $mock -FoxgloveExe $fox -DemoHome $home4 -SensorsExe (Join-Path $tmp 'no-sensors.exe') 2>&1 | Out-String
+    Check 'missing sensors.exe is a PROBLEM' ($LASTEXITCODE -eq 1 -and $o -match 'PROBLEM.*-SensorsExe not found')
+    Remove-Item $log -ErrorAction SilentlyContinue
+    $o = & $ps @withS -Adopt 2>&1 | Out-String
+    $l = @(Get-Content $log)
+    $sFixed = Join-Path $home4 'apps\sensors\sensors.exe'
+    Check '-SensorsExe -Adopt: three --adopt calls, the last for the sensors folder' ($LASTEXITCODE -eq 0 -and $l.Count -eq 3 -and $l[2] -like "--adopt $home4\adopt\sensors *")
+    Check '-SensorsExe: the build was copied into its fixed folder' ((Test-Path $sFixed) -and ((Get-Content -Raw $sFixed) -match 'sensors build'))
+    $st = Get-Content -Raw (Join-Path $home4 'adopt\sensors\module.toml')
+    $repo = Get-Content -Raw (Join-Path (Split-Path (Split-Path $here)) 'crates\sensors\module.toml')
+    $perm = [regex]::Match($repo, '(?m)^permissions\s*=.*$').Value.Trim()
+    Check 'sensors manifest: adopted, absolute fixed run[0], id and permissions as the repo manifest' ($st -match '(?m)^kind = "adopted"' -and $st.Contains('run = ["' + $sFixed.Replace($bs, '/') + '"]') -and $st -match '(?m)^id = "org\.foxglove\.sensors"' -and $perm -and $st.Contains($perm) -and $st -notmatch 'kind = "service"')
+    # registered at the fixed path: skipped; without -SensorsExe the script never mentions sensors
+    $sm = Join-Path $home4 'hub\modules\org.foxglove.sensors\0.1.0'; New-Item -ItemType Directory -Force $sm | Out-Null
+    Copy-Item (Join-Path $home4 'adopt\sensors\module.toml') $sm
+    Set-Content (Join-Path $home4 'hub\inventory.json') '{"modules":{"org.foxglove.sensors":{"version":"0.1.0"}}}'
+    Remove-Item $log
+    $o = & $ps @withS -Adopt 2>&1 | Out-String
+    $l = @(Get-Content $log)
+    Check 'sensors registered at the fixed path: not adopted again' ($LASTEXITCODE -eq 0 -and $o -match 'plan\s+: sensors\s+already registered' -and -not ($l | Where-Object { $_ -like '*adopt\sensors*' }))
+    $o = & $ps @common 2>&1 | Out-String
+    Check 'no -SensorsExe: sensors is not planned' ($o -notmatch 'sensors')
+
     # -Down -Clean: pid is not a hideout process, so nothing is stopped; folder deleted
     $o = & $ps -NoProfile -File $script_ -DemoHome $home2 -Down -Clean 2>&1 | Out-String
     Check '-Down: stops only a hideout process; -Clean deletes the demo folder' ($LASTEXITCODE -eq 0 -and $o -match 'nothing stopped' -and -not (Test-Path $home2))
