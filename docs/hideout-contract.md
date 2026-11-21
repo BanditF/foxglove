@@ -1125,6 +1125,9 @@ Nodes are `{type, id, props, bind?, stream?, children}`.
   isn't a string is ignored (the hub does not validate it). The focus
   request lasts a few frames, so a node drawn later does not take it. Optional, so an older hub
   ignores it.
+- **`value` (#1429)** on `meter`: absent or `null` means no reading. The bar keeps its place and
+  isn't drawn, so a missing reading never shows as 0; a `label` is drawn as plain text there
+  instead. Send `null`, never 0, for a reading you don't have.
 
 ### 5.3 Updates, input and assets
 

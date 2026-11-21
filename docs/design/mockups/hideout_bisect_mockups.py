@@ -151,7 +151,7 @@ def results():
     e = bar(d, x2, e + 52, w, "Safe mode", ["No modules are on, so the problem is in Hideout itself."],
             ["Copy diagnostics"], ["Start normally"])
 
-    notes = ["Stop finding (any state) returns to the safe-mode banner: \"Stopped finding. Nothing was changed.\"",
+    notes = ["Stop finding (any state) returns to the safe-mode banner: \"Stopped finding. Nothing changed.\"",
              "The saved on/off list changes only on Turn off <Module> or Go back. Enter = primary; Esc does nothing.",
              "One notification when the result is ready and the window is closed: \"Found the module\" / Open Hideout."]
     for i, ln in enumerate(notes):

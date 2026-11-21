@@ -705,6 +705,17 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 d.texts.push(label.clone());
                 bar = bar.text(&label);
             }
+            if value.is_none() && !label.is_empty() {
+                // No reading, but words: they stay, as plain text in the bar's place and at its
+                // height. No bar, no percent and no progress role.
+                let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+                ui.allocate_ui_with_layout(
+                    size,
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| ui.label(&label),
+                );
+                return;
+            }
             let r = ui.add_visible(value.is_some(), bar);
             // With no words to draw, `name` is the meter's screen-reader-only name: the value
             // beside it already says the number. An undrawn bar has no name either.
@@ -1172,6 +1183,48 @@ mod tests {
         assert!(
             !named("Fan, not reported"),
             "no bar: the value beside it says the reading is missing"
+        );
+    }
+
+    /// A meter with no value keeps its words: they are plain text where the bar would be, and
+    /// nothing there is a progress bar.
+    #[test]
+    fn a_meter_with_no_value_keeps_its_label_as_plain_text() {
+        let Some(fonts) = crate::render::test_fonts() else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        let mut host = PanelHost::default();
+        let tree = json!({"type": "column", "id": "c", "children": [
+            {"type": "meter", "id": "none", "props": {
+                "value": null, "max": 100, "label": "VRAM 9.8 of 12.0 GiB"}}]});
+        let params: Register = serde_json::from_value(json!({"instance": "i1", "panels": [
+            {"id": "p", "slot": "page", "title": "P", "icon": "x", "tree": tree}]}))
+        .unwrap();
+        assert!(host.register("m", "Example", None, &params).is_empty());
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts);
+        ctx.enable_accesskit();
+        let key = PanelKey::new("m", "p");
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                panel_ui(&mut host, ui, &key);
+            });
+        });
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        let labels = nodes
+            .iter()
+            .filter(|(_, n)| {
+                n.role() == egui::accesskit::Role::Label
+                    && n.value() == Some("VRAM 9.8 of 12.0 GiB")
+            })
+            .count();
+        assert_eq!(labels, 1, "the label is drawn once, as plain text");
+        assert!(
+            nodes
+                .iter()
+                .all(|(_, n)| n.role() != egui::accesskit::Role::ProgressIndicator),
+            "no bar and no progress role"
         );
     }
 

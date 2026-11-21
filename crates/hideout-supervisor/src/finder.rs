@@ -70,7 +70,7 @@ pub struct Banner {
     /// The link's words: "Find the module that breaks Hideout", "Check whether Art breaks
     /// Hideout"; `None` when no module would start (the banner says it's Hideout itself).
     pub find: Option<String>,
-    /// Stop finding was the last thing done: "Stopped finding. Nothing was changed."
+    /// Stop finding was the last thing done: "Stopped finding. Nothing changed."
     pub stopped: bool,
 }
 
