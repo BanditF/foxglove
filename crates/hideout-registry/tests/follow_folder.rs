@@ -915,3 +915,73 @@ fn the_binding_check_on_the_pinned_bytes_catches_a_swap_after_the_by_name_read()
         Some(VoidReason::Moved)
     );
 }
+
+/// Opens `exe` so that no other open can read it, as a program that is writing it does.
+fn hold_unreadable(exe: &Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(exe)
+        .unwrap()
+}
+
+/// An app file that is there but can't be read at the check refuses the launch and voids
+/// nothing; the next check that can read it decides, and the follow then keeps the new build.
+#[test]
+fn an_unreadable_app_file_refuses_and_keeps_the_ok() {
+    let mut f = fx("unreadable");
+    allow(&mut f, "dialog", true).unwrap();
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    let held = hold_unreadable(&f.exe);
+    assert!(f.reg.app_file_unreadable(ID));
+    // Every read-only check refuses.
+    assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Moved));
+    assert_eq!(
+        f.reg.pre_launch(ID).unwrap_err().id(),
+        Some("trust.mismatch")
+    );
+    assert!(!f.reg.keep_followed(ID, LATER).unwrap());
+    // The write does not void.
+    assert_eq!(f.reg.void_if_changed(ID, LATER).unwrap(), None);
+    let again = Registry::open(&f.home, true).unwrap();
+    let b = again.inventory.modules[ID].bound.clone().unwrap();
+    assert!(!b.void && !b.exe_sha256.is_empty() && b.follow.is_some());
+    assert!(b.attested.is_empty());
+    assert_eq!(
+        again.inventory.modules[ID].granted,
+        ["hub.notify", "ui.window"]
+    );
+    drop(held);
+    assert!(!f.reg.app_file_unreadable(ID));
+    assert_eq!(f.reg.void_if_changed(ID, LATER).unwrap(), None);
+    assert_eq!(f.bound().attested.len(), 1);
+    assert_eq!(f.reg.binding_void(ID), None);
+    assert!(f.reg.pre_launch(ID).is_ok());
+}
+
+/// Without a follow the same holds while the file can't be read, and the changed bytes void as
+/// before at the first check that reads them. A file that is not there is still `Moved`.
+#[test]
+fn an_unreadable_app_file_without_a_follow_voids_once_it_is_read() {
+    let mut f = fx("unreadable-plain");
+    allow(&mut f, "dialog", false).unwrap();
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    let held = hold_unreadable(&f.exe);
+    assert!(f.reg.app_file_unreadable(ID));
+    assert!(f.reg.pre_launch(ID).is_err());
+    assert_eq!(f.reg.void_if_changed(ID, LATER).unwrap(), None);
+    assert!(!f.bound().void);
+    assert_eq!(f.granted(), ["hub.notify", "ui.window"]);
+    drop(held);
+    assert_voids(&mut f, VoidReason::Changed);
+    // Void already: not "unreadable", whatever the file does.
+    let _held = hold_unreadable(&f.exe);
+    assert!(!f.reg.app_file_unreadable(ID));
+
+    let mut g = fx("unreadable-gone");
+    allow(&mut g, "dialog", false).unwrap();
+    std::fs::remove_file(&g.exe).unwrap();
+    assert!(!g.reg.app_file_unreadable(ID));
+    assert_eq!(g.reg.binding_void(ID), Some(VoidReason::Moved));
+}

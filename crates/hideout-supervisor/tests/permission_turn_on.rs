@@ -376,3 +376,62 @@ fn a_changed_module_that_is_not_adopted_is_never_worded_as_waiting_for_the_ok() 
     drop(sup);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
+
+/// An app file that is there but can't be read (another program holds it) is refused with its
+/// own line, nothing starts, and the user's Allow is kept: once the file can be read, Turn on
+/// starts it with no new OK.
+#[test]
+fn an_app_file_that_cant_be_read_is_refused_and_the_ok_is_kept() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let (home, exe, id) = adopted_home("unreadable");
+    let id = id.as_str();
+    let hub = hub();
+    let sup = common::start(&home, hub.clone());
+    let list = Registry::open_from_env(&home)
+        .unwrap()
+        .permission_list(id)
+        .unwrap();
+    let all = strs(&["hub.notify", "ui.window"]);
+    sup.grant_listed(id, list.code(), &all, &[], "dialog")
+        .unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&exe)
+        .unwrap();
+    let words = hideout_supervisor::words::CANT_READ_APP_FILE;
+
+    // The user's Turn on: refused with the line, not saved as on, nothing started.
+    assert_eq!(sup.turn_on(id).unwrap_err(), words);
+    assert!(!Registry::open_from_env(&home).unwrap().hub.enabled(id));
+    assert!(sup.pid(id).is_none());
+
+    // The hub's own start (the app is on): refused, worded as a failed start with that line,
+    // never as waiting for the OK.
+    Registry::open_from_env(&home)
+        .unwrap()
+        .set_enabled(id, true)
+        .unwrap();
+    sup.feed(hideout_supervisor::policy::Ev::Enable { id: id.into() });
+    assert!(
+        sup.pid(id).is_none(),
+        "started from a file it could not read"
+    );
+    let fact = |k: &str| hub.read(|r| r.fact(&format!("module.{id}.{k}")).cloned());
+    assert_eq!(fact("failed"), Some(serde_json::json!("launch")));
+    assert_eq!(fact("reason"), Some(serde_json::json!(words)));
+
+    // Nothing was withdrawn.
+    let reg = Registry::open_from_env(&home).unwrap();
+    let m = &reg.inventory.modules[id];
+    assert_eq!(m.granted, all);
+    assert!(m.pending_permissions.is_empty());
+    assert!(m.bound.as_ref().is_some_and(|b| !b.void));
+
+    drop(held);
+    sup.turn_on(id).expect("turn_on once the file can be read");
+    assert!(sup.pid(id).is_some());
+
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}

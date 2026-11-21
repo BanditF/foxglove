@@ -303,6 +303,17 @@ pub(crate) fn io_invalid(msg: &str) -> Failure {
 /// What a folder step does to a module's grants (#1465): the held items go from `granted` to
 /// `pending_permissions` and `last_choice`, and the keyboard record `voids` picks goes void
 /// (reason `changed`). Nothing else changes.
+/// What the binding check found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Check {
+    /// Nothing bound, or the program is the one the grant is bound to.
+    Fine,
+    /// Not the program that was allowed (or already void).
+    Void(VoidReason),
+    /// The app file is there but could not be read now.
+    Unreadable,
+}
+
 fn hold_back(
     m: &mut crate::inventory::Installed,
     now: &str,
@@ -428,7 +439,15 @@ impl Registry {
             .ok_or_else(|| Failure::NotInstalled(id.into()))?;
         if m.source == ADOPTED {
             let exe = adopted_exe(&self.manifest_checked(id)?)?;
-            let path = canonical_path(&exe).map_err(|_| Failure::Io(crate::not_found(&exe)))?;
+            // "Not there" keeps its own answer; any other failure (the file is busy, access
+            // was refused) is passed on as it is, so the binding check can tell the two apart.
+            let path = canonical_path(&exe).map_err(|e| {
+                Failure::Io(if e.kind() == std::io::ErrorKind::NotFound {
+                    crate::not_found(&exe)
+                } else {
+                    e
+                })
+            })?;
             let bytes = std::fs::read(&path)?;
             Ok((path, foxglove_plugin_trust::sha256_hex(&bytes)))
         } else {
@@ -803,8 +822,21 @@ impl Registry {
 
     /// Whether a grant of `id` is bound and the program no longer matches (or was already
     /// voided). Read-only; [`Registry::void_if_changed`] writes.
+    ///
+    /// An app file that is there but can't be read now also answers `Moved` here, so every
+    /// caller that reads this refuses (fails closed); [`Registry::app_file_unreadable`] tells
+    /// that case apart, and it is never written as a void.
     pub fn binding_void(&self, id: &str) -> Option<VoidReason> {
         self.binding_void_with(id, || self.program(id), false)
+    }
+
+    /// Whether the grant of `id` is bound and not void, and its app file is there but could not
+    /// be read just now (another program has it open, access was refused). Nothing may start
+    /// from such a file, but it says nothing about which program it is, so the user's Allow is
+    /// kept and the next check reads it again. A file that is not there is not this: that one
+    /// is `Moved`. Read-only.
+    pub fn app_file_unreadable(&self, id: &str) -> bool {
+        self.binding_check(id, || self.program(id), false) == Check::Unreadable
     }
 
     /// [`Registry::binding_void`] against a program the caller already holds open and hashed
@@ -823,44 +855,67 @@ impl Registry {
         program: impl FnOnce() -> Result<(String, String), Failure>,
         pinned: bool,
     ) -> Option<VoidReason> {
-        let m = self.inventory.modules.get(id)?;
+        match self.binding_check(id, program, pinned) {
+            Check::Fine => None,
+            Check::Void(why) => Some(why),
+            // Refused like a moved file; only the write ([`Registry::void_if_changed`]) and
+            // the wording treat it differently.
+            Check::Unreadable => Some(VoidReason::Moved),
+        }
+    }
+
+    fn binding_check(
+        &self,
+        id: &str,
+        program: impl FnOnce() -> Result<(String, String), Failure>,
+        pinned: bool,
+    ) -> Check {
+        let Some(m) = self.inventory.modules.get(id) else {
+            return Check::Fine;
+        };
         let Some(b) = m.bound.as_ref() else {
             // Old data: an adopted record with grants and no binding would carry them to any
             // program. Every Allow writes a binding, so this has no legitimate source.
-            return (m.source == ADOPTED && !m.granted.is_empty()).then_some(VoidReason::Changed);
+            return if m.source == ADOPTED && !m.granted.is_empty() {
+                Check::Void(VoidReason::Changed)
+            } else {
+                Check::Fine
+            };
         };
         if b.void {
-            return Some(VoidReason::Changed);
+            return Check::Void(VoidReason::Changed);
         }
         // A binding with no program hash that still holds grants binds them to nothing.
         if m.source == ADOPTED && b.exe_sha256.is_empty() && !m.granted.is_empty() {
-            return Some(VoidReason::Changed);
+            return Check::Void(VoidReason::Changed);
         }
         if m.source != ADOPTED || b.exe_sha256.is_empty() {
-            return None;
+            return Check::Fine;
         }
         match program() {
             Ok((path, hash)) => {
                 if self.run_args(id) != b.run_args {
-                    Some(VoidReason::Changed)
+                    Check::Void(VoidReason::Changed)
                 } else if !crate::keyboard::same_path(&path, &b.exe_path)
                     && self.dev_enrolment(id, m, b, &path).is_none()
                 {
-                    Some(VoidReason::Moved)
+                    Check::Void(VoidReason::Moved)
                 } else if !hash.eq_ignore_ascii_case(&b.exe_sha256) {
                     if (!pinned && self.follows(id, b, &path))
                         || self.dev_enrolment(id, m, b, &path).is_some()
                     {
-                        None
+                        Check::Fine
                     } else {
-                        Some(VoidReason::Changed)
+                        Check::Void(VoidReason::Changed)
                     }
                 } else {
-                    None
+                    Check::Fine
                 }
             }
+            // The file is there and this read of it failed: not known to be another program.
+            Err(Failure::Io(e)) if e.kind() != std::io::ErrorKind::NotFound => Check::Unreadable,
             // A program that is not there can't be the one that was allowed.
-            Err(_) => Some(VoidReason::Moved),
+            Err(_) => Check::Void(VoidReason::Moved),
         }
     }
 
@@ -1026,9 +1081,14 @@ impl Registry {
     ///
     /// A change a follow-folder grant keeps is recorded first ([`Registry::keep_followed`]) and
     /// does not void.
+    ///
+    /// An app file that is there but can't be read at this moment voids nothing (`None`): one
+    /// failed read is not a changed program. Nothing starts meanwhile, since every read-only
+    /// check ([`Registry::binding_void`], the launch) still refuses, and the next check that
+    /// can read the file decides.
     pub fn void_if_changed(&mut self, id: &str, now: &str) -> Result<Option<VoidReason>, Failure> {
         self.keep_followed(id, now)?;
-        let Some(reason) = self.binding_void(id) else {
+        let Check::Void(reason) = self.binding_check(id, || self.program(id), false) else {
             return Ok(None);
         };
         if self.inventory.modules[id]
