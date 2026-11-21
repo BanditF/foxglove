@@ -246,7 +246,7 @@ SENSORS_NAME = 'PC sensors'
 RAW_IDS = ('facts.write', 'facts.read', 'sensor.*', 'keyboard.game_mode', 'org.foxglove')
 
 
-def sensors_fixture(root, hub_exe, sensors_exe, module_toml):
+def sensors_fixture(root, hub_exe, sensors_exe, module_toml, extra_perm=None):
     r"""Places what demo-up.ps1 -SensorsExe places next to a build: a copy of the hub's exe in `<root>\hub` with
     `apps\sensors\sensors.exe` and `module.toml` beside it, plus the lab's config dir `<root>\cfg` with an empty fake registry.
     The hub's exe folder must stay outside the config dir: a service file below the hub's own folder is refused.
@@ -261,6 +261,11 @@ def sensors_fixture(root, hub_exe, sensors_exe, module_toml):
     shutil.copy2(sensors_exe, placed / 'sensors.exe')
     manifest = placed / 'module.toml'
     shutil.copy2(module_toml, manifest)
+    if extra_perm:  # the lab copy also asks for one more item (a Sensitive one, for the #1465 words)
+        text = manifest.read_text(encoding='utf-8')
+        new = text.replace('permissions = [', f'permissions = ["{extra_perm}", ', 1)
+        assert new != text
+        write_text(manifest, new)
     write_text(root / 'cfg' / 'lab-discover.json',
                json.dumps({'registry': {}, 'env': {'LOCALAPPDATA': str(root / 'local')}}))
     return app, manifest
@@ -532,7 +537,7 @@ def tools_checks(hub, check, tool):
     check('T8 the same file with other bytes asks again', ok, f'{tool_asks(s)!r}')
 
 
-def keep_checks(hub, check, exe, manifest):
+def keep_checks(hub, check, exe, manifest, sens=False):
     """#1465: Keep my OK on a changed app file asks again for what is sensitive (the Changed-row words)."""
     hub.wait(lambda s: has(s, 'Apps'), 20)
     hub.do('focus', 'Apps')
@@ -547,11 +552,23 @@ def keep_checks(hub, check, exe, manifest):
         return
     if has(s, 'I understand'):
         hub.do('click', 'I understand')
+    if sens:  # the Sensitive item (net) must be understood, then allowed, before the Keep is ticked
+        node = next((t for t in texts(s) if t.startswith('I understand: These let')), None)
+        if node:
+            hub.do('click', node)
+            time.sleep(1)
+        s = hub.state()
+        row_ = next((t for t in texts(s) if t.startswith('Sensitive: ') and ', not checked' in t), None)
+        if row_:
+            hub.do('click', row_)
+            time.sleep(1)
+        check('K6 the Sensitive item is allowed (checked)', any(t.startswith('Sensitive: ') and t.endswith(', checked') for t in texts(hub.state())),
+              f'{[t for t in texts(hub.state()) if t.startswith("Sensitive")][:2]}')
     hub.do('click', KEEP_LABEL + ', not checked')
-    ok, s = hub.wait(lambda s: any(t.startswith('I understand:') for t in texts(s)), 10)
+    ok, s = hub.wait(lambda s: any(t.startswith('I understand: any app') for t in texts(s)), 10)
     check('K1 ticking Keep asks for I understand', ok, f'{[t for t in texts(s) if "understand" in t][:3]}')
     if ok:
-        node = next(t for t in texts(s) if t.startswith('I understand:'))
+        node = next(t for t in texts(s) if t.startswith('I understand: any app'))
         hub.do('click', node)
         time.sleep(1)
     hub.do('click', allow_label(hub.state()) or 'Allow')
@@ -574,20 +591,30 @@ def keep_checks(hub, check, exe, manifest):
             time.sleep(0.1)
     hub.do('focus', 'Apps')
     hub.do('click', 'Add an app\u2026')
-    ok, s = hub.wait(lambda s: contains(s, KEPT_NOW), 30)
-    row = [t for t in texts(s) if 'New build' in t]
-    check('K3 the Permissions line says the OK stayed, except Sensitive and keyboard', ok, f'{row[:3]}')
-    ok, s = hub.wait(lambda s: (tray_status(s) or '') == '1 app is running', 20)
-    check('K3 the new build runs (the folder grant kept the OK)', ok, repr(tray_status(s)))
-    check('K4 Keep is still On for the folder', has(s, 'Turn off keep my OK after updates') or contains(s, 'Turn off'),
-          f'{[t for t in texts(s) if "Keep" in t][:3]}')
-    hub.capture('K3-changed')
-    log_before = len(hub.log())
-    # this fixture has no Sensitive item waiting, so KEPT_WORDS (#1465) can't show: that needs a Sensitive grant
-    check('K4 no Sensitive item waits here, so no Review is offered (the #1465 words need one)',
-          not contains(s, KEPT_WORDS), 'not shown, as expected')
-    time.sleep(1)
-    new_log = hub.log()[log_before:]
+    if sens:  # K6: the Allow included a Sensitive item (net); the swap moves it back to waiting (#1465)
+        ok, s = hub.wait(lambda s: contains(s, KEPT_WORDS), 30)
+        check('K6 the kept-changed line shows: Sensitive items and the keyboard need your OK again', ok,
+              f'{[t for t in texts(s) if "changed" in t or "OK again" in t][:3]}')
+        ok2, s = hub.wait(lambda s: (tray_status(s) or '') == '1 app is running', 20)
+        check('K6 the app runs without them', ok2, repr(tray_status(s)))
+        check('K6 Review appears', has(s, 'Review…'), f'{[t for t in texts(s) if "Review" in t][:2]}')
+        hub.capture('K6-kept-changed')
+        log_before = len(hub.log())
+        new_log = hub.log()[log_before:]
+    else:
+        ok, s = hub.wait(lambda s: contains(s, KEPT_NOW), 30)
+        row = [t for t in texts(s) if 'New build' in t]
+        check('K3 the Permissions line says the OK stayed, except Sensitive and keyboard', ok, f'{row[:3]}')
+        ok, s = hub.wait(lambda s: (tray_status(s) or '') == '1 app is running', 20)
+        check('K3 the new build runs (the folder grant kept the OK)', ok, repr(tray_status(s)))
+        check('K4 Keep is still On for the folder', has(s, 'Turn off keep my OK after updates') or contains(s, 'Turn off'),
+              f'{[t for t in texts(s) if "Keep" in t][:3]}')
+        hub.capture('K3-changed')
+        log_before = len(hub.log())
+        # no Sensitive item waits in this fixture, so KEPT_WORDS can't show (--only keep-sens has one)
+        check('K4 no Sensitive item waits here, so no Review is offered', not contains(s, KEPT_WORDS), 'not shown, as expected')
+        time.sleep(1)
+        new_log = hub.log()[log_before:]
     check('K5 nothing sensitive started before Allow: no grant line after the change',
           not re.search(r'sensor\.|keyboard', new_log) or 'grant' not in new_log.lower(), new_log[-200:])
 
@@ -597,7 +624,7 @@ def main():
     ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the hideout.exe under test')
     ap.add_argument('--probe', type=tool_arg('--probe'), help='hideout-ac-probe.exe (the hello fixture)')
     ap.add_argument('--lab', required=True, type=tool_arg('--lab', kind='dir'), help='an existing, EMPTY scratch folder: the lab hub config dir (seeded by the run)')
-    ap.add_argument('--only', default='first-run', choices=('first-run', 's1', 'tools', 'keep'), help='which flow to run')
+    ap.add_argument('--only', default='first-run', choices=('first-run', 's1', 'tools', 'keep', 'keep-sens'), help='which flow to run')
     ap.add_argument('--sensors', type=tool_arg('--sensors'), help='sensors.exe (for --only s1, keep)')
     ap.add_argument('--cli', type=tool_arg('--cli'), help='foxglove-cli.exe (for --only tools)')
     ap.add_argument('--seconds', type=int, default=300, help='hard time limit of the hidden hub (1..3600)')
@@ -614,7 +641,7 @@ def main():
     if lab.exists() and any(lab.iterdir()):
         print(f'BLOCKED: {lab} is not empty (a run needs a fresh scratch folder)' + chr(10) + 'RESULT BLOCKED', flush=True)
         sys.exit(2)
-    if args.only in ('s1', 'keep') and not args.sensors:
+    if args.only in ('s1', 'keep', 'keep-sens') and not args.sensors:
         ap.error('--only s1 and --only keep need --sensors <sensors.exe>')
     if args.only == 'tools' and not args.cli:
         ap.error('--only tools needs --cli <foxglove-cli.exe>')
@@ -622,8 +649,8 @@ def main():
         ap.error('--probe <hideout-ac-probe.exe> is needed for the first-run flow')
     module_toml = Path(__file__).resolve().parents[2] / 'crates' / 'sensors' / 'module.toml'
     try:
-        if args.only in ('s1', 'keep'):
-            app, manifest = sensors_fixture(lab, args.app, args.sensors, module_toml)
+        if args.only in ('s1', 'keep', 'keep-sens'):
+            app, manifest = sensors_fixture(lab, args.app, args.sensors, module_toml, 'net' if args.only == 'keep-sens' else None)
             exe = Path(app).parent / 'apps' / 'sensors' / 'sensors.exe'
         elif args.only == 'tools':
             app, tool = tools_fixture(lab, args.app, args.cli)
@@ -633,7 +660,7 @@ def main():
         print(f'BLOCKED: seeding {lab}: {e}' + chr(10) + 'RESULT BLOCKED', flush=True)
         sys.exit(2)
     desktop = 'ql-ux' + os.urandom(3).hex()
-    cfg = lab / 'cfg' if args.only in ('s1', 'keep', 'tools') else lab
+    cfg = lab / 'cfg' if args.only in ('s1', 'keep', 'keep-sens', 'tools') else lab
     extra = {'HIDEOUT_LAB_TOOL_ASK': '1'} if args.only == 'tools' else {}
     hub = QuietHub(str(app), cfg, lab.parent / 'shots', desktop, extra, seconds=args.seconds,
                    allow_running=args.allow_running)
@@ -642,8 +669,8 @@ def main():
         hub.start()
         if args.only == 's1':
             s1_checks(hub, check, exe, manifest)
-        elif args.only == 'keep':
-            keep_checks(hub, check, exe, manifest)
+        elif args.only in ('keep', 'keep-sens'):
+            keep_checks(hub, check, exe, manifest, args.only == 'keep-sens')
         elif args.only == 'tools':
             tools_checks(hub, check, tool)
         else:
