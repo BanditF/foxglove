@@ -263,6 +263,36 @@ pub fn tool_class(cap: &Capability, risk: Option<&str>) -> ToolClass {
     }
 }
 
+/// What the tool asks to do, as the end of "Hideout didn't let it ...": the plain words for a
+/// permission an outside tool asked for. Display only. Shared by the router's refusal text and
+/// the hub's dialog so the two always say the same thing.
+pub fn tool_phrase(cap: &Capability) -> String {
+    match cap {
+        Capability::Kept(p) => p.describe(),
+        Capability::HubNotify => "show notifications from Hideout".into(),
+        Capability::UiWindow => "open a window in Hideout".into(),
+        Capability::GpuStatus => "see how busy your graphics card is".into(),
+        Capability::GpuRequest(_) => "use your graphics card".into(),
+        Capability::ImageGenerate => "make pictures".into(),
+        Capability::AiAsk(_) => "ask an AI agent".into(),
+        Capability::ModulesManage => "manage your apps".into(),
+        other => format!("use {other}"),
+    }
+}
+
+/// Whether an ask-class item gets the red, sensitive style in the dialog (S1 section 5): it
+/// changes what a program can do on the computer, not just what is shown. `risk` is the
+/// catalog's class of a channel a `channel.open` names.
+pub fn tool_ask_is_red(cap: &Capability, risk: Option<&str>) -> bool {
+    match cap {
+        Capability::Kept(Permission::BehaviorsInvoke | Permission::AudioInputsMute) => true,
+        Capability::Kept(Permission::FactsWrite(p)) => !p.starts_with("device."),
+        Capability::ChannelOpen { .. } => risk == Some("sensitive"),
+        Capability::AiAsk(_) => true,
+        _ => false,
+    }
+}
+
 /// Where a module's files came from, for the never-list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {

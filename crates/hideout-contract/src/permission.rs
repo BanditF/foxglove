@@ -189,7 +189,9 @@ pub const TOOL_SCRIPT_RUNNERS: &[&str] = &[
     "python",
     "pythonw",
     "py",
+    "pyw",
     "pypy",
+    "pypyw",
     "node",
     "nodejs",
     "deno",
@@ -203,20 +205,62 @@ pub const TOOL_SCRIPT_RUNNERS: &[&str] = &[
     "mshta",
     "java",
     "javaw",
+    "jshell",
     "ruby",
+    "rubyw",
     "perl",
+    "wperl",
     "php",
+    "php-cgi",
     "lua",
+    "luajit",
     "bash",
     "sh",
     "wsl",
+    "rscript",
+    "julia",
+    "tclsh",
+    "wish",
+    "csi",
+    "fsi",
+    "electron",
+    "nw",
+    "autoit3",
+    "autohotkey",
+    // Loaders: they run code from a file or an argument they are given.
+    "rundll32",
+    "regsvr32",
+    "dotnet",
+    "msbuild",
+    "installutil",
+    "regasm",
+    "msiexec",
+    "dllhost",
 ];
 
-/// Whether the image file name `file` (for example `Python.EXE`) is a script runner.
+/// Names that run scripts under any suffix: the stem starts with one of these and what follows
+/// is digits, dots, dashes or underscores (`autohotkey64`, `AutoHotkeyU64`).
+pub const TOOL_SCRIPT_RUNNER_PREFIXES: &[&str] = &["autohotkey"];
+
+/// Whether the image file name `file` (for example `Python.EXE`) is a script runner. A stem is a
+/// runner when it is in [`TOOL_SCRIPT_RUNNERS`], or is one of them followed only by digits and
+/// dots (`python3.12`, `lua54`, `pypy3`), or starts with one of
+/// [`TOOL_SCRIPT_RUNNER_PREFIXES`]. A renamed copy of a runner is not caught by a name list; that is a known
+/// limit, and the dialog says the program runs scripts only when the name says so.
 pub fn tool_runs_scripts(file: &str) -> bool {
     let lower = file.to_ascii_lowercase();
     let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
-    TOOL_SCRIPT_RUNNERS.contains(&stem)
+    if TOOL_SCRIPT_RUNNERS.contains(&stem) {
+        return true;
+    }
+    if TOOL_SCRIPT_RUNNER_PREFIXES
+        .iter()
+        .any(|p| stem.starts_with(p))
+    {
+        return true;
+    }
+    let base = stem.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    base.len() < stem.len() && !base.is_empty() && TOOL_SCRIPT_RUNNERS.contains(&base)
 }
 
 /// Whether the fact pattern `pattern` (as asked in `facts.read:<pattern>`) lies wholly inside
@@ -735,6 +779,47 @@ impl Grant {
 
 #[cfg(test)]
 mod tests {
+    /// Versioned names, loaders and the other runners are script runners; a plain tool is not.
+    #[test]
+    fn script_runners_cover_versions_loaders_and_more() {
+        for f in [
+            "python3.12.exe",
+            "Python313.EXE",
+            "pyw.exe",
+            "pypy3.exe",
+            "luajit.exe",
+            "lua54.exe",
+            "rubyw.exe",
+            "wperl.exe",
+            "php-cgi.exe",
+            "jshell.exe",
+            "rundll32.exe",
+            "regsvr32.exe",
+            "dotnet.exe",
+            "msbuild.exe",
+            "installutil.exe",
+            "regasm.exe",
+            "msiexec.exe",
+            "dllhost.exe",
+            "AutoHotkey64.exe",
+            "AutoHotkeyU32.exe",
+            "AutoIt3.exe",
+            "Rscript.exe",
+            "julia.exe",
+            "tclsh86.exe",
+            "wish.exe",
+            "csi.exe",
+            "fsi.exe",
+            "electron.exe",
+            "nw.exe",
+        ] {
+            assert!(tool_runs_scripts(f), "{f}");
+        }
+        for f in ["mytool.exe", "pythonista.exe", "shell.exe", "notes.exe", "spy.exe"] {
+            assert!(!tool_runs_scripts(f), "{f}");
+        }
+    }
+
     use super::*;
 
     fn p(s: &str) -> Result<Permission, String> {

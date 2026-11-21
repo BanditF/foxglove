@@ -26,6 +26,7 @@ pub mod keyboard;
 pub mod lab;
 pub mod permission;
 pub mod sync_root;
+pub mod tools;
 pub mod trust;
 
 use std::collections::BTreeMap;

@@ -138,6 +138,19 @@ pub enum Out {
     /// A fact the hub watches changed (`null`: removed), for the panel host: module states,
     /// `when` facts and bindings (§4.6, §5.2). See [`Router::watch_facts`].
     Fact { key: String, value: Value },
+    /// A program outside Hideout is waiting for the user (S1, section 6.4): the Apps page
+    /// shows a line about it. A wake-up only; the list is [`Router::tool_asks`].
+    ToolAsk,
+    /// The user allowed a program file something that is kept: the hub stores it
+    /// (`tools.json`), bound to the file's path and hash. `granted` holds permission strings.
+    ToolRemembered {
+        image_path: String,
+        image_sha256: String,
+        granted: Vec<String>,
+    },
+    /// A program file's bytes changed: what was kept for the old bytes is void, and the hub
+    /// drops its record for this path.
+    ToolVoided(String),
     /// `ui.patch` from a module, for the panel host (§5.3).
     Patch { module: String, params: Value },
     /// `ui.badge` from a module (v1.3, §5.9), for the panel host: its tab's badge.
@@ -301,6 +314,9 @@ struct Conn {
     /// The program behind the peer, read from the handle opened at connect (S1); `None` is the
     /// valid unknown state.
     identity: Option<crate::ToolId>,
+    /// What an outside tool asked for at `initialize` (grantable items only): the most a later
+    /// Allow can add to this connection.
+    tool_asked: Vec<Capability>,
 }
 
 /// Who waits for an answer.
@@ -372,6 +388,9 @@ const HUB_APPS_PAGE: &str = "hub.modules";
 /// The least time between two `hub.show` calls that take effect (v1.19), hub-wide.
 pub const HOLDERS_GAP: Duration = Duration::from_millis(100);
 
+/// The most programs outside Hideout whose answer is held (S1); older answers are asked again.
+pub const APPROVED_MAX: usize = 64;
+
 /// The least time between two `lease.holders` calls of one module that change its lists (v1.21).
 pub const SHOW_GAP: Duration = Duration::from_secs(2);
 
@@ -381,6 +400,8 @@ pub struct Router {
     /// What the user allowed an outside tool, by the program (image path and hash), never by
     /// the name it gives itself. Only for a known program that is no script runner (S1).
     approved: HashMap<crate::ToolId, Vec<Capability>>,
+    /// Outside tools waiting for the user (S1): in memory, at most `QUEUE_MAX`.
+    tool_queue: crate::tool_queue::ToolQueue,
     modules: BTreeMap<String, ModuleEntry>,
     tokens: HashMap<String, String>,
     conns: HashMap<ConnId, Conn>,
@@ -551,6 +572,7 @@ impl Router {
             settings,
             approve,
             approved: HashMap::new(),
+            tool_queue: Default::default(),
             modules: BTreeMap::new(),
             tokens: HashMap::new(),
             conns: HashMap::new(),
@@ -928,6 +950,7 @@ impl Router {
                 pid: None,
                 app_container: None,
                 identity: None,
+                tool_asked: Vec::new(),
             },
         );
         id
@@ -951,6 +974,147 @@ impl Router {
     /// The program recorded for `conn`.
     pub fn peer_identity(&self, conn: ConnId) -> Option<crate::ToolId> {
         self.conns.get(&conn).and_then(|c| c.identity.clone())
+    }
+
+    /// The program behind `conn` as far as the hub may rely on it: `None` when it could not be
+    /// told and when the peer runs in an AppContainer (a contained program is never
+    /// remembered as a tool).
+    fn tool_identity(&self, conn: ConnId) -> Option<crate::ToolId> {
+        let c = self.conns.get(&conn)?;
+        if c.app_container.is_some() {
+            return None;
+        }
+        c.identity.clone()
+    }
+
+    /// What the user allowed program files before, read by the hub from its record at start.
+    /// Items that do not parse or may not be a tool's are dropped; at most `APPROVED_MAX`
+    /// programs are held.
+    pub fn load_tools(&mut self, records: Vec<(String, String, Vec<String>)>) {
+        for (image_path, image_sha256, granted) in records {
+            let caps: Vec<Capability> = granted
+                .iter()
+                .filter_map(|s| Capability::parse(s).ok())
+                .filter(|c| check_grantable(c, Holder::OutsideTool).is_ok())
+                // Only what a user can allow a tool: a keys-class item in a stray record is
+                // not honoured. (A channel's class is checked again when the tool asks.)
+                .filter(|c| {
+                    matches!(c, Capability::ChannelOpen { .. })
+                        || hideout_contract::capability::tool_class(c, None)
+                            == hideout_contract::capability::ToolClass::Ask
+                })
+                .collect();
+            let id = crate::ToolId {
+                image_path,
+                image_sha256,
+            };
+            if id.remembered() && !caps.is_empty() {
+                self.remember_approved(id, caps);
+            }
+        }
+    }
+
+    /// Keeps what `id` was allowed, within `APPROVED_MAX` programs: when full, one other
+    /// program's answer is forgotten (it is asked again).
+    fn remember_approved(&mut self, id: crate::ToolId, caps: Vec<Capability>) {
+        if !self.approved.contains_key(&id) && self.approved.len() >= APPROVED_MAX {
+            if let Some(old) = self.approved.keys().next().cloned() {
+                self.approved.remove(&old);
+            }
+        }
+        self.approved.insert(id, caps);
+    }
+
+    /// The programs outside Hideout waiting for the user, newest first (S1). Display data:
+    /// names and paths are untrusted text.
+    pub fn tool_asks(&self) -> Vec<crate::ToolAsk> {
+        self.tool_queue.list()
+    }
+
+    /// The user said Not now: the program's ask is dropped. It asks again when it connects.
+    pub fn dismiss_tool(&mut self, id: &crate::ToolId) {
+        self.tool_queue.remove(id);
+    }
+
+    /// The user allowed `allowed` to the program `id` in the hub's dialog (S1). Only what the
+    /// program asked and the queue held can be allowed. A program that is no script runner
+    /// keeps the answer for its file (`Out::ToolRemembered`); a script runner's answer is for
+    /// the connections it has now. Every live connection of that program gets what it asked
+    /// and was allowed, and a v2 connection is told with `module.grants {added}`.
+    pub fn set_tool_grants(&mut self, id: &crate::ToolId, allowed: &[Capability]) -> Vec<Out> {
+        let mut out = Vec::new();
+        let Some(ask) = self.tool_queue.remove(id) else {
+            return out;
+        };
+        let offered: Vec<Capability> = ask
+            .items
+            .iter()
+            .filter_map(|i| Capability::parse(&i.raw).ok())
+            .collect();
+        let allowed: Vec<Capability> = allowed
+            .iter()
+            .filter(|c| offered.contains(c))
+            .cloned()
+            .collect();
+        if allowed.is_empty() {
+            return out;
+        }
+        if id.remembered() {
+            let mut all = self.approved.get(id).cloned().unwrap_or_default();
+            for c in &allowed {
+                if !all.contains(c) {
+                    all.push(c.clone());
+                }
+            }
+            // What is kept is the user's answer, not the free set the hub grants anyway.
+            let kept: Vec<String> = all
+                .iter()
+                .filter(|c| {
+                    hideout_contract::capability::tool_class(c, None)
+                        != hideout_contract::capability::ToolClass::Free
+                })
+                .map(|c| c.to_string())
+                .collect();
+            self.remember_approved(id.clone(), all);
+            out.push(Out::ToolRemembered {
+                image_path: id.image_path.clone(),
+                image_sha256: id.image_sha256.clone(),
+                granted: kept,
+            });
+        }
+        let mut live: Vec<ConnId> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| {
+                c.identity.as_ref() == Some(id)
+                    && c.app_container.is_none()
+                    && matches!(c.who, Who::Tool { .. })
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        live.sort();
+        for conn in live {
+            let Some(c) = self.conns.get_mut(&conn) else {
+                continue;
+            };
+            let mut added: Vec<String> = Vec::new();
+            for cap in &allowed {
+                if c.tool_asked.contains(cap) && !c.caps.0.contains(cap) {
+                    c.caps.0.push(cap.clone());
+                    added.push(cap.to_string());
+                }
+            }
+            added.sort();
+            let v2 = matches!(c.who, Who::Tool { v1: false, .. });
+            if v2 && !added.is_empty() {
+                out.push(Out::Send(
+                    conn,
+                    json!({"jsonrpc": "2.0", "method": hideout_contract::messages::MODULE_GRANTS,
+                           "params": {"added": added}}),
+                ));
+            }
+        }
+        out
     }
 
     /// Records that `conn`'s peer runs in the AppContainer `sid` (read from its token by the
@@ -2521,7 +2685,7 @@ impl Router {
             ))),
             m => {
                 if !may_call(&caps, m, &params) {
-                    let reason = self.needs_permission(&who, m, &params);
+                    let reason = self.needs_permission(conn, &who, m, &params);
                     out.push(answer(denied(&id, Some(&reason))));
                     return;
                 }
@@ -2597,9 +2761,9 @@ impl Router {
 
     /// The refusal text for a call the caller has no permission for: names the module the call
     /// goes to and says where to allow it.
-    fn needs_permission(&self, who: &Who, method: &str, params: &Value) -> String {
+    fn needs_permission(&self, conn: ConnId, who: &Who, method: &str, params: &Value) -> String {
         if let Who::Tool { name, .. } = who {
-            return self.tool_refusal(name, method, params);
+            return self.tool_refusal(conn, name, method, params);
         }
         let target = self
             .routes
@@ -2634,33 +2798,31 @@ impl Router {
     }
 
     /// What a program outside Hideout is told when a call needs a permission it doesn't have
-    /// (S1): ask-class says nothing can allow it yet, never-class says only an app may. The name
-    /// is the tool's own word, cleaned and quoted; it never decides anything.
-    fn tool_refusal(&self, name: &str, method: &str, params: &Value) -> String {
+    /// (S1). Never-class says only an app may (R2). Otherwise, when the hub can tell which
+    /// program this is, it says the hub hasn't let it yet and where to review it (R3); when it
+    /// can't (no process, no readable file, a contained program), it says the program may only
+    /// read and how to start it again (R4). The name is the tool's own word, cleaned and
+    /// quoted; it never decides anything.
+    fn tool_refusal(&self, conn: ConnId, name: &str, method: &str, params: &Value) -> String {
         use hideout_contract::capability::{tool_class, ToolClass};
         let cap = crate::checks::needed_capability(method, params);
         let never = cap
             .as_ref()
             .is_some_and(|c| tool_class(c, None) == ToolClass::Never);
         let does = match &cap {
-            Some(Capability::Kept(p)) => p.describe(),
-            Some(Capability::HubNotify) => "show notifications from Hideout".into(),
-            Some(Capability::UiWindow) => "open a window in Hideout".into(),
-            Some(Capability::GpuStatus) => "see how busy your graphics card is".into(),
-            Some(Capability::GpuRequest(_)) => "use your graphics card".into(),
-            Some(Capability::ImageGenerate) => "make pictures".into(),
-            Some(Capability::AiAsk(_)) => "ask an AI agent".into(),
-            Some(Capability::ModulesManage) => "manage your apps".into(),
-            Some(_) | None => format!("call {method}"),
+            Some(c) => hideout_contract::capability::tool_phrase(c),
+            None => format!("call {method}"),
         };
         if never {
             format!(
                 "Hideout never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
             )
+        } else if self.tool_identity(conn).is_none() {
+            "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.".to_string()
         } else {
             let name = Self::clean_name_to(name, 40);
             format!(
-                "Hideout didn't let \u{201c}{name}\u{201d} {does}. Programs outside Hideout can't be allowed this yet. To do it now, use the app's own page in Hideout."
+                "Hideout hasn't let \u{201c}{name}\u{201d} {does} yet. Open Hideout, go to Apps and press Review\u{2026} on its line, then try again."
             )
         }
     }
@@ -2831,13 +2993,30 @@ impl Router {
                 _ => true,
             })
             .collect();
-        // Remembered by the program, not the name: an unknown program or a script runner is
-        // asked each time it connects and nothing is kept.
-        let key = self
-            .conns
-            .get(&conn)
-            .and_then(|c| c.identity.clone())
-            .filter(crate::ToolId::remembered);
+        // Remembered by the program, not the name: an unknown program, a contained program or
+        // a script runner is asked each time it connects and nothing is kept.
+        let identity = self.tool_identity(conn);
+        let key = identity.clone().filter(crate::ToolId::remembered);
+        // The same file with other bytes is another program: what was kept for the old bytes
+        // is void, and so is a waiting ask.
+        if let Some(id) = &identity {
+            let stale: Vec<crate::ToolId> = self
+                .approved
+                .keys()
+                .filter(|k| {
+                    k.image_path.eq_ignore_ascii_case(&id.image_path)
+                        && k.image_sha256 != id.image_sha256
+                })
+                .cloned()
+                .collect();
+            if !stale.is_empty() {
+                for k in stale {
+                    self.approved.remove(&k);
+                }
+                self.tool_queue.remove_path(&id.image_path);
+                out.push(Out::ToolVoided(id.image_path.clone()));
+            }
+        }
         let known = key
             .as_ref()
             .and_then(|k| self.approved.get(k))
@@ -2852,10 +3031,40 @@ impl Router {
         if !new.is_empty() {
             let yes = (self.approve)(&name, &new);
             granted.extend(yes.into_iter().filter(|c| new.contains(c)));
-            if let Some(k) = key {
-                self.approved.insert(k, granted.clone());
+        }
+        if let Some(k) = key {
+            if !granted.is_empty() {
+                self.remember_approved(k, granted.clone());
             }
         }
+        // What only the user can allow waits in the queue, by program file. Not for a program
+        // the hub can't identify: it may only read.
+        if let Some(id) = &identity {
+            let items: Vec<crate::AskItem> = asked
+                .iter()
+                .filter(|c| !granted.contains(c))
+                .filter_map(|c| {
+                    let risk = self.channel_risk(c);
+                    (hideout_contract::capability::tool_class(c, risk)
+                        == hideout_contract::capability::ToolClass::Ask)
+                        .then(|| crate::AskItem {
+                            raw: c.to_string(),
+                            does: hideout_contract::capability::tool_phrase(c),
+                            red: hideout_contract::capability::tool_ask_is_red(c, risk),
+                        })
+                })
+                .collect();
+            if !items.is_empty() {
+                self.tool_queue.push(crate::ToolAsk {
+                    id: id.clone(),
+                    name: name.clone(),
+                    items,
+                    runs_scripts: !id.remembered(),
+                });
+                out.push(Out::ToolAsk);
+            }
+        }
+        let tool_asked = asked.clone();
         let caps = Caps(granted.into_iter().filter(|c| asked.contains(c)).collect());
         let result = if v1 {
             json!({"api": api, "app": self.settings.app, "granted": caps.v1_strings()})
@@ -2864,8 +3073,21 @@ impl Router {
         };
         let c = self.conns.get_mut(&conn).unwrap();
         c.caps = caps;
+        c.tool_asked = tool_asked;
         c.who = Who::Tool { name, holder, v1 };
         out.push(Out::Send(conn, ok(id, result)));
+    }
+
+    /// The catalog's class of the channel a `channel.open` permission names.
+    fn channel_risk(&self, c: &Capability) -> Option<&str> {
+        match c {
+            Capability::ChannelOpen { module, channel } => self
+                .modules
+                .get(module)
+                .and_then(|m| m.channel_risk.get(channel))
+                .map(String::as_str),
+            _ => None,
+        }
     }
 
     fn token_ok(&self, params: &Value) -> bool {

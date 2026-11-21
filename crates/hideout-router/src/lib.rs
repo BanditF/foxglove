@@ -17,6 +17,8 @@ mod router;
 pub mod server;
 pub mod tool_id;
 pub use tool_id::ToolId;
+mod tool_queue;
+pub use tool_queue::{AskItem, ToolAsk, ITEMS_MAX, QUEUE_MAX};
 
 pub mod secrets;
 pub use router::{
