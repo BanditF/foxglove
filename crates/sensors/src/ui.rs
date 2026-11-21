@@ -68,7 +68,9 @@ struct Shown {
     text: String,
     tone: &'static str,
     name: String,
-    meter: f64,
+    /// `None` with no reading: the meter is sent with no value and draws no bar (a missing
+    /// reading is never an empty bar that reads as 0).
+    meter: Option<f64>,
 }
 
 const READING: &str = "Reading…";
@@ -92,7 +94,7 @@ fn shown_of(
             text: READING.into(),
             tone: "off",
             name: format!("{what}, reading"),
-            meter: 0.0,
+            meter: None,
         },
         (_, Some(v)) => {
             let (text, spoken) = fmt(v);
@@ -100,14 +102,14 @@ fn shown_of(
                 text,
                 tone: "neutral",
                 name: format!("{what}, {spoken}"),
-                meter: v.clamp(0, 100) as f64,
+                meter: Some(v.clamp(0, 100) as f64),
             }
         }
         (_, None) => Shown {
             text: NOT_REPORTED.into(),
             tone: "off",
             name: format!("{what}, not reported"),
-            meter: 0.0,
+            meter: None,
         },
     }
 }
@@ -269,7 +271,7 @@ pub fn page(i: &PageInput) -> Value {
                 text: format!("{} °C", z.celsius),
                 tone: "neutral",
                 name: format!("Zone {}, {} degrees Celsius", n + 1, z.celsius),
-                meter: 0.0,
+                meter: None,
             };
             sys_rows.push(detail_row(
                 &format!("sys-zone-{n}"),
@@ -337,7 +339,7 @@ pub fn tile(i: &PageInput) -> Value {
                 format!("{name} {v}%"),
                 "neutral",
                 format!("{name}, {v} percent {word}"),
-                v.clamp(0, 100) as f64,
+                Some(v.clamp(0, 100) as f64),
             )
         }
         None => {
@@ -351,14 +353,14 @@ pub fn tile(i: &PageInput) -> Value {
                     NOT_REPORTED.to_string(),
                     "off",
                     "PC sensors, not reported".to_string(),
-                    0.0,
+                    None,
                 )
             } else {
                 (
                     READING.to_string(),
                     "off",
                     "PC sensors, reading".to_string(),
-                    0.0,
+                    None,
                 )
             }
         }
