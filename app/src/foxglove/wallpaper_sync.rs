@@ -1477,6 +1477,23 @@ pub fn play_owed_now() -> bool {
     )
 }
 
+/// Whether a failed resume is owed as the user should see it: the one rule for Foxglove's
+/// page, its tray and what the hub is told (#1420). Not while the pause is stale, and not while
+/// a paired wallpaper plays (the user pressed Play, so nothing is owed).
+#[cfg_attr(test, allow(dead_code))]
+pub fn owed_shown_now() -> bool {
+    owed_shown(
+        pause_stale_now(),
+        super::live_feed::wallpaper_playing(),
+        play_owed_now(),
+    )
+}
+
+/// [`owed_shown_now`]'s rule.
+fn owed_shown(stale: bool, playing: bool, owed: bool) -> bool {
+    !stale && !playing && owed
+}
+
 /// The local holders' names as the `wallpaper_engine.local_holders` fact has them.
 pub fn local_holders_now() -> Vec<String> {
     match super::devices::bus().facts().get(LOCAL_HOLDERS) {
@@ -1844,6 +1861,16 @@ mod tests {
             self.interface_reads += 1;
             ifaces()
         }
+    }
+
+    /// #1420: one rule for the page, the tray and the hub: a failed resume is shown as owed
+    /// only while nothing plays and the pause is not stale.
+    #[test]
+    fn an_owed_resume_is_shown_only_while_nothing_plays() {
+        assert!(owed_shown(false, false, true));
+        assert!(!owed_shown(false, true, true), "the user pressed Play");
+        assert!(!owed_shown(true, false, true), "a stale pause");
+        assert!(!owed_shown(false, false, false));
     }
 
     #[test]

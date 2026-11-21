@@ -823,3 +823,75 @@ fn names_win_over_owed_and_no_empty_list_leaks() {
     let _ = out;
     assert_eq!(holders(&t), Some(json!({ f: [] })));
 }
+
+/// #1420 review: a repeat of the same owed state inside the gap is free (not rate limited).
+#[test]
+fn an_owed_repeat_inside_the_gap_is_free() {
+    let mut t = Rig::new();
+    let p = t.p;
+    let f = "example.lessor";
+    say_owed(&mut t, p, f, json!([]), Some(json!(true)));
+    // No time passes.
+    let out = t.call(
+        p,
+        "lease.holders",
+        json!({"family": f, "names": [], "owed": true}),
+    );
+    let back = sends(&out, p)
+        .into_iter()
+        .find(|m| m.get("id").is_some())
+        .unwrap();
+    assert_eq!(back["result"], json!({}), "{back}");
+}
+
+/// #1420 review: owed families count toward the family cap like named ones.
+#[test]
+fn owed_families_count_toward_the_family_cap() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    let max = 8; // HOLDERS_MAX_FAMILIES
+    let routes: Vec<String> = (0..=max).map(|i| format!("example.w{i}.*")).collect();
+    let routes: Vec<&str> = routes.iter().map(String::as_str).collect();
+    t.r.add_module(entry("example.wide", &routes));
+    let w = connect(&mut t.r, "example.wide", t.now);
+    ready(&mut t.r, w, &routes, t.now);
+    for i in 0..max {
+        let back = say_owed(
+            &mut t,
+            w,
+            &format!("example.w{i}"),
+            json!([]),
+            Some(json!(true)),
+        );
+        assert_eq!(back["result"], json!({}), "family {i}: {back}");
+    }
+    let over = say_owed(
+        &mut t,
+        w,
+        &format!("example.w{max}"),
+        json!([]),
+        Some(json!(true)),
+    );
+    assert!(over.get("error").is_some(), "one past the cap: {over}");
+    // A kept family can still change.
+    let back = say_owed(&mut t, w, "example.w0", json!(["N"]), None);
+    assert_eq!(back["result"], json!({}), "{back}");
+}
+
+/// #1420 review: the tray's Resume does not clear `owed`; the provider is the truth and says
+/// so itself once its retry settles.
+#[test]
+fn resume_leaves_the_owed_family_in_place() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    let p = t.p;
+    let f = "example.lessor";
+    say_owed(&mut t, p, f, json!([]), Some(json!(true)));
+    let out = t.r.resume_leases(P, f);
+    let notes: Vec<Value> = sends(&out, p)
+        .into_iter()
+        .filter(|m| m["method"] == "lease.end")
+        .collect();
+    assert_eq!(notes.len(), 1, "the provider hears the Resume");
+    assert_eq!(holders(&t), Some(json!({ f: [] })));
+}
