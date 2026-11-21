@@ -429,7 +429,12 @@ pub fn foxglove(
     Arc::new(Wire {
         id: id.to_string(),
         open: Arc::new(PipeOpen {
-            pipe: hideout_router::server::alias_pipe_name(),
+            // A lab hub probes its own folder's pipe (G2), never the user's real Foxglove's.
+            pipe: if hideout_registry::lab::lab_mode_from_env(home).on() {
+                hub.alias_pipe()
+            } else {
+                hideout_router::server::alias_pipe_name()
+            },
             exe: foxglove_plugin::owner::Expect::FOXGLOVE,
             home: home.to_path_buf(),
             id: id.to_string(),
