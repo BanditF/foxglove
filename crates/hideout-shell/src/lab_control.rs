@@ -196,6 +196,17 @@ struct Inner {
     /// Modules whose panels the hub's next frame quarantines (`quarantine`, #1096): (module,
     /// ticket).
     quarantines: Vec<(String, u64)>,
+    /// View changes for the hub's next frame (`set-theme`, `set-size`, G4): (what, ticket).
+    views: Vec<(View, u64)>,
+}
+
+/// A view change a lab script asks of the main window: its theme or its inner size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum View {
+    /// `set-theme`: light, dark or the system's.
+    Theme(crate::prefs::ThemeChoice),
+    /// `set-size`: the inner size in points.
+    Size(f32, f32),
 }
 
 /// The control state the plugin, the tray hook and the pipe thread share.
@@ -280,6 +291,29 @@ impl Lab {
         t
     }
 
+    /// Queues a view change for the hub's next frame (`set-theme`, `set-size`); its ticket.
+    pub fn queue_view(&self, v: View) -> u64 {
+        let mut i = self.lock();
+        i.next_ticket += 1;
+        let t = i.next_ticket;
+        i.views.push((v, t));
+        t
+    }
+
+    /// The queued view changes, for the hub's frame to apply to its window.
+    pub fn take_views(&self) -> Vec<View> {
+        let mut i = self.lock();
+        let all = std::mem::take(&mut i.views);
+        let Some(took) = all.iter().map(|v| v.1).max() else {
+            return Vec::new();
+        };
+        i.taken = i.taken.max(took);
+        i.taken_pass = i.root_passes;
+        drop(i);
+        self.cv.notify_all();
+        all.into_iter().map(|(v, _)| v).collect()
+    }
+
     /// The queued quarantines, for the hub's frame to hand to the panel host as its own
     /// quarantine does (`PanelHost::quarantine`, then the supervisor through the hand-off).
     pub fn take_quarantines(&self) -> Vec<String> {
@@ -320,6 +354,7 @@ impl Lab {
                 i.queue.retain(|q| q.3 != ticket);
                 i.settings.retain(|q| q.3 != ticket);
                 i.quarantines.retain(|q| q.1 != ticket);
+                i.views.retain(|q| q.1 != ticket);
                 return Err(format!(
                     "no pass of the window within {} s (is it on screen?)",
                     timeout.as_secs()
@@ -542,6 +577,11 @@ pub fn take_settings() -> Vec<(String, String, serde_json::Value)> {
     LAB.get().map(|l| l.take_settings()).unwrap_or_default()
 }
 
+/// View changes `set-theme` and `set-size` queued for this frame (none on the user's hub).
+pub fn take_views() -> Vec<View> {
+    LAB.get().map(|l| l.take_views()).unwrap_or_default()
+}
+
 /// Panel quarantines `quarantine` queued for this frame (none on the user's hub: no lab).
 pub fn take_quarantines() -> Vec<String> {
     LAB.get().map(|l| l.take_quarantines()).unwrap_or_default()
@@ -720,7 +760,7 @@ const WM_RBUTTONUP: u32 = 0x0205;
 /// The verbs and their arguments, for `--lab-do help` and errors.
 pub const HELP: &str = "verbs: state | frames <ms> [<from_t>] | tray-click | tray-double-click [<gap_ms>] | \
 tray-menu | tray-menu-model | tray-key-select | menu-key <down|up|left|right|enter|esc|home|end> | menu-pick <text> | \
-key <chord> [main|flyout] | text <text> | click <name>[#n]|@<i> [main|flyout] | focus <tab or page> | \
+set-theme <light|dark|system> | set-size <w> <h> | key <chord> [main|flyout] | text <text> | click <name>[#n]|@<i> [main|flyout] | focus <tab or page> | \
 open-flyout | close-flyout | close-window | set-setting <module> <name> <value> | \
 update-ready <module> [<reason>] | update-waiting <module> <permission>... | updating <module> | \
 quarantine <module>";
@@ -924,6 +964,24 @@ fn run_verb(
             host.wake();
             let settled = lab.wait_pass_after(passes, SETTLE_TIMEOUT);
             Ok(serde_json::json!({"verb": verb, "t": t, "window": win.name(), "settled": settled}))
+        }
+        // The main window's theme or size (G4), so light, dark and narrow captures need no
+        // hands: the choice is applied in the hub's next frame, as the Settings page's would be.
+        "set-theme" | "set-size" => {
+            if !main_on {
+                return Err(
+                    "the main window is not on screen (tray-double-click or menu-pick Open Hideout)"
+                        .into(),
+                );
+            }
+            let view = parse_view(verb, rest)?;
+            let ticket = lab.queue_view(view);
+            host.wake();
+            let t = lab.now_ms();
+            let passes = lab.wait_taken(ticket, PASS_TIMEOUT)?;
+            host.wake();
+            let settled = lab.wait_pass_after(passes, SETTLE_TIMEOUT);
+            Ok(serde_json::json!({"verb": verb, "t": t, "arg": rest, "settled": settled}))
         }
         "set-setting" => {
             // The Settings form's own path (`PanelHost::set_setting`, then `settings.set` to the
@@ -1170,6 +1228,32 @@ pub fn request(pipe: &str, line: &str) -> io::Result<String> {
     Ok(reply)
 }
 
+/// `set-theme light|dark|system` or `set-size <w> <h>` (points, 300..=4000 each).
+fn parse_view(verb: &str, rest: &str) -> Result<View, String> {
+    use crate::prefs::ThemeChoice;
+    if verb == "set-theme" {
+        return match rest.to_ascii_lowercase().as_str() {
+            "light" => Ok(View::Theme(ThemeChoice::Light)),
+            "dark" => Ok(View::Theme(ThemeChoice::Dark)),
+            "system" => Ok(View::Theme(ThemeChoice::System)),
+            _ => Err("set-theme <light|dark|system>".into()),
+        };
+    }
+    let mut a = rest.split_whitespace();
+    let (Some(w), Some(h), None) = (a.next(), a.next(), a.next()) else {
+        return Err("set-size <width> <height>".into());
+    };
+    let n = |s: &str| {
+        s.parse::<f32>()
+            .ok()
+            .filter(|v| (300.0..=4000.0).contains(v))
+    };
+    match (n(w), n(h)) {
+        (Some(w), Some(h)) => Ok(View::Size(w, h)),
+        _ => Err("set-size <width> <height>: each 300 to 4000".into()),
+    }
+}
+
 /// Whether an answer says `ok`.
 pub fn answer_ok(reply: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(reply.trim())
@@ -1393,6 +1477,29 @@ mod tests {
         allow(false);
         assert!(pipe_name(&lab_paths()).ends_with(&lab_paths().instance_suffix()));
         assert!(pipe_name(&lab_paths()).starts_with(r"\\.\pipe\hideout-lab-"));
+    }
+
+    #[test]
+    fn view_verbs_parse_and_queue() {
+        use crate::prefs::ThemeChoice;
+        assert_eq!(
+            parse_view("set-theme", "Dark"),
+            Ok(View::Theme(ThemeChoice::Dark))
+        );
+        assert!(parse_view("set-theme", "blue").is_err());
+        assert_eq!(
+            parse_view("set-size", "480 800"),
+            Ok(View::Size(480.0, 800.0))
+        );
+        for bad in ["480", "480 800 1", "10 800", "a b", "480 99999"] {
+            assert!(parse_view("set-size", bad).is_err(), "{bad}");
+        }
+        let lab = Lab::new(ViewportId::from_hash_of("fly"));
+        assert!(lab.take_views().is_empty());
+        let t = lab.queue_view(View::Size(480.0, 700.0));
+        assert_eq!(lab.take_views(), vec![View::Size(480.0, 700.0)]);
+        assert!(lab.take_views().is_empty());
+        assert!(t > 0);
     }
 
     #[test]
