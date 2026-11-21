@@ -7,7 +7,8 @@ window; ..."]` (run on purpose with FOXGLOVE_QUIET_DESKTOP=1 and --ignored), or 
 reason in scripts/window_tests_allowlist.txt after someone read it and saw it is window-free.
 
 What counts as test code: a `#[cfg(test)] mod ...` to the end of its file, and every file under a
-`tests/` folder or named `*_tests.rs` / `tests.rs`. app/vendor and target folders are skipped.
+`tests/` folder or named `*_tests.rs` / `tests.rs`. app/vendor, vendor (upstream copies, outside every workspace, never run) and target
+folders are skipped.
 
 A hit in a test region passes when its enclosing `fn` has `#[ignore` among its attributes, or the
 allowlist names `path::fn` or `path` (whole file). For `Command::new` the file may instead use
@@ -126,7 +127,7 @@ def scan(path: str, text: str, allow=frozenset()):
 def tracked_rs():
     out = subprocess.check_output(["git", "ls-files", "*.rs"], cwd=ROOT, text=True)
     for p in out.splitlines():
-        if p.startswith("app/vendor/") or "/target/" in p:
+        if p.startswith(("app/vendor/", "vendor/")) or "/target/" in p:
             continue
         yield p
 

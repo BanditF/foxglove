@@ -140,6 +140,18 @@ try {
                 }
             }
         }
+        # The same for the hub's copies (#1381): root [patch.crates-io], vendor\ at the repo root.
+        Step 'hub: vendored patches are the ones built' {
+            foreach ($c in 'accesskit_windows', 'eframe') {
+                $t = @(cargo tree --locked --offline -e normal --target x86_64-pc-windows-msvc -p hideout-shell -i $c)
+                if ($LASTEXITCODE) { throw "cargo tree -i $c failed" }
+                $heads = @($t | Where-Object { $_ -match '^[a-z_0-9-]+ v[0-9]' })
+                if ($heads.Count -ne 1 -or $heads[0] -notmatch ('(?<!app)[\/]vendor[\/]' + $c)) {
+                    Write-Host "$c is not the single vendored copy: $($heads -join ' | ')"
+                    throw "$c is not the vendored copy"
+                }
+            }
+        }
         Step 'app: clippy' { cargo clippy --manifest-path app/Cargo.toml --all-targets -- -D warnings }
         Step 'app: tests' { cargo test --manifest-path app/Cargo.toml }
     }
