@@ -163,5 +163,74 @@ class QuietStartTests(unittest.TestCase):
         self.assertIn('bad -DesktopName', str(c.exception))
 
 
+class HarnessFixesTests(unittest.TestCase):
+    """G6: slow-verb timeouts, the clean Quit, the hello fixture and the UIA verdict; window-free."""
+
+    def _hub(self):
+        h = hl.QuietHub('x.exe', str(LAB), 'shots', 'ql-hlcabc123', {})
+        calls = []
+        h.do = lambda *a, **k: calls.append((a, k)) or {'ok': False}
+        return h, calls
+
+    def test_stop_quits_through_the_tray_first(self):
+        h, calls = self._hub()
+        orig = hl.hidden_ps
+        hl.hidden_ps = lambda script: type('P', (), {'wait': lambda self, t=None: 0})()
+        h.launcher = type('L', (), {'wait': lambda self, t=None: 0})()
+        try:
+            h.stop()
+        finally:
+            hl.hidden_ps = orig
+        self.assertEqual(calls[0][0], ('menu-pick', 'Quit Hideout'))
+        self.assertIsNone(h.launcher)
+
+    def test_slow_verbs_get_a_long_timeout(self):
+        seen = []
+        orig = subprocess.run
+        subprocess.run = lambda *a, **k: seen.append(k['timeout']) or type('R', (), {'stdout': '{"ok":true}', 'stderr': ''})()
+        try:
+            hub = hl.Hub('x.exe', str(LAB), 'shots')
+            hub.do('update-ready')
+            hub.do('state')
+        finally:
+            subprocess.run = orig
+        self.assertEqual(seen, [90, 30])
+
+
+class UxRunTests(unittest.TestCase):
+    def setUp(self):
+        import hideout_ux_run as ux
+        self.ux = ux
+
+    def test_fixture_is_adopted_vulpes_utf8_without_bom(self):
+        with tempfile.TemporaryDirectory() as d:
+            probe = Path(d) / 'probe.exe'
+            probe.write_bytes(b'MZ')
+            exe = self.ux.hello_fixture(Path(d) / 'lab', probe)
+            lab = Path(d) / 'lab'
+            self.assertTrue(exe.exists())
+            toml = (lab / 'fx' / 'hideout' / 'module.toml').read_bytes()
+            disc = (lab / 'lab-discover.json').read_bytes()
+            for raw in (toml, disc):
+                self.assertFalse(raw.startswith(bytes([0xEF, 0xBB, 0xBF])))
+            self.assertIn(b'kind = "adopted"', toml)
+            self.assertIn(b'id = "vulpes"', toml)
+            self.assertIn(b'@EXE@', toml)
+            self.assertIn(b'family = "vulpes"', toml)
+            import json
+            self.assertIn(chr(92).join(['Software', 'Vulpes', 'Installer']), json.loads(disc)['registry'])
+
+    def test_allow_label_and_unnamed_nodes(self):
+        s = {'main': {'nodes': [{'role': 'Button', 'name': 'Not now'}, {'role': 'Button', 'name': 'Allow and start'}]}}
+        self.assertEqual(self.ux.allow_label(s), 'Allow and start')
+        s['main']['nodes'].insert(0, {'role': 'Label', 'value': 'Allow Vulpes first.'})
+        self.assertEqual(self.ux.allow_label(s), 'Allow and start')
+        self.assertTrue(self.ux.dialog_open({'main': {'nodes': [{'role': 'Label', 'value': 'Let Vulpes run in Hideout?'}]}}))
+        tree = {'role': 'Window', 'name': 'w', 'children': [{'role': 'Button', 'name': ''},
+                                                           {'role': 'Button', 'name': 'ok'},
+                                                           {'role': 'Text', 'name': ''}]}
+        self.assertEqual(self.ux.unnamed_focusables(tree), ['Button'])
+
+
 if __name__ == '__main__':
     unittest.main()

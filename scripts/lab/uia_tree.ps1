@@ -10,7 +10,7 @@
 # of the tree turns AccessKit on in that process until it restarts, which changes its CPU profile.
 # Point it at a lab instance (isolated FOXGLOVE_CONFIG_DIR) unless On-call says otherwise.
 #
-# The process must be named exactly `foxglove` (never a wildcard). Window: the top-level window of
+# The process must be named exactly `foxglove`, or `hideout` with -ProcessName hideout (never a wildcard; a lab hub's window is titled "Hideout (lab)", pass it as -Title). Window: the top-level window of
 # that process whose name equals -Title (default "Foxglove", the Settings window; the overlay's
 # window is named "Foxglove overlay").
 #
@@ -31,6 +31,7 @@
 param(
     [int]$ProcessId = 0,
     [string]$Title = 'Foxglove',
+    [ValidateSet('foxglove', 'hideout')][string]$ProcessName = 'foxglove',
     [string[]]$Expect = @(),
     [int]$TimeoutSec = 20,
     [int]$MaxNodes = 4000,
@@ -139,11 +140,11 @@ if ($env:FOXGLOVE_APP_OK -ne '1') {
     exit 3
 }
 if ($Page -and -not (Test-PageName $Page)) { Write-Host "bad -Page '$Page' (one of: $($PageNames -join ', '))"; exit 3 }
-if ($ProcessId -le 0) { Write-Host 'give -ProcessId of a running foxglove'; exit 3 }
+if ($ProcessId -le 0) { Write-Host "give -ProcessId of a running $ProcessName"; exit 3 }
 
 $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-if (-not $proc -or $proc.ProcessName -cne 'foxglove') {
-    Write-Host "refused: process $ProcessId is not a running process named exactly 'foxglove'"
+if (-not $proc -or $proc.ProcessName -cne $ProcessName) {
+    Write-Host "refused: process $ProcessId is not a running process named exactly '$ProcessName'"
     exit 3
 }
 # Same Windows session and, when Windows tells us the owner, the same user.
