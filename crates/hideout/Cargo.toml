@@ -9,15 +9,29 @@ license = "MIT"
 name = "hideout"
 path = "src/main.rs"
 
+[features]
+# Lab mode, developer mode, unsigned sideload, the hub folder override and `--lab`: read from the
+# environment and the command line only with this feature. On by default (the lab harness and
+# On-call build `--release` and need it); the installer builds `-p hideout --no-default-features`
+# (scripts/build-hideout-installer.ps1), so the installed hub ignores them.
+default = ["lab-switches"]
+lab-switches = [
+    "hideout-registry/lab-switches",
+    "hideout-router/lab-switches",
+    "hideout-services/lab-switches",
+    "hideout-shell/lab-switches",
+    "hideout-supervisor/lab-switches",
+]
+
 [dependencies]
 hideout-acl = { path = "../hideout-acl" }
 hideout-appwatch = { path = "../hideout-appwatch" }
 hideout-contract = { path = "../hideout-contract" }
-hideout-registry = { path = "../hideout-registry" }
-hideout-router = { path = "../hideout-router" }
-hideout-services = { path = "../hideout-services" }
-hideout-shell = { path = "../hideout-shell" }
-hideout-supervisor = { path = "../hideout-supervisor" }
+hideout-registry = { path = "../hideout-registry", default-features = false }
+hideout-router = { path = "../hideout-router", default-features = false }
+hideout-services = { path = "../hideout-services", default-features = false }
+hideout-shell = { path = "../hideout-shell", default-features = false }
+hideout-supervisor = { path = "../hideout-supervisor", default-features = false }
 foxglove-plugin = { path = "../plugin-sdk" }
 foxglove-plugin-trust = { path = "../plugin-trust" }
 sha2 = "0.10"
@@ -34,7 +48,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Network
 
 [dev-dependencies]
 # The Settings > Developer tests swap the disk and cloud-sync probes for fakes.
-hideout-registry = { path = "../hideout-registry", features = ["test-probes"] }
+hideout-registry = { path = "../hideout-registry", default-features = false, features = ["test-probes"] }
 # The catalog fetch tests sign their own catalogs with keys made per run (minisign, MIT).
 foxglove-plugin-trust = { path = "../plugin-trust", features = ["sign"] }
 # The hand-over test talks to the app's real connection handler, not a canned reply.

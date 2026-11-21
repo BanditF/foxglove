@@ -9,6 +9,8 @@
 //! `--lab` (or `HIDEOUT_LAB=1`) asks for lab mode: with a `HIDEOUT_CONFIG_DIR` outside the
 //! user's hub folder, the modules in `<config>\lab-modules\` load (#1001, docs/hideout-lab.md),
 //! and the lab control pipe is served (#1003). `hideout.exe --lab-do <verb> [args]` is its client.
+//! The installed build (no `lab-switches` feature) ignores `--lab`, these variables and the
+//! developer and sideload ones, and uses `%LOCALAPPDATA%\Hideout`; it logs one line when one is set.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(windows)]
@@ -244,6 +246,9 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
         }
         Err(e) => eprintln!("hideout: log {}: {e}", paths.logs_dir().display()),
     }
+    // A build without `lab-switches` ignores the lab, developer and home variables and `--lab`:
+    // one log line says which were set, no window.
+    hideout_registry::lab::log_ignored_switches(std::env::args_os().skip(1));
     let lock_name = format!(
         r"Local\BanditF.Hideout.Supervisor{}",
         paths.instance_suffix()
@@ -322,13 +327,23 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
     }
 }
 
+/// `--lab` asks for lab mode by setting the environment switch; the registry then checks the
+/// folder (`lab::lab_mode`). Before any thread starts.
+#[cfg(all(windows, feature = "lab-switches"))]
+fn lab_flag() {
+    if std::env::args().skip(1).any(|a| a == "--lab") {
+        std::env::set_var(hideout_registry::lab::LAB_ENV, "1");
+    }
+}
+
+/// The installed build has no `--lab`: the flag is ignored (and logged by `start`).
+#[cfg(all(windows, not(feature = "lab-switches")))]
+fn lab_flag() {}
+
 #[cfg(windows)]
 fn main() {
     use hideout_shell::paths::HubPaths;
-    if std::env::args().skip(1).any(|a| a == "--lab") {
-        // Before any thread starts; the registry checks the folder (lab::lab_mode).
-        std::env::set_var(hideout_registry::lab::LAB_ENV, "1");
-    }
+    lab_flag();
     let Some(paths) = HubPaths::from_env() else {
         eprintln!("hideout: neither HIDEOUT_CONFIG_DIR nor LOCALAPPDATA is set");
         std::process::exit(2);

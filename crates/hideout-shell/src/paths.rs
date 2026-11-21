@@ -3,9 +3,28 @@
 //!
 //! `HIDEOUT_CONFIG_DIR`, when set, is the whole hub folder: a lab or test hub runs on its own
 //! folder and gets its own single-instance names (see `instance_suffix`). Otherwise
-//! `HIDEOUT_HOME` (the contract's test override), otherwise `%LOCALAPPDATA%\Hideout`.
+//! `HIDEOUT_HOME` (the contract's test override), otherwise `%LOCALAPPDATA%\Hideout`. The
+//! installed build (no `lab-switches` feature) ignores both variables: it always uses the last.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+/// `env(k)` as a path, none when unset or empty.
+fn non_empty(env: &dyn Fn(&str) -> Option<OsString>, k: &str) -> Option<PathBuf> {
+    env(k).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The hub folder the environment names: `HIDEOUT_CONFIG_DIR`, else `HIDEOUT_HOME`.
+#[cfg(feature = "lab-switches")]
+fn home_override(env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    non_empty(env, "HIDEOUT_CONFIG_DIR").or_else(|| non_empty(env, "HIDEOUT_HOME"))
+}
+
+/// [`home_override`] in a build without `lab-switches` (the installed Hideout): never one.
+#[cfg(not(feature = "lab-switches"))]
+fn home_override(_env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    None
+}
 
 /// The hub's folders, all under one root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,9 +37,8 @@ pub struct HubPaths {
 impl HubPaths {
     /// Resolves the root from an environment lookup (`std::env::var_os` in the hub, a map in tests).
     pub fn resolve(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<Self> {
-        let set = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-        let default = set("LOCALAPPDATA").map(|base| base.join("Hideout"));
-        if let Some(root) = set("HIDEOUT_CONFIG_DIR").or_else(|| set("HIDEOUT_HOME")) {
+        let default = non_empty(&env, "LOCALAPPDATA").map(|base| base.join("Hideout"));
+        if let Some(root) = home_override(&env) {
             // Naming the default folder is the default hub: same pipe and lock names (#1010).
             let overridden = default.as_ref().is_none_or(|d| {
                 hideout_router::server::folder_key(d) != hideout_router::server::folder_key(&root)
@@ -86,6 +104,7 @@ mod tests {
         move |k| m.get(k).cloned()
     }
 
+    #[cfg(feature = "lab-switches")]
     #[test]
     fn config_dir_wins_then_home_then_local_app_data() {
         let all = [
@@ -108,6 +127,26 @@ mod tests {
         );
         assert!(!d.overridden);
         assert!(HubPaths::resolve(env(&[])).is_none());
+    }
+
+    /// The installed build: both variables are ignored and the real default folder is used
+    /// (the test only computes the path, it writes nothing).
+    #[cfg(not(feature = "lab-switches"))]
+    #[test]
+    fn the_installed_build_ignores_the_home_variables() {
+        let p = HubPaths::resolve(env(&[
+            ("HIDEOUT_CONFIG_DIR", r"C:\lab\cfg"),
+            ("HIDEOUT_HOME", r"C:\home"),
+            ("LOCALAPPDATA", r"C:\Users\u\AppData\Local"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            p.root,
+            PathBuf::from(r"C:\Users\u\AppData\Local").join("Hideout")
+        );
+        assert!(!p.overridden);
+        assert_eq!(p.instance_suffix(), "");
+        assert!(HubPaths::resolve(env(&[("HIDEOUT_CONFIG_DIR", r"C:\lab\cfg")])).is_none());
     }
 
     #[test]

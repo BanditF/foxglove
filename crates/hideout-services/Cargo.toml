@@ -5,10 +5,15 @@ edition = "2021"
 description = "The Hideout hub's host services (contract §8.10, §8.11): the network broker (net.open, net.send, net.close) and the microphone (mic.* facts, audio.inputs.set_mute). Event-driven, never polling. Clean-room MIT."
 license = "MIT"
 
+[features]
+# Forwards the router's (and so the registry's) `lab-switches`, so a hub built without it has none.
+default = ["lab-switches"]
+lab-switches = ["hideout-router/lab-switches"]
+
 [dependencies]
 base64 = "0.22"
 hideout-contract = { path = "../hideout-contract" }
-hideout-router = { path = "../hideout-router" }
+hideout-router = { path = "../hideout-router", default-features = false }
 log = "0.4"
 serde_json = "1"
 

@@ -51,17 +51,33 @@ pub const MAX_VERSIONS: usize = 2;
 /// Whether unsigned sideload (§12.6) is on in this process's environment: `HIDEOUT_DEV_UNSIGNED=1`
 /// or the legacy `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1`. This gates only installing and launching a
 /// module that is in no catalog; it never turns on the dev-folder path ([`dev_folders_from_env`]).
+/// Without the `lab-switches` feature (the installed build) the environment is not read: off.
+#[cfg(feature = "lab-switches")]
 pub fn dev_unsigned_from_env() -> bool {
     ["HIDEOUT_DEV_UNSIGNED", "FOXGLOVE_DEV_UNSIGNED_PLUGINS"]
         .iter()
         .any(|v| std::env::var(v).is_ok_and(|s| s == "1"))
 }
 
+/// [`dev_unsigned_from_env`] in a build without `lab-switches`: always off.
+#[cfg(not(feature = "lab-switches"))]
+pub fn dev_unsigned_from_env() -> bool {
+    false
+}
+
 /// Whether the dev-folder path (running a module from a dev folder, the dev chip) is on in this
 /// process's environment: `HIDEOUT_DEV_MODE=1` and nothing else. `HIDEOUT_DEV_UNSIGNED` and the
 /// legacy Foxglove variable never turn it on. Anything but exactly `1` is off (fail closed).
+/// Without the `lab-switches` feature (the installed build) the environment is not read: off.
+#[cfg(feature = "lab-switches")]
 pub fn dev_folders_from_env() -> bool {
     std::env::var("HIDEOUT_DEV_MODE").is_ok_and(|s| s == "1")
+}
+
+/// [`dev_folders_from_env`] in a build without `lab-switches`: always off.
+#[cfg(not(feature = "lab-switches"))]
+pub fn dev_folders_from_env() -> bool {
+    false
 }
 
 /// The two developer switches, kept apart on purpose: neither implies the other.

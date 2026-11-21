@@ -479,6 +479,7 @@ The hub MUST NOT contain:
   Nothing in `%LOCALAPPDATA%\Hideout` or `%APPDATA%\Hideout` moves with an install or an
   uninstall, and Foxglove's data stays in `%APPDATA%\Foxglove`.
 - `HIDEOUT_HOME`, when set, replaces `%LOCALAPPDATA%\Hideout` and `%APPDATA%\Hideout` (tests).
+  The installed hub (built without the `lab-switches` feature) ignores it and `HIDEOUT_CONFIG_DIR`.
 - Every file and pipe here MUST have a current-user-only ACL.
 - (v1.10, #983) One exception, only while modules run in AppContainers (§7.7): the router pipe
   also lets each such container's SID in (client rights, no create-instance) and carries a Low
@@ -2832,6 +2833,8 @@ Two switches, kept apart; neither implies the other, and each is on only for exa
   refused (`install.dev-mode-required`, v1.1).
 - Its shallow verify compares against the inventory's hashes.
 - It MUST NOT use an id in a first-party scope (`trust.sideload-scope`).
+- The installed hub is built without the `lab-switches` feature and ignores both variables (and
+  `HIDEOUT_LAB`, `--lab`): it logs one line when one is set, and runs as if none were.
 
 ## 13. Public and private modules (user requirement, 11/09)
 

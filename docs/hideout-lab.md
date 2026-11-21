@@ -12,6 +12,11 @@ isn't needed. **Lab mode** loads them as they ship, only in a lab hub.
   anything inside them. Otherwise `hideout.log` says
   `lab: lab mode refused: <why>; no lab modules loaded` and the hub runs as a normal hub.
   `HIDEOUT_HOME` alone is not enough.
+- The installed Hideout ignores all of this: it is built with `--no-default-features`, without the
+  `lab-switches` cargo feature (on by default), so `HIDEOUT_LAB`, `--lab`, `HIDEOUT_CONFIG_DIR`,
+  `HIDEOUT_HOME`, `HIDEOUT_DEV_MODE` and `HIDEOUT_DEV_UNSIGNED` change nothing there, and
+  `hideout.log` gets one line naming any that is set. Lab builds (`cargo build -p hideout`, debug
+  or `--release`) keep the feature.
 - When it's on, `hideout.log` says `lab: lab mode on; loading lab modules from <config>\lab-modules`,
   then one `lab:` line per folder: `<id>: loaded from …` or `…: not loaded: <why>`.
 - Each `<config>\lab-modules\<id>\` whose manifest (`module.toml`, else `plugin.toml`) has that
