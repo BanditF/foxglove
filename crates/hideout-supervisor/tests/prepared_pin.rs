@@ -20,7 +20,10 @@ const ID: &str = "dev.unregistered";
 /// test's clean-up delete the other's files (#1400).
 fn home(test: &str) -> PathBuf {
     let home = std::env::temp_dir()
-        .join(format!("hideout-prepared-pin-{}-{test}", std::process::id()))
+        .join(format!(
+            "hideout-prepared-pin-{}-{test}",
+            std::process::id()
+        ))
         .join("home");
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
