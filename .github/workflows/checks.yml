@@ -4,6 +4,7 @@ name: Script checks
 # runs in zmk-sim.yml.
 on:
   push:
+    branches: [main]
     paths:
       - "scripts/**"
       - "config/**"
@@ -14,6 +15,11 @@ on:
       - "config/**"
       - ".github/workflows/checks.yml"
   workflow_dispatch:
+
+# Pull requests already run this; branch pushes only run on main, and a newer push cancels the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

@@ -2,6 +2,7 @@ name: ZMK simulator
 
 on:
   push:
+    branches: [main]
     paths:
       - "config/**"
       - "boards/**"
@@ -25,6 +26,11 @@ on:
         description: "Capture snapshots for HUMAN REVIEW (does not validate correctness)"
         type: boolean
         default: false
+
+# Pull requests already run this; branch pushes only run on main, and a newer push cancels the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
