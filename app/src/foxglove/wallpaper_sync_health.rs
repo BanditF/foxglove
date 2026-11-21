@@ -96,6 +96,10 @@ pub struct SyncHealth {
     /// start; and times Wallpaper Engine quit while a lease held it.
     pub lease_stale: u64,
     pub lease_engine_quit: u64,
+    /// (#1399) Property pushes that failed, and `play` commands that failed (the wallpapers
+    /// stayed paused and the play is owed).
+    pub failed_pushes: u64,
+    pub failed_plays: u64,
 }
 
 impl SyncHealth {
@@ -113,6 +117,8 @@ impl SyncHealth {
             lease_dropped: 0,
             lease_stale: 0,
             lease_engine_quit: 0,
+            failed_pushes: 0,
+            failed_plays: 0,
         }
     }
 
@@ -245,6 +251,21 @@ pub fn rows(h: &SyncHealth, now: Instant) -> Vec<HealthRow> {
         }
         out.push(row("Pause leases", Level::Ok, detail));
     }
+    // (#1399) Only once they happened.
+    if h.failed_pushes + h.failed_plays > 0 {
+        let mut parts = Vec::new();
+        if h.failed_pushes > 0 {
+            parts.push(format!("failed pushes {}", h.failed_pushes));
+        }
+        if h.failed_plays > 0 {
+            parts.push(format!("failed plays {}", h.failed_plays));
+        }
+        out.push(row(
+            "Wallpaper commands",
+            Level::Ok,
+            format!("{} since Foxglove started", parts.join(", ")),
+        ));
+    }
     out
 }
 
@@ -338,6 +359,21 @@ mod tests {
         assert_eq!(
             rows(&h, Instant::now())[3].detail,
             "paused 2, played 1, dropped plays 1, left by a crash 1, Wallpaper Engine quit 2"
+        );
+    }
+
+    #[test]
+    fn failed_commands_show_only_once_they_happened() {
+        let mut h = SyncHealth::new();
+        assert_eq!(rows(&h, Instant::now()).len(), 3);
+        h.failed_pushes = 2;
+        let r = rows(&h, Instant::now());
+        assert_eq!(r.len(), 4);
+        assert_eq!(r[3].detail, "failed pushes 2 since Foxglove started");
+        h.failed_plays = 1;
+        assert_eq!(
+            rows(&h, Instant::now())[3].detail,
+            "failed pushes 2, failed plays 1 since Foxglove started"
         );
     }
 

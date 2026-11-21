@@ -9,6 +9,11 @@
 //!   the first lease came: a paired wallpaper had reported `Paused`), or with a full-screen
 //!   program in front (Wallpaper Engine's own `playbackfullscreen` brings it back then).
 //! - If the pause command fails, no lease is taken.
+//! - If the `play` command fails (#1399), the wallpapers are still paused and Foxglove's pause
+//!   still holds them: the play is *owed* ([`Leases::play_owed`]). It is tried again only on
+//!   a trigger, never on a timer: the next Resume, the next last release or drop, quitting, or
+//!   the next start (the pause mark stays on disk). Wallpaper Engine quitting or the user's
+//!   own pause ends the debt.
 //! - Ids are strings the hub's lease rules accept (contract section 8.5, v1.14): a counter, so
 //!   no id is handed out twice in this process, and 64 random bits, so none can be guessed.
 //! - Through the hub (#1120 slice C) every routed caller is [`ROUTED`]: the router keeps the
@@ -79,7 +84,8 @@ pub struct Ended {
     /// `play` went out.
     pub played: bool,
     /// Why it didn't: `held` (other leases remain), `user-paused`, `fullscreen` or (#1142)
-    /// `restarted` (Wallpaper Engine quit meanwhile and came back playing).
+    /// `restarted` (Wallpaper Engine quit meanwhile and came back playing), or (#1399)
+    /// `failed` (the `play` command failed: it is owed, and goes again at the next trigger).
     pub why: Option<&'static str>,
     /// The last lease ended, whatever was sent.
     pub last: bool,
@@ -96,6 +102,9 @@ pub struct Leases {
     /// Wallpaper Engine quit while it was ours (#1142): it came back playing, so the live
     /// leases no longer hold it and their last release answers `restarted`.
     restarted: bool,
+    /// A `play` failed (#1399): Wallpaper Engine is still paused by Foxglove's pause, with no
+    /// lease holding it. Kept with `we_paused`, so the pause mark stays.
+    owed: bool,
     pub paused: u64,
     pub played: u64,
     pub dropped: u64,
@@ -103,6 +112,8 @@ pub struct Leases {
     pub stale: u64,
     /// Times Wallpaper Engine quit while a lease held it (#1142).
     pub engine_quit: u64,
+    /// `play` commands that failed (#1399).
+    pub failed_plays: u64,
 }
 
 impl Leases {
@@ -140,11 +151,16 @@ impl Leases {
         if !apply.ready() {
             return Err(Fail::NotRunning);
         }
-        if self.live.is_empty() && !user_paused {
+        if self.live.is_empty() && user_paused {
+            // The user's own pause now: a play owed from before would play over it.
+            self.we_paused = false;
+            self.owed = false;
+        } else if self.live.is_empty() && !self.we_paused {
             apply.control("pause").map_err(Fail::Command)?;
             self.we_paused = true;
             self.paused += 1;
         }
+        // (A pause that is still ours, because a play failed, is not sent again.)
         self.next += 1;
         let id = new_id(self.next);
         self.live.push(Lease {
@@ -213,7 +229,8 @@ impl Leases {
         let had = !self.live.is_empty();
         self.live.clear();
         self.ended.clear();
-        had.then(|| self.after(apply, full))
+        // A play owed (#1399) is tried again by this Resume, with no lease left to end.
+        (had || self.owed).then(|| self.after(apply, full))
     }
 
     /// A pause an earlier Foxglove left (the pause mark, #1142: it crashed, was killed, or its
@@ -234,6 +251,7 @@ impl Leases {
             return false;
         }
         self.we_paused = false;
+        self.owed = false;
         self.restarted = !self.live.is_empty();
         self.engine_quit += 1;
         true
@@ -248,6 +266,7 @@ impl Leases {
         }
         let mine = std::mem::take(&mut self.we_paused);
         let restarted = std::mem::take(&mut self.restarted);
+        self.owed = false;
         let last = |played, why| Ended {
             played,
             why,
@@ -264,16 +283,22 @@ impl Leases {
             self.dropped += 1;
             return last(false, Some("fullscreen"));
         }
-        // A play that can't go out (Wallpaper Engine quit meanwhile, or no answer) leaves
-        // nothing to hold: the user's next play or Wallpaper Engine's restart does it.
+        // A play that can't go out because Wallpaper Engine isn't running leaves nothing to
+        // hold: its restart plays. One that failed (#1399) leaves the wallpapers paused, so it
+        // stays ours and owed, and the next trigger sends it again.
         match apply.ready().then(|| apply.control("play")) {
             Some(Ok(())) => {
                 self.played += 1;
                 last(true, None)
             }
             Some(Err(e)) => {
-                eprintln!("Foxglove: wallpaper sync: play failed: {e}");
-                last(false, None)
+                eprintln!(
+                    "Foxglove: wallpaper sync: play failed ({e}); the wallpapers stay paused until the next Resume"
+                );
+                self.we_paused = true;
+                self.owed = true;
+                self.failed_plays += 1;
+                last(false, Some("failed"))
             }
             None => last(false, None),
         }
@@ -286,6 +311,25 @@ impl Leases {
     /// Wallpaper Engine is paused by a lease Foxglove sent.
     pub fn paused_by_lease(&self) -> bool {
         self.we_paused
+    }
+
+    /// The wallpapers play although a play is owed (#1399): the user pressed Play in the
+    /// wallpaper app, so Foxglove's pause is over and nothing is owed. `true` when this changed
+    /// anything. Leases that are live keep their own hold.
+    pub fn user_took_over(&mut self) -> bool {
+        if !self.owed || !self.live.is_empty() {
+            return false;
+        }
+        self.owed = false;
+        self.we_paused = false;
+        true
+    }
+
+    /// A `play` failed and nothing holds the wallpapers paused now (#1399): the wallpapers stay
+    /// paused until a trigger sends it again. While a new lease holds them, the holder is what
+    /// shows; the debt waits behind it.
+    pub fn play_owed(&self) -> bool {
+        self.owed && self.live.is_empty()
     }
 
     /// Leases are live but hold nothing: Wallpaper Engine quit and came back playing.
@@ -322,6 +366,8 @@ mod tests {
         running: bool,
         calls: Vec<String>,
         fail: bool,
+        /// Only `play` fails (#1399).
+        fail_play: bool,
     }
 
     impl Apply for &mut Fake {
@@ -332,7 +378,7 @@ mod tests {
             unreachable!("leases never push properties")
         }
         fn control(&mut self, command: &str) -> Result<(), String> {
-            if self.fail {
+            if self.fail || (self.fail_play && command == "play") {
                 return Err("refused".into());
             }
             self.calls.push(command.into());
@@ -439,6 +485,106 @@ mod tests {
         l.pause(&mut &mut f, 1, "a", false).unwrap();
         assert!(l.end_all(&mut &mut f, false).unwrap().played);
         assert_eq!(f.calls, ["pause", "play"]);
+    }
+
+    /// #1399: a failed play keeps Foxglove's pause and owes the play; the next Resume sends it.
+    #[test]
+    fn a_failed_play_is_owed_and_the_next_resume_sends_it() {
+        let (mut f, mut l) = (up(), Leases::default());
+        let (id, _) = l.pause(&mut &mut f, 1, "a", false).unwrap();
+        f.fail_play = true;
+        let e = l.release(&mut &mut f, 1, &id, false).unwrap();
+        assert_eq!((e.played, e.why, e.last), (false, Some("failed"), true));
+        assert!(l.play_owed());
+        assert!(
+            l.paused_by_lease(),
+            "still paused, still ours: the mark stays"
+        );
+        assert_eq!((l.played, l.failed_plays), (0, 1));
+        // A second failure is owed again.
+        let e = l.end_all(&mut &mut f, false).unwrap();
+        assert_eq!((e.played, e.why), (false, Some("failed")));
+        assert!(l.play_owed());
+        assert_eq!(l.failed_plays, 2);
+        // The program answers again: the next Resume sends play, with no lease left to end.
+        f.fail_play = false;
+        let e = l.end_all(&mut &mut f, false).unwrap();
+        assert_eq!((e.played, e.why, e.last), (true, None, true));
+        assert!(!l.play_owed() && !l.paused_by_lease());
+        assert_eq!(f.calls, ["pause", "play"]);
+        assert_eq!(l.end_all(&mut &mut f, false), None, "nothing owed any more");
+    }
+
+    #[test]
+    fn a_new_lease_over_an_owed_play_sends_no_pause_and_its_release_retries() {
+        let (mut f, mut l) = (up(), Leases::default());
+        let (a, _) = l.pause(&mut &mut f, 1, "a", false).unwrap();
+        f.fail_play = true;
+        l.release(&mut &mut f, 1, &a, false).unwrap();
+        f.fail_play = false;
+        let (b, paused) = l.pause(&mut &mut f, 1, "b", false).unwrap();
+        assert!(paused, "the wallpapers really are paused for it");
+        assert_eq!(f.calls, ["pause"], "no second pause");
+        assert!(!l.play_owed(), "a holder shows while it holds");
+        let e = l.release(&mut &mut f, 1, &b, false).unwrap();
+        assert!(e.played);
+        assert_eq!(f.calls, ["pause", "play"]);
+        assert!(!l.play_owed());
+    }
+
+    fn owe(f: &mut Fake, l: &mut Leases) {
+        f.fail_play = false;
+        let (id, _) = l.pause(&mut &mut *f, 1, "a", false).unwrap();
+        f.fail_play = true;
+        l.release(&mut &mut *f, 1, &id, false).unwrap();
+        assert!(l.play_owed());
+    }
+
+    #[test]
+    fn the_engine_quitting_ends_the_debt() {
+        let (mut f, mut l) = (up(), Leases::default());
+        owe(&mut f, &mut l);
+        assert!(l.engine_gone());
+        assert!(!l.play_owed() && !l.paused_by_lease());
+        assert_eq!(l.end_all(&mut &mut f, false), None);
+    }
+
+    #[test]
+    fn the_user_pressing_play_ends_the_debt_and_quitting_sends_nothing() {
+        let (mut f, mut l) = (up(), Leases::default());
+        assert!(!l.user_took_over(), "nothing owed");
+        owe(&mut f, &mut l);
+        assert!(l.user_took_over());
+        assert!(!l.play_owed() && !l.paused_by_lease());
+        assert_eq!(l.end_all(&mut &mut f, false), None);
+        assert_eq!(f.calls, ["pause"], "no play over what the user did");
+    }
+
+    #[test]
+    fn the_users_own_pause_ends_the_debt() {
+        let (mut f, mut l) = (up(), Leases::default());
+        owe(&mut f, &mut l);
+        f.fail_play = false;
+        let (id, paused) = l.pause(&mut &mut f, 1, "b", true).unwrap();
+        assert!(!paused && !l.play_owed() && !l.paused_by_lease());
+        let e = l.release(&mut &mut f, 1, &id, false).unwrap();
+        assert_eq!(e.why, Some("user-paused"));
+        assert_eq!(f.calls, ["pause"], "no play over the user's pause");
+    }
+
+    #[test]
+    fn a_retry_with_the_program_gone_or_a_full_screen_app_drops_the_debt() {
+        let (mut f, mut l) = (up(), Leases::default());
+        owe(&mut f, &mut l);
+        f.running = false;
+        let e = l.end_all(&mut &mut f, false).unwrap();
+        assert_eq!((e.played, e.why), (false, None));
+        assert!(!l.play_owed() && !l.paused_by_lease());
+        let (mut f, mut l) = (up(), Leases::default());
+        owe(&mut f, &mut l);
+        let e = l.end_all(&mut &mut f, true).unwrap();
+        assert_eq!(e.why, Some("fullscreen"));
+        assert!(!l.play_owed());
     }
 
     #[test]

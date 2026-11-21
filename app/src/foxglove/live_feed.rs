@@ -1229,6 +1229,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
                 if let Some(c) = clients.iter_mut().find(|c| c.id == id) {
                     c.paused = p;
                 }
+                note_report(&PLAYED, p);
                 if !hub.paused(id, p, &mut Streams(&mut clients)) {
                     dead.push(id);
                 }
@@ -1767,6 +1768,22 @@ pub(super) fn wallpaper_playing() -> bool {
 
 static ANY_PLAYING: AtomicBool = AtomicBool::new(false);
 
+/// A wallpaper reported itself playing since the last look (#1399). The report is kept until
+/// wallpaper sync takes it, so a Play followed by a Pause between two of its wakes still counts
+/// as the user taking over. A wallpaper that only joined has reported nothing.
+pub(super) fn take_played() -> bool {
+    PLAYED.swap(false, Ordering::Relaxed)
+}
+
+static PLAYED: AtomicBool = AtomicBool::new(false);
+
+/// Keeps a "playing" report; a "paused" one changes nothing.
+fn note_report(played: &AtomicBool, paused: bool) {
+    if !paused {
+        played.store(true, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 pub(super) fn fullscreen_now() -> bool {
     FAKE_FULLSCREEN.load(Ordering::SeqCst)
@@ -2046,6 +2063,16 @@ const STORE_OWNER: &str = "wallpaper-engine";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_play_report_is_kept_through_a_later_pause() {
+        let f = AtomicBool::new(false);
+        note_report(&f, true);
+        assert!(!f.load(Ordering::Relaxed), "a pause is no play");
+        note_report(&f, false);
+        note_report(&f, true);
+        assert!(f.swap(false, Ordering::Relaxed), "the play is still known");
+    }
 
     /// The settings writer on a temp store file: one locked read-modify-write, like the app's.
     fn upd(path: &std::path::Path) -> impl Updater + '_ {

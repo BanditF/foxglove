@@ -1024,6 +1024,85 @@ fn the_state_line_is_a_status_and_resume_names_the_holder() {
     );
 }
 
+/// #1399: a play that failed shows as its own state: the wallpapers are still paused, nobody
+/// holds them, Resume stays (plain name), and the line says what to do, with the app from data.
+#[test]
+fn a_play_that_failed_is_said_and_resume_stays() {
+    let owed = Wallpaper {
+        running: true,
+        play_owed: true,
+        ..Wallpaper::default()
+    };
+    let v = we_view(owed.clone());
+    assert_eq!(
+        we_texts(&v).unwrap()[..],
+        [
+            "Couldn't resume wallpapers",
+            "Try again, or press Play in Wallpaper Engine.",
+            "Resume wallpapers"
+        ]
+    );
+    let all = panels(&v);
+    let page = &panel(&all, PAGE)["tree"];
+    let section = page["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == WALLPAPER)
+        .unwrap();
+    let kids = section["children"].as_array().unwrap();
+    let state = kids.iter().find(|n| n["id"] == STATE_NODE).unwrap();
+    assert_eq!(state["props"]["live"], true, "spoken once when it appears");
+    assert_eq!(state["props"]["tone"], "active");
+    let resume = kids
+        .iter()
+        .find(|n| n["id"] == "we-resume" || n["props"]["label"] == RESUME);
+    let resume = resume.expect("the Resume button stays");
+    assert_eq!(resume["props"]["focus_after"], STATE_NODE);
+    assert!(
+        !serde_json::to_string(resume).unwrap().contains("paused by"),
+        "no holder to name: the plain label is the name"
+    );
+    // The name is data: without it the line says "your wallpaper app".
+    let no_name = view(&connected()).with_wallpaper(Some(owed.clone()));
+    assert_eq!(
+        we_texts(&no_name).unwrap()[1],
+        "Try again, or press Play in your wallpaper app."
+    );
+    // Running out of time doesn't drop it: an after-line never replaces it.
+    let said = Wallpaper {
+        after: Some(After::Resumed(vec!["Arete".into()])),
+        ..owed.clone()
+    };
+    assert_eq!(we_texts(&we_view(said)).unwrap()[0], RESUME_FAILED);
+    // The user's own pause takes over; a holder shows while it holds; not running wins.
+    assert_eq!(
+        we_texts(&we_view(Wallpaper {
+            user_paused: true,
+            ..owed.clone()
+        }))
+        .unwrap()[0],
+        PAUSED_BY_YOU
+    );
+    assert_eq!(
+        we_texts(&we_view(Wallpaper {
+            holders: vec!["Arete".into()],
+            reasons: vec!["x".into()],
+            ..owed.clone()
+        }))
+        .unwrap()[0],
+        "Wallpapers paused by Arete"
+    );
+    assert_eq!(
+        we_texts(&we_view(Wallpaper {
+            running: false,
+            ..owed
+        }))
+        .unwrap()[0],
+        NOT_RUNNING
+    );
+}
+
 /// Every string the section can draw, over every state, is free of the words a user never sees
 /// (UX plan 7), and the wallpaper app's name appears only where the data puts it.
 #[test]
@@ -1076,6 +1155,15 @@ fn the_words_have_no_jargon_and_no_hard_coded_engine_name() {
                 }
             }
         }
+    }
+    // (#1399) The owed state, over the user's pause too.
+    for user_paused in [false, true] {
+        all.push(Wallpaper {
+            running: true,
+            play_owed: true,
+            user_paused,
+            ..Wallpaper::default()
+        });
     }
     for w in all {
         let v = we_view(w.clone());
