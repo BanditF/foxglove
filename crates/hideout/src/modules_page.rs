@@ -159,6 +159,10 @@ struct FreshInner {
     waiting: bool,
     /// Modules whose Remove failed after they stopped (the supervisor says so).
     failed: Vec<String>,
+    /// The record of programs outside Hideout changed since the page last read it (#1470).
+    tools: bool,
+    /// The newest program whose file changed, so its record went.
+    tool_voided: Option<String>,
 }
 
 #[cfg(windows)]
@@ -180,6 +184,22 @@ impl Fresh {
     pub fn put_failed(&self, id: &str) -> bool {
         self.0.lock().unwrap().failed.push(id.into());
         true
+    }
+
+    /// The record of programs outside Hideout was written; `voided` is the path of a program
+    /// whose file changed.
+    pub fn put_tools(&self, voided: Option<&str>) {
+        let mut f = self.0.lock().unwrap();
+        f.tools = true;
+        if let Some(path) = voided {
+            f.tool_voided = Some(path.to_string());
+        }
+    }
+
+    /// Whether that record changed since the last take, with the newest voided path.
+    pub(crate) fn take_tools(&self) -> Option<Option<String>> {
+        let mut f = self.0.lock().unwrap();
+        std::mem::take(&mut f.tools).then(|| f.tool_voided.take())
     }
 
     pub(crate) fn take_failed(&self) -> Vec<String> {
@@ -992,6 +1012,14 @@ impl hideout_shell::Page for ModulesPage {
         self.grant = grant;
         self.perm = perm;
         self.discover = discover;
+        // Programs outside Hideout the user allowed, under the app rows (#1470). The record is
+        // read again only when the hub wrote it.
+        if let Some(p) = self.perm.as_mut() {
+            if let Some(voided) = self.fresh.as_ref().and_then(Fresh::take_tools) {
+                p.tools_changed(voided.as_deref());
+            }
+            p.tools_ui(ui, t);
+        }
         self.start_again_pending();
         self.settle_hand_over(false);
         if let Some(id) = added {

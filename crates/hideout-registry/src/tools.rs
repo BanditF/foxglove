@@ -22,6 +22,10 @@ pub struct ToolRecord {
     pub image_sha256: String,
     /// Permission strings, as the router parses them.
     pub granted: Vec<String>,
+    /// When the user allowed it (`YYYY-MM-DDTHH:MM:SSZ`). `None` in a record written before
+    /// the time was kept: the page then says the date is not known, never a made-up one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_at: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,11 +56,13 @@ impl ToolStore {
 
     /// Keeps `granted` for this program file. A record for the same path with another hash is
     /// replaced (the old file's answer is void), and the list is capped at [`MAX_TOOLS`].
+    /// `allowed_at` is when the user answered.
     pub fn remember(
         &self,
         image_path: &str,
         image_sha256: &str,
         granted: &[String],
+        allowed_at: Option<&str>,
     ) -> io::Result<()> {
         self.update(|tools| {
             tools.retain(|t| !same_path(&t.image_path, image_path));
@@ -64,6 +70,7 @@ impl ToolStore {
                 image_path: image_path.to_string(),
                 image_sha256: image_sha256.to_string(),
                 granted: granted.to_vec(),
+                allowed_at: allowed_at.map(str::to_string),
             });
             let over = tools.len().saturating_sub(MAX_TOOLS);
             tools.drain(..over);
@@ -72,6 +79,12 @@ impl ToolStore {
 
     /// Drops every record for this program file: its bytes changed.
     pub fn void_path(&self, image_path: &str) -> io::Result<()> {
+        self.forget(image_path)
+    }
+
+    /// Drops every record for this program file, whatever its hash: the user pressed Forget on
+    /// the Apps page. The program is asked about again the next time it connects.
+    pub fn forget(&self, image_path: &str) -> io::Result<()> {
         self.update(|tools| tools.retain(|t| !same_path(&t.image_path, image_path)))
     }
 
@@ -176,14 +189,15 @@ mod tests {
         let s = ToolStore::at(&d);
         assert!(s.load().is_empty());
         let g = vec!["lighting.write".to_string()];
-        s.remember(r"C:\Tools\a.exe", "aa", &g).unwrap();
+        s.remember(r"C:\Tools\a.exe", "aa", &g, Some("2026-11-17T09:00:00Z"))
+            .unwrap();
         let recs = s.load();
         assert_eq!(granted_for(&recs, r"C:\Tools\a.exe", "aa"), Some(&g[..]));
         // Case of the path does not matter; a changed hash is no record.
         assert!(granted_for(&recs, r"c:\tools\A.EXE", "aa").is_some());
         assert_eq!(granted_for(&recs, r"C:\Tools\a.exe", "bb"), None);
         // New bytes at the same path replace the old record.
-        s.remember(r"C:\Tools\a.exe", "bb", &[]).unwrap();
+        s.remember(r"C:\Tools\a.exe", "bb", &[], None).unwrap();
         let recs = s.load();
         assert_eq!(recs.len(), 1);
         assert_eq!(granted_for(&recs, r"C:\Tools\a.exe", "aa"), None);
@@ -197,11 +211,50 @@ mod tests {
         let d = home("cap");
         let s = ToolStore::at(&d);
         for i in 0..MAX_TOOLS + 3 {
-            s.remember(&format!(r"C:\T\{i}.exe"), "h", &[]).unwrap();
+            s.remember(&format!(r"C:\T\{i}.exe"), "h", &[], None)
+                .unwrap();
         }
         let recs = s.load();
         assert_eq!(recs.len(), MAX_TOOLS);
         assert_eq!(recs[0].image_path, r"C:\T\3.exe");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_record_without_a_time_loads_and_the_time_round_trips() {
+        let d = home("old");
+        // A file written before the time was kept.
+        std::fs::write(
+            d.join("tools.json"),
+            r#"{"format":"hideout-tools/1","tools":[{"image_path":"C:\\Tools\\old.exe","image_sha256":"aa","granted":["lighting.write"]}]}"#,
+        )
+        .unwrap();
+        let s = ToolStore::at(&d);
+        let recs = s.load();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].allowed_at, None);
+        s.remember(r"C:\Tools\new.exe", "bb", &[], Some("2026-11-17T09:00:00Z"))
+            .unwrap();
+        let recs = s.load();
+        assert_eq!(recs[0].allowed_at, None);
+        assert_eq!(recs[1].allowed_at.as_deref(), Some("2026-11-17T09:00:00Z"));
+        // The old record is written back without a time, never with a made-up one.
+        let text = std::fs::read_to_string(d.join("tools.json")).unwrap();
+        assert_eq!(text.matches("allowed_at").count(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn forget_drops_only_that_program_file() {
+        let d = home("forget");
+        let s = ToolStore::at(&d);
+        let g = vec!["lighting.write".to_string()];
+        s.remember(r"C:\Tools\a.exe", "aa", &g, None).unwrap();
+        s.remember(r"C:\Tools\b.exe", "bb", &g, None).unwrap();
+        s.forget(r"c:\tools\A.EXE").unwrap();
+        let recs = s.load();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].image_path, r"C:\Tools\b.exe");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -215,7 +268,7 @@ mod tests {
         .unwrap();
         let s = ToolStore::at(&d);
         assert!(s.load().is_empty());
-        assert!(s.remember("x", "y", &[]).is_err());
+        assert!(s.remember("x", "y", &[], None).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

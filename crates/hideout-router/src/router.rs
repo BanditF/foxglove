@@ -317,6 +317,9 @@ struct Conn {
     /// What an outside tool asked for at `initialize` (grantable items only): the most a later
     /// Allow can add to this connection.
     tool_asked: Vec<Capability>,
+    /// The user pressed Forget for this program while the connection was open and it lost
+    /// something: its refusals say so, until it is allowed again.
+    forgotten: bool,
 }
 
 /// Who waits for an answer.
@@ -954,6 +957,7 @@ impl Router {
                 app_container: None,
                 identity: None,
                 tool_asked: Vec::new(),
+                forgotten: false,
             },
         );
         id
@@ -1121,6 +1125,9 @@ impl Router {
                 }
             }
             added.sort();
+            if !added.is_empty() {
+                c.forgotten = false;
+            }
             let v2 = matches!(c.who, Who::Tool { v1: false, .. });
             if v2 && !added.is_empty() {
                 out.push(Out::Send(
@@ -1131,6 +1138,93 @@ impl Router {
             }
         }
         out
+    }
+
+    /// The user pressed Forget for the program file `image_path` on the hub's Apps page. Only
+    /// the hub's own UI calls this: no message on any pipe reaches it. Every answer kept for
+    /// that path goes, whatever the file's hash. Every open connection of that file keeps only
+    /// what any program outside Hideout may have without asking; the subscriptions and app
+    /// watches that needed more end (a v2 connection is told with
+    /// `module.grants {added: [], ended}`), and so do the leases it holds under what it lost
+    /// (`lease.closed`, reason `revoked`). Calls already under way finish, and an ask waiting
+    /// for the user stays. The program is asked about again the next time it connects.
+    pub fn forget_tool(&mut self, image_path: &str) -> Vec<Out> {
+        use hideout_contract::capability::{tool_class, ToolClass};
+        let mut out = Vec::new();
+        let same = |id: &crate::ToolId| id.image_path.eq_ignore_ascii_case(image_path);
+        self.approved.retain(|k, _| !same(k));
+        self.approved_order.retain(|k| !same(k));
+        let mut live: Vec<ConnId> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| {
+                matches!(c.who, Who::Tool { .. }) && c.identity.as_ref().is_some_and(same)
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        live.sort_unstable();
+        let mut changed = Vec::new();
+        for conn in live {
+            let free: Vec<Capability> = self.conns[&conn]
+                .caps
+                .0
+                .iter()
+                .filter(|c| tool_class(c, self.channel_risk(c)) == ToolClass::Free)
+                .cloned()
+                .collect();
+            let c = self.conns.get_mut(&conn).unwrap();
+            if free.len() != c.caps.0.len() {
+                c.caps = Caps(free);
+                c.forgotten = true;
+                changed.push(conn);
+            }
+        }
+        if changed.is_empty() {
+            return out;
+        }
+        let mut held: Vec<(String, String)> = self
+            .leases
+            .iter()
+            .filter(|(_, l)| {
+                changed.contains(&l.holder)
+                    && !may_call(&self.conns[&l.holder].caps, &l.method, &Value::Null)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        held.sort();
+        let closed = !held.is_empty();
+        for k in held {
+            self.leases.remove(&k);
+            self.lease_closed(&k.0, &k.1, "revoked", &mut out);
+        }
+        if closed {
+            self.sync_lease_holders(&mut out);
+        }
+        self.end_lost_subs(&changed, &mut out);
+        out
+    }
+
+    /// What a kept answer lists, for the hub's Apps page: the items of `granted` a program
+    /// outside Hideout can be allowed, with their plain words. An item that does not parse or
+    /// that such a program may never have is left out. Display only.
+    pub fn tool_items(&self, granted: &[String]) -> Vec<crate::AskItem> {
+        use hideout_contract::capability::{tool_ask_is_red, tool_class, tool_phrase, ToolClass};
+        granted
+            .iter()
+            .filter_map(|s| Capability::parse(s).ok())
+            .filter(|c| check_grantable(c, Holder::OutsideTool).is_ok())
+            .filter_map(|c| {
+                let risk = match &c {
+                    Capability::ChannelOpen { .. } => self.channel_risk(&c),
+                    _ => None,
+                };
+                (tool_class(&c, risk) == ToolClass::Ask).then(|| crate::AskItem {
+                    raw: c.to_string(),
+                    does: tool_phrase(&c),
+                    red: tool_ask_is_red(&c, risk),
+                })
+            })
+            .collect()
     }
 
     /// Records that `conn`'s peer runs in the AppContainer `sid` (read from its token by the
@@ -1339,6 +1433,13 @@ impl Router {
                 changed.push(*k);
             }
         }
+        self.end_lost_subs(&changed, out);
+    }
+
+    /// Ends the fact subscriptions and app watches the connections in `changed` no longer hold
+    /// a permission for, after their grant narrowed. A connection that is not v1 is told which
+    /// subscriptions ended (`module.grants {added: [], ended}`).
+    fn end_lost_subs(&mut self, changed: &[ConnId], out: &mut Vec<Out>) {
         if changed.is_empty() {
             return;
         }
@@ -1355,7 +1456,7 @@ impl Router {
             }
             keep
         });
-        for c in &changed {
+        for c in changed {
             let grant = conns[c].caps.kept();
             if let Some(w) = self.app_watches.get_mut(c) {
                 w.retain(|label, _| watches_app(&grant, &format!("{}{label}", apps::RUNNING)));
@@ -1366,7 +1467,10 @@ impl Router {
         }
         for (c, mut subs) in ended {
             subs.sort_unstable();
-            if !matches!(self.conns[&c].who, Who::Module { v1: true, .. }) {
+            if !matches!(
+                self.conns[&c].who,
+                Who::Module { v1: true, .. } | Who::Tool { v1: true, .. }
+            ) {
                 out.push(Out::Send(
                     c,
                     json!({"jsonrpc": "2.0", "method": hideout_contract::messages::MODULE_GRANTS,
@@ -2826,8 +2930,9 @@ impl Router {
     /// (S1). Never-class says only an app may (R2). Otherwise, when the hub can tell which
     /// program this is, it says the hub hasn't let it yet and where to review it (R3); when it
     /// can't (no process, no readable file, a contained program), it says the program may only
-    /// read and how to start it again (R4). The name is the tool's own word, cleaned and
-    /// quoted; it never decides anything.
+    /// read and how to start it again (R4). A connection that was open when the user pressed
+    /// Forget for its program, and lost something, is told that (R5) until it is allowed again.
+    /// The name is the tool's own word, cleaned and quoted; it never decides anything.
     fn tool_refusal(&self, conn: ConnId, name: &str, method: &str, params: &Value) -> String {
         use hideout_contract::capability::{tool_class, ToolClass};
         let cap = crate::checks::needed_capability(method, params);
@@ -2844,6 +2949,14 @@ impl Router {
             )
         } else if self.tool_identity(conn).is_none() {
             "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.".to_string()
+        } else if self.conns.get(&conn).is_some_and(|c| c.forgotten) {
+            let who = match Self::clean_name_opt(name, 40) {
+                Some(n) => format!("\u{201c}{n}\u{201d}"),
+                None => "this program".to_string(),
+            };
+            format!(
+                "Hideout no longer lets {who} {does}. This program was forgotten on Hideout's Apps page. Close this program and start it again, then allow it in Hideout."
+            )
         } else {
             let who = match Self::clean_name_opt(name, 40) {
                 Some(n) => format!("\u{201c}{n}\u{201d}"),

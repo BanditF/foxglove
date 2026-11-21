@@ -151,6 +151,15 @@ pub fn time_words(at: &str) -> String {
     }
 }
 
+/// Whether a kept program's file is not there now. Only a path on a drive letter is looked
+/// at (a network name is never opened to draw a page), and only whether it exists: the file is
+/// never read.
+fn file_missing(path: &str) -> bool {
+    let b = path.as_bytes();
+    let on_drive = b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
+    on_drive && !Path::new(path).exists()
+}
+
 /// The folder of the app's file (`C:\Apps\Fox\foxglove.exe` gives `C:\Apps\Fox`).
 fn folder_of(path: &str) -> String {
     path.rsplit_once(['\\', '/'])
@@ -574,6 +583,8 @@ pub struct PermUi {
     /// The dialog for a program outside Hideout that asks for more than it may have (S1).
     pub tool: Option<ToolDialog>,
     tool_drawn: bool,
+    /// The programs outside Hideout the user allowed, at the bottom of the page (#1470).
+    pub(crate) tools: hideout_shell::tool_list::ToolList,
     /// The first-run header the user answered Not now, by (app, list code), until a list changes.
     first_hidden: Vec<(String, String)>,
     /// What the hub can see of standalone copies (FR5); none in tests that do not need it.
@@ -618,6 +629,7 @@ impl PermUi {
             first_run_drawn: false,
             tool: None,
             tool_drawn: false,
+            tools: Default::default(),
             first_hidden: Vec::new(),
             standalone: None,
             handover_notes: Vec::new(),
@@ -626,6 +638,7 @@ impl PermUi {
             ctx: None,
         };
         p.refresh();
+        p.reload_tools();
         p
     }
 
@@ -1445,6 +1458,79 @@ impl PermUi {
             self.tool = Some(ToolDialog::from_ask(&a));
             self.tool_drawn = false;
         }
+    }
+
+    /// The rows of "Programs outside Hideout", in the record's order (oldest first). Reads
+    /// `tools.json` and asks whether each file is there; it never reads or hashes a program.
+    fn tool_rows(&self) -> Vec<hideout_shell::tool_list::ToolRow> {
+        let records = hideout_registry::tools::ToolStore::at(&self.home).load();
+        self.hub.read(|r| {
+            records
+                .iter()
+                .filter(|rec| {
+                    // The router honours no record for a program that runs scripts.
+                    hideout_router::ToolId {
+                        image_path: rec.image_path.clone(),
+                        image_sha256: rec.image_sha256.clone(),
+                    }
+                    .remembered()
+                })
+                .filter_map(|rec| {
+                    let items = r
+                        .tool_items(&rec.granted)
+                        .into_iter()
+                        .map(|i| hideout_shell::tool_dialog::ToolItem {
+                            raw: i.raw,
+                            does: i.does,
+                            red: i.red,
+                        })
+                        .collect();
+                    hideout_shell::tool_list::ToolRow::new(
+                        &rec.image_path,
+                        items,
+                        rec.allowed_at.as_deref(),
+                        file_missing(&rec.image_path),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// Reads the record of programs outside Hideout again: at page creation, when the hub
+    /// wrote it, and after Forget. Never per frame.
+    pub fn reload_tools(&mut self) {
+        let rows = self.tool_rows();
+        self.tools.set_rows(rows);
+    }
+
+    /// The hub wrote the record; `voided` is the program whose file changed, so its answer
+    /// went.
+    pub fn tools_changed(&mut self, voided: Option<&str>) {
+        if let Some(path) = voided {
+            self.tools.file_changed(path);
+        }
+        self.reload_tools();
+    }
+
+    /// "Programs outside Hideout", under the app rows; nothing when none is kept.
+    pub fn tools_ui(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        if let Some(path) = hideout_shell::tool_list::tool_list_ui(ui, t, &mut self.tools) {
+            self.forget_tool(&path);
+        }
+    }
+
+    /// Forget on a program's row: the router first (every open connection of that file keeps
+    /// only what any program may have), then the record, as an app's Turn off. A record that
+    /// can't be saved keeps its row and the page says to press Forget again; what the router
+    /// took away is not given back. Only this page calls it.
+    pub(crate) fn forget_tool(&mut self, path: &str) {
+        self.hub.act(|r| r.forget_tool(path));
+        let saved = hideout_registry::tools::ToolStore::at(&self.home).forget(path);
+        if let Err(e) = &saved {
+            log::warn!("permissions: a forgotten program's record was not saved: {e}");
+        }
+        let rows = self.tool_rows();
+        self.tools.after_forget(path, saved.is_ok(), rows);
     }
 
     /// The tool dialog's answer: Allow hands exactly the items it drew to the router; Not now
@@ -3114,6 +3200,245 @@ on = [\"open\", \"call\"]
                 vec!["lighting.write".to_string()]
             )]
         );
+    }
+
+    // ---- "Programs outside Hideout" and Forget (#1470) ----
+
+    const T_EXE: &str = r"C:\Tools\t.exe";
+
+    /// Allows the waiting program its item and writes the record as the hub's events thread
+    /// does, stamped `at`.
+    fn allow_and_keep(
+        ui: &mut PermUi,
+        rx: &mpsc::Receiver<hideout_router::Out>,
+        id: &hideout_router::ToolId,
+        at: &str,
+    ) {
+        ui.open_tool(id);
+        ui.answer_tool(ToolAnswer::Allow);
+        let store = hideout_registry::tools::ToolStore::at(&ui.home);
+        for event in rx.try_iter() {
+            if crate::router_start::keep_tools(&store, &event, at).is_some() {
+                ui.tools_changed(None);
+            }
+        }
+    }
+
+    /// A new connection of the program file `id`; answers the connection and what it was
+    /// granted.
+    fn tool_connects(
+        ui: &PermUi,
+        id: &hideout_router::ToolId,
+    ) -> (hideout_router::ConnId, serde_json::Value) {
+        let mut got = None;
+        ui.hub.act(|r| {
+            let c = r.connect(hideout_router::Origin::Pipe);
+            r.set_peer_pid(c, 4300);
+            r.set_peer_identity(c, Some(id.clone()));
+            let msg = serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
+                "client":{"name":"Tool","version":"1"},"api":"1.1",
+                "permissions":["devices.read","lighting.write"]}});
+            let out = r.receive(c, &msg.to_string(), std::time::Instant::now());
+            let granted = out
+                .iter()
+                .find_map(|o| match o {
+                    hideout_router::Out::Send(to, v) if *to == c => {
+                        Some(v["result"]["granted"].clone())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            got = Some((c, granted));
+            out
+        });
+        got.unwrap()
+    }
+
+    /// The refusal a lighting call on `c` gets, if it is refused for permission.
+    fn lighting_refused(ui: &PermUi, c: hideout_router::ConnId) -> Option<String> {
+        let mut why = None;
+        ui.hub.act(|r| {
+            let msg = serde_json::json!({"jsonrpc":"2.0","id":9,"method":"lighting.set",
+                "params":{"device":"d","on":true}});
+            let out = r.receive(c, &msg.to_string(), std::time::Instant::now());
+            why = out.iter().find_map(|o| match o {
+                hideout_router::Out::Send(to, v)
+                    if *to == c && v["error"]["code"].as_i64() == Some(5) =>
+                {
+                    Some(
+                        v["error"]["data"]["reason"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                    )
+                }
+                _ => None,
+            });
+            out
+        });
+        why
+    }
+
+    fn row_names(ui: &PermUi) -> Vec<String> {
+        ui.tools.rows().iter().map(|r| r.name.clone()).collect()
+    }
+
+    #[test]
+    fn forget_removes_the_record_and_narrows_the_open_connection() {
+        let (mut ui, rx, id) = tool_fx("forget");
+        assert!(!ui.tools.shown(), "nothing allowed: no section");
+        allow_and_keep(&mut ui, &rx, &id, "2026-11-17T09:00:00Z");
+        let store = hideout_registry::tools::ToolStore::at(&ui.home);
+        // Another program the user allowed earlier.
+        store
+            .remember(
+                r"C:\Tools\other.exe",
+                "bb",
+                &["lighting.write".into()],
+                None,
+            )
+            .unwrap();
+        ui.reload_tools();
+        assert_eq!(
+            row_names(&ui),
+            ["other.exe", "t.exe"],
+            "newest record first"
+        );
+        let row = ui.tools.rows()[1].clone();
+        assert_eq!(row.date, "Allowed in Hideout on 17 Nov 2026");
+        assert_eq!(row.file, r"Program file: C:\Tools\t.exe");
+        assert_eq!(row.items.len(), 1, "only what was asked and allowed");
+        let (open, granted) = tool_connects(&ui, &id);
+        assert_eq!(
+            granted,
+            serde_json::json!(["devices.read", "lighting.write"])
+        );
+        assert!(lighting_refused(&ui, open).is_none());
+
+        ui.forget_tool(T_EXE);
+        assert_eq!(row_names(&ui), ["other.exe"]);
+        assert_eq!(
+            ui.tools.notes(),
+            [hideout_shell::tool_list::forgot("t.exe")]
+        );
+        // The other program's record is as it was.
+        let left = store.load();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].image_path, r"C:\Tools\other.exe");
+        assert_eq!(left[0].granted, ["lighting.write"]);
+        // The open connection lost the item at once and is told why.
+        let why = lighting_refused(&ui, open).expect("refused after Forget");
+        assert!(
+            why.contains("was forgotten on Hideout's Apps page"),
+            "{why}"
+        );
+        // It asks again the next time it connects, and can be allowed again.
+        let (_, granted) = tool_connects(&ui, &id);
+        assert_eq!(granted, serde_json::json!(["devices.read"]));
+        assert_eq!(ui.hub.read(|r| r.tool_asks()).len(), 1);
+        allow_and_keep(&mut ui, &rx, &id, "2026-11-18T09:00:00Z");
+        assert!(lighting_refused(&ui, open).is_none());
+        assert_eq!(row_names(&ui), ["t.exe", "other.exe"]);
+        let _ = std::fs::remove_dir_all(&ui.home);
+    }
+
+    #[test]
+    fn a_record_without_a_time_says_date_not_known() {
+        let (mut ui, _rx, _id) = tool_fx("forget-old");
+        // A `tools.json` written before the time was kept.
+        std::fs::write(
+            ui.home.join("tools.json"),
+            r#"{"format":"hideout-tools/1","tools":[{"image_path":"C:\\Tools\\old.exe","image_sha256":"cc","granted":["lighting.write","key.events","devices.read"]}]}"#,
+        )
+        .unwrap();
+        ui.reload_tools();
+        let rows = ui.tools.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].date, "Allowed in Hideout, date not known");
+        assert!(!rows[0].lines().iter().any(|l| l.contains("1970")));
+        // Only what a program can be allowed is listed: not the free item, not the never item.
+        assert_eq!(rows[0].items.len(), 1);
+        let _ = std::fs::remove_dir_all(&ui.home);
+    }
+
+    #[test]
+    fn a_row_says_when_its_file_is_not_there() {
+        let (mut ui, _rx, _id) = tool_fx("forget-missing");
+        let here = ui.home.join("here.exe");
+        std::fs::write(&here, b"x").unwrap();
+        let here = here.to_string_lossy().into_owned();
+        let gone = ui.home.join("gone.exe").to_string_lossy().into_owned();
+        let store = hideout_registry::tools::ToolStore::at(&ui.home);
+        for path in [&here, &gone] {
+            store
+                .remember(path, "dd", &["lighting.write".into()], None)
+                .unwrap();
+        }
+        // A network name is never opened to draw the page.
+        assert!(!file_missing(r"\\server\share\t.exe"));
+        ui.reload_tools();
+        let rows = ui.tools.rows();
+        assert_eq!(
+            rows.iter().map(|r| r.missing).collect::<Vec<_>>(),
+            [true, false]
+        );
+        assert!(rows[0]
+            .lines()
+            .contains(&hideout_shell::tool_list::MISSING.to_string()));
+        assert!(rows[0].said().ends_with(", file not here now"));
+        let _ = std::fs::remove_dir_all(&ui.home);
+    }
+
+    #[test]
+    fn a_forget_that_cannot_be_saved_keeps_the_row() {
+        let (mut ui, rx, id) = tool_fx("forget-unsaved");
+        allow_and_keep(&mut ui, &rx, &id, "2026-11-17T09:00:00Z");
+        let (open, _) = tool_connects(&ui, &id);
+        // Another writer holds the record.
+        let lock = ui.home.join("tools.lock");
+        std::fs::write(&lock, b"").unwrap();
+        ui.forget_tool(T_EXE);
+        assert_eq!(row_names(&ui), ["t.exe"], "the row stays");
+        assert_eq!(
+            ui.tools.notes(),
+            [hideout_shell::tool_list::not_saved("t.exe")]
+        );
+        assert!(
+            lighting_refused(&ui, open).is_some(),
+            "what was taken away is not given back"
+        );
+        std::fs::remove_file(&lock).unwrap();
+        ui.forget_tool(T_EXE);
+        assert!(row_names(&ui).is_empty());
+        assert_eq!(
+            ui.tools.notes(),
+            [hideout_shell::tool_list::forgot("t.exe")]
+        );
+        assert!(hideout_registry::tools::ToolStore::at(&ui.home)
+            .load()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(&ui.home);
+    }
+
+    #[test]
+    fn a_changed_file_is_said_once_the_record_went() {
+        let (mut ui, rx, id) = tool_fx("forget-changed");
+        allow_and_keep(&mut ui, &rx, &id, "2026-11-17T09:00:00Z");
+        let store = hideout_registry::tools::ToolStore::at(&ui.home);
+        let void = hideout_router::Out::ToolVoided(T_EXE.into());
+        let voided = crate::router_start::keep_tools(&store, &void, "2026-11-19T09:00:00Z");
+        assert_eq!(voided, Some(Some(T_EXE.to_string())));
+        let fresh = crate::modules_page::Fresh::default();
+        fresh.put_tools(voided.unwrap().as_deref());
+        let taken = fresh.take_tools().unwrap();
+        assert!(fresh.take_tools().is_none(), "read again once per change");
+        ui.tools_changed(taken.as_deref());
+        assert!(row_names(&ui).is_empty());
+        assert_eq!(
+            ui.tools.notes(),
+            [hideout_shell::tool_list::file_changed("t.exe")]
+        );
+        let _ = std::fs::remove_dir_all(&ui.home);
     }
 
     #[test]

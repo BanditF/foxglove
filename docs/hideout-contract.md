@@ -1522,7 +1522,9 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   Allow stores the grants in `tools.json` (format `hideout-tools/1`) in the hub folder, bound
   to the program file's canonical path and SHA-256. At most 64 programs are kept. When a 65th
   is allowed, the program allowed longest ago is forgotten and asks again the next time it
-  connects. Removing an entry from `tools.json` with the hub stopped forgets it. Only a
+  connects. Each record holds the time of the Allow (`allowed_at`, UTC, optional: a record
+  written before the time was kept has none and still loads). The user forgets a program with
+  Forget on the Apps page (below). Only a
   user's Allow (or the loaded record) is kept: a connection that got only the free set leaves
   no record. Every connection from that program file that is open now gets the allowed items
   it asked for in `initialize`. A v2 connection is told with `module.grants {added}`; a v1
@@ -1533,12 +1535,38 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   `tools.json` protect against a program that only speaks the pipe protocol; a program running
   as the user can edit `tools.json` or operate the hub window, and Hideout does not defend
   against that.
+- (#1470) **Programs outside Hideout, and Forget.** At the bottom of the Apps page the section
+  "Programs outside Hideout" lists every kept program file, newest Allow first: the file name,
+  "Program file: {file}" (the file line rules above), "{n} allowed", "Allowed in Hideout on
+  {date}" (or "Allowed in Hideout, date not known", never a zero date), "It may:" with one line
+  per kept item in the dialog's words, and one **Forget** button. With nothing kept the section
+  is not drawn. A program that runs scripts is never listed. With 64 kept it adds "Hideout
+  keeps 64 programs. Allowing another one forgets the last one in this list." A file that is
+  not there now says so; the page only asks whether the file exists and never reads or hashes
+  a program. Forget has no confirm: it only takes away. The router forgets first, then the
+  record is written, as an app's Turn off. Every answer kept for that path goes. Every
+  connection of that program file that is open now keeps only the free set, at once; the fact
+  subscriptions and app watches that needed more end, and so do the leases it holds under
+  what it lost (`lease.closed`, reason `revoked`). A v2 connection is told with
+  `module.grants {added: [], ended}`; a v1 connection is not told. Calls already under way
+  finish. The program is asked about again the next time it connects, and an Allow then gives
+  the open connections their items back. An ask that waits for the user stays. If the record
+  cannot be written the row stays and the page says "Hideout forgot {name} for now but
+  couldn't save that. Press Forget again."; what the router took away is not given back.
+  Forget is reached only from the hub's own page: no method on any pipe forgets a program, so
+  neither a tool nor an app can call it. The section reads `tools.json` again only when the
+  hub wrote it, never on a timer.
 - (S1) **Words for a refused tool call.** R3 (ask-class, not yet reviewed): "Hideout hasn't let
   “{name}” {does} yet. Open Hideout, go to Apps and press Review… on its line. If there
   is no line, close this program and start it again, then try again." With no name it reads
   "Hideout hasn't let this program {does} yet. …" R4 (program not known): "Hideout couldn't check which program this is, so it may only
   read. Start it again from a normal window, not as administrator." R2 (never-class): "Hideout
   never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
+  R5 (#1470; ask-class, on a connection that was open when the user pressed Forget for its
+  program and lost something): "Hideout no longer lets “{name}” {does}. This program was
+  forgotten on Hideout's Apps page. Close this program and start it again, then allow it in
+  Hideout." With no name it reads "Hideout no longer lets this program {does}. …" It holds
+  until that program is allowed again; a connection opened after Forget gets R3.
 - The cut-over from Foxglove carries every existing grant over silently. Only new permissions ask.
 - Grants are machine state: they are stored in `inventory.json` (`granted`), in canonical form,
   sorted, never in `hideout.toml`.
@@ -2180,7 +2208,9 @@ Rules:
 - **Modules** connect with their launch token.
 - **Outside tools** (`foxglove-cli`, the `hideout` CLI, `hideout mcp`, scripts) connect without a
   token. Each is granted the free set until the user allows more in the tool dialog (§6.4); a
-  refused call is answered with words that say what to do next (R2, R3, R4 of §6.4).
+  refused call is answered with words that say what to do next (R2, R3, R4, R5 of §6.4).
+  The user takes back what a tool was allowed with Forget on the Apps page (§6.4); no pipe
+  method does that.
   Whatever the hub remembers for one is keyed by its program file and that file's hash (§6.4),
   never by the name it sends.
 - **Tool identity is read lazily from one handle (S1).** The router opens one process handle

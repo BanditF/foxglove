@@ -315,11 +315,16 @@ pub fn start(
     }
     let s = sup.clone();
     let tools = hideout_registry::tools::ToolStore::at(home);
+    let tools_fresh = fresh.clone();
     std::thread::Builder::new()
         .name("hideout-router-events".into())
         .spawn(move || {
             for event in rx {
-                keep_tools(&tools, &event);
+                // The Apps page lists what is kept: it reads the record again when it changed.
+                if let Some(voided) = keep_tools(&tools, &event, &hideout_supervisor::now_utc()) {
+                    tools_fresh.put_tools(voided.as_deref());
+                    side.wake();
+                }
                 crate::signin_signal::on_event(&event);
                 s.on_router(&event);
                 side.on_router(&event);
@@ -331,21 +336,31 @@ pub fn start(
     (hub, sup, feed)
 }
 
-/// Writes what the user allowed an outside program (or the voiding of it) to `tools.json`.
-fn keep_tools(store: &hideout_registry::tools::ToolStore, event: &hideout_router::Out) {
+/// Writes what the user allowed an outside program (stamped `now`), or the voiding of it, to
+/// `tools.json`. Answers `Some` when the event was about that record, with the path of a
+/// program whose file changed (its record is void).
+pub(crate) fn keep_tools(
+    store: &hideout_registry::tools::ToolStore,
+    event: &hideout_router::Out,
+    now: &str,
+) -> Option<Option<String>> {
     use hideout_router::Out;
-    let done = match event {
+    let (done, voided) = match event {
         Out::ToolRemembered {
             image_path,
             image_sha256,
             granted,
-        } => store.remember(image_path, image_sha256, granted),
-        Out::ToolVoided(path) => store.void_path(path),
-        _ => return,
+        } => (
+            store.remember(image_path, image_sha256, granted, Some(now)),
+            None,
+        ),
+        Out::ToolVoided(path) => (store.void_path(path), Some(path.clone())),
+        _ => return None,
     };
     if let Err(e) = done {
         log::warn!("router: tools.json not written: {e}");
     }
+    Some(voided)
 }
 
 /// The inventory watch (§7.1, #1012.4, #1054): a module that leaves the inventory has its
