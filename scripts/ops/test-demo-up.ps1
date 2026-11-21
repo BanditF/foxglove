@@ -118,6 +118,9 @@ try {
     Check '-SensorsExe dry run: planned, nothing written' ($LASTEXITCODE -eq 0 -and $o -match 'plan\s+: sensors\s+place' -and -not (Test-Path $home4) -and -not (Test-Path $sDir))
     $o = & $ps -NoProfile -File $script_ -AreteModuleDir $mdir -HideoutExe $mock -FoxgloveExe $fox -DemoHome $home4 -SensorsExe (Join-Path $tmp 'no-sensors.exe') 2>&1 | Out-String
     Check 'missing sensors.exe is a PROBLEM' ($LASTEXITCODE -eq 1 -and $o -match 'PROBLEM.*-SensorsExe not found')
+    $inst = Join-Path $env:ProgramFiles 'Hideout-demo-up-test\hideout.exe'
+    $o = & $ps -NoProfile -File $script_ -AreteModuleDir $mdir -HideoutExe $inst -FoxgloveExe $fox -DemoHome $home4 -SensorsExe $sens 2>&1 | Out-String
+    Check 'an installed Hideout is refused for -SensorsExe' ($LASTEXITCODE -eq 1 -and $o -match 'PROBLEM.*-SensorsExe is refused')
     Remove-Item $log -ErrorAction SilentlyContinue
     $o = & $ps @withS -Adopt 2>&1 | Out-String
     $l = @(Get-Content $log)

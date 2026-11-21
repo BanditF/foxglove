@@ -334,7 +334,8 @@ fn beside_hideout(
         let (Origin::Folder(folder), Some(program)) = (&c.origin, &c.program) else {
             continue;
         };
-        if !inside(folder, &root) || !inside(program, &root) {
+        // The program must sit in this entry's own folder: one entry cannot name another's.
+        if !inside(folder, &root) || !inside(program, folder) {
             log::debug!("discover: {}: leads out of the apps folder; skipped", c.id);
             continue;
         }
@@ -437,13 +438,16 @@ pub fn add(
             // ...and what is registered is the text the user was shown, staged and adopted
             // from there, so a swap after this point cannot reach the inventory.
             let dir = staging.join(format!("add-{}", c.id));
+            // An earlier record of this id (and its grants) is not ours to drop on a failed check.
+            let fresh = !hideout_registry::Registry::open_from_env(home)
+                .is_ok_and(|r| r.inventory.modules.contains_key(&c.id));
             let staged = std::fs::create_dir_all(&dir)
                 .and_then(|()| std::fs::write(dir.join("module.toml"), &text))
                 .map_err(|e| format!("{}: {e}", dir.display()))
                 .and_then(|()| crate::adopt::run(home, &dir, now));
             let _ = std::fs::remove_dir_all(&dir);
             // What the registry now holds must be the staged text, byte for byte.
-            if staged.is_ok() && !registered_matches(home, &c.id, &text) {
+            if staged.is_ok() && !registered_matches(home, &c.id, &text, fresh) {
                 return Err(words::changed(&c.name));
             }
             staged
@@ -473,9 +477,10 @@ pub fn add(
 }
 
 /// Reads the registry's own copy of `id`'s manifest and requires it to equal `staged`. When it
-/// does not (or can't be read), the record just made is removed (unregistered: the app's own
-/// files are never touched) and this is `false`.
-fn registered_matches(home: &Path, id: &str, staged: &str) -> bool {
+/// does not (or can't be read) this is `false`, and when the record is `fresh` (this add made
+/// it) it is removed: unregistered, with any grants; the app's own files are never touched. A
+/// record that was there before the add is left alone.
+fn registered_matches(home: &Path, id: &str, staged: &str, fresh: bool) -> bool {
     let Ok(mut reg) = hideout_registry::Registry::open_from_env(home) else {
         return false;
     };
@@ -487,8 +492,10 @@ fn registered_matches(home: &Path, id: &str, staged: &str) -> bool {
         .and_then(|p| std::fs::read(p).ok())
         .is_some_and(|b| b == staged.as_bytes());
     if !same {
-        log::warn!("discover: {id}: the registered file is not the staged one; unregistered");
-        let _ = reg.remove(id);
+        log::warn!("discover: {id}: the registered file is not the staged one (fresh: {fresh})");
+        if fresh {
+            let _ = reg.remove(id);
+        }
     }
     same
 }
@@ -1853,21 +1860,22 @@ mod tests {
         // Registered, and the copy is the staged text: the check passes and keeps the record.
         let staged =
             adopted_text(c.text.as_deref().unwrap(), c.program.as_deref().unwrap()).unwrap();
-        assert!(registered_matches(&home, &id, &staged));
+        assert!(registered_matches(&home, &id, &staged, true));
         assert!(hideout_registry::Registry::open_from_env(&home)
             .unwrap()
             .inventory
             .modules
             .contains_key(&id));
-        // A different text than what the registry holds: refused, and the record goes.
-        assert!(!registered_matches(
-            &home,
-            &id,
-            &format!(
-                "{staged}# changed
-"
-            )
-        ));
+        let other = format!("{staged}# changed");
+        // A different text, on a record that was there before this add: refused, record kept.
+        assert!(!registered_matches(&home, &id, &other, false));
+        assert!(hideout_registry::Registry::open_from_env(&home)
+            .unwrap()
+            .inventory
+            .modules
+            .contains_key(&id));
+        // The same on a record this add made: refused, and the record goes.
+        assert!(!registered_matches(&home, &id, &other, true));
         let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
         assert!(!reg.inventory.modules.contains_key(&id));
     }

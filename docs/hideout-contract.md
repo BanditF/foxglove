@@ -1461,7 +1461,7 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
 
 ### 6.4 Approval
 
-- Apps shipped with Hideout are shown on the Found card and asked at Add; nothing is granted
+- Apps in the `apps` folder next to hideout.exe are shown on the Found card and asked at Add; nothing is granted
   without the user's Allow.
 - Catalog, private and sideloaded modules show the permission dialog at enable.
 - An update that adds permissions keeps the old version running and shows "Update waiting for
@@ -1669,7 +1669,7 @@ the first failure, with its error id.
 | **disable** | Drain and stop the instance (§7.6). Its leases, holds and channels end; its panels hide. Files, data, settings, secrets and grants stay. |
 | **update** | Install the new version beside the old. If it adds permissions, wait (§6.4). Then hot swap (§7.6) at the right moment (§7.6, "when"). Record `previous`. |
 | **rollback** | Only if the previous folder exists: hot swap back to it, shallow verify first. A revoked version is refused (`trust.revoked`). |
-| **remove** | Stop it and end its Job Object. Delete its secrets, undo its `footprint`, delete its version folders, then `data\` per `[lifecycle] data` (`ask` without a terminal is `keep`). Remove the records. First-party modules shipped in the MSI offer **Turn off**, not Remove (UX7). |
+| **remove** | Stop it and end its Job Object. Delete its secrets, undo its `footprint`, delete its version folders, then `data\` per `[lifecycle] data` (`ask` without a terminal is `keep`). Remove the records. First-party modules installed by Hideout itself (not ones added from the `apps` folder next to hideout.exe, which are adopted) offer **Turn off**, not Remove (UX7). |
 
 **Permission steps (#1178).** `hideout modules permissions <id>` (read-only, works without the hub)
 prints every item (group, raw string, plain line, state), the program path and hash and the **list

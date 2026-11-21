@@ -14,7 +14,8 @@
 #   ... -SensorsExe <sensors.exe>  places the PC sensors app (org.foxglove.sensors) NEXT TO the hideout.exe this script
 #       uses: sensors.exe and the repo's crates/sensors/module.toml (unchanged, kind = service) go to
 #       <folder of that hideout.exe>\apps\sensors\. Nothing is adopted: the hub's Found card offers it (Add, then Allow).
-#   ... -Down     stops only the demo hub (by its pid file); with -Clean also deletes the demo folder.
+#   ... -Down     stops only the demo hub (by its pid file); with -Clean also deletes the demo folder (and, given
+#       -HideoutExe, the apps\sensors folder this script placed next to it).
 #
 # Isolation: HIDEOUT_CONFIG_DIR (the hub's files) and FOXGLOVE_CONFIG_DIR (Foxglove's data) are set to
 # folders under -DemoHome for the child processes only; the user's real Hideout/Foxglove folders are
@@ -84,6 +85,17 @@ function Copy-Build([string]$From, [string]$To) {
     catch { Write-Host "PROBLEM  : could not copy the build to $To (is that app still running? stop it, then run again): $($_.Exception.Message)"; $false }
 }
 
+# True when the exe sits where installers put programs (Program Files, the per-user Programs folder).
+function Test-InstalledPlace([string]$Exe) {
+    $full = [IO.Path]::GetFullPath($Exe)
+    $bases = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432)
+    if ($env:LOCALAPPDATA) { $bases += (Join-Path $env:LOCALAPPDATA 'Programs') }
+    foreach ($b in $bases) {
+        if ($b -and $full.StartsWith($b.TrimEnd([char]92) + [char]92, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    $false
+}
+
 function Test-Registered([string]$HubHome, [string]$Id) {
     $inv = Join-Path $HubHome 'inventory.json'
     if (-not (Test-Path $inv)) { return $false }
@@ -146,6 +158,7 @@ function Invoke-DemoUp {
             Remove-Item $pidFile -ErrorAction SilentlyContinue
         } else { Write-Host 'no hub.pid: nothing stopped' }
         if ($Clean) { Write-Host "deleting $demo"; Remove-Item -Recurse -Force $demo -ErrorAction SilentlyContinue }
+        if ($Clean -and $sensorsDir -and -not (Test-InstalledPlace $HideoutExe) -and (Test-Path $sensorsDir)) { Write-Host "deleting $sensorsDir"; Remove-Item -Recurse -Force $sensorsDir -ErrorAction SilentlyContinue }
         if ($Rollback) {
             if ($FoxgloveExe -and (Test-Path $FoxgloveExe)) {
                 if ($Launch) { $p = Start-Process -FilePath $FoxgloveExe -PassThru; Write-Host "started standalone Foxglove pid $($p.Id) (no --module, no demo environment)" }
@@ -184,6 +197,7 @@ function Invoke-DemoUp {
         if (-not (Test-Path $SensorsExe)) { $problems.Add("-SensorsExe not found: $SensorsExe") }
         elseif (-not (Test-Path $sensorsTmpl)) { $problems.Add("PC sensors manifest missing: $sensorsTmpl") }
         elseif (-not $HideoutExe) { $problems.Add('-SensorsExe needs -HideoutExe: the app is placed next to it') }
+        elseif (Test-InstalledPlace $HideoutExe) { $problems.Add("-SensorsExe is refused: $HideoutExe is an installed Hideout, and this script only places files next to a build. Use a hideout.exe from the repo's target folder.") }
         else { Write-Host "sensors  : build = $SensorsExe  place in $sensorsDir  (files only; the hub's Found card offers it)" }
     }
     if (-not $HideoutExe) { $problems.Add('-HideoutExe is required') }
