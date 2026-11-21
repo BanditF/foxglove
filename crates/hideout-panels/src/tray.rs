@@ -661,6 +661,15 @@ fn tile_ui_keyed(
             if current.as_deref() == Some("updating") {
                 spoken.push(TILE_UPDATING.into());
                 ui.label(RichText::new(TILE_UPDATING).weak());
+            } else if let Some(s) = current
+                .as_deref()
+                .filter(|s| matches!(*s, "update-busy" | "update-waiting"))
+            {
+                // An update that waits: the body stays live, one muted line says it (the
+                // row's and the tab's words), no mark.
+                let words = crate::model::state_words(s);
+                spoken.push(words.to_string());
+                ui.label(RichText::new(words).weak());
             } else if let Some(s) = greyed.as_deref().filter(|s| *s != "restarting") {
                 ui.label(RichText::new(crate::model::state_words(s)).weak());
             }

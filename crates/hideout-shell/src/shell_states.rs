@@ -61,8 +61,9 @@ impl Hub {
             // don't name the module again (the tile's "Its tile couldn't be shown").
             "quarantined" => TabState::Stopped(QUARANTINED_TAB.into()),
             "updating" => TabState::Busy(words::UPDATING.into()),
-            // The old version keeps running and nothing needs the user yet: no mark.
-            "update-busy" | "update-waiting" => TabState::Live,
+            // The old version keeps running: no mark, the same words as the row and the page.
+            "update-busy" => TabState::Note(words::UPDATE_READY.into()),
+            "update-waiting" => TabState::Note(words::UPDATE_WAITING.into()),
             _ => return None,
         })
     }

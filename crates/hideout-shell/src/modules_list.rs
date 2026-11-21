@@ -226,6 +226,12 @@ pub struct Row {
     pub removal: Option<Removal>,
     /// A Turn on that did not work: one plain line under the row.
     pub turn_on_note: Option<String>,
+    /// A withdrawn row's Check for updates (`module.<id>.check`): the muted line under the
+    /// row ("Checking Art's source\u{2026}", nothing newer, couldn't check); None before a check
+    /// and once a new version moves the row on.
+    pub check_note: Option<String>,
+    /// The check is running: the button reads "Checking\u{2026}" and is disabled.
+    pub checking: bool,
 }
 
 /// What a click on the page asks for.
@@ -366,17 +372,28 @@ pub fn row_in(
     let sentence = state.as_deref() == Some("install-failed")
         && matches!(get("failed").as_deref(), Some("missing" | "version"))
         && get("reason").is_some();
+    // A withdrawn row's check, said on the row itself (the same words as the module's page).
+    let check = get("check");
+    let checking = check.as_deref() == Some("checking");
+    let check_button = || {
+        let label = if checking {
+            words::CHECKING
+        } else {
+            words::CHECK_FOR_UPDATES
+        };
+        primary(label, Does::CheckUpdates)
+    };
     let (words, stopped, main) = match state.as_deref() {
         Some("revoked") => (
             words::withdrawn_row(withdrawn.as_deref().unwrap_or(&m.version)),
             true,
-            primary(words::CHECK_FOR_UPDATES, Does::CheckUpdates),
+            check_button(),
         ),
         // Turned off after the withdrawal: no Turn on, Check for updates instead.
         None | Some("off") if !m.enabled && withdrawn.is_some() => (
             words::off_withdrawn(withdrawn.as_deref().unwrap_or(&m.version)),
             false,
-            primary(words::CHECK_FOR_UPDATES, Does::CheckUpdates),
+            check_button(),
         ),
         None | Some("running") | Some("off") if !m.enabled => (
             "Off".to_string(),
@@ -474,9 +491,20 @@ pub fn row_in(
         Some("off") => ("Off".into(), false, primary(words::TURN_ON, Does::TurnOn)),
         Some(s) => (state_words(s).to_string(), s == "install-failed", None),
     };
+    let checks = matches!(&main, Some(p) if p.does == Does::CheckUpdates);
+    let check_note = checks
+        .then(|| match check.as_deref() {
+            Some("checking") => Some(words::checking_source(&m.name)),
+            Some("none") => Some(words::NOTHING_NEWER.to_string()),
+            Some("failed") => Some(words::COULDNT_CHECK.to_string()),
+            _ => None,
+        })
+        .flatten();
     Row {
         removal: None,
         turn_on_note: None,
+        check_note,
+        checking: checks && checking,
         adopted: m.adopted,
         id: m.id.clone(),
         name: m.name.clone(),
@@ -781,14 +809,16 @@ pub fn page_ui_with_head(
                             }
                             if let Some(p) = &r.primary {
                                 let locked = top.locked && toggles(p.does);
-                                let (fg, bg) = if locked {
+                                let (fg, bg) = if locked || r.checking {
                                     (t.text_muted, t.surface)
                                 } else {
                                     (t.on_accent, t.accent)
                                 };
                                 let b = egui::Button::new(RichText::new(&p.label).color(c(fg)))
                                     .fill(c(bg));
-                                let resp = ui.add(b);
+                                // A running check: the button waits, the line under the row
+                                // says what is happening.
+                                let resp = ui.add_enabled(!r.checking, b);
                                 if locked {
                                     // Focusable, so its description is read (#1033 follow-up 5).
                                     ui.ctx().accesskit_node_builder(resp.id, |n| {
@@ -849,6 +879,17 @@ pub fn page_ui_with_head(
                     if let Some(line) = &r.turn_on_note {
                         ui.add_space(8.0);
                         ui.label(RichText::new(line).color(c(t.danger)));
+                    }
+                    // The check's result, a polite live region so a screen reader hears it
+                    // without the focus moving.
+                    if let Some(line) = &r.check_note {
+                        ui.add_space(8.0);
+                        let note = ui.label(RichText::new(line).color(c(t.text_muted)));
+                        let said = line.clone();
+                        ui.ctx().accesskit_node_builder(note.id, |n| {
+                            n.set_live(egui::accesskit::Live::Polite);
+                            n.set_label(said);
+                        });
                     }
                     if r.removal == Some(Removal::Failed) {
                         ui.add_space(8.0);
@@ -1127,6 +1168,74 @@ mod tests {
     }
 
     /// Rows that need the user first, then A–Z, Off last.
+    /// Check for updates on a withdrawn row says its result under the row (on or turned off):
+    /// the button waits while the check runs, then nothing newer or couldn't check; a row
+    /// that is not withdrawn never shows a check line.
+    #[test]
+    fn a_withdrawn_rows_check_shows_under_the_row() {
+        let m = |enabled: bool| Installed {
+            adopted: false,
+            dev: false,
+            dev_folder: None,
+            id: "m.a".into(),
+            name: "Art".into(),
+            version: "0.5.0".into(),
+            enabled,
+        };
+        let row_with = |enabled: bool, state: &'static str, check: Option<&'static str>| {
+            row(
+                &m(enabled),
+                &|k: &str| match k {
+                    "module.m.a.state" => Some(json!(state)),
+                    "module.m.a.revoked" => Some(json!({"version": "0.5.0", "reason": "x"})),
+                    "module.m.a.check" => check.map(|c| json!(c)),
+                    _ => None,
+                },
+                None,
+            )
+        };
+        for (enabled, state) in [(true, "revoked"), (false, "off")] {
+            let r = row_with(enabled, state, None);
+            assert_eq!((r.check_note.as_deref(), r.checking), (None, false));
+            assert_eq!(r.primary.unwrap().label, "Check for updates");
+            let r = row_with(enabled, state, Some("checking"));
+            assert_eq!(
+                r.check_note.as_deref(),
+                Some("Checking Art's source\u{2026}")
+            );
+            assert!(r.checking);
+            let p = r.primary.unwrap();
+            assert_eq!(
+                (p.label.as_str(), p.does),
+                ("Checking\u{2026}", Does::CheckUpdates)
+            );
+            let r = row_with(enabled, state, Some("none"));
+            assert_eq!(
+                r.check_note.as_deref(),
+                Some("No new version yet. Checked just now.")
+            );
+            assert!(!r.checking);
+            assert_eq!(r.primary.unwrap().label, "Check for updates");
+            let r = row_with(enabled, state, Some("failed"));
+            assert_eq!(
+                r.check_note.as_deref(),
+                Some("Couldn't check. Try again later.")
+            );
+            assert!(!r.checking);
+        }
+        // Not withdrawn any more (the new version arrived): no line, whatever the fact says.
+        let r = row(
+            &m(true),
+            &|k: &str| match k {
+                "module.m.a.state" => Some(json!("running")),
+                "module.m.a.check" => Some(json!("none")),
+                _ => None,
+            },
+            None,
+        );
+        assert_eq!((r.check_note, r.checking), (None, false));
+    }
+
     #[test]
     fn needs_you_first_then_a_to_z_then_off() {
         let mk = |name: &str, stopped: bool, off: bool| Row {
@@ -1144,6 +1253,8 @@ mod tests {
             adopted: false,
             removal: None,
             turn_on_note: None,
+            check_note: None,
+            checking: false,
         };
         let mut rows = vec![
             mk("Beat", false, false),

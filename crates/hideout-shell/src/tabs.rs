@@ -415,6 +415,9 @@ pub enum TabState {
     Waiting(String),
     /// Crash-stopped, install failed, needs a newer hub, quarantined, couldn't be shown.
     Stopped(String),
+    /// An update that waits (ready, or waiting for the user): the old version keeps running,
+    /// so no ring and no mark, but the tooltip and the accessible name say it.
+    Note(String),
     /// The module is turned off.
     Off,
 }
@@ -485,8 +488,9 @@ impl Look {
             TabState::Busy(w) if w.contains('\u{2026}') => parts.push(w.clone()),
             TabState::Retrying(w) => parts.push(w.clone()),
             TabState::Busy(w) => parts.push(format!("{w}\u{2026}")),
-            TabState::Waiting(w) => parts.push(w.clone()),
-            TabState::Stopped(w) => parts.push(w.clone()),
+            TabState::Waiting(w) | TabState::Stopped(w) | TabState::Note(w) => {
+                parts.push(w.clone())
+            }
             TabState::Off => parts.push("Off".into()),
         }
         match self.mark {
