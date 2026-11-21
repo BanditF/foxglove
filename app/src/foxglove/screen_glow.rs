@@ -308,6 +308,12 @@ pub trait Capture: Send {
     /// The next frame of the screen, waiting at most `wait` for it to change. An error ends
     /// this capture (the gate's "capture failed").
     fn next(&mut self, wait: Duration) -> Result<Got, String>;
+
+    /// Whether this screen is HDR: `None` until its first picture has told (a screen whose
+    /// format isn't known is never counted as SDR).
+    fn hdr(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Opens one [`Capture`] per screen that can be read (a screen that can't, such as a VR headset
@@ -562,6 +568,7 @@ impl Reader {
         let feed = self.feed.clone();
         let on_fail = self.on_fail.clone();
         let retired = std::mem::take(&mut self.retired);
+        let publish = self.publish;
         // Opening (making the GPU devices) happens off the control thread, after the stopped
         // runs' threads have let the screens go.
         let first = std::thread::Builder::new()
@@ -587,17 +594,33 @@ impl Reader {
                     }
                 };
                 let failed = Arc::new(AtomicBool::new(false));
+                let tally = Arc::new(Tally::new(caps.len()));
+                if publish {
+                    wait.unless_set(|| set_screens(tally.counts()));
+                }
                 let handles: Vec<JoinHandle<()>> = caps
                     .into_iter()
                     .enumerate()
                     .filter_map(|(i, cap)| {
-                        let (wait, feed, on_fail, failed) =
-                            (wait.clone(), feed.clone(), on_fail.clone(), failed.clone());
+                        let (wait, feed, on_fail, failed, tally) = (
+                            wait.clone(),
+                            feed.clone(),
+                            on_fail.clone(),
+                            failed.clone(),
+                            tally.clone(),
+                        );
                         std::thread::Builder::new()
                             .name(format!("screen-glow-{i}"))
                             .spawn(move || {
                                 let report = || on_fail(generation);
-                                capture_loop(cap, &wait, &feed, &report, &failed)
+                                let formats = |hdr: Option<bool>| {
+                                    if let Some(c) = tally.set(i, hdr) {
+                                        if publish {
+                                            wait.unless_set(|| set_screens(c));
+                                        }
+                                    }
+                                };
+                                capture_loop(cap, &wait, &feed, &report, &failed, &formats)
                             })
                             .ok()
                     })
@@ -644,6 +667,9 @@ impl Reader {
         s.on = on;
         s.reading = self.run.is_some();
         s.hold = self.gates.hold().filter(|_| on);
+        if self.run.is_none() {
+            s.screens = Counts::NONE;
+        }
         drop(s);
         super::tray_panel::wake();
     }
@@ -666,6 +692,7 @@ fn capture_loop(
     feed: &Feed,
     on_fail: &dyn Fn(),
     failed: &AtomicBool,
+    formats: &dyn Fn(Option<bool>),
 ) {
     loop {
         if stop.is_set() {
@@ -678,6 +705,7 @@ fn capture_loop(
                 if !stop.unless_set(|| feed.put(edges)) {
                     return;
                 }
+                formats(cap.hdr());
                 // The rest of the gap, woken at once by a stop. Pictures that change meanwhile
                 // are merged by Windows into the next one.
                 if stop.wait(MIN_GAP) {
@@ -712,6 +740,8 @@ pub struct Status {
     /// Frames are read now: the eye shows.
     pub reading: bool,
     pub hold: Option<Hold>,
+    /// The screens read and how many of them are HDR (for Copy diagnostics).
+    pub screens: Counts,
     since: Option<Instant>,
     pictures_at_start: u64,
 }
@@ -720,9 +750,64 @@ static STATUS: Mutex<Status> = Mutex::new(Status {
     on: false,
     reading: false,
     hold: None,
+    screens: Counts::NONE,
     since: None,
     pictures_at_start: 0,
 });
+
+/// How many screens are read, how many of them have told their format, and how many of those
+/// are HDR.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub screens: u8,
+    pub known: u8,
+    pub hdr: u8,
+}
+
+impl Counts {
+    const NONE: Counts = Counts {
+        screens: 0,
+        known: 0,
+        hdr: 0,
+    };
+}
+
+/// Each screen's format as its capture last told: `None` until known.
+struct Tally(Mutex<Vec<Option<bool>>>);
+
+impl Tally {
+    fn new(screens: usize) -> Tally {
+        Tally(Mutex::new(vec![None; screens]))
+    }
+
+    fn counts(&self) -> Counts {
+        let v = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let n = |f: fn(&Option<bool>) -> bool| {
+            u8::try_from(v.iter().filter(|x| f(x)).count()).unwrap_or(u8::MAX)
+        };
+        Counts {
+            screens: u8::try_from(v.len()).unwrap_or(u8::MAX),
+            known: n(Option::is_some),
+            hdr: n(|x| *x == Some(true)),
+        }
+    }
+
+    /// Records screen `i`'s format; the new counts when they changed.
+    fn set(&self, i: usize, hdr: Option<bool>) -> Option<Counts> {
+        let before = self.counts();
+        {
+            let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            *v.get_mut(i)? = hdr;
+        }
+        let after = self.counts();
+        (after != before).then_some(after)
+    }
+}
+
+fn set_screens(c: Counts) {
+    STATUS.lock().unwrap_or_else(|e| e.into_inner()).screens = c;
+    super::tray_panel::wake();
+}
 
 /// The running scene's feed, for the Scenes page's live edge strips (gone with the scene).
 static LIVE: Mutex<std::sync::Weak<Feed>> = Mutex::new(std::sync::Weak::new());
@@ -769,13 +854,26 @@ pub fn preview_status(reading: bool, hold: Option<Hold>) -> Status {
         on: true,
         reading,
         hold,
+        screens: Counts::NONE,
         since: None,
         pictures_at_start: 0,
     }
 }
 
+/// The updates a second as Copy diagnostics can say it: never a made-up 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rate {
+    /// Stopped: no rate to give.
+    None,
+    /// A run's first second: not measured yet.
+    NotYet,
+    PerSecond(f64),
+}
+
 /// The diagnostics line: "Screen glow: allowed/not allowed · running/stopped/held ({gate}) ·
-/// {n} updates/s".
+/// {n} screens, {m} HDR · {n} updates/s". The screens part is left out when none are read; the
+/// HDR part when no screen has told its format yet; the rate when stopped
+/// ("updates/s not measured yet" in a run's first second).
 pub fn diagnostics() -> String {
     let s = status();
     let state = match (s.on, s.hold) {
@@ -783,19 +881,32 @@ pub fn diagnostics() -> String {
         (true, Some(h)) => format!("held ({})", h.short()),
         (true, None) => "running".to_string(),
     };
-    let rate = s
-        .since
-        .map(|t| t.elapsed().as_secs_f64())
-        .filter(|secs| *secs >= 1.0)
-        .map_or(0.0, |secs| UPDATES.load(Ordering::Relaxed) as f64 / secs);
-    diagnostics_line(allowed(), &state, rate)
+    let rate = match s.since.map(|t| t.elapsed().as_secs_f64()) {
+        None => Rate::None,
+        Some(secs) if secs < 1.0 => Rate::NotYet,
+        Some(secs) => Rate::PerSecond(UPDATES.load(Ordering::Relaxed) as f64 / secs),
+    };
+    diagnostics_line(allowed(), &state, s.screens, rate)
 }
 
-pub fn diagnostics_line(allowed: bool, state: &str, per_s: f64) -> String {
-    format!(
-        "Screen glow: {} · {state} · {per_s:.0} updates/s",
+pub fn diagnostics_line(allowed: bool, state: &str, screens: Counts, rate: Rate) -> String {
+    let mut line = format!(
+        "Screen glow: {} · {state}",
         if allowed { "allowed" } else { "not allowed" }
-    )
+    );
+    if screens.screens > 0 {
+        let n = screens.screens;
+        line += &format!(" · {n} screen{}", if n == 1 { "" } else { "s" });
+        if screens.known > 0 {
+            line += &format!(", {} HDR", screens.hdr);
+        }
+    }
+    match rate {
+        Rate::None => {}
+        Rate::NotYet => line += " · updates/s not measured yet",
+        Rate::PerSecond(r) => line += &format!(" · {r:.0} updates/s"),
+    }
+    line
 }
 
 /// A scene started: the update count starts again.
