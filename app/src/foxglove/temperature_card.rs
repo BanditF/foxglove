@@ -29,7 +29,8 @@ pub const NEEDS_APP: &str =
 pub const NOT_ALLOWED: &str =
     "Foxglove isn't allowed to see your PC's readings. Allow it in Hideout's Apps page.";
 /// Start refused: Foxglove runs on its own.
-pub const STANDALONE: &str = "Temperature needs Hideout and its PC sensors app.";
+pub const STANDALONE: &str =
+    "Temperature needs Hideout and its PC sensors app. Start Foxglove from Hideout to use it.";
 /// The button that takes the user to the page that fixes [`NEEDS_APP`] and [`NOT_ALLOWED`].
 pub const OPEN_APPS: &str = "Open Apps page";
 /// Under the steppers when the ends are as close as they may be.
@@ -794,13 +795,7 @@ mod tests {
             assert_eq!(hosted(s).gate(), None, "{s:?}");
         }
         let idle = |t: TempView| status_line(false, &TempView { live: false, ..t }, &look());
-        assert_eq!(
-            idle(standalone),
-            (
-                "Temperature needs Hideout and its PC sensors app.".into(),
-                Tone::Muted
-            )
-        );
+        assert_eq!(idle(standalone), (STANDALONE.into(), Tone::Muted));
         assert_eq!(
             idle(hosted(Status::AppOff)),
             (

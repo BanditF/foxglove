@@ -2641,7 +2641,7 @@ pub(crate) mod tests {
         assert_eq!(
             status(&v),
             (
-                "Temperature needs Hideout and its PC sensors app.".into(),
+                crate::foxglove::temperature_card::STANDALONE.into(),
                 Tone::Muted
             )
         );

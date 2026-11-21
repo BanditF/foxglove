@@ -694,7 +694,10 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
         }
         "meter" => {
             let max = f(&p, "max").unwrap_or(1.0).max(f64::EPSILON);
-            let v = (f(&p, "value").unwrap_or(0.0) / max).clamp(0.0, 1.0) as f32;
+            // No value (absent or null) is no reading: the bar keeps its place and is not drawn,
+            // so a missing reading never looks like 0.
+            let value = f(&p, "value");
+            let v = (value.unwrap_or(0.0) / max).clamp(0.0, 1.0) as f32;
             let mut bar = egui::ProgressBar::new(v);
             if !label.is_empty() {
                 // The meter's name is its words ("VRAM 9.8 of 12.0 GiB"), never a bare percent:
@@ -702,10 +705,10 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 d.texts.push(label.clone());
                 bar = bar.text(&label);
             }
-            let r = ui.add(bar);
+            let r = ui.add_visible(value.is_some(), bar);
             // With no words to draw, `name` is the meter's screen-reader-only name: the value
-            // beside it already says the number.
-            if let (true, Some(name)) = (label.is_empty(), s(&p, "name")) {
+            // beside it already says the number. An undrawn bar has no name either.
+            if let (true, true, Some(name)) = (value.is_some(), label.is_empty(), s(&p, "name")) {
                 let (enabled, name) = (ui.is_enabled(), name.to_string());
                 r.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::ProgressIndicator, enabled, &name)
@@ -1133,6 +1136,43 @@ mod tests {
             egui::accesskit::Role::ComboBox,
             "Chat profile, daily"
         ));
+    }
+
+    /// A meter with no value (null or absent) is a missing reading: it is accepted, keeps its
+    /// place and draws no bar, so it never reads as 0.
+    #[test]
+    fn a_meter_with_no_value_is_accepted_and_draws_no_bar() {
+        let Some(fonts) = crate::render::test_fonts() else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        let mut host = PanelHost::default();
+        let tree = json!({"type": "column", "id": "c", "children": [
+            {"type": "meter", "id": "none", "props": {
+                "value": null, "max": 100, "name": "Fan, not reported"}},
+            {"type": "meter", "id": "absent", "props": {"max": 100}},
+            {"type": "meter", "id": "some", "props": {
+                "value": 23, "max": 100, "name": "Processor, 23 percent busy"}}]});
+        let params: Register = serde_json::from_value(json!({"instance": "i1", "panels": [
+            {"id": "p", "slot": "page", "title": "P", "icon": "x", "tree": tree}]}))
+        .unwrap();
+        assert!(host.register("m", "Example", None, &params).is_empty());
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts);
+        ctx.enable_accesskit();
+        let key = PanelKey::new("m", "p");
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                panel_ui(&mut host, ui, &key);
+            });
+        });
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        let named = |name: &str| nodes.iter().any(|(_, n)| n.label() == Some(name));
+        assert!(named("Processor, 23 percent busy"));
+        assert!(
+            !named("Fan, not reported"),
+            "no bar: the value beside it says the reading is missing"
+        );
     }
 
     #[test]

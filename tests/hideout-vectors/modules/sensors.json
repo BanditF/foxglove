@@ -36,7 +36,7 @@
                 "props": {
                   "max": 100,
                   "name": "PC sensors, reading",
-                  "value": 0.0
+                  "value": null
                 },
                 "type": "meter"
               }
@@ -77,7 +77,7 @@
                         "props": {
                           "max": 100,
                           "name": "Processor, reading",
-                          "value": 0.0
+                          "value": null
                         },
                         "type": "meter"
                       }
@@ -108,7 +108,7 @@
                         "props": {
                           "max": 100,
                           "name": "Graphics card, reading",
-                          "value": 0.0
+                          "value": null
                         },
                         "type": "meter"
                       }
@@ -139,7 +139,7 @@
                         "props": {
                           "max": 100,
                           "name": "Memory, reading",
-                          "value": 0.0
+                          "value": null
                         },
                         "type": "meter"
                       }
@@ -1500,7 +1500,7 @@
                         "props": {
                           "max": 100,
                           "name": "Graphics card, not reported",
-                          "value": 0.0
+                          "value": null
                         },
                         "type": "meter"
                       }
@@ -2477,7 +2477,7 @@
                 "props": {
                   "max": 100,
                   "name": "PC sensors, not reported",
-                  "value": 0.0
+                  "value": null
                 },
                 "type": "meter"
               }
