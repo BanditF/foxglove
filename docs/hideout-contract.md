@@ -39,7 +39,8 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   notification grants nothing: `added` only says a call that was denied is worth sending
   again, and the hub checks that call as any other. The module SDKs keep each
   `facts.subscribe` the hub denied or ended (64 at most, the oldest dropped) and send them
-  once more per `module.grants` with a non-empty `added`, with no timer. Not sent on a v1
+  once more per `module.grants` with a non-empty `added`, with no timer. A module that no longer
+  wants one calls the SDK's `forget_denied(pattern)`. Not sent on a v1
   connection. Additive: the hub version stays 1.5; an older hub never sends it and an older
   module ignores it.
 - **1.21** (#1142, who holds a pause): a provider can name the callers it holds leases for

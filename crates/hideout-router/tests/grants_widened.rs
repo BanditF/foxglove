@@ -473,4 +473,18 @@ fn the_session_keeps_only_denials_and_caps_them() {
     assert_eq!(kept.len(), 64);
     assert_eq!(kept[0], json!({"pattern": "a.6"}));
     assert_eq!(kept[63], json!({"pattern": "a.69"}));
+
+    // One the module no longer wants is forgotten: the next Allow does not ask for it.
+    assert!(session.forget_denied("a.69"));
+    assert!(!session.forget_denied("a.69"));
+    session.writer_mut().clear();
+    session
+        .handle(
+            json!({"jsonrpc":"2.0","method":"module.grants","params":{"added":["net"]}}),
+            &mut seen,
+        )
+        .unwrap();
+    let sent = String::from_utf8(std::mem::take(session.writer_mut())).unwrap();
+    assert_eq!(sent.lines().count(), 63);
+    assert!(!sent.contains("a.69") && sent.contains("a.68"));
 }

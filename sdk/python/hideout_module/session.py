@@ -264,6 +264,17 @@ class Session:
         with self._cond:
             return list(self._denied_subs)
 
+    def forget_denied(self, pattern):
+        """Forgets the denied or hub-ended `facts.subscribe {pattern}` that waits for an Allow,
+        so it is not asked for again. Returns whether one waited."""
+        with self._cond:
+            before = len(self._denied_subs)
+            self._denied_subs = [
+                p for p in self._denied_subs
+                if not (isinstance(p, dict) and p.get("pattern") == pattern)
+            ]
+            return len(self._denied_subs) != before
+
     def _keep_denied(self, params):
         # Under self._cond.
         if params not in self._denied_subs:

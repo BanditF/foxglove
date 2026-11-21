@@ -422,6 +422,15 @@ impl<R: BufRead, W: Write> Session<R, W> {
         &self.denied_subs
     }
 
+    /// Forgets the denied or hub-ended `facts.subscribe {pattern}` that waits for an Allow: the
+    /// module no longer wants it, so it is not asked for again. Returns whether one waited.
+    pub fn forget_denied(&mut self, pattern: &str) -> bool {
+        let before = self.denied_subs.len();
+        self.denied_subs
+            .retain(|p| p.get("pattern").and_then(Value::as_str) != Some(pattern));
+        self.denied_subs.len() != before
+    }
+
     /// `module.grants` arrived: every denied subscription is asked for once more. One that is
     /// denied again waits for the next `module.grants`; nothing is sent on a timer.
     fn resubscribe(&mut self) -> Result<()> {
