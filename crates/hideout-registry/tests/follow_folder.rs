@@ -409,6 +409,8 @@ fn a_junction_that_points_elsewhere_voids() {
     let elsewhere = temp("junction-elsewhere");
     std::fs::write(elsewhere.join("foxglove.exe"), b"build 2").unwrap();
     let parked = f.install.with_extension("old");
+    // A parked folder left by an earlier run of this process id must not block the rename.
+    let _ = std::fs::remove_dir_all(&parked);
     std::fs::rename(&f.install, &parked).unwrap();
     let ok = std::process::Command::new("cmd")
         .creation_flags(0x0800_0000)
