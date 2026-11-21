@@ -24,6 +24,16 @@ pub const MODE_OFF: &str = "Developer mode is off on this PC, so dev folders do 
 /// The second line when dev mode is off but folders are still listed (a developer): what
 /// happens to their apps, and the way back.
 pub const MODE_OFF_MORE: &str = "Apps from them ask for your OK at their next build. To use dev folders, start Hideout with HIDEOUT_DEV_MODE=1.";
+/// The installed build has no developer mode: say where it is instead of naming a switch it ignores.
+pub const MODE_OFF_MORE_INSTALLED: &str = "Apps from them ask for your OK at their next build. Dev folders need a developer build of Hideout.";
+/// The second line this build shows.
+pub fn mode_off_more() -> &'static str {
+    if cfg!(feature = "lab-switches") {
+        MODE_OFF_MORE
+    } else {
+        MODE_OFF_MORE_INSTALLED
+    }
+}
 
 pub const ADDED: &str = "Added. Apps you allow from here keep what you allowed over rebuilds.";
 pub const ALREADY: &str = "That folder is already on the list.";

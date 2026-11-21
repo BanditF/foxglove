@@ -106,6 +106,19 @@ Step 'scripts: demo-up tests' { powershell -NoProfile -ExecutionPolicy Bypass -F
         # package in its graph has a permissive licence, and no path dependency points under app/.
         Step 'hub: dependency licences' { python scripts/check_hub_deps.py }
         Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
+        # The installed hub is built without the `lab-switches` feature (scripts/build-hideout-installer.ps1):
+        # it must compile warning-free that way, and no crate in its graph may have the feature on.
+        Step 'hub: build without lab switches' {
+            cargo clippy -p hideout --no-default-features -- -D warnings
+            if (!$LASTEXITCODE) { cargo test -q -p hideout-registry -p hideout-shell --no-default-features --lib -- lab:: paths:: }
+            if (!$LASTEXITCODE) {
+                foreach ($c in 'hideout-registry', 'hideout-router', 'hideout-shell', 'hideout-supervisor', 'hideout-services') {
+                    $t = @(cargo tree --locked --offline -p hideout --no-default-features -e features -i $c)
+                    if ($LASTEXITCODE) { throw "cargo tree -i $c failed" }
+                    if ($t -match 'feature "lab-switches"') { throw "$c has lab-switches on in the installed hub's build" }
+                }
+            }
+        }
         # cargo-nextest runs each test in its own process (about 90 s faster than cargo test on the
         # crates); without it, plain cargo test. nextest skips doc tests, so those run on their own.
         Step 'crates: tests' {

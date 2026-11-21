@@ -26,7 +26,9 @@ foreach ($tool in 'candle.exe', 'light.exe') {
 
 Push-Location $repo
 try {
-    cargo build --release --locked -p hideout
+    # Without the `lab-switches` feature: the installed hub ignores the lab, developer, sideload and
+    # home-folder environment variables and `--lab` (docs/packaging.md). Never add `--features`.
+    cargo build --release --locked -p hideout --no-default-features
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
     $exe = Join-Path $targetDir 'release/hideout.exe'
     if (-not (Test-Path $exe)) { throw "No hideout.exe at $exe" }

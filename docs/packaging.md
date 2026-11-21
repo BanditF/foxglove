@@ -128,7 +128,10 @@ are, and no data is moved or copied when Hideout is installed.
 
 The Hideout installer is built, never published: no signing, no tag, no release, and nothing in
 this repo runs it. It is a WiX 3.14 MSI (the same toolchain as Foxglove's) from
-`crates/hideout/wix/hideout.wxs`, built with `candle` and `light` directly.
+`crates/hideout/wix/hideout.wxs`, built with `candle` and `light` directly. The script builds
+`hideout.exe` with `cargo build --release --locked -p hideout --no-default-features`, without the
+`lab-switches` feature: the installed hub ignores `HIDEOUT_LAB`, `--lab`, `HIDEOUT_CONFIG_DIR`,
+`HIDEOUT_HOME`, `HIDEOUT_DEV_MODE` and `HIDEOUT_DEV_UNSIGNED` (it logs one line when one is set).
 
 ```powershell
 # Lists what the MSI would write (runs python scripts/hideout_installer_plan.py). Builds and installs nothing; needs no WiX or cargo.

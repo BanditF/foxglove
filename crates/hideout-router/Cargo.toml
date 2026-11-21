@@ -5,11 +5,16 @@ edition = "2021"
 description = "Hideout's IPC router (contract §8): the router pipe, launch tokens, the provider table, the facts cache, permission checks, the legacy stdio bridge and the foxglove-<user> alias. Clean-room MIT."
 license = "MIT"
 
+[features]
+# Forwards the registry's `lab-switches` (the environment switches; see its Cargo.toml).
+default = ["lab-switches"]
+lab-switches = ["hideout-registry/lab-switches"]
+
 [dependencies]
 foxglove-plugin = { path = "../plugin-sdk" }
 foxglove-plugin-api = { path = "../plugin-api" }
 hideout-contract = { path = "../hideout-contract" }
-hideout-registry = { path = "../hideout-registry" }
+hideout-registry = { path = "../hideout-registry", default-features = false }
 log = "0.4"
 serde_json = "1"
 

@@ -5326,7 +5326,7 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
     // DF5: the second line says what happens to their apps and how to turn it on.
     assert!(off
         .iter()
-        .any(|(_, l, _)| l.as_deref() == Some(crate::dev_settings::MODE_OFF_MORE)));
+        .any(|(_, l, _)| l.as_deref() == Some(crate::dev_settings::mode_off_more())));
     assert!(off
         .iter()
         .any(|(_, l, _)| l.as_deref() == Some(r"D:\dev\foxglove")));
@@ -5335,7 +5335,7 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
             l.as_deref().is_some_and(|l| {
                 (l.contains("dev folder")
                     && l != crate::dev_settings::MODE_OFF
-                    && l != crate::dev_settings::MODE_OFF_MORE)
+                    && l != crate::dev_settings::mode_off_more())
                     || l == crate::dev_settings::ADD
                     || l == crate::dev_settings::RESTART_SWITCH
             })
@@ -5347,12 +5347,12 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
     assert!(hidden.iter().all(|(_, l, _)| {
         l.as_deref() != Some(crate::dev_settings::HEADING)
             && l.as_deref() != Some(crate::dev_settings::MODE_OFF)
-            && l.as_deref() != Some(crate::dev_settings::MODE_OFF_MORE)
+            && l.as_deref() != Some(crate::dev_settings::mode_off_more())
     }));
     // Dev on: the dev-off lines are not there.
     assert!(on
         .iter()
-        .all(|(_, l, _)| l.as_deref() != Some(crate::dev_settings::MODE_OFF_MORE)));
+        .all(|(_, l, _)| l.as_deref() != Some(crate::dev_settings::mode_off_more())));
     assert!(no_controls(&hidden), "{hidden:?}");
 }
 

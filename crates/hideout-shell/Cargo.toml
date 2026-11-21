@@ -5,15 +5,21 @@ edition = "2021"
 description = "The Hideout hub's shell: tray, window frame, sidebar, status strip, command palette, theme, placement, single instance and log. Clean-room MIT."
 license = "MIT"
 
+[features]
+# The hub folder override from the environment (`paths::home_override`) and, through the
+# supervisor, the registry's switches. Off in the installed build (see hideout-registry's Cargo.toml).
+default = ["lab-switches"]
+lab-switches = ["hideout-router/lab-switches", "hideout-supervisor/lab-switches"]
+
 [dependencies]
 hideout-acl = { path = "../hideout-acl" }
 # `config::Windows`: the `[windows]` table of pop-out placement (§2.5, spec v1.6).
 hideout-contract = { path = "../hideout-contract" }
 # The folder suffix of the hub's pipe and kernel-object names (#1010), one rule with the router.
-hideout-router = { path = "../hideout-router" }
+hideout-router = { path = "../hideout-router", default-features = false }
 # Only its `words` (every string the supervisor's states show) for the crash bar, the stopped
 # card and the tray lines.
-hideout-supervisor = { path = "../hideout-supervisor" }
+hideout-supervisor = { path = "../hideout-supervisor", default-features = false }
 log = "0.4"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }

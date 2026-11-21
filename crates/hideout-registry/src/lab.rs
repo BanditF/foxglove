@@ -117,8 +117,58 @@ pub fn lab_mode(home: &Path, env: impl Fn(&str) -> Option<OsString>) -> LabMode 
 }
 
 /// [`lab_mode`] from this process's environment.
+#[cfg(feature = "lab-switches")]
 pub fn lab_mode_from_env(home: &Path) -> LabMode {
     lab_mode(home, |k| std::env::var_os(k))
+}
+
+/// [`lab_mode_from_env`] in a build without `lab-switches` (the installed Hideout): the
+/// environment is not read and lab mode is always off.
+#[cfg(not(feature = "lab-switches"))]
+pub fn lab_mode_from_env(_home: &Path) -> LabMode {
+    LabMode::Off
+}
+
+/// Logs one line when the hub's command line or environment asks for a lab, developer or
+/// sideload switch the build ignores; none in a build with `lab-switches`. Names only, never values.
+#[cfg(feature = "lab-switches")]
+pub fn log_ignored_switches(_args: impl IntoIterator<Item = OsString>) {}
+
+/// See the `lab-switches` variant: in this build the switches are ignored, and a set one is logged.
+#[cfg(not(feature = "lab-switches"))]
+pub fn log_ignored_switches(args: impl IntoIterator<Item = OsString>) {
+    let names = ignored_switches(|k| std::env::var_os(k), args);
+    if !names.is_empty() {
+        log::warn!(
+            "this build ignores lab, developer and home-folder switches; set but ignored: {}",
+            names.join(", ")
+        );
+    }
+}
+
+/// The switches this build ignores that `env` and `args` set (the variable names and `--lab`).
+#[cfg(not(feature = "lab-switches"))]
+fn ignored_switches(
+    env: impl Fn(&str) -> Option<OsString>,
+    args: impl IntoIterator<Item = OsString>,
+) -> Vec<&'static str> {
+    const VARS: [&str; 7] = [
+        LAB_ENV,
+        "HIDEOUT_CONFIG_DIR",
+        "HIDEOUT_HOME",
+        "HIDEOUT_DEV_MODE",
+        "HIDEOUT_DEV_UNSIGNED",
+        "FOXGLOVE_DEV_UNSIGNED_PLUGINS",
+        "HIDEOUT_LAB_CAPTURE",
+    ];
+    let mut names: Vec<&'static str> = VARS
+        .into_iter()
+        .filter(|k| env(k).is_some_and(|v| !v.is_empty()))
+        .collect();
+    if args.into_iter().any(|a| a == "--lab") {
+        names.push("--lab");
+    }
+    names
 }
 
 #[cfg(test)]
@@ -193,6 +243,39 @@ mod tests {
             lab_mode(Path::new(r"C:\Users\u\AppData\Local\Hideout-lab"), env(&c)),
             LabMode::On
         );
+    }
+
+    /// The installed build: switches in the real environment decide nothing (this test sets
+    /// them in its own process and only computes, it touches no hub folder).
+    #[cfg(not(feature = "lab-switches"))]
+    #[test]
+    fn the_installed_build_ignores_every_switch() {
+        let home = std::env::temp_dir().join("hideout-off-build-lab-test");
+        std::env::set_var(LAB_ENV, "1");
+        std::env::set_var("HIDEOUT_CONFIG_DIR", &home);
+        std::env::set_var("HIDEOUT_DEV_MODE", "1");
+        std::env::set_var("HIDEOUT_DEV_UNSIGNED", "1");
+        std::env::set_var("FOXGLOVE_DEV_UNSIGNED_PLUGINS", "1");
+        assert_eq!(lab_mode_from_env(&home), LabMode::Off);
+        assert!(!crate::dev_unsigned_from_env());
+        assert!(!crate::dev_folders_from_env());
+        assert_eq!(crate::DevFlags::from_env(), crate::DevFlags::OFF);
+    }
+
+    #[cfg(not(feature = "lab-switches"))]
+    #[test]
+    fn an_ignored_switch_is_named_not_valued() {
+        let e = env(&[
+            ("HIDEOUT_LAB", "1"),
+            ("HIDEOUT_DEV_MODE", ""),
+            ("HIDEOUT_HOME", "C:/x"),
+        ]);
+        let args = ["--tray", "--lab"].map(OsString::from);
+        assert_eq!(
+            ignored_switches(e, args),
+            ["HIDEOUT_LAB", "HIDEOUT_HOME", "--lab"]
+        );
+        assert!(ignored_switches(env(&[]), []).is_empty());
     }
 
     #[test]

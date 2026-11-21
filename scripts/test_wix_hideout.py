@@ -251,6 +251,23 @@ class DryRun(unittest.TestCase):
         self.assertIn('hideout-installer', ps)  # output under the target dir (ignored by git)
         self.assertIn('hideout-x64.msi', ps)
 
+    def test_build_leaves_the_lab_switches_feature_off(self):
+        # The shipped hub must not read HIDEOUT_LAB / HIDEOUT_DEV_* / HIDEOUT_CONFIG_DIR or --lab.
+        ps = PS1.read_text(encoding='utf-8')
+        code = re.sub(r'(?m)^\s*#.*$', '', ps)
+        builds = [l for l in code.splitlines() if re.match(r'\s*cargo\s+build\b', l)]
+        self.assertEqual(len(builds), 1, builds)
+        line = builds[0]
+        self.assertIn('-p hideout', line)
+        self.assertRegex(line, r'(?<![\w-])--no-default-features(?![\w-])')
+        self.assertNotIn('--features', line)
+        self.assertNotIn('--all-features', line)
+        self.assertNotIn('--workspace', line)
+        # The feature is on by default (lab harness, On-call, demo-up build the plain way), so
+        # --no-default-features is what turns it off.
+        toml = (ROOT / 'crates' / 'hideout' / 'Cargo.toml').read_text(encoding='utf-8')
+        self.assertRegex(toml, r'(?m)^default\s*=\s*\[\s*"lab-switches"\s*\]')
+
 
 if __name__ == '__main__':
     unittest.main()

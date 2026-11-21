@@ -35,7 +35,9 @@ fn refuse_in_tests() -> Result<(), String> {
     if cfg!(test) {
         return Err("a test build never touches the real Startup folder or registry".into());
     }
-    // A lab or test hub (its own folder) never writes the user's Startup folder either.
+    // A lab or test hub (its own folder) never writes the user's Startup folder either. The
+    // installed build ignores these switches, so a leftover one must not block Start with Windows.
+    #[cfg(feature = "lab-switches")]
     for k in ["HIDEOUT_CONFIG_DIR", "HIDEOUT_HOME"] {
         if std::env::var_os(k).is_some_and(|v| !v.is_empty()) {
             return Err(format!("{k} is set: a test run writes nothing"));
