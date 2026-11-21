@@ -856,9 +856,7 @@ fn wallpaper_now(holders: &[String]) -> Option<super::hub_panels::Wallpaper> {
             super::wallpaper_sync::reasons_now()
         },
         // Not while a paired wallpaper plays: the user pressed Play, so nothing is owed.
-        play_owed: !stale
-            && !super::live_feed::wallpaper_playing()
-            && super::wallpaper_sync::play_owed_now(),
+        play_owed: super::wallpaper_sync::owed_shown_now(),
         allow: Some(super::we_panel::inputs_now(running)),
     })
 }
@@ -2236,7 +2234,7 @@ mod runner {
             }
             if let Err(e) = link.sync_local_holders(
                 &crate::foxglove::wallpaper_sync::local_holders_now(),
-                crate::foxglove::wallpaper_sync::play_owed_now(),
+                crate::foxglove::wallpaper_sync::owed_shown_now(),
             ) {
                 return lost(e, live);
             }
