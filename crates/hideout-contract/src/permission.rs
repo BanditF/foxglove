@@ -165,7 +165,9 @@ impl Permission {
 /// The fact patterns a program outside Hideout may read without asking (`capability::tool_class`).
 /// Device or PC state that only the hub or a first-party app writes. An entry without `*` is one
 /// exact key; an entry ending in `.*` covers that prefix; `<id>` stands for one app id (no `*`).
-/// Anything not covered here is not free: a new fact is never free by default.
+/// Anything not covered here is not free: a new fact is never free by default. Not here on
+/// purpose: `module.<id>.version` (text the app itself sends) and the rest of `mic.*` (the
+/// microphone's name can be personal).
 pub const TOOL_FREE_FACTS: &[&str] = &[
     "keyboard.connected",
     "keyboard.link",
@@ -178,7 +180,6 @@ pub const TOOL_FREE_FACTS: &[&str] = &[
     "volume.*",
     "mic.state",
     "module.<id>.state",
-    "module.<id>.version",
 ];
 
 /// Whether the fact pattern `pattern` (as asked in `facts.read:<pattern>`) lies wholly inside

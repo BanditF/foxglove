@@ -1475,7 +1475,7 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   you" (§7.8). Never a modal at sign-in.
 - Outside tools ask in `initialize`. (#1142) Until a dialog for them ships, nothing asks: the
   hub grants an outside tool only the free set, which is read-only device and PC state
-  (`devices.read`, `audio.inputs.read`, `gpu.status`, and the fact reads in the hub's free list),
+  (`devices.read`, `gpu.status`, and the fact reads in the hub's free list, `mic.state` among them),
   and leaves everything else out. Each permission has a class for a tool: free, ask (no way to
   allow it yet, so it is refused in words that say what to do next) or never (key-level
   permissions, `secrets`, network, files, wildcard agents and keys-class or unknown-class

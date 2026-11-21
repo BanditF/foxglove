@@ -213,8 +213,11 @@ pub fn tool_class(cap: &Capability, risk: Option<&str>) -> ToolClass {
                     Ask
                 }
             }
-            Permission::DevicesRead | Permission::AudioInputsRead => Free,
-            Permission::FactsWrite(_)
+            Permission::DevicesRead => Free,
+            // It reads all of `mic.*`, the microphone's name included; the mute state alone is
+            // free as `facts.read:mic.state`.
+            Permission::AudioInputsRead
+            | Permission::FactsWrite(_)
             | Permission::LightingWrite
             | Permission::BehaviorsInvoke
             | Permission::ScreensWrite
@@ -370,7 +373,10 @@ mod tests {
             ("app.windows", None, Ask),
             ("wallpaper.control", None, Ask),
             ("apps.watch:example.exe", None, Ask),
-            ("audio.inputs.read", None, Free),
+            ("audio.inputs.read", None, Ask),
+            ("facts.read:mic.state", None, Free),
+            ("facts.read:mic.endpoint_name", None, Ask),
+            ("facts.read:module.foxglove.version", None, Ask),
             ("audio.inputs.mute", None, Ask),
             ("gpu.status", None, Free),
             ("gpu.request:any", None, Ask),
@@ -408,7 +414,6 @@ mod tests {
     fn free_set_is_read_only() {
         let free = [
             "devices.read",
-            "audio.inputs.read",
             "gpu.status",
             "facts.read:keyboard.link",
             "facts.read:keyboard.lighting.*",
@@ -416,7 +421,6 @@ mod tests {
             "facts.read:volume.master",
             "facts.read:mic.state",
             "facts.read:module.hideout.modules.state",
-            "facts.read:module.foxglove.version",
         ];
         for s in free {
             let c = cap(s);
@@ -438,6 +442,9 @@ mod tests {
             "facts.read:keyboard.*",
             "facts.read:keyboard.layer",
             "facts.read:mic.*",
+            "facts.read:mic.endpoint_name",
+            "facts.read:module.foxglove.version",
+            "audio.inputs.read",
             "facts.write:sensor.cpu",
         ] {
             if let Ok(c) = Capability::parse(s) {

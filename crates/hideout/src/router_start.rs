@@ -873,7 +873,6 @@ permissions = [\"apps.watch:{label}.exe\"]
                 "devices.read",
                 "facts.read:keyboard.connected",
                 "facts.read:module.foxglove.state",
-                "audio.inputs.read",
                 "gpu.status",
             ])
         );
