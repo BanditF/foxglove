@@ -15,6 +15,8 @@ mod channels;
 pub mod checks;
 mod router;
 pub mod server;
+pub mod tool_id;
+pub use tool_id::ToolId;
 
 pub mod secrets;
 pub use router::{
