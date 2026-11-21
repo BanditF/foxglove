@@ -2633,7 +2633,7 @@ pub(crate) mod tests {
         v.temperature.status = Status::AppOff;
         assert_eq!(
             status(&v).0,
-            "Temperature needs the PC sensors app. Turn it on in Hideout's Apps page."
+            "Temperature needs the PC sensors app. Add it or turn it on in Hideout's Apps page."
         );
         v.temperature.status = Status::NotAllowed;
         assert_eq!(status(&v).1, Tone::Warn);

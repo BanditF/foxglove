@@ -9,6 +9,8 @@
 //! "hash" or an id, except the selectable path and the list code.
 
 pub const ALLOW_NONE: &str = "Allow none";
+/// The button of an app that asks for nothing (there is nothing to count).
+pub const ALLOW: &str = "Allow";
 pub const ALLOW_AND_START: &str = "Allow and start";
 pub const SOURCE_UNSIGNED: &str = "Not signed";
 pub const SHOW: &str = "Show";
@@ -38,6 +40,9 @@ pub const KEEP_LABEL: &str = "Keep my OK after updates in this folder";
 pub const KEEP_REFUSED: &str = "Hideout keeps your OK only for a folder on this PC's own drive.";
 /// Binding line 2 while the box is checked.
 pub const KEEP_BINDING: &str = "If the app asks for more or moves, Hideout asks again.";
+/// [`KEEP_BINDING`] for an app that asks for nothing.
+pub const KEEP_BINDING_NOTHING: &str =
+    "If the app asks for something or moves, Hideout asks again.";
 pub const KEEP_CONFIRM_TITLE: &str = "Keep your OK for this folder?";
 pub const KEEP_CONFIRM_OK: &str = "Keep my OK";
 pub const CANCEL: &str = "Cancel";
@@ -60,6 +65,14 @@ pub fn keep_helper(name: &str, file: &str) -> String {
     format!(
         "A new build of {name} saved here as {file} keeps what you allowed. Hideout asks again \
          if the new build wants more, or if the app moves."
+    )
+}
+
+/// The helper under the label for an app that asks for nothing.
+pub fn keep_helper_nothing(name: &str, file: &str) -> String {
+    format!(
+        "A new build of {name} saved here as {file} keeps your OK. Hideout asks again if the \
+         new build asks for something, or if the app moves."
     )
 }
 
@@ -510,14 +523,29 @@ impl PermDialog {
 
     /// "<name> asks for these <N> things. Each app that uses them still needs its own
     /// permission. Nothing leaves this PC." (the last sentence goes when the network is asked).
+    /// One item reads "asks for 1 thing"; none, "<name> doesn't ask for anything."
     pub fn intro(&self) -> String {
         let n = self.items.len();
+        if n == 0 {
+            return format!(
+                "{} doesn't ask for anything. Nothing leaves this PC.",
+                self.name
+            );
+        }
         let never = n - self.allowable().count();
-        let mut s = format!("{} asks for these {n} things.", self.name);
+        let mut s = if n == 1 {
+            format!("{} asks for 1 thing.", self.name)
+        } else {
+            format!("{} asks for these {n} things.", self.name)
+        };
         if never > 0 {
             s.push_str(&format!(" {never} can't be allowed."));
         }
-        s.push_str(" Each app that uses them still needs its own permission.");
+        s.push_str(if n == 1 {
+            " Each app that uses it still needs its own permission."
+        } else {
+            " Each app that uses them still needs its own permission."
+        });
         if !self
             .items
             .iter()
@@ -577,21 +605,39 @@ impl PermDialog {
         file_of(&self.path)
     }
 
+    /// The three lines under the list. An app that asks for nothing has no list and nothing
+    /// to turn off one by one, so its lines speak of the OK and of the app.
     pub fn binding_lines(&self) -> [String; 3] {
         let keeping = self.keep.as_ref().is_some_and(|k| !k.is_refused() && k.on);
-        [
-            if self.path.is_empty() {
-                format!("Only for this copy of {}:", self.name)
-            } else {
-                format!("Only for this copy of {} (the file above):", self.name)
-            },
-            if keeping {
-                KEEP_BINDING.into()
-            } else {
-                "If this file or this list changes, Hideout asks again.".into()
-            },
-            format!("You can turn each one off any time in Apps, {}.", self.name),
-        ]
+        let above = if self.path.is_empty() {
+            ""
+        } else {
+            " (the file above)"
+        };
+        match self.items.len() {
+            0 => [
+                format!("Your OK is only for this copy of {}{above}:", self.name),
+                if keeping {
+                    KEEP_BINDING_NOTHING.into()
+                } else {
+                    "If this file changes or it asks for something, Hideout asks again.".into()
+                },
+                format!("You can turn {} off any time in Apps.", self.name),
+            ],
+            n => [
+                format!("Only for this copy of {}{above}:", self.name),
+                if keeping {
+                    KEEP_BINDING.into()
+                } else {
+                    "If this file or this list changes, Hideout asks again.".into()
+                },
+                if n == 1 {
+                    format!("You can turn it off any time in Apps, {}.", self.name)
+                } else {
+                    format!("You can turn each one off any time in Apps, {}.", self.name)
+                },
+            ],
+        }
     }
 
     /// Marks what a changed list added (`new`) and records what it dropped (`removed`),
@@ -619,8 +665,17 @@ impl PermDialog {
     }
 
     /// "Allow 9", "Allow and start" when Allow also starts the app, or "Allow none" with
-    /// nothing counted.
+    /// nothing counted. An app that asks for nothing has nothing to count: "Allow" (or
+    /// "Allow and start").
     pub fn allow_label(&self) -> String {
+        if self.items.is_empty() {
+            return if self.view.starts {
+                ALLOW_AND_START
+            } else {
+                ALLOW
+            }
+            .into();
+        }
         match self.count() {
             0 => ALLOW_NONE.into(),
             _ if self.view.starts && self.sensitive_decided() => ALLOW_AND_START.into(),
@@ -999,10 +1054,13 @@ impl FirstRun {
         self.sections.iter().map(PermDialog::count).sum()
     }
 
-    /// "Allow 9", or "Allow none" with nothing counted (the same rule as one dialog).
+    /// "Allow 9 items", or "Allow none" with nothing counted (the same rule as one dialog);
+    /// "Allow" when no app asks for anything.
     pub fn allow_label(&self) -> String {
         match self.count() {
+            0 if self.sections.iter().all(|s| s.items.is_empty()) => ALLOW.into(),
             0 => ALLOW_NONE.into(),
+            1 => "Allow 1 item".into(),
             n => format!("Allow {n} items"),
         }
     }
@@ -1182,6 +1240,64 @@ mod tests {
             view: Default::default(),
             error: None,
         }
+    }
+
+    /// An app that asks for nothing: no "these 0 things", no "Allow none", no "each one".
+    #[test]
+    fn an_app_that_asks_for_nothing_reads_plainly() {
+        let mut d = dialog();
+        d.items.clear();
+        assert_eq!(
+            d.intro(),
+            "Foxglove doesn't ask for anything. Nothing leaves this PC."
+        );
+        assert_eq!(d.allow_label(), "Allow");
+        assert_eq!(
+            d.binding_lines(),
+            [
+                "Your OK is only for this copy of Foxglove (the file above):",
+                "If this file changes or it asks for something, Hideout asks again.",
+                "You can turn Foxglove off any time in Apps.",
+            ]
+        );
+        assert!(!d.has_all() && !d.everyday_shown());
+        d.keep = Some(Keep::offered(true));
+        assert_eq!(
+            d.binding_lines()[1],
+            "If the app asks for something or moves, Hideout asks again."
+        );
+        d.path.clear();
+        assert_eq!(
+            d.binding_lines()[0],
+            "Your OK is only for this copy of Foxglove:"
+        );
+        d.view.starts = true;
+        assert_eq!(d.allow_label(), "Allow and start");
+        assert_eq!(
+            keep_helper_nothing("Foxglove", "foxglove.exe"),
+            "A new build of Foxglove saved here as foxglove.exe keeps your OK. Hideout asks \
+             again if the new build asks for something, or if the app moves."
+        );
+    }
+
+    /// One item is "1 thing" and "it"; a list with nothing ticked still says "Allow none".
+    #[test]
+    fn an_app_that_asks_for_one_thing_says_it_in_the_singular() {
+        let mut d = dialog();
+        d.items.truncate(2);
+        d.items.remove(0);
+        assert_eq!(
+            d.intro(),
+            "Foxglove asks for 1 thing. Each app that uses it still needs its own permission. \
+             Nothing leaves this PC."
+        );
+        assert_eq!(d.allow_label(), "Allow 1");
+        assert_eq!(
+            d.binding_lines()[2],
+            "You can turn it off any time in Apps, Foxglove."
+        );
+        d.items[0].checked = false;
+        assert_eq!(d.allow_label(), "Allow none");
     }
 
     #[test]

@@ -105,9 +105,32 @@ pub struct Candidate {
     /// The manifest text that was read and validated (folder origin). It is what gets
     /// registered: the add stages exactly this text, never a second read of the folder.
     pub text: Option<String>,
+    /// Set when the app is already in Hideout (added from a file) and the file now names another
+    /// version or program: the version Hideout holds. The card then offers the update.
+    pub update_of: Option<String>,
 }
 
 impl Candidate {
+    /// The card's button: **Add**, or **Update in Hideout** for a changed app Hideout holds.
+    pub fn button(&self) -> String {
+        if self.update_of.is_some() {
+            find_installed::Row::NeedsRefresh
+                .button(&self.name)
+                .unwrap_or_else(|| words::ADD.to_string())
+        } else {
+            words::ADD.to_string()
+        }
+    }
+
+    /// The Apps page's row line for a changed app Hideout holds (none for a new one). The model
+    /// carries it; the page's row draws the same [`find_installed::Row`] words.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn row_line(&self) -> Option<String> {
+        self.update_of
+            .is_some()
+            .then(|| find_installed::Row::NeedsRefresh.line(&self.name))
+    }
+
     /// The folder the app was found in, for the card's detail line.
     pub fn folder(&self) -> String {
         let p = match &self.origin {
@@ -200,6 +223,7 @@ pub fn from_folder(m: &dyn Machine, home: &Path, at: &Path) -> Result<Candidate,
         version: clean(&module.version),
         origin: Origin::Folder(folder),
         program,
+        update_of: None,
     })
 }
 
@@ -296,8 +320,104 @@ fn same_but_adopted(was: &Module, staged: &str, exe: Option<&Path>) -> bool {
     Module::parse(staged, &Context::default()).is_ok_and(|got| got == want)
 }
 
+/// The most apps read from the folder next to Hideout.
+const BESIDE_CAP: usize = 32;
+
+/// Apps shipped next to Hideout: `<folder of hideout.exe>\apps\<x>\module.toml`, one level,
+/// read-only, the first [`BESIDE_CAP`] folders by name. Each goes through [`from_folder`]; then
+/// the canonical folder and the canonical program must both be below the canonical `apps`
+/// folder (a link that leads out is skipped), the id must be new (not in `installed`, not in
+/// `found`, not twice here), and the program must exist. Anything else is skipped silently.
+/// An id Hideout already holds (added from a file) is offered again as an update when the file's
+/// version or program differs from the record ([`registered_adopted`]).
+fn beside_hideout(
+    m: &dyn Machine,
+    home: &Path,
+    installed: &[String],
+    found: &[Candidate],
+) -> Vec<Candidate> {
+    let Some(exe_dir) = m.hub_exe_dir() else {
+        return Vec::new();
+    };
+    let Some(root) = find_installed::local_path(m, &exe_dir.join("apps")) else {
+        return Vec::new();
+    };
+    let mut subs = m.sub_folders(&root);
+    subs.sort_by_key(|p| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    });
+    let mut out: Vec<Candidate> = Vec::new();
+    for sub in subs.into_iter().take(BESIDE_CAP) {
+        let mut c = match from_folder(m, home, &sub.join("module.toml")) {
+            Ok(c) => c,
+            Err(why) => {
+                log::debug!("discover: {}: {why}", sub.display());
+                continue;
+            }
+        };
+        let (Origin::Folder(folder), Some(program)) = (&c.origin.clone(), &c.program.clone())
+        else {
+            continue;
+        };
+        // The program must sit in this entry's own folder: one entry cannot name another's.
+        if !inside(folder, &root) || !inside(program, folder) {
+            log::debug!("discover: {}: leads out of the apps folder; skipped", c.id);
+            continue;
+        }
+        let again = found.iter().any(|f| f.id == c.id) || out.iter().any(|f| f.id == c.id);
+        if again || !m.is_file(program) {
+            continue;
+        }
+        if installed.contains(&c.id) {
+            // Held already: only a changed file added by hand (never a catalog install) is
+            // offered, as an update.
+            let Some(held) = registered_adopted(home, &c.id) else {
+                continue;
+            };
+            let same_program = held
+                .run0
+                .as_deref()
+                .and_then(|r| find_installed::local_path(m, Path::new(r)))
+                .is_some_and(|r| inside(&r, program) && inside(program, &r));
+            if held.version == c.version && same_program {
+                continue;
+            }
+            c.update_of = Some(held.version);
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// What Hideout holds for an app added from a file.
+struct Held {
+    /// The version, as shown (the same cleaning as the file's).
+    version: String,
+    /// The first word of `run` in the record's own copy of the file.
+    run0: Option<String>,
+}
+
+/// The record of `id` when it is an adopted one (a catalog install is not touched), else none.
+fn registered_adopted(home: &Path, id: &str) -> Option<Held> {
+    let reg = hideout_registry::Registry::open_from_env(home).ok()?;
+    let e = reg.inventory.modules.get(id)?;
+    if e.source != hideout_registry::inventory::ADOPTED {
+        return None;
+    }
+    Some(Held {
+        version: clean(&e.version),
+        run0: reg
+            .manifest(id)
+            .and_then(|m| m.run)
+            .and_then(|r| r.first().cloned()),
+    })
+}
+
 /// The apps found on this PC that are not in Hideout yet (`installed` = the ids it already has):
-/// self-registered ones first, then fallback-list products they did not already cover.
+/// self-registered ones first, then apps next to Hideout (an app Hideout holds comes again when
+/// its file changed), then fallback-list products they did not already cover.
 pub fn discover(m: &dyn Machine, home: &Path, installed: &[String]) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     for sub in m.registry_subkeys(MODULES_KEY) {
@@ -322,6 +442,9 @@ pub fn discover(m: &dyn Machine, home: &Path, installed: &[String]) -> Vec<Candi
             Err(why) => log::warn!("discover: key {sub}: {why}"),
         }
     }
+    for c in beside_hideout(m, home, installed, &out) {
+        out.push(c);
+    }
     for p in find_installed::products() {
         if out.iter().any(|c| c.id == p.id) {
             continue;
@@ -333,11 +456,12 @@ pub fn discover(m: &dyn Machine, home: &Path, installed: &[String]) -> Vec<Candi
                 version: clean(&f.version),
                 program: Some(f.exe.clone()),
                 text: None,
+                update_of: None,
                 origin: Origin::Product(f),
             });
         }
     }
-    out.retain(|c| !installed.contains(&c.id));
+    out.retain(|c| c.update_of.is_some() || !installed.contains(&c.id));
     out.sort_by_key(|c| c.name.to_lowercase());
     out
 }
@@ -379,11 +503,23 @@ pub fn add(
             // ...and what is registered is the text the user was shown, staged and adopted
             // from there, so a swap after this point cannot reach the inventory.
             let dir = staging.join(format!("add-{}", c.id));
+            // An earlier record of this id (and its grants) is not ours to drop on a failed check.
+            let fresh = !hideout_registry::Registry::open_from_env(home)
+                .is_ok_and(|r| r.inventory.modules.contains_key(&c.id));
             let staged = std::fs::create_dir_all(&dir)
                 .and_then(|()| std::fs::write(dir.join("module.toml"), &text))
                 .map_err(|e| format!("{}: {e}", dir.display()))
                 .and_then(|()| crate::adopt::run(home, &dir, now));
             let _ = std::fs::remove_dir_all(&dir);
+            // An update re-registered a record that had grants: check them now, whatever the
+            // read-back below says, so no earlier Allow stays on a program it was not given for.
+            if staged.is_ok() && c.update_of.is_some() {
+                void_grants_after_update(home, &c.id, now);
+            }
+            // What the registry now holds must be the staged text, byte for byte.
+            if staged.is_ok() && !registered_matches(home, &c.id, &text, fresh) {
+                return Err(words::changed(&c.name));
+            }
             staged
         }
         (Origin::Folder(_), None) => return Err(words::changed(&c.name)),
@@ -408,6 +544,49 @@ pub fn add(
             })
         }
     }
+}
+
+/// After an update the user's earlier Allow does not carry: the registry keeps the record's
+/// grants over a re-register but binds them to the program's path and hash, so this runs the
+/// same check the hub runs at every turn on and launch ([`void_if_changed`]) now. A changed
+/// program sends the grants back to pending (the Allow is asked again); only a follow-folder
+/// choice the user made themselves keeps one. A failure is logged and leaves the launch-time
+/// check as the guard.
+///
+/// [`void_if_changed`]: hideout_registry::Registry::void_if_changed
+fn void_grants_after_update(home: &Path, id: &str, now: &str) {
+    match hideout_registry::Registry::open_from_env(home) {
+        Ok(mut reg) => {
+            if let Err(e) = reg.void_if_changed(id, now) {
+                log::warn!("discover: {id}: grants not checked after the update: {e}");
+            }
+        }
+        Err(e) => log::warn!("discover: {id}: grants not checked after the update: {e}"),
+    }
+}
+
+/// Reads the registry's own copy of `id`'s manifest and requires it to equal `staged`. When it
+/// does not (or can't be read) this is `false`, and when the record is `fresh` (this add made
+/// it) it is removed: unregistered, with any grants; the app's own files are never touched. A
+/// record that was there before the add is left alone.
+fn registered_matches(home: &Path, id: &str, staged: &str, fresh: bool) -> bool {
+    let Ok(mut reg) = hideout_registry::Registry::open_from_env(home) else {
+        return false;
+    };
+    let same = reg
+        .inventory
+        .modules
+        .get(id)
+        .map(|e| reg.module_dir(id, &e.version).join("module.toml"))
+        .and_then(|p| std::fs::read(p).ok())
+        .is_some_and(|b| b == staged.as_bytes());
+    if !same {
+        log::warn!("discover: {id}: the registered file is not the staged one (fresh: {fresh})");
+        if fresh {
+            let _ = reg.remove(id);
+        }
+    }
+    same
 }
 
 /// What the user is told after a click.
@@ -680,12 +859,16 @@ mod ui {
                                         let b = ui
                                             .add(
                                                 egui::Button::new(
-                                                    RichText::new(words::ADD).color(c(t.on_accent)),
+                                                    RichText::new(f.button()).color(c(t.on_accent)),
                                                 )
                                                 .fill(c(t.accent)),
                                             )
                                             .on_hover_text(words::add_hover(&f.name, &f.folder()));
-                                        let label = words::add_label(&f.name);
+                                        let label = if f.update_of.is_some() {
+                                            f.button()
+                                        } else {
+                                            words::add_label(&f.name)
+                                        };
                                         ui.ctx().accesskit_node_builder(b.id, |n| {
                                             n.set_label(label);
                                         });
@@ -785,6 +968,10 @@ mod tests {
         remote: Vec<PathBuf>,
         /// path -> the path it resolves to
         links: BTreeMap<PathBuf, PathBuf>,
+        /// The folder of the running hub's exe.
+        exe_dir: Option<PathBuf>,
+        /// folder -> its sub-folders, as listed (a link's own path is listed, not its target)
+        subs: BTreeMap<PathBuf, Vec<PathBuf>>,
     }
 
     fn norm(p: &Path) -> String {
@@ -824,6 +1011,12 @@ mod tests {
         }
         fn is_local_fixed(&self, p: &Path) -> bool {
             !self.remote.iter().any(|r| p.starts_with(r))
+        }
+        fn hub_exe_dir(&self) -> Option<PathBuf> {
+            self.exe_dir.clone()
+        }
+        fn sub_folders(&self, dir: &Path) -> Vec<PathBuf> {
+            self.subs.get(dir).cloned().unwrap_or_default()
         }
     }
 
@@ -1632,6 +1825,317 @@ mod tests {
         assert_eq!(s.note, Some(Note::error(words::changed("Gadget"))));
         let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
         assert!(reg.inventory.modules.is_empty());
+    }
+
+    // ---- apps next to Hideout ----
+
+    const BESIDE: &str = r"C:\Prog\Hideout";
+
+    /// A service app `name` under `<BESIDE>\apps`, with its program, listed as a sub-folder.
+    fn beside(f: &mut Fake, name: &str, id: &str) -> PathBuf {
+        let folder = Path::new(BESIDE).join("apps").join(name);
+        let text = service_text(id, "svc.exe");
+        f.files
+            .insert(folder.join("module.toml"), (String::new(), Some(text)));
+        f.files
+            .insert(folder.join("svc.exe"), ("0.1.0".into(), None));
+        f.exe_dir = Some(PathBuf::from(BESIDE));
+        f.subs
+            .entry(Path::new(BESIDE).join("apps"))
+            .or_default()
+            .push(folder.clone());
+        folder
+    }
+
+    #[test]
+    fn a_service_app_next_to_hideout_is_found_and_offered() {
+        let mut f = Fake::default();
+        let folder = beside(&mut f, "gadget", "vulpes.gadget");
+        let found = discover(&f, &hh(), &[]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "vulpes.gadget");
+        assert_eq!(
+            found[0].program.as_deref(),
+            Some(folder.join("svc.exe").as_path())
+        );
+        assert!(matches!(&found[0].origin, Origin::Folder(x) if *x == folder));
+    }
+
+    #[test]
+    fn no_exe_folder_or_no_apps_folder_finds_nothing() {
+        let mut f = Fake::default();
+        beside(&mut f, "gadget", "vulpes.gadget");
+        f.exe_dir = None;
+        assert!(discover(&f, &hh(), &[]).is_empty());
+        f.exe_dir = Some(PathBuf::from(BESIDE));
+        f.subs.clear();
+        assert!(discover(&f, &hh(), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_sibling_app_is_listed_once_per_id_and_not_again_when_known() {
+        let mut f = Fake::default();
+        beside(&mut f, "a", "vulpes.gadget");
+        beside(&mut f, "b", "vulpes.gadget");
+        assert_eq!(discover(&f, &hh(), &[]).len(), 1);
+        // Already in Hideout: not offered.
+        assert!(discover(&f, &hh(), &["vulpes.gadget".into()]).is_empty());
+        // Already found by its self-registration: the registered one stands, not a second card.
+        let (install, mut g, _) = service_on_disk("beside-reg", "vulpes.gadget", "svc.exe");
+        g.subkeys.push("vulpes.gadget".into());
+        g.reg.insert(
+            (format!(r"{MODULES_KEY}\vulpes.gadget"), String::new()),
+            install.display().to_string(),
+        );
+        beside(&mut g, "gadget", "vulpes.gadget");
+        let found = discover(&g, &hh(), &[]);
+        assert_eq!(found.len(), 1);
+        assert!(
+            matches!(&found[0].origin, Origin::Folder(x) if *x == install),
+            "{:?} vs {install:?}",
+            found[0].origin
+        );
+    }
+
+    #[test]
+    fn a_link_that_leads_out_of_the_apps_folder_is_skipped() {
+        let mut f = Fake::default();
+        let out = PathBuf::from(r"C:\Elsewhere\gadget");
+        f.files.insert(
+            out.join("module.toml"),
+            (String::new(), Some(service_text("vulpes.evil", "svc.exe"))),
+        );
+        f.files.insert(out.join("svc.exe"), ("0.1.0".into(), None));
+        let link = Path::new(BESIDE).join("apps").join("evil");
+        f.links.insert(link.clone(), out.clone());
+        f.exe_dir = Some(PathBuf::from(BESIDE));
+        f.subs.insert(Path::new(BESIDE).join("apps"), vec![link]);
+        assert!(discover(&f, &hh(), &[]).is_empty());
+        // The program's own link leading out (the folder stays inside) is skipped too.
+        let mut g = Fake::default();
+        let folder = beside(&mut g, "gadget", "vulpes.gadget");
+        g.files.insert(out.join("svc.exe"), ("0.1.0".into(), None));
+        g.links.insert(folder.join("svc.exe"), out.join("svc.exe"));
+        assert!(discover(&g, &hh(), &[]).is_empty());
+    }
+
+    #[test]
+    fn only_the_first_thirty_two_folders_by_name_are_read() {
+        let mut f = Fake::default();
+        for i in 0..40 {
+            beside(&mut f, &format!("app{i:02}"), &format!("vulpes.g{i:02}"));
+        }
+        // List them out of order: the result is by folder name, not by listing order.
+        f.subs
+            .get_mut(&Path::new(BESIDE).join("apps"))
+            .unwrap()
+            .reverse();
+        let found = discover(&f, &hh(), &[]);
+        assert_eq!(found.len(), 32);
+        assert!(found.iter().any(|c| c.id == "vulpes.g31"));
+        assert!(!found.iter().any(|c| c.id == "vulpes.g32"));
+    }
+
+    #[test]
+    fn a_sibling_app_whose_program_is_missing_is_not_offered() {
+        let mut f = Fake::default();
+        let folder = beside(&mut f, "gadget", "vulpes.gadget");
+        f.files.remove(&folder.join("svc.exe"));
+        assert!(discover(&f, &hh(), &[]).is_empty());
+    }
+
+    // ---- a changed app next to Hideout is offered again ----
+
+    /// A sibling app on real disk (`<exe dir>/apps/gadget`) with a fake `Machine` that reads it.
+    struct Sib {
+        f: Fake,
+        folder: PathBuf,
+        home: PathBuf,
+    }
+
+    fn sib_text(version: &str, run0: &str) -> String {
+        service_text("vulpes.gadget", run0)
+            .replace("version = \"0.1.0\"", &format!("version = \"{version}\""))
+            .replace(
+                "permissions = [\"facts.write:gadget.*\", \"facts.read:keyboard.game_mode\"]",
+                "permissions = [\"hub.notify\"]",
+            )
+            .replace("provides = [\"facts:gadget.*\"]\n", "")
+    }
+
+    /// Writes the sibling's file and program (`body`) to disk and to the fake.
+    fn sib_write(s: &mut Sib, version: &str, run0: &str, body: &[u8]) {
+        let text = sib_text(version, run0);
+        std::fs::write(s.folder.join(run0), body).unwrap();
+        std::fs::write(s.folder.join("module.toml"), &text).unwrap();
+        s.f.files
+            .insert(s.folder.join("module.toml"), (String::new(), Some(text)));
+        s.f.files
+            .insert(s.folder.join(run0), ("0.1.0".into(), None));
+    }
+
+    fn sib(name: &str) -> Sib {
+        let root = temp(name);
+        let folder = root.join("apps").join("gadget");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut f = Fake {
+            exe_dir: Some(root.clone()),
+            ..Fake::default()
+        };
+        f.subs.insert(root.join("apps"), vec![folder.clone()]);
+        let mut s = Sib {
+            f,
+            folder,
+            home: temp(&format!("{name}-home")),
+        };
+        sib_write(&mut s, "0.1.0", "svc.exe", b"program v1");
+        s
+    }
+
+    const GADGET: &str = "vulpes.gadget";
+
+    /// Adds the sibling (as the card's Add does) and allows `hub.notify` for it.
+    fn sib_added_and_allowed(s: &Sib) {
+        let mut a = AddApp::default();
+        a.scan(&s.f, &s.home, &[], true);
+        assert_eq!(a.found[0].button(), "Add");
+        assert!(a.found[0].row_line().is_none());
+        assert_eq!(
+            a.add_found(&s.f, GADGET, &s.home, &s.home.join("stg"), NOW)
+                .as_deref(),
+            Some(GADGET)
+        );
+        let mut reg = hideout_registry::Registry::open_from_env(&s.home).unwrap();
+        let list = reg.permission_list(GADGET).unwrap();
+        reg.approve_listed(
+            GADGET,
+            list.code(),
+            &["hub.notify".to_string()],
+            &[],
+            NOW,
+            "dialog",
+            false,
+        )
+        .unwrap();
+        assert_eq!(reg.inventory.modules[GADGET].granted, ["hub.notify"]);
+    }
+
+    #[test]
+    fn a_changed_sibling_app_is_offered_as_an_update_and_the_same_one_is_not() {
+        let mut s = sib("upd-offer");
+        sib_added_and_allowed(&s);
+        let held = [GADGET.to_string()];
+        // The same version and the same program: nothing to offer.
+        assert!(discover(&s.f, &s.home, &held).is_empty());
+        // A new version of the file.
+        sib_write(&mut s, "0.2.0", "svc.exe", b"program v2");
+        let found = discover(&s.f, &s.home, &held);
+        assert_eq!(found.len(), 1);
+        let c = &found[0];
+        assert_eq!(
+            (c.version.as_str(), c.update_of.as_deref()),
+            ("0.2.0", Some("0.1.0"))
+        );
+        assert_eq!(words::found_line(&c.name, &c.version), "Gadget 0.2.0");
+        assert_eq!(c.button(), "Update in Hideout");
+        assert_eq!(
+            c.row_line().as_deref(),
+            Some("Gadget \u{b7} Changed since you added it")
+        );
+        // The same version but another program: offered too.
+        let mut t = sib("upd-offer-prog");
+        sib_added_and_allowed(&t);
+        sib_write(&mut t, "0.1.0", "svc2.exe", b"program v1");
+        let found = discover(&t.f, &t.home, &[GADGET.to_string()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].update_of.as_deref(), Some("0.1.0"));
+        // A changed file with a missing program is not offered.
+        let mut u = sib("upd-offer-gone");
+        sib_added_and_allowed(&u);
+        sib_write(&mut u, "0.2.0", "svc.exe", b"program v2");
+        u.f.files.remove(&u.folder.join("svc.exe"));
+        assert!(discover(&u.f, &u.home, &[GADGET.to_string()]).is_empty());
+    }
+
+    #[test]
+    fn pressing_update_registers_the_new_version_and_program_and_the_allow_is_asked_again() {
+        let mut s = sib("upd-press");
+        sib_added_and_allowed(&s);
+        let before = hideout_registry::Registry::open_from_env(&s.home).unwrap();
+        assert!(before.manifest(GADGET).unwrap().run.unwrap()[0].ends_with("svc.exe"));
+        drop(before);
+        // A new build under another file name: new version, new run[0], new hash.
+        sib_write(&mut s, "0.2.0", "svc2.exe", b"program v2");
+        let held = [GADGET.to_string()];
+        let mut a = AddApp::default();
+        a.scan(&s.f, &s.home, &held, true);
+        assert_eq!(a.shown().len(), 1);
+        assert_eq!(
+            a.add_found(&s.f, GADGET, &s.home, &temp("upd-press-stg"), NOW)
+                .as_deref(),
+            Some(GADGET)
+        );
+        assert_eq!(
+            a.note,
+            Some(Note::info("Added Gadget. Choose what it may do."))
+        );
+        let reg = hideout_registry::Registry::open_from_env(&s.home).unwrap();
+        let rec = &reg.inventory.modules[GADGET];
+        assert_eq!(
+            (rec.version.as_str(), rec.source.as_str()),
+            ("0.2.0", "adopted")
+        );
+        let run0 = reg.manifest(GADGET).unwrap().run.unwrap()[0].clone();
+        assert!(run0.ends_with("svc2.exe"), "{run0}");
+        // Nothing stays allowed: back to pending, the old choice kept only as the suggestion.
+        assert!(rec.granted.is_empty(), "{:?}", rec.granted);
+        assert_eq!(rec.pending_permissions, ["hub.notify"]);
+        assert_eq!(rec.last_choice, ["hub.notify"]);
+        assert!(rec.bound.as_ref().is_some_and(|b| b.void));
+        assert!(!reg.hub.enabled(GADGET));
+        // And what Hideout holds is now the file's: no second offer.
+        assert!(discover(&s.f, &s.home, &held).is_empty());
+    }
+
+    #[test]
+    fn a_record_that_is_not_an_adopted_one_is_not_offered_an_update() {
+        let mut s = sib("upd-other");
+        sib_added_and_allowed(&s);
+        let mut reg = hideout_registry::Registry::open_from_env(&s.home).unwrap();
+        reg.inventory.modules.get_mut(GADGET).unwrap().source = "sideload".into();
+        reg.inventory.save(&s.home.join("inventory.json")).unwrap();
+        drop(reg);
+        sib_write(&mut s, "0.2.0", "svc.exe", b"program v2");
+        assert!(discover(&s.f, &s.home, &[GADGET.to_string()]).is_empty());
+    }
+
+    #[test]
+    fn a_registered_copy_that_is_not_the_staged_text_is_unregistered() {
+        let (install, f, _) = service_on_disk("svc-rb", "vulpes.gadget", "svc.exe");
+        let home = temp("svc-rb-home");
+        let c = from_folder(&f, &home, &install).unwrap();
+        let id = add(&f, &home, &temp("svc-rb-stg"), &c, NOW).unwrap();
+        // Registered, and the copy is the staged text: the check passes and keeps the record.
+        let staged =
+            adopted_text(c.text.as_deref().unwrap(), c.program.as_deref().unwrap()).unwrap();
+        assert!(registered_matches(&home, &id, &staged, true));
+        assert!(hideout_registry::Registry::open_from_env(&home)
+            .unwrap()
+            .inventory
+            .modules
+            .contains_key(&id));
+        let other = format!("{staged}# changed");
+        // A different text, on a record that was there before this add: refused, record kept.
+        assert!(!registered_matches(&home, &id, &other, false));
+        assert!(hideout_registry::Registry::open_from_env(&home)
+            .unwrap()
+            .inventory
+            .modules
+            .contains_key(&id));
+        // The same on a record this add made: refused, and the record goes.
+        assert!(!registered_matches(&home, &id, &other, true));
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert!(!reg.inventory.modules.contains_key(&id));
     }
 
     /// A refused pick says what to do next, in exact words.

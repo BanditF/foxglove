@@ -19,6 +19,16 @@ pub const PAUSED_LINE: &str = "Paused";
 /// The longest module name a tray line shows whole.
 const NAME_MAX: usize = 30;
 
+/// "Art, update waiting for you": a state's words after the app's name, as a tab says them
+/// (the first letter goes lower case).
+fn said_after(name: &str, words: &str) -> String {
+    let mut c = words.chars();
+    match c.next() {
+        Some(f) => format!("{name}, {}{}", f.to_lowercase(), c.as_str()),
+        None => name.to_string(),
+    }
+}
+
 /// "1 app is running", "3 apps are running".
 pub fn running_line(n: usize) -> String {
     if n == 1 {
@@ -159,9 +169,10 @@ impl Marks {
             "needs-ok" => format!("{name} needs your OK"),
             "couldnt-start" => format!("{name} couldn't start"),
             "quarantined" => hideout_supervisor::words::quarantined_title(&name),
-            "update-waiting" => format!("{name} has an update ready to install"),
-            "update-busy" => format!("{name} will update when it is idle"),
-            "updating" => format!("{name} is updating"),
+            // The row's, the tab's and the page's own words, after the name.
+            "update-waiting" => said_after(&name, hideout_supervisor::words::UPDATE_WAITING),
+            "update-busy" => said_after(&name, hideout_supervisor::words::UPDATE_READY),
+            "updating" => said_after(&name, hideout_supervisor::words::UPDATING),
             "restarting" => format!("{name} is restarting"),
             "starting" => format!("{name} is starting"),
             _ => format!("{name} is waiting for another app"),
@@ -739,9 +750,9 @@ mod tests {
             ("starting", "Art is starting"),
             ("restarting", "Art is restarting"),
             ("waiting", "Art is waiting for another app"),
-            ("updating", "Art is updating"),
-            ("update-busy", "Art will update when it is idle"),
-            ("update-waiting", "Art has an update ready to install"),
+            ("updating", "Art, updating\u{2026}"),
+            ("update-busy", "Art, update ready"),
+            ("update-waiting", "Art, update waiting for you"),
             ("quarantined", "Art's page couldn't be shown"),
         ] {
             let (_, got, tip) = line(&mut m, state);
@@ -763,7 +774,7 @@ mod tests {
         assert_eq!(m.look().1, "2 apps are running");
         m.name("b.x", "Echo");
         m.fact("module.b.x.state", &json!("update-waiting"));
-        assert_eq!(m.look().1, "Echo has an update ready to install");
+        assert_eq!(m.look().1, "Echo, update waiting for you");
         // Paused and safe mode keep their own lines.
         m.set_paused(true);
         assert_eq!(m.look().1, "Paused");
