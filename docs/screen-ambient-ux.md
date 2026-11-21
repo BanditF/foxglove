@@ -124,7 +124,7 @@ Rules:
 ## Always visible: the eye
 
 While frames are read (and only then), all three show:
-- **Tray icon:** the fox glyph with a small eye badge, bottom right. Art hand-off: a `screen`
+- **Tray icon:** the fox glyph with a small orange eye (almond and pupil), bottom right, where the pause badge sits. Art hand-off: a `screen`
   variant next to `off` and `paused`, white and black, at 16, 20, 24 and 32 px. **Paused wins:**
   while Foxglove is paused the icon shows Paused, and nothing reads the screen.
 - **Tooltip status line:** "Connected · Screen glow on" ("Disconnected · Screen glow on" without a

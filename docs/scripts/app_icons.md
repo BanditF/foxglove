@@ -33,7 +33,7 @@ The fox polygons are hard-coded in the script, so drawing needs no input files. 
 | `icon.svg` | app/resources/ | 256x256 master, vector |
 | `icon.png` | app/resources/ | 256x256, dark tile with fox |
 | `icon.ico` | app/resources/ | multi-size: 16, 20, 24, 32, 48, 64, 256 px (sizes <= 24 use a simplified silhouette) |
-| `tray-icon-white*.png`, `tray-icon-black*.png` | app/resources/ | states: plain (on), `-off`, `-paused`, `-screen`; sizes 16, 20, 24, 32 px |
+| `tray-icon-white*.png`, `tray-icon-black*.png` | app/resources/ | states: plain (on), `-off`, `-paused`, `-screen` (the fox plus an orange eye, an almond outline with a pupil and no disc, bottom right; 16 and 20 px are hand-placed pixel maps, `EYE_MAPS`, the rest is drawn from the same proportions); sizes 16, 20, 24, 32 px |
 | `tray-icon-template*.png` | app/resources/ | 44 px, black + alpha for macOS templates, same four states |
 | `logo44.png`, `logo50.png`, `logo150.png` | app/packaging/identity/Assets/ | sparse-package identity logos (not written with `--tray`) |
 
