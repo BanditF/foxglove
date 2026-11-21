@@ -519,7 +519,7 @@ fn binding_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<e
     ui.label(fine(ui, b1).color(c(t.text_muted)));
     ui.label(fine(ui, b2).color(c(t.text_muted)));
     if let Some(k) = d.keep.as_mut() {
-        keep_block(ui, t, &d.name, &d.path, k, ids);
+        keep_block(ui, t, &d.name, &d.path, d.items.is_empty(), k, ids);
     }
     ui.add(
         egui::Label::new(fine(ui, format!("List code {}", d.code)).color(c(t.text_muted)))
@@ -535,6 +535,7 @@ fn keep_block(
     t: &Tokens,
     name: &str,
     path: &str,
+    nothing: bool,
     k: &mut Keep,
     ids: &mut Vec<egui::Id>,
 ) {
@@ -555,7 +556,12 @@ fn keep_block(
         k.set_on(on);
     }
     let said = k.said();
-    let desc = k.description(name, &file);
+    // An app that asks for nothing: the helper speaks of the OK, not of "what you allowed".
+    let desc = if nothing && !refused {
+        crate::permission_dialog::keep_helper_nothing(name, &file)
+    } else {
+        k.description(name, &file)
+    };
     let node_desc = desc.clone();
     ui.ctx().accesskit_node_builder(r.id, |n| {
         n.set_label(said);

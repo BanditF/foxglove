@@ -69,6 +69,9 @@ pub fn state_words(state: &str) -> &'static str {
     match state {
         "starting" => "Starting",
         "updating" => "Updating",
+        // The old version keeps running: the row's and the page's words (hideout-supervisor).
+        "update-busy" => "Update ready",
+        "update-waiting" => "Update waiting for you",
         "restarting" => "Restarting",
         "crash-stopped" | "crash-looped" => "Stopped after 5 crashes",
         "waiting" => "Waiting for another app",

@@ -301,10 +301,10 @@ impl ModulesPage {
                     a.start_again(&id);
                     false
                 }
-                // The result shows on the module's page (the status line), so it opens.
+                // The result shows under the row (and on the module's page), so Apps stays.
                 (Does::CheckUpdates, Some(a)) => {
                     a.check_for_updates(&id);
-                    true
+                    false
                 }
                 (Does::StartDefaults, Some(a)) => {
                     a.start_with_defaults(&id);
@@ -1344,9 +1344,12 @@ mod tests {
         use hideout_shell::modules_list::{Click, Does};
         let off = std::rc::Rc::new(std::cell::Cell::new(false));
         let o = off.clone();
+        let check = std::rc::Rc::new(std::cell::Cell::new(None::<&str>));
+        let ch = check.clone();
         let facts: Facts = Box::new(move |k| match k {
             "module.m.a.state" => Some(json!(if o.get() { "off" } else { "revoked" })),
             "module.m.a.revoked" => Some(json!({"version": "0.5.0", "reason": "x"})),
+            "module.m.a.check" => ch.get().map(|c| json!(c)),
             _ => None,
         });
         let log = Log::default();
@@ -1381,8 +1384,24 @@ mod tests {
             (p.label.as_str(), p.does),
             ("Check for updates", Does::CheckUpdates)
         );
+        // The click stays on Apps: the result shows under the row.
         page.on_click(Click::Primary("m.a".into(), Does::CheckUpdates));
         assert_eq!(*log.0.borrow(), ["check m.a"]);
+        assert_eq!(rows[0].check_note, None);
+        check.set(Some("checking"));
+        let (rows, _) = page.rows();
+        assert_eq!(
+            rows[0].check_note.as_deref(),
+            Some("Checking Art's source\u{2026}")
+        );
+        assert!(rows[0].checking);
+        check.set(Some("none"));
+        let (rows, _) = page.rows();
+        assert_eq!(
+            rows[0].check_note.as_deref(),
+            Some("No new version yet. Checked just now.")
+        );
+        assert!(!rows[0].checking);
         off.set(true);
         page.installed[0].enabled = false;
         let (rows, _) = page.rows();

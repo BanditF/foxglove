@@ -417,7 +417,10 @@ fn the_waiting_updates_offer_force_review_and_not_now() {
         assert!(t.iter().any(|x| x == s), "{s}: {t:?}");
     }
     assert_eq!(focused_label(&out), None, "an update line took the focus");
-    assert_eq!(art_tab(&hub).state, TabState::Live);
+    assert_eq!(
+        art_tab(&hub).state,
+        TabState::Note(words::UPDATE_READY.into())
+    );
     click(&ctx, &mut hub, "Force");
     click(&ctx, &mut hub, "Not now");
     assert_eq!(
@@ -542,13 +545,15 @@ fn the_tile_says_each_state() {
     let t = tile_texts("quarantined");
     assert!(t.iter().any(|s| s == "Its tile couldn't be shown"), "{t:?}");
     assert!(t.iter().any(|s| s == "Open"), "{t:?}");
-    for s in ["update-busy", "update-waiting"] {
+    // An update that waits: the body stays, one line with the row's words, no mark.
+    for (s, words) in [
+        ("update-busy", words::UPDATE_READY),
+        ("update-waiting", words::UPDATE_WAITING),
+    ] {
         let t = tile_texts(s);
         assert!(t.iter().any(|x| x == "Painting"), "{s}: {t:?}");
-        assert!(
-            !t.iter().any(|x| x.starts_with("Update") || x == "\u{26A0}"),
-            "{s}: {t:?}"
-        );
+        assert!(t.iter().any(|x| x == words), "{s}: {t:?}");
+        assert!(!t.iter().any(|x| x == "\u{26A0}"), "{s}: {t:?}");
     }
 }
 
@@ -748,9 +753,9 @@ fn the_tray_has_a_line_for_every_state() {
     for (s, want) in [
         ("waiting", "Art is waiting for another app"),
         ("quarantined", "Art's page couldn't be shown"),
-        ("updating", "Art is updating"),
-        ("update-busy", "Art will update when it is idle"),
-        ("update-waiting", "Art has an update ready to install"),
+        ("updating", "Art, updating\u{2026}"),
+        ("update-busy", "Art, update ready"),
+        ("update-waiting", "Art, update waiting for you"),
         ("running", "1 app is running"),
     ] {
         let m = tray_for(&[("m.art", s)]);
@@ -1137,6 +1142,18 @@ fn sidebar_cases(dir: &std::path::Path) -> Vec<(&'static str, Hub, bool, &'stati
             false,
             "Art, needs a newer Hideout",
         ),
+        (
+            "Update ready (words only, no ring)",
+            with("update-busy"),
+            false,
+            "Art, update ready",
+        ),
+        (
+            "Update waiting for you (words only, no ring)",
+            with("update-waiting"),
+            false,
+            "Art, update waiting for you",
+        ),
         ("Running (nothing)", with("running"), false, "Art"),
     ]
 }
@@ -1173,6 +1190,10 @@ fn the_sidebar_draws_the_tabs_ring_with_its_words() {
     assert!(!art_tab(&hub).accessible_name().contains('\u{2026}'));
     let (_, hub, _, _) = sidebar_cases(&dir).remove(1);
     assert_eq!(art_tab(&hub).tooltip(), "Art\nUpdating\u{2026}");
+    let hub = supervised(&dir, &[("state", serde_json::json!("update-waiting"))]).0;
+    assert_eq!(art_tab(&hub).tooltip(), "Art\nUpdate waiting for you");
+    let hub = supervised(&dir, &[("state", serde_json::json!("update-busy"))]).0;
+    assert_eq!(art_tab(&hub).tooltip(), "Art\nUpdate ready");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

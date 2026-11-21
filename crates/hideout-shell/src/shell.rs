@@ -2241,6 +2241,15 @@ impl Hub {
                             resp = resp.on_hover_text(look.tooltip());
                             ui.ctx()
                                 .accesskit_node_builder(resp.id, |n| n.set_label(said));
+                        } else if let Some(look) = look
+                            .as_ref()
+                            .filter(|l| matches!(l.state, TabState::Note(_)))
+                        {
+                            // An update that waits: no ring, the tab's tooltip and name.
+                            let said = look.accessible_name();
+                            resp = resp.on_hover_text(look.tooltip());
+                            ui.ctx()
+                                .accesskit_node_builder(resp.id, |n| n.set_label(said));
                         }
                         if attention {
                             // The attention dot on the sidebar entry too; the tab's accessible
@@ -2555,7 +2564,7 @@ impl Hub {
                         ui.add_space(8.0);
                     }
                     // Waiting draws its own line (shell_states.rs).
-                    TabState::Off | TabState::Live | TabState::Waiting(_) => {}
+                    TabState::Off | TabState::Live | TabState::Waiting(_) | TabState::Note(_) => {}
                 }
                 if self.panels.panel(&key).is_some() {
                     let report = if own {
