@@ -318,7 +318,7 @@ fn watch_inventory(
     // in a second write (`hideout.toml` after `inventory.json`) still starts it.
     let mut late = std::collections::BTreeSet::<String>::new();
     // R3: the rebuild watches follow the enrolled apps; synced at start and at each change.
-    let mut rebuilds = crate::rebuild_start::Watches::default();
+    let mut rebuilds = <crate::rebuild_start::Watches>::default();
     if let Ok(reg) = hideout_registry::Registry::open_from_env(&at) {
         rebuilds.sync(&reg, &sup);
     }
