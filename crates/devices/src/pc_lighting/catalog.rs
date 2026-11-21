@@ -627,6 +627,35 @@ mod tests {
         assert!(Catalog::parse(&cap.to_toml().replace("witmod-lcd", "none")).is_err());
     }
 
+    /// OMEN parity row 5: the 45L's case board names HP's own lighting app as the one that
+    /// puts its colours back, by both of its processes; and every bundled conflict is usable
+    /// as data (a name, exe file names matched exactly, a hint for the hover).
+    #[test]
+    fn the_bundled_conflicts_name_the_vendor_apps_by_exe() {
+        let c = Catalog::bundled();
+        let case = c.find(0x103c, 0x84fd).expect("the 45L");
+        let studio: Vec<_> = case.conflicts.iter().map(|k| k.app.as_str()).collect();
+        assert_eq!(studio, ["OMEN Light Studio"]);
+        assert_eq!(
+            case.conflicts[0].processes,
+            ["LightStudio-background.exe", "LightStudio.exe"]
+        );
+        let all: Vec<_> = c.devices.iter().flat_map(|d| &d.conflicts).collect();
+        assert!(all.len() >= 2, "the case board and the pump cap");
+        for k in all {
+            assert!(!k.app.trim().is_empty());
+            assert!(!k.processes.is_empty(), "{}", k.app);
+            for p in &k.processes {
+                assert!(p.ends_with(".exe") && !p.contains(['\\', '/', '*']), "{p}");
+            }
+            assert!(
+                k.hint.as_deref().is_some_and(|h| !h.is_empty()),
+                "{}",
+                k.app
+            );
+        }
+    }
+
     #[test]
     fn the_bundled_hints_are_fastleds_presets() {
         let c = Catalog::bundled();
