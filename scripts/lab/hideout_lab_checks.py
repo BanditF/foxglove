@@ -344,8 +344,8 @@ class QuietHub(Hub):
                                                 self.allow_running))
         ok, _ = self.wait(lambda s: s.get('ok'), 30, read=lambda: self.do('state', check=False))
         if not ok:
-            self.stop()
             out = self.launcher.stdout.read() if self.launcher.poll() is not None else ''
+            self.stop()
             raise RuntimeError(f'the lab hub did not answer on its pipe within 30 s: {out.strip()[:300]}')
         if f'folder {self.lab}' not in self.log():
             self.stop()
@@ -835,9 +835,13 @@ def main():
     ap.add_argument('--start', action='store_true',
                     help='start the lab hub on its own hidden desktop through quiet-launch.ps1 (and stop it at the end)')
     ap.add_argument('--seconds', type=int, default=1800, help='hard time limit of the hidden hub (1..3600)')
+    ap.add_argument('--allow-running', action='store_true',
+                    help='with --start: allow other hideout.exe processes (the user own Hideout) to be running')
     ap.add_argument('--only', default='flyout,pages,supervisor,states', help='which groups to run')
     ap.add_argument('--shots', default=None, help='where capture PNGs go (default <lab>\\lab-shots)')
     args = ap.parse_args()
+    if not 1 <= args.seconds <= 3600:
+        ap.error('--seconds must be 1..3600')
     require_app_ok()
     home = Path(os.environ.get('LOCALAPPDATA', '')) / 'Hideout'
     if Path(args.lab).resolve() == home.resolve() or home.resolve() in Path(args.lab).resolve().parents:
@@ -846,8 +850,9 @@ def main():
         sys.exit(2)
     shots = args.shots or Path(args.lab) / 'lab-shots'
     if args.start:
-        desktop = 'hlc-' + os.urandom(3).hex()
-        hub = QuietHub(args.app, args.lab, shots, desktop, {}, seconds=args.seconds)
+        desktop = 'ql-hlc' + os.urandom(3).hex()
+        hub = QuietHub(args.app, args.lab, shots, desktop, {}, seconds=args.seconds,
+                       allow_running=args.allow_running)
     else:
         hub = Hub(args.app, args.lab, shots)  # an already running hub (its desktop is the caller's)
     check = Checks()
