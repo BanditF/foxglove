@@ -567,9 +567,24 @@ impl ModulesPage {
             .iter()
             .find(|m| m.id == updated)
             .map_or_else(|| updated.clone(), |m| m.name.clone());
+        // It ran and nothing needs a choice: it runs again now, as the new version. A start that
+        // fails leaves the usual failure line on the row and the note says it is off.
+        let mut restarted = false;
+        if was_running && !waits {
+            if let Some(result) = self.actions.as_deref().map(|a| a.turn_on(&updated)) {
+                match result {
+                    Ok(()) => {
+                        self.ask.clear_turn_on_failed(&updated);
+                        self.set_enabled(&updated, true);
+                        restarted = true;
+                    }
+                    Err(why) => self.after_turn_on(&updated, Err(why)),
+                }
+            }
+        }
         if let Some(d) = self.discover.as_mut() {
             d.state.note = Some(crate::discover::Note::info(
-                crate::discover::words::updated_after(&name, was_running, waits),
+                crate::discover::words::updated_after(&name, was_running && !restarted, waits),
             ));
         }
     }
@@ -2107,17 +2122,34 @@ mod tests {
                 "Updated Gadget. Choose what it may do.",
             ),
             ("row-changed-note-3", false, true, "Updated Gadget."),
-            (
-                "row-changed-note-4",
-                true,
-                true,
-                "Updated Gadget. It's off until you turn it on.",
-            ),
+            ("row-changed-note-4", true, true, "Updated Gadget."),
         ] {
             let (mut page, _log) = changed_page(name, running, same);
             page.update_in_hideout(GADGET);
             assert_eq!(note_of(&page).as_deref(), Some(want), "{name}");
         }
+    }
+
+    /// An app that ran and whose update leaves nothing to choose runs again, as the new version:
+    /// stopped while the old record stood, started once after the new one was registered.
+    #[test]
+    fn an_update_with_nothing_to_choose_starts_the_app_again() {
+        use crate::discover::tests::GADGET;
+        let (mut page, log) = changed_page("row-changed-restart", true, true);
+        page.update_in_hideout(GADGET);
+        assert_eq!(
+            *log.borrow(),
+            [
+                "turn-off vulpes.gadget at 0.1.0 granted=1",
+                "turn-on vulpes.gadget"
+            ]
+        );
+        assert!(page.installed[0].enabled);
+        assert_ne!(page.rows().0[0].state, "Off");
+        let home = page.discover.as_ref().unwrap().home.clone();
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert_eq!(reg.inventory.modules[GADGET].version, "0.2.0");
+        assert!(!reg.inventory.modules[GADGET].granted.is_empty());
     }
 
     /// The Found card's Update button is named for its app; the row's button is not.
