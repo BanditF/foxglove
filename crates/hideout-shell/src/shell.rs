@@ -2898,6 +2898,15 @@ impl Hub {
         for (module, name, value) in crate::lab_control::take_settings() {
             self.panels.set_setting(&module, &name, value);
         }
+        // Lab control's `set-theme` and `set-size` (G4), before anything is drawn.
+        for v in crate::lab_control::take_views() {
+            match v {
+                crate::lab_control::View::Theme(c) => set_theme(ctx, c),
+                crate::lab_control::View::Size(w, h) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+                }
+            }
+        }
         // Lab control's `quarantine` (#1096): the panel host's own quarantine; the hand-off
         // below takes it to the supervisor.
         for module in crate::lab_control::take_quarantines() {
