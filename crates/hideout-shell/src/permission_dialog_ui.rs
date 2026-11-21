@@ -5,6 +5,7 @@
 //! Not now focused and carrying the accent fill, Esc / close / Enter on the focused Not now
 //! answer Not now, Tab stays inside.
 
+use crate::dismiss::dismissed;
 use crate::egui;
 use crate::keyboard_grant::{DIALOG_FOOTER, DIALOG_ITEMS};
 use crate::keyboard_grant_ui::rgb as c;
@@ -53,13 +54,6 @@ fn check(
     text: impl Into<egui::WidgetText>,
 ) -> egui::Response {
     outlined(ui, t, |ui| ui.checkbox(on, text))
-}
-
-/// Esc, or the window's close button: the dialog's "Not now" (nothing granted, nothing
-/// started). The window then closes to the tray as always; without this the dialog stayed
-/// open behind it and came back with the window.
-fn dismissed(ctx: &egui::Context) -> bool {
-    ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested())
 }
 
 /// The dialog. `first`: the first frame, when Not now takes the focus.

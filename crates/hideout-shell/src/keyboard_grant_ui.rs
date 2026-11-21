@@ -99,7 +99,7 @@ pub(crate) fn dialog_ids(
         n.set_label(DIALOG_TITLE);
         n.set_description(said);
     });
-    if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if modal.should_close() || crate::dismiss::dismissed(ctx) {
         answer = answer.or(Some(Answer::NotNow));
     }
     (answer, ids)

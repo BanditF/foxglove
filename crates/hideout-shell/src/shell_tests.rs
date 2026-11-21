@@ -4179,6 +4179,50 @@ fn the_windows_close_button_answers_not_now() {
     assert_eq!(got, [None, None, Some(KeepAnswer::Cancel)]);
 }
 
+/// The same for the keyboard-sharing dialog (Not now) and the dev-folder Remove confirm
+/// (Cancel: nothing is sent and the confirm is gone).
+#[test]
+fn the_windows_close_button_answers_the_other_dialogs_too() {
+    use crate::keyboard_grant::{Answer, Dialog};
+    let closing = |w: f32, h: f32| {
+        let mut raw = input(w, h, vec![]);
+        raw.viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+        raw
+    };
+    let t = crate::theme::tokens(true);
+    let d = Dialog::open(r"C:\Program Files\Foxglove\foxglove.exe", false);
+    let ctx = egui::Context::default();
+    let mut got = Vec::new();
+    let frames = [
+        input(800.0, 600.0, vec![]),
+        input(800.0, 600.0, vec![]),
+        closing(800.0, 600.0),
+    ];
+    for (i, raw) in frames.into_iter().enumerate() {
+        let _ = ctx.run(raw, |c| {
+            got.push(crate::keyboard_grant_ui::dialog_ui(c, &t, &d, i == 0));
+        });
+    }
+    assert_eq!(got, [None, None, Some(Answer::NotNow)]);
+
+    let mut d = DevDriver::new("ok");
+    d.press(&crate::dev_settings::remove_name(FOX));
+    assert!(d.dialog_open());
+    let (view, dark) = (d.view.clone(), d.dark);
+    let mut sent = 0;
+    let _ = d.ctx.run(closing(d.w, 1400.0), |c| {
+        sent += usize::from(draw_settings_with_dev(c, dark, &view).dev.is_some());
+    });
+    d.frames(2, vec![]);
+    assert_eq!(sent, 0);
+    assert!(d.sent.is_empty());
+    assert!(!d.dialog_open());
+}
+
 /// The Modules confirm: Cancel is focused on open, Enter does not keep, Esc cancels, Tab stays
 /// inside, and the dialog is named and described.
 #[test]

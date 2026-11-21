@@ -866,12 +866,9 @@ pub fn page_ui_with_head(
                             if first {
                                 cancel.request_focus();
                             }
-                            // Escape is taken here, so it closes nothing else.
-                            if cancel.clicked()
-                                || ui.input_mut(|i| {
-                                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
-                                })
-                            {
+                            // Escape is taken here, so it closes nothing else; the window's
+                            // close button cancels too.
+                            if cancel.clicked() || crate::dismiss::dismissed_taking_esc(ui.ctx()) {
                                 click = Some(Click::CancelRemove);
                             }
                         });
@@ -1688,6 +1685,39 @@ mod tests {
             .filter_map(|(_, n)| n.label().or(n.value()).map(String::from))
             .collect();
         (labels, clicked)
+    }
+
+    /// The window's close button cancels an open Remove confirm, like Esc; a frame without it
+    /// answers nothing.
+    #[test]
+    fn the_windows_close_button_cancels_the_remove_confirm() {
+        let rows = [row_of("art", "Art", false)];
+        let t = crate::theme::tokens(false);
+        let ctx = egui::Context::default();
+        let mut got = Vec::new();
+        for close in [false, false, true] {
+            let mut raw = egui::RawInput::default();
+            if close {
+                raw.viewports
+                    .entry(egui::ViewportId::ROOT)
+                    .or_default()
+                    .events
+                    .push(egui::ViewportEvent::Close);
+            }
+            let mut clicked = None;
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let top = Top {
+                        remove: Some("art"),
+                        can_remove: true,
+                        ..Top::default()
+                    };
+                    clicked = page_ui_with(ui, &t, &rows, top);
+                });
+            });
+            got.push(clicked);
+        }
+        assert_eq!(got, [None, None, Some(Click::CancelRemove)]);
     }
 
     fn row_of(id: &str, name: &str, adopted: bool) -> Row {
