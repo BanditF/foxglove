@@ -433,6 +433,9 @@ pub struct Router {
     grant_image: HashMap<String, (String, String)>,
     /// The connections the last [`Router::sync_conn_caps`] widened.
     widened: Vec<ConnId>,
+    /// The grant each connection was last held back from (its image is not the one the Allow
+    /// is for): the log says so once per grant, not on every revalidation.
+    held_back: HashMap<ConnId, Vec<String>>,
     /// The user's keyboard grant per module, pushed by the hub from `inventory.json` (#1155-B).
     keyboards: HashMap<String, hideout_registry::keyboard::KeyboardGrant>,
     /// The method patterns the legacy module asked for at `module.register`, kept while it is
@@ -566,6 +569,7 @@ impl Router {
             identities: HashMap::new(),
             grant_image: HashMap::new(),
             widened: Vec::new(),
+            held_back: HashMap::new(),
             keyboards: HashMap::new(),
             wanted: HashMap::new(),
             pending: HashMap::new(),
@@ -1098,6 +1102,7 @@ impl Router {
             let full = Caps::parse(&e.granted);
             let have = c.caps.strings();
             if full.strings() == have {
+                self.held_back.remove(k);
                 continue;
             }
             let widens = full.strings().iter().any(|s| !have.contains(s));
@@ -1113,11 +1118,15 @@ impl Router {
                 if widens {
                     self.widened.push(*k);
                 }
+                self.held_back.remove(k);
                 full
             } else {
-                log::info!(
-                    "permissions: {id}: a running instance is not the program the Allow is for; it gets the new grant at its next start"
-                );
+                if self.held_back.get(k) != Some(&full.strings()) {
+                    self.held_back.insert(*k, full.strings());
+                    log::info!(
+                        "permissions: {id}: a running instance is not the program the Allow is for; it gets the new grant at its next start"
+                    );
+                }
                 Caps(
                     full.0
                         .into_iter()
@@ -1690,6 +1699,7 @@ impl Router {
         self.subs.retain(|_, (owner, _)| *owner != conn);
         let mut lost_subs = self.subs.len() != had_subs;
         self.identities.remove(&conn);
+        self.held_back.remove(&conn);
         // Its app watches end with it (§8.12, v1.13).
         self.app_watches.remove(&conn);
         // Leases it held end: tell each provider (§8.5).

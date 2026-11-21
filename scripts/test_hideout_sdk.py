@@ -120,6 +120,9 @@ class SampleModule(unittest.TestCase):
         self.assertEqual(len(kept), 64)
         self.assertEqual(kept[0], {"pattern": "a.6"})
         self.assertEqual(kept[-1], {"pattern": "a.69"})
+        self.assertTrue(s.forget_denied("a.69"))
+        self.assertFalse(s.forget_denied("a.69"))
+        self.assertEqual(s.denied_subscriptions()[-1], {"pattern": "a.68"})
 
     def test_call_handles_hub_calls_meanwhile(self):
         hub = b'{"jsonrpc":"2.0","id":7,"method":"module.drain","params":{"reason":"reload"}}\n' \
