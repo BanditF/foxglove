@@ -7,9 +7,11 @@ control pipe
 
 The lab hub runs with HIDEOUT_LAB=1 and HIDEOUT_LAB_CAPTURE=1 on its own HIDEOUT_CONFIG_DIR
 (--lab), with the first-party plugins in <lab>\\lab-modules (docs/hideout-lab.md, On-call steps).
---start starts it (and stops only that process, by its own handle, at the end); without it the
-hub must already run on --lab. It shows windows, the tray flyout and the tray menu, so it runs only
-with FOXGLOVE_APP_OK=1 (On-call, in a lab sitting), never on the user's desktop otherwise.
+--start starts it on its own hidden desktop through scripts/lab/quiet-launch.ps1 (a private
+desktop, a hard time limit, a kill-on-close job; torn down by the desktop's name at the end), so no
+window, focus change or tray icon reaches the user's desktop. Without --start the hub must already
+run on --lab, on a desktop of the caller's. It still needs FOXGLOVE_APP_OK=1 (On-call). The tray
+reads go through the tray model (G3), which needs no cursor or open menu.
 
     FOXGLOVE_APP_OK=1 python scripts/lab/hideout_lab_checks.py --app <hideout.exe> --lab <folder> [--start]
         [--only flyout,pages,supervisor,states] [--shots <folder>]
@@ -18,7 +20,7 @@ Waits: every lab control action answers after the frame that shows its result. T
 the hub's own timing (a module restarting, a crash landing) read `state` every 0.25 s for a
 bounded time, started by the action they wait for.
 """
-import argparse, json, os, subprocess, sys, time
+import argparse, base64, json, os, subprocess, sys, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -152,7 +154,10 @@ def module_exe(lab, module):
 
 def tray_status(state):
     """The tray menu's status line (its first item), when the menu is open."""
-    items = (state.get('tray') or {}).get('menu') or []
+    tray = state.get('tray') or {}
+    if tray.get('line'):  # the tray model (G3): no open menu needed, so it works on a hidden desktop
+        return tray['line']
+    items = tray.get('menu') or []
     return items[0]['text'] if items else None
 
 
@@ -275,14 +280,86 @@ class Hub:
         """Open Hideout from the tray menu (the keyboard-free tray path)."""
         if self.state()['main']['on_screen']:
             return
-        self.do('tray-menu')
-        ok, _ = self.wait(lambda s: s['tray'].get('menu') is not None, 5)
-        if not ok:
-            raise RuntimeError('the tray menu did not open')
-        self.do('menu-pick', 'Open Hideout')
+        self.do('menu-pick', 'Open Hideout')  # no menu open: picked from the tray model (G3)
         ok, _ = self.wait(lambda s: s['main']['on_screen'], 5)
         if not ok:
             raise RuntimeError('Open Hideout did not show the window')
+
+
+POWERSHELL = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe')
+QUIET = Path(__file__).resolve().parent / 'quiet-launch.ps1'
+
+
+def ps_quote(text):
+    """A PowerShell single-quoted string; a quote in a path is refused, not escaped."""
+    if any(c in str(text) for c in "'\n\0‘’‚‛"):  # PowerShell reads curly quotes as quotes
+        raise ValueError(f'a quote, newline or NUL in {text!r}')
+    return f"'{text}'"
+
+
+def launch_script(exe, lab, desktop, env, seconds, allow_running=False):
+    """The PowerShell text that starts the lab hub through quiet-launch.ps1 (real hashtable)."""
+    pairs = '; '.join(f'{k} = {ps_quote(v)}' for k, v in env.items())
+    return (f"& {ps_quote(QUIET)} -Exe {ps_quote(exe)} -ArgList '--lab' -Env @{{ {pairs} }} "
+            f"-DesktopName {ps_quote(desktop)} -TimeoutSec {int(seconds)}"
+            + (' -AllowRunning' if allow_running else ''))
+
+
+def stop_script(desktop):
+    return f"& {ps_quote(QUIET)} -Stop {ps_quote(desktop)}"
+
+
+def encoded(script):
+    return base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+
+
+# ---- the hub on a hidden desktop -------------------------------------------------------------------
+
+def hidden_ps(script):
+    """Runs `script` in a PowerShell that never shows a console."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith('HIDEOUT_DEV_')}  # quiet-launch passes ours on
+    return subprocess.Popen(
+        [POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded(script)],
+        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        creationflags=0x08000000)  # CREATE_NO_WINDOW
+
+
+class QuietHub(Hub):
+    """A lab hub that lives on its own hidden desktop; `do`/`state` are the parent class's."""
+
+    def __init__(self, exe, lab, shots, desktop, extra_env, seconds=240, allow_running=False):
+        super().__init__(exe, lab, shots)
+        for k in [k for k in self.env if k.startswith('HIDEOUT_DEV_')]:
+            del self.env[k]  # an ambient HIDEOUT_DEV_* must not decide what a run shows
+        self.extra_env = dict(extra_env)
+        self.desktop, self.seconds, self.allow_running = desktop, seconds, allow_running
+        self.launcher = None
+
+    def start(self):
+        env = {k: self.env[k] for k in ('HIDEOUT_CONFIG_DIR', 'HIDEOUT_LAB', 'HIDEOUT_LAB_CAPTURE')}
+        env.update(self.extra_env)
+        if self.do('state', check=False).get('ok'):
+            raise RuntimeError('a lab hub already answers on the lab pipe; refusing to drive it')
+        self.launcher = hidden_ps(launch_script(self.exe, self.lab, self.desktop, env, self.seconds,
+                                                self.allow_running))
+        ok, _ = self.wait(lambda s: s.get('ok'), 30, read=lambda: self.do('state', check=False))
+        if not ok:
+            self.stop()
+            out = self.launcher.stdout.read() if self.launcher.poll() is not None else ''
+            raise RuntimeError(f'the lab hub did not answer on its pipe within 30 s: {out.strip()[:300]}')
+        if f'folder {self.lab}' not in self.log():
+            self.stop()
+            raise RuntimeError("the hub that answered is not this run's (no start line for this folder in its log)")
+
+    def stop(self):
+        if self.launcher is None:
+            return
+        try:
+            hidden_ps(stop_script(self.desktop)).wait(30)  # the launcher's own teardown, by name
+            self.launcher.wait(30)
+        except subprocess.TimeoutExpired:
+            self.launcher.kill()  # our own launcher handle; its job closes the hub
+        self.launcher = None
 
 
 def step(check, name, fn):
@@ -577,10 +654,7 @@ def supervisor_steps(hub, check):
         return
 
     def tray_line():
-        hub.do('tray-menu')
-        ok, s = hub.wait(lambda s: s['tray'].get('menu') is not None, 5)
-        hub.do('menu-key', 'esc')
-        return tray_status(s) if ok else None
+        return tray_status(hub.state())  # the tray model's line (G3), no menu opened
 
     def crash_once(k):
         pids = hub.pids(exe)
@@ -652,10 +726,7 @@ def state_steps(hub, check):
     names = manifest_names(hub.lab)
 
     def tray_line():
-        hub.do('tray-menu')
-        ok, s = hub.wait(lambda s: s['tray'].get('menu') is not None, 5)
-        hub.do('menu-key', 'esc')
-        return tray_status(s) if ok else None
+        return tray_status(hub.state())  # the tray model's line (G3), no menu opened
 
     def s2_needs_hub():
         newer = needs_hub_modules(hub.lab)
@@ -761,7 +832,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the hideout.exe under test')
     ap.add_argument('--lab', required=True, type=tool_arg('--lab', kind='dir'), help="the lab hub's HIDEOUT_CONFIG_DIR")
-    ap.add_argument('--start', action='store_true', help='start the lab hub (and stop it at the end)')
+    ap.add_argument('--start', action='store_true',
+                    help='start the lab hub on its own hidden desktop through quiet-launch.ps1 (and stop it at the end)')
+    ap.add_argument('--seconds', type=int, default=1800, help='hard time limit of the hidden hub (1..3600)')
     ap.add_argument('--only', default='flyout,pages,supervisor,states', help='which groups to run')
     ap.add_argument('--shots', default=None, help='where capture PNGs go (default <lab>\\lab-shots)')
     args = ap.parse_args()
@@ -771,7 +844,12 @@ def main():
         print(f'BLOCKED: {args.lab} is the user\'s hub folder', flush=True)
         print('RESULT BLOCKED', flush=True)
         sys.exit(2)
-    hub = Hub(args.app, args.lab, args.shots or Path(args.lab) / 'lab-shots')
+    shots = args.shots or Path(args.lab) / 'lab-shots'
+    if args.start:
+        desktop = 'hlc-' + os.urandom(3).hex()
+        hub = QuietHub(args.app, args.lab, shots, desktop, {}, seconds=args.seconds)
+    else:
+        hub = Hub(args.app, args.lab, shots)  # an already running hub (its desktop is the caller's)
     check = Checks()
     try:
         if args.start:
