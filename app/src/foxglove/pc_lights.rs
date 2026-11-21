@@ -49,6 +49,9 @@ pub struct Saved {
     /// Zone id (the board's number) to `#rrggbb`.
     pub colors: BTreeMap<String, String>,
     pub match_keyboard: bool,
+    /// The effect of its own the device plays (by its catalog name); `None`: steady colours.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect: Option<String>,
 }
 
 /// One device as the page shows it.
@@ -85,6 +88,10 @@ pub struct Row {
     pub shape: Option<foxglove_devices::pc_lighting::Shape>,
     /// A Dynamic Lighting device Foxglove drives: whether Windows lets it now (#691).
     pub lamp_access: Option<pcl::LampAccess>,
+    /// The effects it plays by itself that Foxglove can start, as its driver offers them.
+    pub effects: Vec<pcl::OnboardEffect>,
+    /// The one of them it is set to play; `None`: steady colours.
+    pub effect: Option<String>,
 }
 
 /// An app the catalog names as a conflict for a found device, running now.
@@ -221,6 +228,7 @@ pub fn place_of(msg: &Msg) -> Place {
         | Msg::Off(key)
         | Msg::Identify(key)
         | Msg::Match(key, _)
+        | Msg::Effect { key, .. }
         | Msg::Recalibrate(key) => Place::Row(key.clone()),
         Msg::KeyboardLamp { .. } | Msg::KeyboardLampRelease => Place::Keyboard,
         Msg::TestZone { .. } | Msg::SaveLocal(_) | Msg::RemoveLocal(..) => Place::Sources,
@@ -250,6 +258,13 @@ pub enum Msg {
     Off(String),
     Identify(String),
     Match(String, bool),
+    /// The effect of its own a device plays by itself (one of its [`Row::effects`], by name);
+    /// `None`: steady colours again. Saved. A scene or a lease draws over it; it starts again
+    /// at their end.
+    Effect {
+        key: String,
+        effect: Option<String>,
+    },
     /// A colour Foxglove is about to send the keyboard (the accent follower sends it). Ignored
     /// since #616: the push may not take (the keymap has no colour behavior) and an effect may
     /// hide it, so the case follows the keyboard's own report ([`Msg::Keyboard`]) instead.
@@ -329,6 +344,9 @@ pub enum Msg {
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
 /// A board's colours back after a scene: its key, its name and (zone index, colour) pairs.
 type Restore = (String, String, Vec<(usize, Rgb)>);
+
+/// An effect to start: its name, and each zone's colours for it.
+type DueEffect = (String, Vec<(usize, Vec<Rgb>)>);
 
 /// Each board's colours by key: (zone index, colour) pairs.
 pub type BoardColours = BTreeMap<String, Vec<(usize, [u8; 3])>>;
@@ -1069,19 +1087,193 @@ impl Worker {
             .enumerate()
             .filter_map(|(i, c)| Some((i, c?)))
             .collect();
-        if colors.is_empty() {
+        if !colors.is_empty() {
+            if let Some(d) = self.drivers.get_mut(&f.key) {
+                if let Err(e) = d.set_zones(&colors) {
+                    eprintln!("Foxglove: {}: {e}", f.name);
+                }
+            }
+        }
+        self.effect_start(&f.key, Some(f));
+    }
+
+    /// The effect of its own a device is set to play, if its driver offers it.
+    fn saved_effect(&self, key: &str) -> Option<pcl::OnboardEffect> {
+        let name = self.settings.devices.get(key)?.effect.as_ref()?;
+        let offered = self.drivers.get(key)?.effects();
+        offered.into_iter().find(|e| &e.name == name)
+    }
+
+    /// The effect a device is set to play but doesn't (a steady colour was written over it, or
+    /// it just arrived), with each zone's colours for it: the zone's own colour, or the
+    /// spectrum. `None` while a scene or a lease holds the lights: their end asks again.
+    /// `arriving`: the device, while a scan is still listing it.
+    fn effect_due(&self, key: &str, arriving: Option<&Found>) -> Option<DueEffect> {
+        let effect = self.saved_effect(key)?;
+        if self.scene.is_some() || self.leased.contains_key(key) {
+            return None;
+        }
+        let d = self.drivers.get(key)?;
+        if d.effect().as_deref() == Some(effect.name.as_str()) {
+            return None;
+        }
+        let colors = if effect.own_colours {
+            let f = arriving.or_else(|| self.found.iter().find(|f| f.key == key))?;
+            pcl::restore_colors(&d.colors(), &self.saved_colors(f))
+                .into_iter()
+                .map(|(i, c)| (i, vec![c]))
+                .collect()
+        } else {
+            (0..d.zones().len())
+                .map(|i| (i, pcl::SPECTRUM.to_vec()))
+                .collect()
+        };
+        Some((effect.name, colors))
+    }
+
+    /// Starts the effect a device is set to play, if it isn't playing ([`Self::effect_due`]).
+    /// `None`: nothing was due.
+    fn effect_again(&mut self, key: &str) -> Option<foxglove_devices::Result<()>> {
+        self.effect_start(key, None)
+    }
+
+    fn effect_start(
+        &mut self,
+        key: &str,
+        arriving: Option<&Found>,
+    ) -> Option<foxglove_devices::Result<()>> {
+        let (name, colors) = self.effect_due(key, arriving)?;
+        let d = self.drivers.get_mut(key)?;
+        let result = d.set_effect(&name, &colors);
+        if let Err(e) = &result {
+            eprintln!("Foxglove: {}: {name}: {e}", d.name());
+        }
+        Some(result)
+    }
+
+    /// The devices whose own effect a request may have drawn over: asked again after it.
+    fn effect_keys(&self, msg: &Msg) -> Vec<String> {
+        let set = |all: bool| {
+            self.settings
+                .devices
+                .iter()
+                .filter(|(_, s)| s.effect.is_some() && (all || s.match_keyboard))
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+        match msg {
+            Msg::Set { key, .. }
+            | Msg::Off(key)
+            | Msg::Identify(key)
+            | Msg::Match(key, _)
+            | Msg::Recalibrate(key)
+            | Msg::LeaseEnd(key) => vec![key.clone()],
+            Msg::SceneEnd => set(true),
+            Msg::Keyboard(_) => set(false),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Steady colours on a device that plays an effect of its own it isn't set to play any
+    /// more: the colours Foxglove knows, else the saved ones. Nothing while a scene or a lease
+    /// holds it (it shows steady colours already).
+    fn steady(&mut self, key: &str) {
+        let Some(d) = self.drivers.get(key) else {
+            return;
+        };
+        if d.effect().is_none() || self.scene.is_some() || self.leased.contains_key(key) {
             return;
         }
-        if let Some(d) = self.drivers.get_mut(&f.key) {
-            if let Err(e) = d.set_zones(&colors) {
-                eprintln!("Foxglove: {}: {e}", f.name);
+        let saved = self
+            .found
+            .iter()
+            .find(|f| f.key == key)
+            .map(|f| self.saved_colors(f))
+            .unwrap_or_default();
+        let colors = pcl::restore_colors(&d.colors(), &saved);
+        self.write(key, "Steady colours", |d| d.set_zones(&colors), false);
+    }
+
+    /// The user's pick of a device's own effect ([`Msg::Effect`]).
+    fn pick_effect(&mut self, key: &str, effect: Option<String>) {
+        let row = Place::Row(key.to_string());
+        let Some(d) = self.drivers.get(key) else {
+            self.say(row, Tone::Problem, "That device isn't connected now");
+            return;
+        };
+        let dev = d.name().to_string();
+        let offered = d.effects();
+        let spec = match &effect {
+            None => None,
+            Some(name) => match offered.into_iter().find(|e| &e.name == name) {
+                Some(spec) => Some(spec),
+                None => {
+                    let text = format!("{dev} has no effect of its own called {name}");
+                    self.say(row, Tone::Problem, text);
+                    return;
+                }
+            },
+        };
+        let saved = self.settings.devices.entry(key.to_string()).or_default();
+        let before = saved.clone();
+        saved.effect = effect;
+        // An effect in colours of its own can't show the keyboard's.
+        let mut unmatched = "";
+        if spec.as_ref().is_some_and(|s| !s.own_colours) && saved.match_keyboard {
+            saved.match_keyboard = false;
+            unmatched = " (Match keyboard off)";
+        }
+        self.dirty = true;
+        let Some(spec) = spec else {
+            self.steady(key);
+            // A write that failed says so itself.
+            if self.drivers.get(key).is_some_and(|d| d.effect().is_none()) {
+                self.say(row, Tone::Done, format!("{dev}: steady colours"));
             }
+            return;
+        };
+        let name = spec.name;
+        if self.scene.is_some() {
+            let text = format!("{dev}: {name} starts when the scene ends");
+            self.say(row, Tone::Note, text);
+            return;
+        }
+        if self.leased.contains_key(key) {
+            let text = format!("{dev}: {name} starts once nothing else draws on it");
+            self.say(row, Tone::Note, text);
+            return;
+        }
+        match self.effect_again(key) {
+            Some(Err(e)) => {
+                // Not started: the pick isn't kept.
+                self.settings.devices.insert(key.to_string(), before);
+                let text = match e {
+                    DeviceError::Disconnected => format!("{dev}: not connected"),
+                    e => format!("{dev}: {e}"),
+                };
+                self.say(row, Tone::Problem, text);
+            }
+            _ => self.say(row, Tone::Done, format!("{dev}: {name}{unmatched}")),
         }
     }
 
     /// Handles one request. `paused` refuses writes (#404); `wait` sleeps between identify
     /// steps.
     pub fn handle(&mut self, msg: Msg, paused: bool, wait: &mut dyn FnMut(std::time::Duration)) {
+        let drawn_over = self.effect_keys(&msg);
+        let gives_back = matches!(msg, Msg::SceneEnd | Msg::LeaseEnd(_));
+        self.handle_inner(msg, paused, wait);
+        // A device set to play an effect of its own plays it again once the steady colours
+        // this request wrote are on. Paused, only what gives the lights back does (#404).
+        if paused && !gives_back {
+            return;
+        }
+        for key in drawn_over {
+            self.effect_again(&key);
+        }
+    }
+
+    fn handle_inner(&mut self, msg: Msg, paused: bool, wait: &mut dyn FnMut(std::time::Duration)) {
         // Scene frames stop quietly while paused; the scene's end gives the colours back even
         // then, as leases do (#404).
         if paused && matches!(msg, Msg::SceneFrame { .. } | Msg::LampChanged(_)) {
@@ -1133,8 +1325,14 @@ impl Worker {
                 let zones = self.drivers.get(&key).map_or(0, |d| d.zones().len());
                 let dark: Vec<_> = (0..zones).map(|i| (i, pcl::BLACK)).collect();
                 self.scene_keeps(&key, &dark);
-                self.write(&key, "Lights off", |d| d.off(), true);
+                // Off is steady and dark: no effect of its own either.
+                if self.write(&key, "Lights off", |d| d.off(), true) {
+                    if let Some(saved) = self.settings.devices.get_mut(&key) {
+                        saved.effect = None;
+                    }
+                }
             }
+            Msg::Effect { key, effect } => self.pick_effect(&key, effect),
             Msg::SceneStart => {
                 if self.scene.is_none() {
                     let before = self
@@ -1223,15 +1421,25 @@ impl Worker {
                 );
             }
             Msg::Match(key, on) => {
-                self.settings
-                    .devices
-                    .entry(key.clone())
-                    .or_default()
-                    .match_keyboard = on;
+                // An effect in colours of its own can't show the keyboard's: steady again.
+                let fixed = on && self.saved_effect(&key).is_some_and(|e| !e.own_colours);
+                let saved = self.settings.devices.entry(key.clone()).or_default();
+                saved.match_keyboard = on;
+                if fixed {
+                    saved.effect = None;
+                }
                 self.dirty = true;
                 // A scene holds the lights: its end puts the matched colours on.
                 if on && self.scene.is_none() {
                     self.match_keyboard(&key, false);
+                }
+                if fixed {
+                    self.steady(&key);
+                    // The effect ended: say so, unless a write just said it failed.
+                    if let Some(d) = self.drivers.get(&key).filter(|d| d.effect().is_none()) {
+                        let text = format!("{}: matching the keyboard, steady", d.name());
+                        self.say(Place::Row(key.clone()), Tone::Done, text);
+                    }
                 }
             }
             // Superseded by the keyboard's report (#616); see the variant.
@@ -1759,25 +1967,26 @@ impl Worker {
     }
 
     /// Runs one driver call; `manual` saves the colours and stops matching the keyboard.
+    /// Whether it went.
     fn write(
         &mut self,
         key: &str,
         done: &str,
         call: impl FnOnce(&mut dyn LightingDevice) -> foxglove_devices::Result<()>,
         manual: bool,
-    ) {
+    ) -> bool {
         let Some(d) = self.drivers.get_mut(key) else {
             self.say(
                 Place::Row(key.to_string()),
                 Tone::Problem,
                 "That device isn't connected now",
             );
-            return;
+            return false;
         };
         let result = call(d.as_mut());
         self.lamp_applied(key, &result);
         let Some(d) = self.drivers.get_mut(key) else {
-            return;
+            return result.is_ok();
         };
         // Under a scene, the other zones show its frame: the user's colours are the kept ones.
         let colors = match self.scene.as_ref().and_then(|s| s.get(key)) {
@@ -1785,20 +1994,43 @@ impl Worker {
             _ => d.colors(),
         };
         let name = d.name().to_string();
+        // Its effects in colours of their own: the user's colours end one (they'd not show).
+        let fixed: Vec<String> = d
+            .effects()
+            .into_iter()
+            .filter(|e| !e.own_colours)
+            .map(|e| e.name)
+            .collect();
+        // Colours picked over one of them: the row says the effect ended (Off says dark).
+        let ends = manual
+            && done != "Lights off"
+            && self
+                .settings
+                .devices
+                .get(key)
+                .and_then(|s| s.effect.as_ref())
+                .is_some_and(|e| fixed.contains(e));
+        let steady = if ends { ", steady" } else { "" };
         let (tone, text) = match &result {
-            Ok(()) => (Tone::Done, format!("{name}: {}", done.to_lowercase())),
+            Ok(()) => (
+                Tone::Done,
+                format!("{name}: {}{steady}", done.to_lowercase()),
+            ),
             Err(DeviceError::Disconnected) => (Tone::Problem, format!("{name}: not connected")),
             Err(e) => (Tone::Problem, format!("{name}: {e}")),
         };
         self.say(Place::Row(key.to_string()), tone, text);
         if result.is_err() || !manual {
-            return;
+            return result.is_ok();
         }
         let Some(found) = self.found.iter().find(|f| f.key == key) else {
-            return;
+            return true;
         };
         let saved = self.settings.devices.entry(key.to_string()).or_default();
         saved.match_keyboard = false;
+        if saved.effect.as_ref().is_some_and(|e| fixed.contains(e)) {
+            saved.effect = None;
+        }
         for (zone, c) in found.zones.iter().zip(colors) {
             if let Some(c) = c {
                 saved
@@ -1807,6 +2039,7 @@ impl Worker {
             }
         }
         self.dirty = true;
+        true
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -1854,6 +2087,12 @@ impl Worker {
                     kind: f.kind,
                     shape: f.shape,
                     lamp_access: self.drivers.get(&f.key).and_then(|d| d.lamp_access()),
+                    effects: self
+                        .drivers
+                        .get(&f.key)
+                        .map(|d| d.effects())
+                        .unwrap_or_default(),
+                    effect: self.saved_effect(&f.key).map(|e| e.name),
                 }
             })
             .collect();
@@ -2474,6 +2713,7 @@ mod tests {
             Saved {
                 colors: [("1".to_string(), "#a57500".to_string())].into(),
                 match_keyboard: false,
+                effect: None,
             },
         );
         let (mut w, _sent) = worker(settings);
@@ -2579,6 +2819,7 @@ mod tests {
             Saved {
                 colors: [("2".to_string(), "#112233".to_string())].into(),
                 match_keyboard: false,
+                effect: None,
             },
         );
         let (mut w, sent) = worker(settings.clone());
@@ -2752,6 +2993,361 @@ mod tests {
         assert_eq!(sent.lock().unwrap().len(), 16);
         w.handle(Msg::Keyboard(grey()), false, &mut no_wait());
         assert_eq!(sent.lock().unwrap().len(), 21);
+    }
+
+    const CASE: &str = "103c:84fd";
+
+    fn effect(name: Option<&str>) -> Msg {
+        Msg::Effect {
+            key: CASE.into(),
+            effect: name.map(str::to_string),
+        }
+    }
+
+    fn set(zone: usize, c: [u8; 3]) -> Msg {
+        Msg::Set {
+            key: CASE.into(),
+            colors: vec![(zone, c)],
+        }
+    }
+
+    /// One report of an effect of the board's own: the static one's layout with the effect,
+    /// its colour count, this colour's number, type 0x0A and the slow speed.
+    fn effect_report(zone: u8, mode: u8, count: u8, index: u8, c: [u8; 3]) -> Vec<u8> {
+        let mut b = report(zone, c);
+        b[3] = mode;
+        b[4] = count;
+        b[5] = index;
+        b[0x31] = 0x0A;
+        b[0x39] = 0x01;
+        b
+    }
+
+    fn take(sent: &Sent) -> Vec<Vec<u8>> {
+        std::mem::take(&mut *sent.lock().unwrap())
+    }
+
+    #[test]
+    fn breathing_plays_the_zone_colours_and_follows_new_ones() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let row = w.snapshot_row(CASE).unwrap();
+        let offered: Vec<_> = row.effects.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(offered, ["breathing", "colour cycle", "wave", "radial"]);
+        assert_eq!(row.effect, None);
+        // The cooler (not driven) and the mouse (Dynamic Lighting) offer none.
+        let others = w.snapshot().devices;
+        assert!(others
+            .iter()
+            .filter(|r| r.key != CASE)
+            .all(|r| r.effects.is_empty()));
+        w.handle(set(0, [1, 2, 3]), false, &mut no_wait());
+        take(&sent);
+        w.dirty = false;
+
+        w.handle(effect(Some("breathing")), false, &mut no_wait());
+        let got = take(&sent);
+        assert_eq!(got.len(), 5, "one report a zone");
+        assert_eq!(got[0], effect_report(1, 0x06, 1, 1, [1, 2, 3]));
+        assert_eq!(got[4], effect_report(7, 0x06, 1, 1, [255, 255, 255]));
+        assert_eq!(
+            w.settings.devices[CASE].effect.as_deref(),
+            Some("breathing")
+        );
+        assert!(w.dirty);
+        let st = w.snapshot().status.unwrap();
+        assert_eq!(
+            (st.place.clone(), st.tone),
+            (Place::Row(CASE.into()), Tone::Done)
+        );
+        assert!(st.ends_with(": breathing"), "{}", &*st);
+        assert_eq!(
+            w.snapshot_row(CASE).unwrap().effect.as_deref(),
+            Some("breathing")
+        );
+        // Picked again: it plays already, nothing is sent.
+        w.handle(effect(Some("breathing")), false, &mut no_wait());
+        assert!(take(&sent).is_empty());
+
+        // New colours: it breathes in them, and stays the pick.
+        w.handle(set(0, [9, 9, 9]), false, &mut no_wait());
+        let got = take(&sent);
+        assert_eq!(got.len(), 6);
+        assert_eq!(got[0], report(1, [9, 9, 9]));
+        assert_eq!(got[1], effect_report(1, 0x06, 1, 1, [9, 9, 9]));
+        assert_eq!(w.settings.devices[CASE].colors["1"], "#090909");
+        assert_eq!(
+            w.settings.devices[CASE].effect.as_deref(),
+            Some("breathing")
+        );
+        // Identify blinks steady colours over it; it breathes again after.
+        w.handle(Msg::Identify(CASE.into()), false, &mut no_wait());
+        let got = take(&sent);
+        assert_eq!(got[got.len() - 5], effect_report(1, 0x06, 1, 1, [9, 9, 9]));
+
+        // Steady colours: the colours as they were, steady, and nothing more.
+        w.handle(effect(None), false, &mut no_wait());
+        let got = take(&sent);
+        assert_eq!(got.len(), 5);
+        assert_eq!(got[0], report(1, [9, 9, 9]));
+        assert_eq!(w.settings.devices[CASE].effect, None);
+        assert!(w.snapshot().status.unwrap().ends_with(": steady colours"));
+        w.handle(effect(None), false, &mut no_wait());
+        w.handle(set(1, [4, 4, 4]), false, &mut no_wait());
+        assert_eq!(take(&sent), vec![report(2, [4, 4, 4])]);
+    }
+
+    #[test]
+    fn an_effect_in_its_own_colours_plays_until_colours_are_picked() {
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            CASE.into(),
+            Saved {
+                match_keyboard: true,
+                ..Default::default()
+            },
+        );
+        let (mut w, sent) = worker(settings);
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        take(&sent);
+        let spectrum = [
+            [255, 0, 0],
+            [255, 255, 0],
+            [0, 255, 0],
+            [0, 255, 255],
+            [0, 0, 255],
+            [255, 0, 255],
+        ];
+
+        w.handle(effect(Some("wave")), false, &mut no_wait());
+        let got = take(&sent);
+        assert_eq!(got.len(), 30, "six colours a zone");
+        for (i, c) in spectrum.iter().enumerate() {
+            assert_eq!(got[i], effect_report(1, 0x09, 6, i as u8 + 1, *c));
+            assert_eq!(got[24 + i], effect_report(7, 0x09, 6, i as u8 + 1, *c));
+        }
+        let saved = &w.settings.devices[CASE];
+        assert_eq!(saved.effect.as_deref(), Some("wave"));
+        assert!(!saved.match_keyboard, "it can't show the keyboard's colour");
+        let st = w.snapshot().status.unwrap();
+        assert!(st.ends_with(": wave (Match keyboard off)"), "{}", &*st);
+        // The keyboard's report doesn't draw over it.
+        w.handle(Msg::Keyboard(solid(240)), false, &mut no_wait());
+        assert!(take(&sent).is_empty());
+
+        // Colours picked: steady, in them.
+        w.handle(set(0, [1, 2, 3]), false, &mut no_wait());
+        assert_eq!(take(&sent), vec![report(1, [1, 2, 3])]);
+        assert_eq!(w.settings.devices[CASE].effect, None);
+        assert_eq!(w.snapshot_row(CASE).unwrap().effect, None);
+        let st = w.snapshot().status.unwrap();
+        assert!(
+            st.ends_with(", steady"),
+            "the row says the effect ended: {}",
+            &*st
+        );
+
+        // Off: dark and steady.
+        w.handle(effect(Some("radial")), false, &mut no_wait());
+        assert_eq!(take(&sent)[0][3], 0x0A);
+        assert!(w.snapshot().status.unwrap().ends_with(": radial"));
+        w.handle(Msg::Off(CASE.into()), false, &mut no_wait());
+        assert!(w.snapshot().status.unwrap().ends_with(": lights off"));
+        assert_eq!(
+            take(&sent),
+            (0..5)
+                .map(|i| report([1, 2, 5, 6, 7][i], [0; 3]))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(w.settings.devices[CASE].effect, None);
+
+        // Match keyboard turned on: steady, in the keyboard's colour.
+        w.handle(effect(Some("colour cycle")), false, &mut no_wait());
+        assert_eq!(take(&sent)[0][3], 0x07);
+        w.handle(Msg::Match(CASE.into(), true), false, &mut no_wait());
+        let got = take(&sent);
+        assert_eq!(got.len(), 5, "steady colours, once");
+        assert!(got.iter().all(|r| r[3] == 0x01));
+        let saved = &w.settings.devices[CASE];
+        assert!(saved.match_keyboard && saved.effect.is_none());
+        let st = w.snapshot().status.unwrap();
+        assert!(st.ends_with(": matching the keyboard, steady"), "{}", &*st);
+        assert_eq!(w.drivers[CASE].effect(), None);
+    }
+
+    #[test]
+    fn breathing_with_match_keyboard_breathes_in_the_keyboards_colour() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        w.handle(Msg::Keyboard(solid(0)), false, &mut no_wait());
+        w.handle(Msg::Match(CASE.into(), true), false, &mut no_wait());
+        w.handle(effect(Some("breathing")), false, &mut no_wait());
+        assert!(
+            w.settings.devices[CASE].match_keyboard,
+            "breathing keeps it"
+        );
+        take(&sent);
+        w.handle(Msg::Keyboard(solid(240)), false, &mut no_wait());
+        let got = take(&sent);
+        assert_eq!(got.len(), 10, "the new colour, then breathing in it");
+        assert_eq!(got[0][3], 0x01);
+        assert_eq!(got[5][3], 0x06);
+        assert_eq!(&got[5][0x08..0x0B], &got[0][0x08..0x0B]);
+        // Paused: the report isn't taken, and nothing is written.
+        w.handle(Msg::Keyboard(solid(120)), true, &mut no_wait());
+        assert!(take(&sent).is_empty());
+    }
+
+    #[test]
+    fn a_scene_and_a_lease_draw_over_the_effect_and_their_end_starts_it_again() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        w.handle(set(0, [1, 2, 3]), false, &mut no_wait());
+        w.handle(effect(Some("breathing")), false, &mut no_wait());
+        take(&sent);
+        let frame = |c: [u8; 3]| (0..5).map(|i| (i, c)).collect::<Vec<_>>();
+
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        w.handle(
+            Msg::SceneFrame {
+                key: CASE.into(),
+                colors: frame([5, 5, 5]),
+            },
+            false,
+            &mut no_wait(),
+        );
+        let got = take(&sent);
+        assert!(
+            got.iter().all(|r| r[3] == 0x01),
+            "the scene's steady colours"
+        );
+        assert_eq!(w.drivers[CASE].effect(), None);
+        // Picked while the scene runs: saved, started at its end.
+        w.handle(effect(Some("wave")), false, &mut no_wait());
+        assert!(take(&sent).is_empty());
+        let st = w.snapshot().status.unwrap();
+        assert_eq!(st.tone, Tone::Note);
+        assert!(
+            st.ends_with(": wave starts when the scene ends"),
+            "{}",
+            &*st
+        );
+        // Colours picked meanwhile don't start it either.
+        w.handle(effect(Some("breathing")), false, &mut no_wait());
+        w.handle(set(1, [7, 7, 7]), false, &mut no_wait());
+        assert!(take(&sent).iter().all(|r| r[3] == 0x01));
+        // The end gives the colours back, then the effect; also while paused.
+        w.handle(Msg::SceneEnd, true, &mut no_wait());
+        let got = take(&sent);
+        assert_eq!(got.len(), 10);
+        assert_eq!(got[0], report(1, [1, 2, 3]));
+        assert_eq!(got[5], effect_report(1, 0x06, 1, 1, [1, 2, 3]));
+        assert_eq!(got[6], effect_report(2, 0x06, 1, 1, [7, 7, 7]));
+
+        // A lease: the same.
+        w.handle(
+            Msg::LeaseShow {
+                key: CASE.into(),
+                colors: frame([8, 8, 8]),
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert!(take(&sent).iter().all(|r| r[3] == 0x01));
+        w.handle(effect(Some("radial")), false, &mut no_wait());
+        assert!(take(&sent).is_empty());
+        assert!(w
+            .snapshot()
+            .status
+            .unwrap()
+            .ends_with(": radial starts once nothing else draws on it"));
+        w.handle(Msg::LeaseEnd(CASE.into()), true, &mut no_wait());
+        let got = take(&sent);
+        assert_eq!(got.len(), 5 + 30);
+        assert_eq!(got[0], report(1, [1, 2, 3]));
+        assert_eq!(got[5][3], 0x0A);
+    }
+
+    #[test]
+    fn an_arriving_board_gets_its_colours_then_its_effect() {
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            CASE.into(),
+            Saved {
+                colors: [("1".to_string(), "#112233".to_string())].into(),
+                effect: Some("breathing".into()),
+                ..Default::default()
+            },
+        );
+        // The vendor's app runs: nothing is written, as for colours.
+        let (mut w, sent) = worker(settings.clone());
+        w.scan(&case_hid(), &mut studio(), false, true);
+        assert!(take(&sent).is_empty());
+        // Paused: nothing either.
+        let (mut w, sent) = worker(settings.clone());
+        w.scan(&case_hid(), &mut nothing(), true, true);
+        assert!(take(&sent).is_empty());
+        w.handle(effect(Some("wave")), true, &mut no_wait());
+        assert!(take(&sent).is_empty());
+        assert!(w.snapshot().status.unwrap().contains("paused"));
+        assert_eq!(
+            w.settings.devices[CASE].effect.as_deref(),
+            Some("breathing")
+        );
+
+        let (mut w, sent) = worker(settings);
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let got = take(&sent);
+        assert_eq!(got.len(), 6);
+        assert_eq!(got[0], report(1, [0x11, 0x22, 0x33]));
+        assert_eq!(got[1], effect_report(1, 0x06, 1, 1, [0x11, 0x22, 0x33]));
+        assert_eq!(
+            w.snapshot_row(CASE).unwrap().effect.as_deref(),
+            Some("breathing")
+        );
+        // A rescan with the board still there writes nothing.
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert!(take(&sent).is_empty());
+    }
+
+    #[test]
+    fn an_effect_the_board_lacks_is_refused_and_old_settings_load() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        take(&sent);
+        // Blinking is in the board's catalog entry, but Foxglove never starts it.
+        for name in ["blinking", "strobe"] {
+            w.handle(effect(Some(name)), false, &mut no_wait());
+            let st = w.snapshot().status.unwrap();
+            assert_eq!(st.tone, Tone::Problem);
+            assert!(st.contains("no effect of its own called"), "{}", &*st);
+        }
+        assert!(take(&sent).is_empty());
+        assert!(!w.dirty && !w.settings.devices.contains_key(CASE));
+        // A device with none (the mouse), and one that's gone.
+        for key in [MOUSE, "gone"] {
+            w.handle(
+                Msg::Effect {
+                    key: key.into(),
+                    effect: Some("breathing".into()),
+                },
+                false,
+                &mut no_wait(),
+            );
+            assert_eq!(w.snapshot().status.unwrap().tone, Tone::Problem);
+        }
+        assert!(!w.dirty);
+
+        // Settings from before the key load as steady colours, and steady saves no key.
+        let old: Settings =
+            toml::from_str("[devices.\"103c:84fd\"]\nmatch_keyboard = true\n").unwrap();
+        assert_eq!(old.devices[CASE].effect, None);
+        assert!(!toml::to_string(&old).unwrap().contains("effect"));
+        let mut new = old.clone();
+        new.devices.get_mut(CASE).unwrap().effect = Some("wave".into());
+        let text = toml::to_string(&new).unwrap();
+        assert!(text.contains("effect = \"wave\""), "{text}");
+        assert_eq!(toml::from_str::<Settings>(&text).unwrap(), new);
     }
 
     #[test]
@@ -2933,6 +3529,7 @@ mod tests {
             Saved {
                 colors: [("1".to_string(), "#112233".to_string())].into(),
                 match_keyboard: false,
+                effect: None,
             },
         );
         let (mut w, sent) = worker(settings);
@@ -3689,6 +4286,7 @@ mod tests {
                     ("1".into(), "#00ff00".into()),
                 ]),
                 match_keyboard: false,
+                effect: None,
             },
         );
         let (w, _) = worker(settings.clone());
@@ -3911,6 +4509,7 @@ zones = [{ id = 3, name = \"Logo\" }]
                 Saved {
                     colors: [("3".to_string(), "#0000ff".to_string())].into(),
                     match_keyboard: false,
+                    effect: None,
                 },
             );
         }
@@ -4223,6 +4822,7 @@ zones = [{ id = 3, name = \"Logo\" }]
                     .map(|z| (z.to_string(), "#0a0b0c".to_string()))
                     .collect(),
                 match_keyboard: false,
+                effect: None,
             },
         );
         let (mut w, sent) = worker(settings);
@@ -4361,6 +4961,7 @@ zones = [{ id = 3, name = \"Logo\" }]
             Saved {
                 colors: [("1".to_string(), "#ff0000".to_string())].into(),
                 match_keyboard: false,
+                effect: None,
             },
         );
         let (mut w, news) = openrgb_fake::worker(saved, on(fake.addr.port(), false));
