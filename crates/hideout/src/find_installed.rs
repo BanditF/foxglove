@@ -347,6 +347,22 @@ pub fn adopt(
     found: &Found,
     now: &str,
 ) -> Result<String, String> {
+    adopt_with(m, home, staging, found, now, crate::adopt::run)
+}
+
+/// How [`adopt`]'s error ends when what was registered is not the text it staged.
+pub(crate) const SWAPPED: &str = " changed while it was added";
+
+/// [`adopt`] with the registering step given (`crate::adopt::run`; a test swaps the staged
+/// file in it).
+fn adopt_with(
+    m: &dyn Machine,
+    home: &Path,
+    staging: &Path,
+    found: &Found,
+    now: &str,
+    register: impl Fn(&Path, &Path, &str) -> Result<String, String>,
+) -> Result<String, String> {
     let p = product(&found.id).ok_or_else(|| "not an app Hideout knows".to_string())?;
     let text = manifest_text(m, p, found)?;
     // The product the user chose is the one registered, whatever id the template names.
@@ -354,11 +370,26 @@ pub fn adopt(
         return Err(format!("{} names another app", p.name));
     }
     let dir = staging.join(&p.id);
+    // The ids registered before this call. An earlier record of this id (and its grants) is not
+    // ours to drop on a failed check; when the registry can't be read, nothing is dropped.
+    let before: Option<Vec<String>> = hideout_registry::Registry::open_from_env(home)
+        .ok()
+        .map(|r| r.inventory.modules.keys().cloned().collect());
+    let fresh = before.as_ref().is_some_and(|b| !b.contains(&p.id));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    std::fs::write(dir.join("module.toml"), text)
+    std::fs::write(dir.join("module.toml"), &text)
         .map_err(|e| format!("manifest not saved: {e}"))?;
-    let out = crate::adopt::run(home, &dir, now);
+    let out = register(home, &dir, now);
     let _ = std::fs::remove_dir_all(&dir);
+    // What the registry now holds must be the text made above, byte for byte: a swap of the
+    // staged file between the write and the adopt code's read does not stay registered.
+    if let Ok(line) = &out {
+        if !crate::discover::registered_matches(home, &p.id, &text, fresh) {
+            // The adopt code may have registered another id: that record does not stay either.
+            crate::discover::drop_stray(home, line, before.as_deref());
+            return Err(format!("{}{SWAPPED}", p.name));
+        }
+    }
     out
 }
 
@@ -1217,6 +1248,114 @@ mod tests {
         assert_eq!(
             adopt(&m, &home, &staging, &newer, "2026-11-18T09:00:00Z").unwrap(),
             "registered foxglove 0.3.1 (installed separately)"
+        );
+    }
+
+    /// The staged file is swapped before the adopt code reads it: a first add is refused and
+    /// leaves no record; a refresh is refused and the record that was there stays.
+    #[test]
+    fn a_staged_file_swapped_before_it_is_registered_does_not_stay() {
+        let install = temp("swap-install");
+        let exe = install.join("foxglove.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        let home = temp("swap-home");
+        let staging = temp("swap-staging");
+        let found = Found {
+            id: "foxglove".into(),
+            exe,
+            version: "0.3.0".into(),
+            source: Source::Record,
+            folder: None,
+            manifest: None,
+        };
+        let m = Fake::default();
+        let swapped = |home: &Path, dir: &Path, now: &str| {
+            let at = dir.join("module.toml");
+            let text = std::fs::read_to_string(&at).unwrap();
+            std::fs::write(
+                &at,
+                format!(
+                    "{text}
+# swapped
+"
+                ),
+            )
+            .unwrap();
+            crate::adopt::run(home, dir, now)
+        };
+        let has = |home: &Path| {
+            hideout_registry::Registry::open_from_env(home)
+                .unwrap()
+                .inventory
+                .modules
+                .get("foxglove")
+                .map(|e| e.version.clone())
+        };
+        let now = "2026-11-21T08:00:00Z";
+        let e = adopt_with(&m, &home, &staging, &found, now, swapped).unwrap_err();
+        assert!(e.contains("changed while it was added"), "{e}");
+        assert_eq!(
+            has(&home),
+            None,
+            "a first add that fails the check is removed"
+        );
+
+        adopt(&m, &home, &staging, &found, now).unwrap();
+        let newer = Found {
+            version: "0.3.1".into(),
+            ..found
+        };
+        assert!(adopt_with(&m, &home, &staging, &newer, now, swapped).is_err());
+        assert!(
+            has(&home).is_some(),
+            "a record that was there is not dropped"
+        );
+    }
+
+    /// The staged file is swapped for one that names another id: neither id stays registered.
+    #[test]
+    fn a_staged_file_swapped_for_another_id_leaves_no_record() {
+        let install = temp("swap-id-install");
+        let exe = install.join("foxglove.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        let home = temp("swap-id-home");
+        let found = Found {
+            id: "foxglove".into(),
+            exe,
+            version: "0.3.0".into(),
+            source: Source::Record,
+            folder: None,
+            manifest: None,
+        };
+        let other = |home: &Path, dir: &Path, now: &str| {
+            let at = dir.join("module.toml");
+            let text = std::fs::read_to_string(&at).unwrap();
+            let swapped = text.replace("id = \"foxglove\"", "id = \"fennec\"");
+            assert_ne!(swapped, text);
+            std::fs::write(&at, swapped).unwrap();
+            let line = crate::adopt::run(home, dir, now);
+            assert!(
+                line.as_ref()
+                    .is_ok_and(|l| l.starts_with("registered fennec ")),
+                "{line:?}"
+            );
+            line
+        };
+        let e = adopt_with(
+            &Fake::default(),
+            &home,
+            &temp("swap-id-staging"),
+            &found,
+            "2026-11-21T08:00:00Z",
+            other,
+        )
+        .unwrap_err();
+        assert!(e.ends_with(SWAPPED), "{e}");
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert!(
+            reg.inventory.modules.is_empty(),
+            "{:?}",
+            reg.inventory.modules.keys()
         );
     }
 
