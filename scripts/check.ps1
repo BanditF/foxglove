@@ -110,6 +110,7 @@ Step 'scripts: demo-up tests' { powershell -NoProfile -ExecutionPolicy Bypass -F
         # it must compile warning-free that way, and no crate in its graph may have the feature on.
         Step 'hub: build without lab switches' {
             cargo clippy -p hideout --no-default-features -- -D warnings
+            if (!$LASTEXITCODE) { cargo test -q -p hideout-registry -p hideout-shell --no-default-features --lib -- lab:: paths:: }
             if (!$LASTEXITCODE) {
                 foreach ($c in 'hideout-registry', 'hideout-router', 'hideout-shell', 'hideout-supervisor', 'hideout-services') {
                     $t = @(cargo tree --locked --offline -p hideout --no-default-features -e features -i $c)
