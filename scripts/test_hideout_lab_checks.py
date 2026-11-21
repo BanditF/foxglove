@@ -231,6 +231,38 @@ class UxRunTests(unittest.TestCase):
                                                            {'role': 'Text', 'name': ''}]}
         self.assertEqual(self.ux.unnamed_focusables(tree), ['Button'])
 
+    def test_sensors_fixture_places_what_demo_up_places(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for n, b in (('hideout.exe', b'MZ1'), ('sensors.exe', b'MZ2')):
+                (d / n).write_bytes(b)
+            toml = d / 'module.toml'
+            toml.write_text('id = "org.foxglove.sensors"' + chr(10) + 'version = "0.1.0"' + chr(10), encoding='utf-8')
+            app, manifest = self.ux.sensors_fixture(d / 'lab', d / 'hideout.exe', d / 'sensors.exe', toml)
+            lab = d / 'lab'
+            self.assertEqual(app, lab / 'hub' / 'hideout.exe')
+            self.assertEqual(manifest, lab / 'hub' / 'apps' / 'sensors' / 'module.toml')
+            self.assertEqual((lab / 'hub' / 'apps' / 'sensors' / 'sensors.exe').read_bytes(), b'MZ2')
+            disc = (lab / 'cfg' / 'lab-discover.json').read_bytes()
+            self.assertFalse(disc.startswith(bytes([0xEF, 0xBB, 0xBF])))
+            self.assertEqual(json.loads(disc)['registry'], {})
+            self.assertEqual(self.ux.bump_version(manifest), '9.9.9')
+            self.assertIn('version = "9.9.9"', manifest.read_text(encoding='utf-8'))
+            self.assertIn('id = "org.foxglove.sensors"', manifest.read_text(encoding='utf-8'))
+
+    def test_readings_never_pass_a_bare_zero_temperature(self):
+        ok = self.ux.reading_ok
+        self.assertTrue(ok('Not reported'))
+        self.assertTrue(ok('54 °C'))
+        self.assertTrue(ok('0 %'))
+        self.assertFalse(ok('0 °C'))
+        self.assertFalse(ok('0'))
+        self.assertFalse(ok(None))
+        s = {'main': {'nodes': [{'name': 'Temperature, 54 degrees'}, {'value': '54 °C'}, {'name': 'Processor'}]}}
+        self.assertEqual(self.ux.value_after(s, 'Temperature'), '54 °C')
+        self.assertIsNone(self.ux.value_after(s, 'Processor'))
+
 
 if __name__ == '__main__':
     unittest.main()
