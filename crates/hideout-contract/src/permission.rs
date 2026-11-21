@@ -815,7 +815,13 @@ mod tests {
         ] {
             assert!(tool_runs_scripts(f), "{f}");
         }
-        for f in ["mytool.exe", "pythonista.exe", "shell.exe", "notes.exe", "spy.exe"] {
+        for f in [
+            "mytool.exe",
+            "pythonista.exe",
+            "shell.exe",
+            "notes.exe",
+            "spy.exe",
+        ] {
             assert!(!tool_runs_scripts(f), "{f}");
         }
     }

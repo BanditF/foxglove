@@ -27,6 +27,7 @@ use hideout_shell::permission_dialog_ui::{
     FirstRunAnswer, SectionAsk,
 };
 use hideout_shell::theme::Tokens;
+use hideout_shell::tool_dialog::{tool_dialog_ui, ToolAnswer, ToolDialog};
 
 /// What the user pressed to open the dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -570,6 +571,9 @@ pub struct PermUi {
     /// The first-run review: one dialog, a section per app (UX cut 3).
     pub first_run: Option<FirstRun>,
     first_run_drawn: bool,
+    /// The dialog for a program outside Hideout that asks for more than it may have (S1).
+    pub tool: Option<ToolDialog>,
+    tool_drawn: bool,
     /// The first-run header the user answered Not now, by (app, list code), until a list changes.
     first_hidden: Vec<(String, String)>,
     /// What the hub can see of standalone copies (FR5); none in tests that do not need it.
@@ -612,6 +616,8 @@ impl PermUi {
             keep_drawn: false,
             first_run: None,
             first_run_drawn: false,
+            tool: None,
+            tool_drawn: false,
             first_hidden: Vec::new(),
             standalone: None,
             handover_notes: Vec::new(),
@@ -1296,6 +1302,33 @@ impl PermUi {
             }
             ui.add_space(8.0);
         }
+        // A program outside Hideout waits for the user (S1): the newest ask, one line. It
+        // never opens a dialog by itself.
+        let waiting = self.hub.read(|r| r.tool_asks()).into_iter().next();
+        let mut open_tool: Option<egui::Id> = None;
+        let mut drop_tool: Option<hideout_router::ToolId> = None;
+        if let Some(a) = &waiting {
+            let n = ToolDialog::from_ask(a).items.len();
+            if n > 0 {
+                let h = header(HeaderKind::Tool, "", &a.name, Some((n, "")));
+                match perm_header_ui(ui, t, &h) {
+                    Some((true, id)) => open_tool = Some(id),
+                    Some((false, _)) => drop_tool = Some(a.id.clone()),
+                    None => {}
+                }
+                ui.add_space(8.0);
+            }
+        }
+        if let (Some(id), Some(a)) = (open_tool, &waiting) {
+            self.opener_id = Some(id);
+            self.open_tool(&a.id);
+        }
+        if let Some(id) = drop_tool {
+            self.hub.act(|r| {
+                r.dismiss_tool(&id);
+                Vec::new()
+            });
+        }
         let first_ids = if self.first_run_shown() {
             self.first_run_ids()
         } else {
@@ -1401,10 +1434,54 @@ impl PermUi {
         }
     }
 
+    /// Opens the dialog for the waiting program `id`. Nothing is allowed by opening it.
+    pub fn open_tool(&mut self, id: &hideout_router::ToolId) {
+        let ask = self
+            .hub
+            .read(|r| r.tool_asks())
+            .into_iter()
+            .find(|a| &a.id == id);
+        if let Some(a) = ask {
+            self.tool = Some(ToolDialog::from_ask(&a));
+            self.tool_drawn = false;
+        }
+    }
+
+    /// The tool dialog's answer: Allow hands exactly the items it drew to the router; Not now
+    /// drops the ask (the program asks again when it next connects).
+    pub fn answer_tool(&mut self, a: ToolAnswer) {
+        let Some(d) = self.tool.take() else { return };
+        match a {
+            ToolAnswer::Allow => {
+                let allowed = d.allowed();
+                self.hub.act(|r| r.set_tool_grants(&d.id, &allowed));
+            }
+            ToolAnswer::NotNow => self.hub.act(|r| {
+                r.dismiss_tool(&d.id);
+                Vec::new()
+            }),
+        }
+    }
+
     /// Draws the dialog while it is open. An Allow that was recorded comes back so the page can
     /// turn the module on; the focus goes back to the button that opened it.
     pub fn dialog(&mut self, ctx: &egui::Context, t: &Tokens) -> Vec<Done> {
         self.ctx = Some(ctx.clone());
+        if self.tool.is_some() {
+            let first = !self.tool_drawn;
+            self.tool_drawn = true;
+            let a = self
+                .tool
+                .as_mut()
+                .and_then(|d| tool_dialog_ui(ctx, t, d, first));
+            if let Some(a) = a {
+                self.answer_tool(a);
+                if let Some(id) = self.opener_id.take() {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
+            }
+            return Vec::new();
+        }
         if self.first_run.is_some() {
             let first = !self.first_run_drawn;
             self.first_run_drawn = true;
@@ -2951,6 +3028,91 @@ on = [\"open\", \"call\"]
         assert_eq!(d.title(), "Let 2 apps run in Hideout?");
         // Opening grants nothing.
         assert!(view(&f).bound.is_none() && view_of(&f, FOX).bound.is_none());
+    }
+
+    /// A UI over a router where a program outside Hideout (`C:\Tools\t.exe`) asked for more
+    /// than it may have, and the events the hub sends on.
+    fn tool_fx(
+        tag: &str,
+    ) -> (
+        PermUi,
+        mpsc::Receiver<hideout_router::Out>,
+        hideout_router::ToolId,
+    ) {
+        let home = std::env::temp_dir().join(format!("hideout-pact-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        Registry::open(&home, false).unwrap();
+        let mut router = Router::new(
+            Settings::default(),
+            Box::new(|tool, asked| crate::router_start::approve(tool, asked, false)),
+        );
+        let id = hideout_router::ToolId {
+            image_path: r"C:\Tools\t.exe".into(),
+            image_sha256: "aa".into(),
+        };
+        let c = router.connect(hideout_router::Origin::Pipe);
+        router.set_peer_pid(c, 4242);
+        router.set_peer_identity(c, Some(id.clone()));
+        let msg = serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
+            "client":{"name":"Tool","version":"1"},"api":"1.1",
+            "permissions":["devices.read","lighting.write","key.events"]}});
+        router.receive(c, &msg.to_string(), std::time::Instant::now());
+        let (events, rx) = mpsc::channel();
+        let ui = PermUi::new(&home, Hub::new(router, events));
+        (ui, rx, id)
+    }
+
+    #[test]
+    fn a_waiting_program_opens_nothing_and_not_now_drops_the_ask() {
+        let (mut ui, rx, id) = tool_fx("tool-notnow");
+        assert_eq!(ui.hub.read(|r| r.tool_asks()).len(), 1);
+        assert!(
+            ui.tool.is_none(),
+            "the header never opens a dialog by itself"
+        );
+        ui.open_tool(&id);
+        let d = ui.tool.clone().unwrap();
+        let drawn: Vec<&str> = d.items.iter().map(|i| i.raw.as_str()).collect();
+        assert_eq!(
+            drawn,
+            ["lighting.write"],
+            "the free item and the never item are not asked"
+        );
+        ui.answer_tool(ToolAnswer::NotNow);
+        assert!(ui.tool.is_none());
+        assert!(ui.hub.read(|r| r.tool_asks()).is_empty());
+        assert!(
+            !rx.try_iter()
+                .any(|o| matches!(o, hideout_router::Out::ToolRemembered { .. })),
+            "nothing was kept"
+        );
+    }
+
+    #[test]
+    fn allow_sends_grants_added() {
+        let (mut ui, rx, id) = tool_fx("tool-allow");
+        ui.open_tool(&id);
+        ui.answer_tool(ToolAnswer::Allow);
+        assert!(ui.hub.read(|r| r.tool_asks()).is_empty());
+        let kept: Vec<_> = rx
+            .try_iter()
+            .filter_map(|o| match o {
+                hideout_router::Out::ToolRemembered {
+                    image_path,
+                    granted,
+                    ..
+                } => Some((image_path, granted)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            [(
+                r"C:\Tools\t.exe".to_string(),
+                vec!["lighting.write".to_string()]
+            )]
+        );
     }
 
     #[test]

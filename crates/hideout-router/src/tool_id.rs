@@ -128,7 +128,12 @@ fn final_path(f: &std::fs::File) -> Option<PathBuf> {
     let mut buf = vec![0u16; 1024];
     // SAFETY: a valid file handle and a buffer of the length given.
     let n = unsafe {
-        GetFinalPathNameByHandleW(f.as_raw_handle() as _, buf.as_mut_ptr(), buf.len() as u32, 0)
+        GetFinalPathNameByHandleW(
+            f.as_raw_handle() as _,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            0,
+        )
     } as usize;
     (n != 0 && n <= buf.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])))
 }
@@ -235,7 +240,10 @@ mod tests {
         let mut f = open_for_hash(&p).unwrap();
         assert_eq!(hash_bounded(&mut f, 200_000, big).unwrap().len(), 64);
         let mut f = open_for_hash(&p).unwrap();
-        assert_eq!(hash_bounded(&mut f, 200_000, std::time::Duration::ZERO), None);
+        assert_eq!(
+            hash_bounded(&mut f, 200_000, std::time::Duration::ZERO),
+            None
+        );
         let _ = std::fs::remove_file(&p);
     }
 }

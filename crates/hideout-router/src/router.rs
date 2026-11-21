@@ -2258,7 +2258,7 @@ impl Router {
     }
 
     /// [`Router::clean_holder_name`] cut at `max` characters.
-    fn clean_name_to(raw: &str, max: usize) -> String {
+    pub fn clean_name_to(raw: &str, max: usize) -> String {
         // Control characters other than whitespace are dropped too (a name is one line).
         let raw: String = raw
             .chars()

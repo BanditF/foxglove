@@ -596,9 +596,8 @@ impl Hub {
 /// Whether a first line is an outside tool's `initialize`: no launch token (an app's own
 /// connection carries one and is never read or hashed).
 fn is_tool_initialize(line: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| {
-        v["method"] == "initialize" && v["params"].get("token").is_none()
-    })
+    serde_json::from_str::<serde_json::Value>(line)
+        .is_ok_and(|v| v["method"] == "initialize" && v["params"].get("token").is_none())
 }
 
 /// The process id of a connected router pipe's client.
