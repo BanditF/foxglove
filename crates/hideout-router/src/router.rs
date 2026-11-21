@@ -757,7 +757,7 @@ impl Router {
         value: Option<&str>,
     ) -> Result<(), String> {
         if !self.secret_declared(module, name) {
-            return Err("This module has no such secret.".into());
+            return Err("This app has no such secret.".into());
         }
         if value.is_some_and(|v| v.len() > crate::secrets::MAX_SECRET) {
             return Err("That is too long (at most 2048 bytes).".into());

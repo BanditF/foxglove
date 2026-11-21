@@ -97,14 +97,22 @@ pub fn remove_failed(name: &str) -> String {
 /// The line under a row whose Turn on did not work after the user's Allow, for `name`. `why` is
 /// the supervisor's raw error: it only picks the plain reason and is never shown.
 pub fn turn_on_failed(name: &str, why: &str) -> String {
-    let reason = if why.contains("trust.revoked") || why.contains("withdrawn") {
-        "its maker withdrew this version"
+    if why.contains("trust.revoked") || why.contains("withdrawn") {
+        format!(
+            "Couldn't turn on {name}: its maker withdrew this version. Press {} to look for a new one.",
+            words::CHECK_FOR_UPDATES
+        )
     } else if why.contains("OK first") {
-        "it still needs your OK"
+        format!(
+            "Couldn't turn on {name}: it still needs your OK. Press {} to give it.",
+            words::REVIEW_OK
+        )
     } else {
-        "the app didn't start"
-    };
-    format!("Couldn't turn on {name}: {reason}.")
+        format!(
+            "Couldn't turn on {name}: the app didn't start. Try {} again.",
+            words::TURN_ON
+        )
+    }
 }
 /// The error's choices: ask again (the confirm shows again), or put the message away.
 pub const TRY_AGAIN: &str = "Try again";
@@ -876,10 +884,13 @@ mod tests {
         let line = turn_on_failed("Art", "trust.revoked: a@1 was withdrawn");
         assert_eq!(
             line,
-            "Couldn't turn on Art: its maker withdrew this version."
+            "Couldn't turn on Art: its maker withdrew this version. Press Check for updates to look for a new one."
         );
         let other = turn_on_failed("Art", "Io(Os { code: 5 })");
-        assert_eq!(other, "Couldn't turn on Art: the app didn't start.");
+        assert_eq!(
+            other,
+            "Couldn't turn on Art: the app didn't start. Try Turn on again."
+        );
         assert!(!other.contains("Os"));
         let mut a = RemoveAsk::default();
         a.set_turn_on_failed("m", other.clone());
