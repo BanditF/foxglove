@@ -117,5 +117,51 @@ class Verdicts(unittest.TestCase):
         self.assertIn('RESULT BLOCKED', r.stdout)
 
 
+class QuietStartTests(unittest.TestCase):
+    """G5: --start goes through quiet-launch.ps1 on a hidden desktop; window-free."""
+
+    def test_tray_status_prefers_the_model_line(self):
+        s = {'tray': {'line': 'Focus 18:42', 'menu': [{'text': 'Hideout'}]}}
+        self.assertEqual(hl.tray_status(s), 'Focus 18:42')
+
+    def test_launch_goes_through_quiet_launch_and_stop_by_desktop(self):
+        script = hl.launch_script('hideout.exe', 'lab', 'ql-hlcabc123', {'HIDEOUT_LAB': '1'}, 60)
+        self.assertIn('quiet-launch.ps1', script)
+        self.assertIn('ql-hlcabc123', script)
+        self.assertNotIn('-AllowRunning', script)
+        self.assertIn('-AllowRunning', hl.launch_script('h.exe', 'lab', 'ql-hlcabc123', {}, 60, True))
+        self.assertIn('-Stop', hl.stop_script('ql-hlcabc123'))
+
+    def test_main_desktop_name_passes_quiet_launchs_pattern(self):
+        import re
+        src = (LAB / 'hideout_lab_checks.py').read_text(encoding='utf-8')
+        self.assertIn("'ql-hlc' + os.urandom(3).hex()", src)
+        self.assertTrue(re.fullmatch(r'ql-[a-z0-9]{4,24}', 'ql-hlc' + os.urandom(3).hex()))
+
+    def test_seconds_out_of_range_is_refused(self):
+        r = subprocess.run([sys.executable, str(LAB / 'hideout_lab_checks.py'), '--app', sys.executable,
+                            '--lab', str(LAB), '--start', '--seconds', '5000'],
+                           capture_output=True, text=True, cwd=LAB, timeout=60)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('--seconds', r.stderr)
+
+    def test_a_failed_start_keeps_the_launcher_text(self):
+        class Proc:
+            def poll(self): return 1
+            stdout = type('S', (), {'read': lambda self: 'bad -DesktopName'})()
+            def wait(self, t=None): return 1
+        h = hl.QuietHub('x.exe', str(LAB), 'shots', 'ql-hlcabc123', {})
+        h.do = lambda *a, **k: {'ok': False}
+        h.wait = lambda *a, **k: (False, None)
+        orig = hl.hidden_ps
+        hl.hidden_ps = lambda script: Proc()
+        try:
+            with self.assertRaises(RuntimeError) as c:
+                h.start()
+        finally:
+            hl.hidden_ps = orig
+        self.assertIn('bad -DesktopName', str(c.exception))
+
+
 if __name__ == '__main__':
     unittest.main()

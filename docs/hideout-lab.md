@@ -245,8 +245,10 @@ before the hub's frame reads it.
 ### `scripts/lab/hideout_lab_checks.py`
 
 Runs the steps below against a lab hub and prints PASS, FAIL or BLOCKED per step, with
-`--capture` PNGs in `<lab>\lab-shots`. It needs `FOXGLOVE_APP_OK=1` (it shows windows) and
-refuses the user's hub folder.
+`--capture` PNGs in `<lab>\lab-shots`. It needs `FOXGLOVE_APP_OK=1` and refuses the user's hub
+folder. With `--start` the hub runs on its own hidden desktop through `quiet-launch.ps1` (G5), so
+nothing shows on the user's desktop; a step that needs a real cursor or an open menu can't run
+there and reports FAIL or BLOCKED, never a window.
 
 ```powershell
 $env:FOXGLOVE_APP_OK = '1'

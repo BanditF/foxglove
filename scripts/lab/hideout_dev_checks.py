@@ -21,10 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from labkit import tool_arg, Checks, require_app_ok  # noqa: E402
-from hideout_lab_checks import Hub, texts, has, contains, node_index, step  # noqa: E402
-
-POWERSHELL = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe')
-QUIET = Path(__file__).resolve().parent / 'quiet-launch.ps1'
+from hideout_lab_checks import (Hub, QuietHub, texts, has, contains, node_index, step,  # noqa: E402,F401
+                                POWERSHELL, QUIET, ps_quote, launch_script, stop_script, encoded, hidden_ps)
 
 # The words, as in crates/hideout-shell/src/dev_settings.rs (a unit test compares them with it).
 HEADING = 'Developer'
@@ -62,82 +60,10 @@ def seed_config(folder=None):
     return "[dev]\nfolders = []\n" if folder is None else f"[dev]\nfolders = [{toml_literal(folder)}]\n"
 
 
-def ps_quote(text):
-    """A PowerShell single-quoted string; a quote in a path is refused, not escaped."""
-    if any(c in str(text) for c in "'\n\0‘’‚‛"):  # PowerShell reads curly quotes as quotes
-        raise ValueError(f'a quote, newline or NUL in {text!r}')
-    return f"'{text}'"
-
-
-def launch_script(exe, lab, desktop, env, seconds, allow_running=False):
-    """The PowerShell text that starts the lab hub through quiet-launch.ps1 (real hashtable)."""
-    pairs = '; '.join(f'{k} = {ps_quote(v)}' for k, v in env.items())
-    return (f"& {ps_quote(QUIET)} -Exe {ps_quote(exe)} -ArgList '--lab' -Env @{{ {pairs} }} "
-            f"-DesktopName {ps_quote(desktop)} -TimeoutSec {int(seconds)}"
-            + (' -AllowRunning' if allow_running else ''))
-
-
-def stop_script(desktop):
-    return f"& {ps_quote(QUIET)} -Stop {ps_quote(desktop)}"
-
-
-def encoded(script):
-    return base64.b64encode(script.encode('utf-16-le')).decode('ascii')
-
-
 def remove_button(state):
     """The first node index whose name starts with 'Remove dev folder ', and its text."""
     i = node_index(state, 'main', lambda n: (n.get('name') or '').startswith(REMOVE_PREFIX))
     return i, (state['main']['nodes'][i]['name'] if i is not None else None)
-
-
-# ---- the hub on a hidden desktop -------------------------------------------------------------------
-
-def hidden_ps(script):
-    """Runs `script` in a PowerShell that never shows a console."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith('HIDEOUT_DEV_')}  # quiet-launch passes ours on
-    return subprocess.Popen(
-        [POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded(script)],
-        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        creationflags=0x08000000)  # CREATE_NO_WINDOW
-
-
-class QuietHub(Hub):
-    """A lab hub that lives on its own hidden desktop; `do`/`state` are the parent class's."""
-
-    def __init__(self, exe, lab, shots, desktop, extra_env, seconds=240, allow_running=False):
-        super().__init__(exe, lab, shots)
-        for k in [k for k in self.env if k.startswith('HIDEOUT_DEV_')]:
-            del self.env[k]  # an ambient HIDEOUT_DEV_* must not decide what a run shows
-        self.extra_env = dict(extra_env)
-        self.desktop, self.seconds, self.allow_running = desktop, seconds, allow_running
-        self.launcher = None
-
-    def start(self):
-        env = {k: self.env[k] for k in ('HIDEOUT_CONFIG_DIR', 'HIDEOUT_LAB', 'HIDEOUT_LAB_CAPTURE')}
-        env.update(self.extra_env)
-        if self.do('state', check=False).get('ok'):
-            raise RuntimeError('a lab hub already answers on the lab pipe; refusing to drive it')
-        self.launcher = hidden_ps(launch_script(self.exe, self.lab, self.desktop, env, self.seconds,
-                                                self.allow_running))
-        ok, _ = self.wait(lambda s: s.get('ok'), 30, read=lambda: self.do('state', check=False))
-        if not ok:
-            self.stop()
-            out = self.launcher.stdout.read() if self.launcher.poll() is not None else ''
-            raise RuntimeError(f'the lab hub did not answer on its pipe within 30 s: {out.strip()[:300]}')
-        if f'folder {self.lab}' not in self.log():
-            self.stop()
-            raise RuntimeError("the hub that answered is not this run's (no start line for this folder in its log)")
-
-    def stop(self):
-        if self.launcher is None:
-            return
-        try:
-            hidden_ps(stop_script(self.desktop)).wait(30)  # the launcher's own teardown, by name
-            self.launcher.wait(30)
-        except subprocess.TimeoutExpired:
-            self.launcher.kill()  # our own launcher handle; its job closes the hub
-        self.launcher = None
 
 
 def pinned(hub, check, name, pred, seconds=5, detail=''):
