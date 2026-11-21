@@ -205,6 +205,14 @@ pub struct Attestation {
     pub at: String,
     /// Who vouched: `updater` or `installer`.
     pub by: String,
+    /// A `folder` step only (#1465): the step sent the held items back to waiting and voided the
+    /// keyboard record. Absent on a step recorded before that rule, which carried everything;
+    /// the registry applies the rule to such a step once when it opens
+    /// ([`Registry::reask_old_folder_steps`]) and sets this.
+    ///
+    /// [`Registry::reask_old_folder_steps`]: crate::Registry::reask_old_folder_steps
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held_back: bool,
 }
 
 impl Installed {

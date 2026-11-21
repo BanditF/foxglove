@@ -382,7 +382,7 @@ impl Registry {
         // A lab entry is never on disk; one written there by hand is not a lab module.
         inventory.modules.retain(|_, m| m.source != LAB);
         let hub = HubConfig::load(&home.join("hideout.toml"))??;
-        Ok(Registry {
+        let mut reg = Registry {
             home: home.to_path_buf(),
             inventory,
             hub,
@@ -399,7 +399,19 @@ impl Registry {
             root_file: None,
             catalog_report: Vec::new(),
             accepted_info: BTreeMap::new(),
-        })
+        };
+        // #1465, once: a folder step recorded before the rule carried the held items and the
+        // keyboard to changed bytes; they wait for the user's OK again. Fail closed: they are
+        // gone in memory even if the write fails (the next open tries again).
+        match reg.reask_old_folder_steps(&foxglove_plugin_trust::now_utc()) {
+            Ok(ids) => {
+                for id in ids {
+                    log::info!("{id}: changed under a kept OK before; the held items ask again");
+                }
+            }
+            Err(e) => log::warn!("could not save the one-time ask for kept changes: {e:?}"),
+        }
+        Ok(reg)
     }
 
     /// Asks the dev-folder checks of `probes` instead of the system (tests only: a registry with
