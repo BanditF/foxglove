@@ -416,8 +416,13 @@ def wait_ask(hub, want=True, seconds=15):
 
 
 def open_tool_dialog(hub):
-    hub.do('click', 'Review\u2026')
-    return hub.wait(tool_dialog_open, 10)
+    for _ in range(2):  # the first click can land before the page shows the line's button
+        hub.wait(lambda s: has(s, 'Review…'), 5)
+        hub.do('click', 'Review…')
+        ok, s = hub.wait(tool_dialog_open, 5)
+        if ok:
+            break
+    return ok, s
 
 
 def tools_checks(hub, check, tool):
@@ -449,9 +454,12 @@ def tools_checks(hub, check, tool):
     s = hub.state()
     check('T3 the close button dismisses the dialog', not tool_dialog_open(s),
           'dialog still open' if tool_dialog_open(s) else 'gone')
-    ok, s = wait_ask(hub, True, 5)
-    check('T3 the ask is still waiting after the close (Not now, nothing allowed)', ok, f'{tool_asks(s)!r}')
-    # Deny (Not now): nothing is remembered
+    time.sleep(1)
+    check('T3 nothing was allowed by the close (the page does not list the program)',
+          not has(hub.state(), 'Programs outside Hideout, 1 program'), f'ask line after close: {tool_asks(hub.state())!r}')
+    # Deny (Not now): nothing is remembered; the tool asks again when it runs again
+    run_cli(tool, pipe, 'profile')
+    wait_ask(hub)
     ok, s = open_tool_dialog(hub)
     if ok:
         hub.do('click', 'Not now')
@@ -483,8 +491,32 @@ def tools_checks(hub, check, tool):
     check('T7 a copy of the file in another folder asks', ok, f'{tool_asks(s)!r}')
     ok, s = open_tool_dialog(hub)
     if ok:
-        hub.do('click', 'Not now')
+        time.sleep(1.5)
+        hub.do('click', allow_label(hub.state()) or 'Allow')
         hub.wait(lambda s: not tool_dialog_open(s), 10)
+    # #1470: the Apps page lists both allowed programs; Forget removes one, with no confirm
+    ok, s = hub.wait(lambda s: has(s, 'Programs outside Hideout, 2 programs'), 10)
+    check('F1 the Apps page lists "Programs outside Hideout, 2 programs"', ok,
+          f'{[t for t in texts(s) if "outside Hideout" in t][:3]}')
+    hub.capture('F1-list')
+    forgets = [t for t in texts(s) if t.startswith('Forget ')]
+    if ok and forgets:
+        hub.do('click', forgets[0])
+        time.sleep(1)
+        s = hub.state()
+        check('F2 Forget asks nothing (no dialog)', not tool_dialog_open(s) and not dialog_open(s), f'{texts(s)[:12]}')
+        ok, s = hub.wait(lambda s: has(s, 'Programs outside Hideout, 1 program'), 10)
+        check('F3 Forget on one program leaves the other', ok, f'{[t for t in texts(s) if "outside Hideout" in t][:3]}')
+        run_cli(copy, pipe, 'profile')
+        ok, s = wait_ask(hub)
+        check('F4 the forgotten file asks again at its next run', ok, f'{tool_asks(s)!r}')
+        ok, s = open_tool_dialog(hub)
+        if ok:
+            hub.do('click', 'Not now')
+            hub.wait(lambda s: not tool_dialog_open(s), 10)
+        run_cli(tool, pipe, 'profile')
+        time.sleep(2)
+        check('F5 the other file still does not ask', not tool_asks(hub.state()), f'{tool_asks(hub.state())!r}')
     # the allowed file, changed in place: the old Allow is void
     with open(tool, 'ab') as f:
         f.write(b'\0' * 16)
@@ -509,17 +541,26 @@ def keep_checks(hub, check, exe, manifest):
         return
     if has(s, 'I understand'):
         hub.do('click', 'I understand')
-    hub.do('click', KEEP_LABEL)
-    ok, s = hub.wait(lambda s: has(s, 'Keep my OK'), 5)
-    check('K1 ticking Keep asks to confirm', ok and has(s, 'Keep your OK for this folder?'), f'{texts(s)[-12:]}')
-    if ok:
+    hub.do('click', KEEP_LABEL + ', not checked')
+    time.sleep(1)
+    s = hub.state()
+    ticked = [t for t in texts(s) if t.startswith(KEEP_LABEL) and t.endswith(', checked')]
+    check('K1 the Keep box is ticked', bool(ticked), f'{[t for t in texts(s) if "Keep" in t][:4]}')
+    if has(s, 'Keep my OK'):
         hub.do('click', 'Keep my OK')
     hub.do('click', allow_label(hub.state()) or 'Allow')
     ok, s = hub.wait(lambda s: (tray_status(s) or '') == '1 app is running', 30)
     check('K2 Allow with Keep starts the app', ok, repr(tray_status(s)))
     bump_version(manifest)
-    with open(exe, 'ab') as f:  # the bytes change under the keep
-        f.write(b'\0' * 16)
+    for pid in hub.pids(exe):  # a running exe can't be written: stop it, change the file at once
+        hub.kill(pid)
+    for _ in range(50):
+        try:
+            with open(exe, 'ab') as f:  # the bytes change under the keep
+                f.write(b'\0' * 16)
+            break
+        except OSError:
+            time.sleep(0.1)
     hub.do('focus', 'Apps')
     hub.do('click', 'Add an app\u2026')
     ok, s = hub.wait(lambda s: contains(s, 'changed since you allowed it'), 30)
@@ -531,8 +572,8 @@ def keep_checks(hub, check, exe, manifest):
         hub.do('click', 'Review\u2026')
     ok, s = hub.wait(dialog_open, 15)
     check('K4 Review opens the Allow dialog again', ok, f'{texts(s)[:30]}')
-    check('K4 the dialog says its app file changed and what waits',
-          contains(s, 'Its app file changed'), f'{[t for t in texts(s) if "changed" in t][:3]}')
+    check('K4 the dialog says the app file changed since it was allowed', contains(s, 'app file changed since you allowed it'),
+          f'{[t for t in texts(s) if "changed" in t][:3]}')
     hub.capture('K4-dialog')
     hub.do('key', 'esc', 'main')
     time.sleep(1)
