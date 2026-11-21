@@ -401,8 +401,10 @@ fn an_app_file_that_cant_be_read_is_refused_and_the_ok_is_kept() {
         .unwrap();
     let words = hideout_supervisor::words::CANT_READ_APP_FILE;
 
-    // The user's Turn on: refused with the line, not saved as on, nothing started.
-    assert_eq!(sup.turn_on(id).unwrap_err(), words);
+    // The user's Turn on: refused with its own mark (the page words it), not saved as on,
+    // nothing started.
+    let refused = sup.turn_on(id).unwrap_err();
+    assert!(refused.starts_with("app-file-unreadable"), "{refused}");
     assert!(!Registry::open_from_env(&home).unwrap().hub.enabled(id));
     assert!(sup.pid(id).is_none());
 

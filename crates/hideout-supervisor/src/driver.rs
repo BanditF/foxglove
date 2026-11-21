@@ -1465,7 +1465,8 @@ impl Supervisor {
                 // still waiting, or a void binding, sends the user to the dialog.
                 let _ = r.void_if_changed(id, &hideout_registry::catalogs::now_utc());
                 if r.app_file_unreadable(id) {
-                    return Err(words::CANT_READ_APP_FILE.into());
+                    // The page picks its own line by this mark; the text is never shown.
+                    return Err(format!("{UNREADABLE}: the app file could not be read"));
                 }
                 let waits = r
                     .inventory

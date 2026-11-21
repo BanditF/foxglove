@@ -20,9 +20,9 @@ pub const DIDNT_START: &str = "It didn't start. Open log to see why.";
 /// app file is new or moved since it was allowed). Never the crash wording (UX cut 2).
 pub const WAITS_FOR_OK: &str = "Waits for your OK";
 /// `module.<id>.reason` when the app file is there but Hideout could not read it at the start
-/// (another program had it open). Nothing ran and the user's OK is kept.
-pub const CANT_READ_APP_FILE: &str =
-    "Hideout couldn't read its app file. Turn it on again to retry.";
+/// (another program had it open). Nothing ran and the user's OK is kept. The row's button in
+/// that state is [`TRY_AGAIN`]; nothing retries by itself.
+pub const CANT_READ_APP_FILE: &str = "Hideout couldn't read its app file. Press Try again.";
 /// The row's button for it: opens the permission dialog.
 pub const REVIEW_OK: &str = "Review\u{2026}";
 

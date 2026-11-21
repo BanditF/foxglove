@@ -984,4 +984,19 @@ fn an_unreadable_app_file_without_a_follow_voids_once_it_is_read() {
     std::fs::remove_file(&g.exe).unwrap();
     assert!(!g.reg.app_file_unreadable(ID));
     assert_eq!(g.reg.binding_void(ID), Some(VoidReason::Moved));
+
+    // A folder in the file's place is not a busy file: it is `Moved`, and it voids.
+    let mut d = fx("unreadable-folder");
+    allow(&mut d, "dialog", false).unwrap();
+    std::fs::remove_file(&d.exe).unwrap();
+    std::fs::create_dir(&d.exe).unwrap();
+    assert!(!d.reg.app_file_unreadable(ID));
+    assert_eq!(d.reg.binding_void(ID), Some(VoidReason::Moved));
+    assert!(d.reg.pre_launch(ID).is_err());
+    assert_eq!(
+        d.reg.void_if_changed(ID, LATER).unwrap(),
+        Some(VoidReason::Moved)
+    );
+    assert!(d.granted().is_empty());
+    assert!(d.bound().void);
 }

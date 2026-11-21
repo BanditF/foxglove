@@ -448,6 +448,11 @@ impl Registry {
                     e
                 })
             })?;
+            // Something at that path that is not a file (a folder put in its place) is not the
+            // app file: "not there", so it is never taken for a file that is only busy.
+            if std::fs::metadata(&path).is_ok_and(|d| !d.is_file()) {
+                return Err(Failure::Io(crate::not_found(&exe)));
+            }
             let bytes = std::fs::read(&path)?;
             Ok((path, foxglove_plugin_trust::sha256_hex(&bytes)))
         } else {
