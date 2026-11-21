@@ -2790,11 +2790,13 @@ fn local_holders_reach_the_hubs_fact_with_the_routed_ones() {
     let key = "module.foxglove.lease_holders";
     // Not before the hub has the module.
     let mut early = Link::new(Vec::new(), launch());
-    early.sync_local_holders(&["Render queue".into()]).unwrap();
+    early
+        .sync_local_holders(&["Render queue".into()], false)
+        .unwrap();
     assert!(early.writer_mut().is_empty());
     // Local only.
     rig.link
-        .sync_local_holders(&["Render queue".to_string()])
+        .sync_local_holders(&["Render queue".to_string()], false)
         .unwrap();
     rig.pump();
     assert_eq!(
@@ -2803,7 +2805,7 @@ fn local_holders_reach_the_hubs_fact_with_the_routed_ones() {
     );
     // The same list again sends nothing.
     rig.link
-        .sync_local_holders(&["Render queue".to_string()])
+        .sync_local_holders(&["Render queue".to_string()], false)
         .unwrap();
     assert!(rig.link.writer_mut().is_empty());
     // With a routed holder: one sorted list, each name once.
@@ -2815,9 +2817,115 @@ fn local_holders_reach_the_hubs_fact_with_the_routed_ones() {
     assert!(names.contains(&json!("Render queue")) && names.contains(&json!("Arete")));
     // None left: the local name goes, the routed one stays.
     rig.now += std::time::Duration::from_millis(200);
-    rig.link.sync_local_holders(&[]).unwrap();
+    rig.link.sync_local_holders(&[], false).unwrap();
     rig.pump();
     assert_eq!(rig.fact(key), Some(json!({"wallpaper-engine": ["Arete"]})));
+}
+
+/// #1420: Foxglove sends `owed` (its play is owed) with `lease.holders`: true once when a play
+/// failed, false after a good one, and again when only `owed` flips with the same names. The hub
+/// keeps the family as `[]` meanwhile, which the page never reads as held.
+#[test]
+fn an_owed_play_is_told_to_the_hub_and_flips_resend() {
+    let (mut rig, _we) = we_rig();
+    let _ = rig.router.watch_facts(vec![String::new()]);
+    let key = "module.foxglove.lease_holders";
+    // What the link wrote, left in place for `pump` to feed the router.
+    let sent = |rig: &mut Rig| -> Vec<Value> {
+        let bytes = rig.link.writer_mut().clone();
+        String::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    // A failed play: owed, nobody holds it.
+    rig.link.sync_local_holders(&[], true).unwrap();
+    let out = sent(&mut rig);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0]["method"], "lease.holders");
+    assert_eq!(
+        out[0]["params"],
+        json!({"family": "wallpaper-engine", "names": [], "owed": true})
+    );
+    rig.pump();
+    assert_eq!(rig.fact(key), Some(json!({"wallpaper-engine": []})));
+    // The page reads the empty family as nobody holding it.
+    assert!(we_holders(&json!({"wallpaper-engine": []})).is_empty());
+    // The same again is sent once only.
+    rig.link.sync_local_holders(&[], true).unwrap();
+    assert!(rig.link.writer_mut().is_empty());
+    // A good play: owed false with the same (empty) names is a change and goes out.
+    rig.now += std::time::Duration::from_millis(200);
+    rig.link.sync_local_holders(&[], false).unwrap();
+    let out = sent(&mut rig);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0]["params"]["owed"], false);
+    rig.pump();
+    assert_eq!(rig.fact(key), None);
+    // An owed flip with the same non-empty names also resends.
+    rig.now += std::time::Duration::from_millis(200);
+    rig.link
+        .sync_local_holders(&["Render queue".to_string()], false)
+        .unwrap();
+    rig.pump();
+    rig.now += std::time::Duration::from_millis(200);
+    rig.link
+        .sync_local_holders(&["Render queue".to_string()], true)
+        .unwrap();
+    let out = sent(&mut rig);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0]["params"]["owed"], true);
+    assert_eq!(out[0]["params"]["names"], json!(["Render queue"]));
+}
+
+/// #1420: the owed fact changes on its own (the play fails after the leases are gone), so the
+/// runner must be woken by it, like by the reasons and the local holders.
+#[test]
+fn the_runner_wakes_on_the_owed_fact() {
+    use crate::foxglove::wallpaper_sync as ws;
+    let keys: Vec<&str> = super::runner::GUARD_FACTS.iter().map(|(k, _)| *k).collect();
+    assert_eq!(keys, [ws::PAUSED_BY, ws::LOCAL_HOLDERS, ws::PLAY_OWED]);
+}
+
+/// #1420: an older hub (before 1.23) reads `lease.holders` by field and answers `{}`: nothing
+/// changes, nothing is logged, and the same state is not sent again.
+#[test]
+fn an_older_hub_answering_empty_to_owed_changes_nothing() {
+    let (mut rig, _we) = we_rig();
+    rig.link.sync_local_holders(&[], true).unwrap();
+    let sent = String::from_utf8(std::mem::take(rig.link.writer_mut())).unwrap();
+    let req: Value = serde_json::from_str(sent.lines().next().unwrap()).unwrap();
+    let old = json!({"jsonrpc":"2.0","id":req["id"],"result":{}});
+    let step = rig.link.line(&old.to_string()).unwrap();
+    assert_eq!(step, Step::Nothing);
+    assert!(rig.link.take_log().is_empty());
+    rig.link.sync_local_holders(&[], true).unwrap();
+    assert!(rig.link.writer_mut().is_empty());
+}
+
+/// #1420: an empty `wallpaper-engine` family in the hub's fact is never "held" on the page: no
+/// "paused by", no Resume, and the page's own owed line is what shows.
+#[test]
+fn an_empty_family_in_the_fact_never_reads_as_held() {
+    let mut rig = Rig::new(&[GRANT]);
+    rig.link = Link::new(Vec::new(), launch()).with_wallpaper(we_probe);
+    let facts = board();
+    rig.connect(&facts);
+    let line = json!({"jsonrpc":"2.0","method":"facts.changed","params":
+        {"subscription":1,"key":"module.foxglove.lease_holders",
+         "value":{"wallpaper-engine": []}}})
+    .to_string();
+    rig.link.line(&line).unwrap();
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    let shown = rig.link.shown.clone().unwrap();
+    assert!(
+        said(&shown, "No app is pausing your wallpapers"),
+        "nobody holds it"
+    );
+    assert!(!said(&shown, "paused by"));
 }
 
 /// A local caller's own name is untrusted text: control and direction characters go, 32 characters
@@ -2839,19 +2947,23 @@ fn a_local_callers_name_is_cleaned() {
 #[test]
 fn an_older_hub_refusing_lease_holders_is_logged_once() {
     let (mut rig, _we) = we_rig();
-    rig.link.sync_local_holders(&["A".to_string()]).unwrap();
+    rig.link
+        .sync_local_holders(&["A".to_string()], false)
+        .unwrap();
     let sent = String::from_utf8(std::mem::take(rig.link.writer_mut())).unwrap();
     let req: Value = serde_json::from_str(sent.lines().next().unwrap()).unwrap();
     assert_eq!(req["method"], "lease.holders");
     assert_eq!(
         req["params"],
-        json!({"family": "wallpaper-engine", "names": ["A"]})
+        json!({"family": "wallpaper-engine", "names": ["A"], "owed": false})
     );
     // A rate-limited answer (not "no such method") clears the memory: the next message resends.
     let limited =
         json!({"jsonrpc":"2.0","id":req["id"],"error":{"code":8,"message":"rate limited"}});
     rig.link.line(&limited.to_string()).unwrap();
-    rig.link.sync_local_holders(&["A".to_string()]).unwrap();
+    rig.link
+        .sync_local_holders(&["A".to_string()], false)
+        .unwrap();
     let sent = String::from_utf8(std::mem::take(rig.link.writer_mut())).unwrap();
     let req: Value = serde_json::from_str(sent.lines().next().unwrap()).unwrap();
     assert_eq!(req["method"], "lease.holders");
@@ -2860,7 +2972,7 @@ fn an_older_hub_refusing_lease_holders_is_logged_once() {
         let no =
             json!({"jsonrpc":"2.0","id":last["id"],"error":{"code":-32601,"message":"no method"}});
         rig.link.line(&no.to_string()).unwrap();
-        rig.link.sync_local_holders(&names).unwrap();
+        rig.link.sync_local_holders(&names, false).unwrap();
         let sent = String::from_utf8(std::mem::take(rig.link.writer_mut())).unwrap();
         last = serde_json::from_str(sent.lines().next().unwrap()).unwrap();
     }

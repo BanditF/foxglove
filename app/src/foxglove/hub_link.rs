@@ -781,8 +781,10 @@ pub struct Link<W: Write> {
     wallpaper: WallpaperProbe,
     /// What Temperature reads from the hub on this connection.
     sensors: Sensors,
-    /// The local holders' names the hub was told on this connection (#1120 slice 1).
-    held_sent: Vec<String>,
+    /// The local holders' names and whether a resume is owed, as the hub was told on this
+    /// connection (#1120 slice 1; `owed`, contract 1.23, #1420).
+    /// `None`: the last telling was refused, so the hub's state is unknown (tell again).
+    held_sent: Option<(Vec<String>, bool)>,
     /// An older hub's refusal of `lease.holders` was logged (once).
     held_said: bool,
     /// The section's after-line for this connection (a new one forgets who was there).
@@ -899,7 +901,8 @@ impl<W: Write> Link<W> {
             off: Vec::new(),
             wallpaper: wallpaper_now,
             sensors: Sensors::new(),
-            held_sent: Vec::new(),
+            // A new connection: the hub has no list of ours.
+            held_sent: Some((Vec::new(), false)),
             held_said: false,
             after: Default::default(),
         }
@@ -1427,7 +1430,7 @@ impl<W: Write> Link<W> {
                 // An older hub (before 1.21) lists only the callers it routes. Any other
                 // refusal (rate limited, not ready) is retried with the next message.
                 if e.code != code::METHOD_NOT_FOUND {
-                    self.held_sent.clear();
+                    self.held_sent = None;
                 }
                 if !self.held_said {
                     self.held_said = true;
@@ -1464,18 +1467,24 @@ impl<W: Write> Link<W> {
 
     /// The local callers holding a Wallpaper Engine pause, by name, told to the hub as
     /// `lease.holders` (contract 1.21) so its fact, the page and the tray name them with the
-    /// callers the hub routes. Sent when the list changed, once the hub has the module; the
-    /// runner tells the list again after each message, so a reconnect sends it once. Names are
-    /// the callers' own words (cleaned, cut at 32): the hub vouches for none of them.
-    pub fn sync_local_holders(&mut self, names: &[String]) -> Result<(), SessionError> {
-        if !self.registered() || self.held_sent == names {
+    /// callers the hub routes. `owed` (contract 1.23, #1420) says a play failed and the
+    /// wallpapers stay paused with nobody holding them, so the hub's tray keeps its Resume item
+    /// (an older hub ignores it). Sent when the names or `owed` changed, once the hub has the
+    /// module; the runner tells them again after each message, so a reconnect sends it once.
+    /// Names are the callers' own words (cleaned, cut at 32): the hub vouches for none of them.
+    pub fn sync_local_holders(&mut self, names: &[String], owed: bool) -> Result<(), SessionError> {
+        let told = self
+            .held_sent
+            .as_ref()
+            .is_some_and(|(n, o)| n.as_slice() == names && *o == owed);
+        if !self.registered() || told {
             return Ok(());
         }
         self.session.request(
             "lease.holders",
-            json!({ "family": WE_FAMILY, "names": names }),
+            json!({ "family": WE_FAMILY, "names": names, "owed": owed }),
         )?;
-        self.held_sent = names.to_vec();
+        self.held_sent = Some((names.to_vec(), owed));
         Ok(())
     }
 
@@ -1836,6 +1845,23 @@ mod runner {
         Duration::from_millis(500u64 << attempt.min(4))
     }
 
+    /// The facts whose change wakes the runner to tell the hub again (panels, holders, owed),
+    /// with each watcher's thread name.
+    pub(super) const GUARD_FACTS: [(&str, &str); 3] = [
+        (
+            crate::foxglove::wallpaper_sync::PAUSED_BY,
+            "hub-link-wallpaper",
+        ),
+        (
+            crate::foxglove::wallpaper_sync::LOCAL_HOLDERS,
+            "hub-link-local-holders",
+        ),
+        (
+            crate::foxglove::wallpaper_sync::PLAY_OWED,
+            "hub-link-play-owed",
+        ),
+    ];
+
     pub fn run(launch: Launch) {
         let facts = crate::foxglove::devices::bus().facts().clone();
         let (tx, rx) = mpsc::channel::<Msg>();
@@ -1851,27 +1877,20 @@ mod runner {
                 }
             }
         });
-        // The Wallpaper Engine section follows the pause's reasons (#1142): told by the fact's
-        // change, never polled.
-        let held = facts.subscribe(crate::foxglove::wallpaper_sync::PAUSED_BY);
-        let wtx = tx.clone();
-        crate::foxglove::services::spawn_named("hub-link-wallpaper", move || {
-            for _ in held {
-                if wtx.send(Msg::Guard).is_err() {
-                    break;
+        // The Wallpaper Engine section follows the pause's reasons (#1142), the local holders'
+        // names (#1120 slice 1) and an owed resume (#1420): told by each fact's change, never
+        // polled. The owed fact changes on its own (a play fails after the leases are gone).
+        for (key, name) in GUARD_FACTS {
+            let changes = facts.subscribe(key);
+            let wtx = tx.clone();
+            crate::foxglove::services::spawn_named(name, move || {
+                for _ in changes {
+                    if wtx.send(Msg::Guard).is_err() {
+                        break;
+                    }
                 }
-            }
-        });
-        // The local holders' names follow the leases the same way (#1120 slice 1).
-        let local = facts.subscribe(crate::foxglove::wallpaper_sync::LOCAL_HOLDERS);
-        let ltx = tx.clone();
-        crate::foxglove::services::spawn_named("hub-link-local-holders", move || {
-            for _ in local {
-                if ltx.send(Msg::Guard).is_err() {
-                    break;
-                }
-            }
-        });
+            });
+        }
         // The Wallpaper Engine allow list follows its switches and sockets: told, never polled.
         let atx = tx.clone();
         crate::foxglove::we_panel::on_change(move || {
@@ -2215,9 +2234,10 @@ mod runner {
             if let Err(e) = link.sync_sensors(crate::foxglove::temperature_feed::wanted() && free) {
                 return lost(e, live);
             }
-            if let Err(e) =
-                link.sync_local_holders(&crate::foxglove::wallpaper_sync::local_holders_now())
-            {
+            if let Err(e) = link.sync_local_holders(
+                &crate::foxglove::wallpaper_sync::local_holders_now(),
+                crate::foxglove::wallpaper_sync::play_owed_now(),
+            ) {
                 return lost(e, live);
             }
             if let Some(end) = link.take_note_deadline() {

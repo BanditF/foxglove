@@ -59,7 +59,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.22",
+  "spec": "1.23",
   "streams": {
     "nodes": [
       "canvas",
@@ -347,7 +347,7 @@
     },
     "lease.LeaseHolders": {
       "additionalProperties": false,
-      "description": "`lease.holders` (§8.8, v1.21): the family and the names of the provider's own callers (the\nones that don't come through the hub). The hub cleans every name like a holder name (hidden\ncharacters dropped, at most [`HOLDER_NAME_MAX`] characters), keeps at most\n[`HOLDERS_MAX_NAMES`] and lists each once. A name is the caller's own word, never checked.",
+      "description": "`lease.holders` (§8.8, v1.21): the family and the names of the provider's own callers (the\nones that don't come through the hub). The hub cleans every name like a holder name (hidden\ncharacters dropped, at most [`HOLDER_NAME_MAX`] characters), keeps at most\n[`HOLDERS_MAX_NAMES`] and lists each once. A name is the caller's own word, never checked.\n\n`owed` (v1.23, optional, false when absent): the provider still owes the family a resume,\nas when a resume failed and the paused things stay paused. With `owed: true` and no names\nthe family stays in the fact as `[]`, so the hub's tray can still offer Resume; with\n`owed: false` and no names the family is removed as before. It ends with the module's\nconnection, and names from any provider win over it. A hub older than v1.23 ignores it.",
       "properties": {
         "family": {
           "type": "string"
@@ -357,6 +357,9 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "owed": {
+          "type": "boolean"
         }
       },
       "required": [

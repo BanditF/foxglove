@@ -705,3 +705,121 @@ fn local_holders_end_with_their_connection_and_changes_are_spaced() {
     assert!(list(&mut t, p2, json!(["Mine"])).get("result").is_some());
     assert_eq!(holders(&t), Some(json!({"example.lessor": ["Mine"]})));
 }
+
+/// `owed` (v1.23, #1420): a provider that still owes a family a resume keeps the family in the
+/// fact as `[]`; the same bounds as the names apply, and names win.
+fn say_owed(t: &mut Rig, from: ConnId, family: &str, names: Value, owed: Option<Value>) -> Value {
+    t.now += std::time::Duration::from_millis(200);
+    let mut params = json!({"family": family, "names": names});
+    if let Some(o) = owed {
+        params["owed"] = o;
+    }
+    let out = t.call(from, "lease.holders", params);
+    sends(&out, from)
+        .into_iter()
+        .find(|m| m.get("id").is_some())
+        .unwrap()
+}
+
+#[test]
+fn owed_keeps_an_empty_family_until_it_is_cleared() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    let p = t.p;
+    let f = "example.lessor";
+    assert_eq!(
+        say_owed(&mut t, p, f, json!([]), Some(json!(true)))["result"],
+        json!({})
+    );
+    assert_eq!(holders(&t), Some(json!({ f: [] })));
+    // The same again is free; owed false with no names removes the family as before.
+    assert!(say_owed(&mut t, p, f, json!([]), Some(json!(true)))
+        .get("result")
+        .is_some());
+    assert_eq!(
+        say_owed(&mut t, p, f, json!([]), Some(json!(false)))["result"],
+        json!({})
+    );
+    assert_eq!(holders(&t), None);
+    // No `owed` at all is false, as before.
+    say_owed(&mut t, p, f, json!([]), Some(json!(true)));
+    say_owed(&mut t, p, f, json!([]), None);
+    assert_eq!(holders(&t), None);
+}
+
+#[test]
+fn owed_must_be_a_json_bool_and_changes_nothing_when_refused() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    let p = t.p;
+    for bad in [json!("true"), json!(1), json!(null), json!([true])] {
+        let back = say_owed(&mut t, p, "example.lessor", json!([]), Some(bad.clone()));
+        assert_eq!(back["error"]["code"], -32602, "{bad}");
+        assert!(
+            back["error"]["data"]
+                .to_string()
+                .contains("owed is true or false"),
+            "{back}"
+        );
+    }
+    assert_eq!(holders(&t), None);
+}
+
+#[test]
+fn owed_ends_with_the_connection() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    let p = t.p;
+    say_owed(&mut t, p, "example.lessor", json!([]), Some(json!(true)));
+    assert_eq!(holders(&t), Some(json!({"example.lessor": []})));
+    t.r.disconnect(p);
+    assert_eq!(holders(&t), None);
+}
+
+#[test]
+fn owed_is_rate_limited_and_family_checked_like_names() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    let p = t.p;
+    let f = "example.lessor";
+    say_owed(&mut t, p, f, json!([]), Some(json!(true)));
+    // A change inside the gap is refused (error 8) and changes nothing.
+    let out = t.call(
+        p,
+        "lease.holders",
+        json!({"family": f, "names": [], "owed": false}),
+    );
+    let back = sends(&out, p)
+        .into_iter()
+        .find(|m| m.get("id").is_some())
+        .unwrap();
+    assert_eq!(back["error"]["code"], 8);
+    assert_eq!(holders(&t), Some(json!({ f: [] })));
+    // A family without a route, or one that is another module's, is refused.
+    for (from, fam) in [(p, "example.other"), (p, "wallpaper-engine"), (t.a, f)] {
+        let back = say_owed(&mut t, from, fam, json!([]), Some(json!(true)));
+        assert!(back.get("error").is_some(), "{fam}: {back}");
+    }
+    assert_eq!(holders(&t), Some(json!({ f: [] })));
+}
+
+#[test]
+fn names_win_over_owed_and_no_empty_list_leaks() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    let p = t.p;
+    let f = "example.lessor";
+    say_owed(&mut t, p, f, json!([]), Some(json!(true)));
+    // A hub lease joins the owed family: the names, never a `[]` beside them.
+    t.lease(t.a, json!("LA"));
+    assert_eq!(holders(&t), Some(json!({ f: [A] })));
+    // Local names with owed also merge to the names.
+    say_owed(&mut t, p, f, json!(["Render queue"]), Some(json!(true)));
+    assert_eq!(holders(&t), Some(json!({ f: ["Render queue", A] })));
+    // The lease ends: owed shows again as `[]`.
+    say_owed(&mut t, p, f, json!([]), Some(json!(true)));
+    assert_eq!(holders(&t), Some(json!({ f: [A] })));
+    let out = t.call(p, "lease.end", json!({"family": f}));
+    let _ = out;
+    assert_eq!(holders(&t), Some(json!({ f: [] })));
+}
