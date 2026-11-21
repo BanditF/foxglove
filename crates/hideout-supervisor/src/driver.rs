@@ -313,6 +313,8 @@ pub fn set_launch_hook(f: Option<LaunchHook>) {
 }
 
 const NEEDS_OK: &str = "needs-ok";
+/// The app file is there but could not be read at the launch: refused, nothing voided.
+const UNREADABLE: &str = "app-file-unreadable";
 /// Internal: new bytes met a follow-folder grant after the keep step; run the step once more.
 const RETRY_KEPT: &str = "retry-kept";
 /// How [`Supervisor::launch`]'s answer starts when containment is on and the module may not
@@ -1462,6 +1464,10 @@ impl Supervisor {
                 // A new or moved program file voids its grants first (#1178); then anything
                 // still waiting, or a void binding, sends the user to the dialog.
                 let _ = r.void_if_changed(id, &hideout_registry::catalogs::now_utc());
+                if r.app_file_unreadable(id) {
+                    // The page picks its own line by this mark; the text is never shown.
+                    return Err(format!("{UNREADABLE}: the app file could not be read"));
+                }
                 let waits = r
                     .inventory
                     .modules
@@ -1646,6 +1652,16 @@ impl Supervisor {
                         Err(r) if r == NEEDS_OK => {
                             log::warn!("supervisor: {id} not started: waits for the user's OK");
                             self.feed(Ev::NeedsOk { id });
+                        }
+                        Err(r) if r == UNREADABLE => {
+                            log::warn!(
+                                "supervisor: {id} not started: its app file could not be read; \
+                                 the user's OK is kept"
+                            );
+                            self.feed(Ev::LaunchFailed {
+                                id,
+                                reason: words::CANT_READ_APP_FILE.into(),
+                            });
                         }
                         Err(r) if r.starts_with(NO_SANDBOX) => {
                             log::warn!("supervisor: {id} not started: {r}");
@@ -1857,6 +1873,9 @@ impl Supervisor {
         self.narrow_router_to(&reg);
         let l = reg.pre_launch(id).map_err(|e| match e.id() {
             Some(NEEDS_HUB) => NEEDS_HUB.to_string(),
+            // The file is there but this read failed: refused, and not a wait for the OK (the
+            // OK was not withdrawn).
+            Some("trust.mismatch") if reg.app_file_unreadable(id) => UNREADABLE.to_string(),
             // Only a refusal because the app file is new or moved since the user allowed it
             // waits for the OK; every other refusal keeps its own wording.
             Some("trust.mismatch")

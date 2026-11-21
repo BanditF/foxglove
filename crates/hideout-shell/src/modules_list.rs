@@ -110,6 +110,13 @@ pub fn turn_on_failed(name: &str, why: &str) -> String {
             "Couldn't turn on {name}: it still needs your OK. Press {} to give it.",
             words::named(words::REVIEW_OK)
         )
+    } else if why.contains("app-file-unreadable") {
+        // The app file is there but could not be read (another program has it open). The
+        // user's OK is kept, so the same button is the retry.
+        format!(
+            "Couldn't turn on {name}: Hideout couldn't read its app file. Try {} again.",
+            words::TURN_ON
+        )
     } else {
         format!(
             "Couldn't turn on {name}: the app didn't start. Try {} again.",
@@ -1001,6 +1008,10 @@ mod tests {
                 "Hideout needs your OK first. Press Turn on\u{2026} to review."
             ),
             "Couldn't turn on Art: it still needs your OK. Press Review to give it."
+        );
+        assert_eq!(
+            turn_on_failed("Art", "app-file-unreadable: the app file could not be read"),
+            "Couldn't turn on Art: Hideout couldn't read its app file. Try Turn on again."
         );
         let mut a = RemoveAsk::default();
         a.set_turn_on_failed("m", other.clone());
