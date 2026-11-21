@@ -835,13 +835,16 @@ permissions = [\"apps.watch:{label}.exe\"]
         let apps = hideout_appwatch::Control::new(
             &home,
             Box::new(move |changes| {
-                let _ = tx.lock().unwrap().send(changes.clone());
+                // The hub first, then the test's channel: what the test hears of, the hub
+                // already holds.
+                let told = changes.clone();
                 h.act(|r| {
                     changes
                         .into_iter()
                         .flat_map(|(k, v)| r.publish(&k, v))
                         .collect()
-                })
+                });
+                let _ = tx.lock().unwrap().send(told);
             }),
         );
         // No module names an app at the start: nothing is watched.
