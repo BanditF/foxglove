@@ -55,6 +55,13 @@ fn check(
     outlined(ui, t, |ui| ui.checkbox(on, text))
 }
 
+/// Esc, or the window's close button: the dialog's "Not now" (nothing granted, nothing
+/// started). The window then closes to the tray as always; without this the dialog stayed
+/// open behind it and came back with the window.
+fn dismissed(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested())
+}
+
 /// The dialog. `first`: the first frame, when Not now takes the focus.
 pub fn perm_dialog_ui(
     ctx: &egui::Context,
@@ -158,7 +165,7 @@ pub(crate) fn perm_dialog_ids(
         n.set_label(title);
         n.set_description(said);
     });
-    if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if modal.should_close() || dismissed(ctx) {
         answer = answer.or(Some(PermAnswer::NotNow));
     }
     (answer, ids)
@@ -271,7 +278,7 @@ pub(crate) fn first_run_dialog_ids(
         n.set_label(title);
         n.set_description(said);
     });
-    if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if modal.should_close() || dismissed(ctx) {
         answer = answer.or(Some(FirstRunAnswer::NotNow));
     }
     (answer, ids)
@@ -669,7 +676,7 @@ pub(crate) fn keep_confirm_ids(
         n.set_label(KEEP_CONFIRM_TITLE);
         n.set_description(said);
     });
-    if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if modal.should_close() || dismissed(ctx) {
         answer = answer.or(Some(KeepAnswer::Cancel));
     }
     (answer, ids)

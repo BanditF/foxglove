@@ -4118,6 +4118,67 @@ fn the_keep_box_leaves_the_buttons_on_a_720_px_window() {
     }
 }
 
+/// The window's close button answers an open dialog like Esc: Not now for the Allow dialog and
+/// the first-run dialog, Cancel for the keep confirm. A frame without it answers nothing.
+#[test]
+fn the_windows_close_button_answers_not_now() {
+    use crate::permission_dialog::{KeepAnswer, KeepConfirm, PermAnswer};
+    use crate::permission_dialog_ui::{
+        first_run_dialog_ids, keep_confirm_ids, perm_dialog_ids, FirstRunAnswer,
+    };
+    let t = crate::theme::tokens(true);
+    let closing = || {
+        let mut raw = input(900.0, 720.0, vec![]);
+        raw.viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+        raw
+    };
+    // Two quiet frames, then the close request.
+    let frames = || {
+        [
+            input(900.0, 720.0, vec![]),
+            input(900.0, 720.0, vec![]),
+            closing(),
+        ]
+    };
+
+    let mut d = keep_test_dialog(3, None);
+    let ctx = egui::Context::default();
+    let mut got = Vec::new();
+    for (i, raw) in frames().into_iter().enumerate() {
+        let _ = ctx.run(raw, |c| got.push(perm_dialog_ids(c, &t, &mut d, i == 0).0));
+    }
+    assert_eq!(got, [None, None, Some(PermAnswer::NotNow)]);
+
+    let mut d = first_run_test_dialog();
+    let ctx = egui::Context::default();
+    let mut got = Vec::new();
+    for (i, raw) in frames().into_iter().enumerate() {
+        let _ = ctx.run(raw, |c| {
+            got.push(first_run_dialog_ids(c, &t, &mut d, i == 0).0)
+        });
+    }
+    assert_eq!(got, [None, None, Some(FirstRunAnswer::NotNow)]);
+
+    let k = KeepConfirm {
+        id: "foxglove".into(),
+        name: "Foxglove".into(),
+        file: "foxglove.exe".into(),
+        folder: r"C:\Apps\Fox".into(),
+        code: "7f3a91c20b4e55d1".into(),
+        error: None,
+    };
+    let ctx = egui::Context::default();
+    let mut got = Vec::new();
+    for (i, raw) in frames().into_iter().enumerate() {
+        let _ = ctx.run(raw, |c| got.push(keep_confirm_ids(c, &t, &k, i == 0).0));
+    }
+    assert_eq!(got, [None, None, Some(KeepAnswer::Cancel)]);
+}
+
 /// The Modules confirm: Cancel is focused on open, Enter does not keep, Esc cancels, Tab stays
 /// inside, and the dialog is named and described.
 #[test]
