@@ -370,6 +370,8 @@ def s1_checks(hub, check, exe, manifest):
 
 TOOL_TITLE = 'Allow a program outside Hideout?'
 TOOL_HEADER = 'A program outside Hideout asks for'
+KEPT_NOW = 'Your OK stayed, except Sensitive and keyboard'
+KEPT_WORDS = 'Sensitive items and the keyboard need your OK again. It runs without them until then.'
 KEEP_LABEL = 'Keep my OK after updates in this folder, except Sensitive and keyboard'
 
 
@@ -546,40 +548,44 @@ def keep_checks(hub, check, exe, manifest):
     if has(s, 'I understand'):
         hub.do('click', 'I understand')
     hub.do('click', KEEP_LABEL + ', not checked')
-    time.sleep(1)
-    s = hub.state()
-    ticked = [t for t in texts(s) if t.startswith(KEEP_LABEL) and t.endswith(', checked')]
-    check('K1 the Keep box is ticked', bool(ticked), f'{[t for t in texts(s) if "Keep" in t][:4]}')
-    if has(s, 'Keep my OK'):
-        hub.do('click', 'Keep my OK')
+    ok, s = hub.wait(lambda s: any(t.startswith('I understand:') for t in texts(s)), 10)
+    check('K1 ticking Keep asks for I understand', ok, f'{[t for t in texts(s) if "understand" in t][:3]}')
+    if ok:
+        node = next(t for t in texts(s) if t.startswith('I understand:'))
+        hub.do('click', node)
+        time.sleep(1)
     hub.do('click', allow_label(hub.state()) or 'Allow')
     ok, s = hub.wait(lambda s: (tray_status(s) or '') == '1 app is running', 30)
     check('K2 Allow with Keep starts the app', ok, repr(tray_status(s)))
     # only the app file changes (a changed module.toml is another path: it voids the answer)
-    for pid in hub.pids(exe):  # a running exe can't be written: stop it, change the file at once
-        hub.kill(pid)
+    # a running exe can't be replaced: stop it, then swap a changed copy in at once (os.replace is atomic, so the
+    # supervisor's restart never reads a half-written file); retry if the supervisor won the race
+    new = Path(str(exe) + '.new')
+    shutil.copy2(exe, new)
+    with open(new, 'ab') as f:
+        f.write(b'\0' * 16)
     for _ in range(50):
+        for pid in hub.pids(exe):
+            hub.kill(pid)
         try:
-            with open(exe, 'ab') as f:  # the bytes change under the keep
-                f.write(b'\0' * 16)
+            os.replace(new, exe)
             break
         except OSError:
             time.sleep(0.1)
     hub.do('focus', 'Apps')
     hub.do('click', 'Add an app\u2026')
-    ok, s = hub.wait(lambda s: contains(s, 'changed since you allowed it'), 30)
-    row = [t for t in texts(s) if 'changed' in t]
-    check('K3 the row says "On \u00b7 changed since you allowed it"', ok, f'{row[:3]}')
+    ok, s = hub.wait(lambda s: contains(s, KEPT_NOW), 30)
+    row = [t for t in texts(s) if 'New build' in t]
+    check('K3 the Permissions line says the OK stayed, except Sensitive and keyboard', ok, f'{row[:3]}')
+    ok, s = hub.wait(lambda s: (tray_status(s) or '') == '1 app is running', 20)
+    check('K3 the new build runs (the folder grant kept the OK)', ok, repr(tray_status(s)))
+    check('K4 Keep is still On for the folder', has(s, 'Turn off keep my OK after updates') or contains(s, 'Turn off'),
+          f'{[t for t in texts(s) if "Keep" in t][:3]}')
     hub.capture('K3-changed')
     log_before = len(hub.log())
-    if has(s, 'Review\u2026'):
-        hub.do('click', 'Review\u2026')
-    ok, s = hub.wait(dialog_open, 15)
-    check('K4 Review opens the Allow dialog again', ok, f'{texts(s)[:30]}')
-    check('K4 the dialog says the app file changed since it was allowed', contains(s, 'app file changed since you allowed it'),
-          f'{[t for t in texts(s) if "changed" in t][:3]}')
-    hub.capture('K4-dialog')
-    hub.do('key', 'esc', 'main')
+    # this fixture has no Sensitive item waiting, so KEPT_WORDS (#1465) can't show: that needs a Sensitive grant
+    check('K4 no Sensitive item waits here, so no Review is offered (the #1465 words need one)',
+          not contains(s, KEPT_WORDS), 'not shown, as expected')
     time.sleep(1)
     new_log = hub.log()[log_before:]
     check('K5 nothing sensitive started before Allow: no grant line after the change',
