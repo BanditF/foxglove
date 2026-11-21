@@ -105,6 +105,11 @@ every spelling of that folder.
   it with the same `HIDEOUT_CONFIG_DIR` as the lab hub.
 - An outside tool for the lab hub (for example `foxglove-cli` with `FOXGLOVE_PIPE`) takes the
   name from the log line.
+- A lab hub's Foxglove hand-over probes the lab alias (`foxglove-<user><suffix>`), not the
+  user's real Foxglove pipe (G2). A lab Foxglove copy serves that name when started with
+  `FOXGLOVE_PIPE=\.\pipeoxglove-<user><suffix>`; the app takes only that suffixed form and
+  ignores any other value. `scripts/lab/fake_pipe_server.py <that name>` stands in for a copy
+  that accepts and drops (check B3).
 - `HIDEOUT_CONFIG_DIR` set to `%LOCALAPPDATA%\Hideout` is the user's hub, not a lab hub: same
   names, and lab mode stays refused.
 

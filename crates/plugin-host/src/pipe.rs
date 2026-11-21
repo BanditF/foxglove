@@ -26,14 +26,33 @@ use windows_sys::Win32::System::Pipes::{
 use windows_sys::Win32::System::Threading::CreateEventW;
 use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
-/// The pipe's name for the current user.
+/// The pipe's name for the current user. `FOXGLOVE_PIPE` may name a lab copy's own pipe, the
+/// default name plus a folder suffix (`foxglove-<user>.<hex>`, G2): anything else is ignored, so
+/// the variable can't point a copy at another program's pipe or at the plain default.
 pub fn name() -> String {
+    pick(std::env::var("FOXGLOVE_PIPE").ok().as_deref())
+}
+
+fn default_name() -> String {
     let user = std::env::var("USERNAME").unwrap_or_default();
     let user: String = user
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .collect();
     format!(r"\\.\pipe\foxglove-{user}")
+}
+
+fn pick(asked: Option<&str>) -> String {
+    let default = default_name();
+    match asked {
+        Some(a) => match a.strip_prefix(&format!("{default}.")) {
+            Some(rest) if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric()) => {
+                a.to_string()
+            }
+            _ => default,
+        },
+        None => default,
+    }
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -211,6 +230,23 @@ pub fn connect() -> io::Result<std::fs::File> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn foxglove_pipe_env_takes_only_a_suffixed_own_name() {
+        let d = super::default_name();
+        assert!(d.starts_with(r"\\.\pipe\foxglove-"));
+        assert_eq!(super::pick(None), d);
+        let ok = format!("{d}.0123456789abcdef");
+        assert_eq!(super::pick(Some(&ok)), ok);
+        for bad in [
+            d.clone(),
+            format!("{d}."),
+            r"\\.\pipe\hideout-x.1".to_string(),
+            format!("{d}.a\\b"),
+        ] {
+            assert_eq!(super::pick(Some(&bad)), d, "{bad}");
+        }
+    }
+
     use super::*;
     use std::io::BufRead;
 
