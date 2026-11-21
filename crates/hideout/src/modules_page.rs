@@ -1090,10 +1090,17 @@ mod tests {
         }
         fn turn_on(&self, id: &str) -> Result<(), String> {
             self.0.borrow_mut().push(format!("turn-on {id}"));
+            // "m.nosave" is a module whose row can't be saved as on.
+            if id == "m.nosave" {
+                return Err("inventory not written".into());
+            }
             Ok(())
         }
         fn begin_hand_over(&self, id: &str) -> Result<(), String> {
             self.0.borrow_mut().push(format!("begin {id}"));
+            if id == "m.nosave" {
+                return Err("inventory not written".into());
+            }
             Ok(())
         }
         fn end_hand_over(&self, id: &str, went: bool) {
@@ -1210,6 +1217,54 @@ mod tests {
             *log.0.borrow(),
             ["begin m.a", "end m.a true", "turn-on m.a"]
         );
+    }
+
+    /// A hand-over whose row can't be saved as on holds nothing: the hold is never ended (there
+    /// is none, and ending it as "went" would save the row as on), and the plain start that
+    /// follows fails, so the row stays off.
+    #[test]
+    fn a_hand_over_that_cannot_be_saved_holds_nothing_and_leaves_the_row_off() {
+        use crate::permission_actions::{Done, Then};
+        let inst = Installed {
+            adopted: true,
+            id: "m.nosave".into(),
+            name: "Art".into(),
+            version: "1.0.0".into(),
+            enabled: false,
+            dev: false,
+            dev_folder: None,
+        };
+        let log = Log::default();
+        let mut page = ModulesPage {
+            installed: vec![inst],
+            facts: None,
+            actions: Some(Box::new(log.clone())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+            done: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: None,
+            ask: Default::default(),
+            told: Default::default(),
+            discover: None,
+        };
+        page.after_allow(Done {
+            id: "m.nosave".into(),
+            code: String::new(),
+            chosen: Vec::new(),
+            declined: Vec::new(),
+            then: Then::TurnOn,
+            handover: true,
+        });
+        // No "end": a hold that was never taken is not released.
+        assert_eq!(*log.0.borrow(), ["begin m.nosave", "turn-on m.nosave"]);
+        assert!(!page.installed[0].enabled);
+        // Nothing is left for `settle_hand_over` to finish later.
+        page.settle_hand_over(false);
+        assert_eq!(log.0.borrow().len(), 2);
+        assert!(!page.installed[0].enabled);
     }
 
     const TAG: &str = "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0";
