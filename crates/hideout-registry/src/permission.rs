@@ -534,6 +534,12 @@ impl Registry {
         follow: bool,
     ) -> Result<Outcome, Failure> {
         self.reload_inventory()?;
+        // An Allow (or a Deny) writes a binding. Grants that are void (legacy, no binding, or
+        // the program changed) must not ride into it unseen: move them back to waiting first,
+        // so the list code changes and the dialog reopens with everything the binding covers.
+        if self.binding_void(id).is_some() && self.void_if_changed(id, now)?.is_some() {
+            return Err(list_changed(list_code, self.permission_list(id)?.code()));
+        }
         let list = self.permission_list(id)?;
         if !list.matches(list_code) {
             return Err(list_changed(list_code, list.code()));
@@ -737,8 +743,16 @@ impl Registry {
         program: impl FnOnce() -> Result<(String, String), Failure>,
     ) -> Option<VoidReason> {
         let m = self.inventory.modules.get(id)?;
-        let b = m.bound.as_ref()?;
+        let Some(b) = m.bound.as_ref() else {
+            // Old data: an adopted record with grants and no binding would carry them to any
+            // program. Every Allow writes a binding, so this has no legitimate source.
+            return (m.source == ADOPTED && !m.granted.is_empty()).then_some(VoidReason::Changed);
+        };
         if b.void {
+            return Some(VoidReason::Changed);
+        }
+        // A binding with no program hash that still holds grants binds them to nothing.
+        if m.source == ADOPTED && b.exe_sha256.is_empty() && !m.granted.is_empty() {
             return Some(VoidReason::Changed);
         }
         if m.source != ADOPTED || b.exe_sha256.is_empty() {
@@ -746,7 +760,7 @@ impl Registry {
         }
         match program() {
             Ok((path, hash)) => {
-                if !b.run_args.is_empty() && self.run_args(id) != b.run_args {
+                if self.run_args(id) != b.run_args {
                     Some(VoidReason::Changed)
                 } else if !crate::keyboard::same_path(&path, &b.exe_path)
                     && self.dev_enrolment(id, m, b, &path).is_none()

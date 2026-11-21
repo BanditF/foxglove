@@ -236,6 +236,157 @@ fn changed_program_arguments_void_even_when_none_were_recorded() {
 }
 
 #[test]
+fn an_argument_added_to_the_same_program_voids_and_unchanged_empty_args_do_not() {
+    let mut f = fx("args3");
+    allow(&mut f, "dialog", false).unwrap();
+    assert!(f.bound().run_args.is_empty());
+    // Nothing changed, no arguments before or after: the grant stands.
+    assert_eq!(f.reg.binding_void(ID), None);
+    // The same exe bytes, one argument more: void.
+    let exe = f.exe.display().to_string();
+    f.readopt(&[&exe, "--evil"]);
+    assert_voids(&mut f, VoidReason::Changed);
+}
+
+#[test]
+fn an_adopted_record_with_grants_and_no_binding_is_void_and_goes_back_to_pending() {
+    let mut f = fx("legacy");
+    allow(&mut f, "dialog", false).unwrap();
+    let path = f.home.join("inventory.json");
+    f.reg.inventory.modules.get_mut(ID).unwrap().bound = None;
+    f.reg.inventory.save(&path).unwrap();
+    assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
+    assert_eq!(
+        f.reg.void_if_changed(ID, LATER).unwrap(),
+        Some(VoidReason::Changed)
+    );
+    let m = &f.reg.inventory.modules[ID];
+    assert!(m.granted.is_empty());
+    assert_eq!(m.pending_permissions, ["hub.notify", "ui.window"]);
+    assert_eq!(m.last_choice, ["hub.notify", "ui.window"]);
+    assert!(m.bound.is_none());
+    // Nothing left to void; a record with no grants and no binding is not void.
+    assert_eq!(f.reg.binding_void(ID), None);
+    // A record that is not adopted is unchanged by the rule.
+    f.reg.inventory.modules.get_mut(ID).unwrap().granted = vec!["hub.notify".into()];
+    f.reg.inventory.modules.get_mut(ID).unwrap().source = "sideload".into();
+    assert_eq!(f.reg.binding_void(ID), None);
+}
+
+/// Removes the binding of an adopted record that holds grants: the old data this rule is for.
+fn make_legacy(f: &mut Fx) {
+    let path = f.home.join("inventory.json");
+    f.reg.inventory.modules.get_mut(ID).unwrap().bound = None;
+    f.reg.inventory.save(&path).unwrap();
+}
+
+/// The first answer on a void record is refused with a new list code; nothing is granted and
+/// every old grant waits. The second answer, with the new code, binds exactly what it names.
+fn first_allow_is_refused_then_binds_one(f: &mut Fx) {
+    let list = f.reg.permission_list(ID).unwrap();
+    let shown = list.code().to_string();
+    let err = f
+        .reg
+        .approve_listed(
+            ID,
+            &shown,
+            &["hub.notify".to_string()],
+            &[],
+            LATER,
+            "dialog",
+            false,
+        )
+        .unwrap_err();
+    assert_eq!(err.id(), Some("permission.list_changed"));
+    assert!(f.granted().is_empty());
+    assert_eq!(
+        f.reg.inventory.modules[ID].pending_permissions,
+        ["hub.notify", "ui.window"]
+    );
+    let fresh = f.reg.permission_list(ID).unwrap();
+    assert_ne!(fresh.code(), shown);
+    assert_eq!(fresh.items.len(), 2);
+    f.reg
+        .approve_listed(
+            ID,
+            fresh.code(),
+            &["hub.notify".to_string()],
+            &[],
+            LATER,
+            "dialog",
+            false,
+        )
+        .unwrap();
+    assert_eq!(f.granted(), ["hub.notify"]);
+    let b = f.bound();
+    assert!(!b.void);
+    assert_eq!(b.exe_sha256.len(), 64);
+    assert_eq!(f.reg.binding_void(ID), None);
+}
+
+#[test]
+fn an_allow_on_a_legacy_record_does_not_carry_the_old_grants_into_the_binding() {
+    let mut f = fx("legacy-allow");
+    allow(&mut f, "dialog", false).unwrap();
+    make_legacy(&mut f);
+    first_allow_is_refused_then_binds_one(&mut f);
+}
+
+#[test]
+fn an_allow_after_a_program_change_does_not_carry_the_old_grants_into_the_binding() {
+    let mut f = fx("changed-allow");
+    allow(&mut f, "dialog", false).unwrap();
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    // The dialog is opened first, before anything voided the grants.
+    assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
+    first_allow_is_refused_then_binds_one(&mut f);
+}
+
+#[test]
+fn a_deny_on_a_legacy_record_binds_no_old_grants() {
+    let mut f = fx("legacy-deny");
+    allow(&mut f, "dialog", false).unwrap();
+    make_legacy(&mut f);
+    let code = f.reg.permission_list(ID).unwrap().code().to_string();
+    let err = f
+        .reg
+        .deny_listed(ID, &code, &[], LATER, "dialog")
+        .unwrap_err();
+    assert_eq!(err.id(), Some("permission.list_changed"));
+    assert!(f.granted().is_empty());
+    assert!(f.reg.inventory.modules[ID].bound.is_none());
+    let fresh = f.reg.permission_list(ID).unwrap();
+    f.reg
+        .deny_listed(ID, fresh.code(), &[], LATER, "dialog")
+        .unwrap();
+    assert!(f.granted().is_empty());
+    assert_eq!(f.reg.binding_void(ID), None);
+}
+
+#[test]
+fn a_binding_without_a_program_hash_that_holds_grants_is_void() {
+    let mut f = fx("empty-hash");
+    allow(&mut f, "dialog", false).unwrap();
+    let path = f.home.join("inventory.json");
+    f.reg
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .bound
+        .as_mut()
+        .unwrap()
+        .exe_sha256
+        .clear();
+    f.reg.inventory.save(&path).unwrap();
+    assert!(!f.bound().void);
+    assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
+    // No grants, no problem.
+    f.reg.inventory.modules.get_mut(ID).unwrap().granted.clear();
+    assert_eq!(f.reg.binding_void(ID), None);
+}
+
+#[test]
 fn changed_recorded_program_arguments_void() {
     let mut f = fx("args2");
     let exe = f.exe.display().to_string();

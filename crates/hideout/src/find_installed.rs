@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use foxglove_plugin::owner::PeerPaths;
+use hideout_contract::module::{Context, Module};
 
 /// How a product's manifest is made. `@EXE@` and `@VERSION@` are filled in.
 #[derive(Clone, Debug)]
@@ -348,6 +349,10 @@ pub fn adopt(
 ) -> Result<String, String> {
     let p = product(&found.id).ok_or_else(|| "not an app Hideout knows".to_string())?;
     let text = manifest_text(m, p, found)?;
+    // The product the user chose is the one registered, whatever id the template names.
+    if !Module::parse(&text, &Context::default()).is_ok_and(|module| module.id == found.id) {
+        return Err(format!("{} names another app", p.name));
+    }
     let dir = staging.join(&p.id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     std::fs::write(dir.join("module.toml"), text)

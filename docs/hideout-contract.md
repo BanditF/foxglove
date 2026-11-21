@@ -1462,6 +1462,8 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
 
 ### 6.4 Approval
 
+- An Allow or Not now on a record whose grants are void first moves those grants back to waiting,
+  so the dialog always shows everything it binds.
 - Apps in the `apps` folder next to hideout.exe are shown on the Found card and asked at Add; nothing is granted
   without the user's Allow.
 - Catalog, private and sideloaded modules show the permission dialog at enable.
@@ -1540,8 +1542,9 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   also ignored when it is older than the module's current instance (the hub's own record).
   The release pipeline (`.github/workflows/app.yml`) already emits `exe_sha256`
   (`foxglove-update manifest --exe-sha256 <hex>`). A binding also records
-  `run[1..]` (the program's arguments); a later difference voids the grant (empty = not
-  recorded, not checked).
+  `run[1..]` (the program's arguments); a later difference voids the grant (an empty list
+  included: adding an argument voids). An adopted record that holds grants but has no binding
+  (old data) counts as void.
 - (#1179) **Design limit.** A module that runs outside an AppContainer has the user's token. It
   can inject into or drive `hideout.exe`, synthesise input to the hub's dialog, or write
   `inventory.json`. The guarantee that a module never grants itself is therefore **full only

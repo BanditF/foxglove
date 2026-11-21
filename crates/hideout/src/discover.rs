@@ -477,6 +477,11 @@ pub fn add(
     c: &Candidate,
     now: &str,
 ) -> Result<String, String> {
+    // The ids that were registered before this call: a record of another id that the adopt code
+    // makes is removed again, one that was there is never touched.
+    let before: Option<Vec<String>> = hideout_registry::Registry::open_from_env(home)
+        .ok()
+        .map(|r| r.inventory.modules.keys().cloned().collect());
     let done = match (&c.origin, &c.text) {
         (Origin::Folder(f), Some(text)) => {
             // Still the same file, byte for byte (name, program and permissions too)...
@@ -500,6 +505,11 @@ pub fn add(
                 }
                 _ => text.clone(),
             };
+            // The id the user was shown is the id that gets registered.
+            if !Module::parse(&text, &Context::default()).is_ok_and(|module| module.id == c.id) {
+                log::warn!("discover: {}: the staged text names another id", c.id);
+                return Err(words::changed(&c.name));
+            }
             // ...and what is registered is the text the user was shown, staged and adopted
             // from there, so a swap after this point cannot reach the inventory.
             let dir = staging.join(format!("add-{}", c.id));
@@ -518,6 +528,11 @@ pub fn add(
             }
             // What the registry now holds must be the staged text, byte for byte.
             if staged.is_ok() && !registered_matches(home, &c.id, &text, fresh) {
+                // The adopt code may have registered another id than the card's: that stray
+                // record made by this call does not stay either.
+                if let Ok(line) = &staged {
+                    drop_stray(home, line, before.as_deref());
+                }
                 return Err(words::changed(&c.name));
             }
             staged
@@ -532,6 +547,7 @@ pub fn add(
                 "discover: asked to add {} but the adopt code said: {line}",
                 c.id
             );
+            drop_stray(home, &line, before.as_deref());
             Err(words::changed(&c.name))
         }
         Err(why) => {
@@ -543,6 +559,24 @@ pub fn add(
                 words::not_saved(&c.name)
             })
         }
+    }
+}
+
+/// The adopt code answered with another id than the card's: that record is removed again when
+/// it was not there before the call (`before`; unknown = nothing is removed). A record that
+/// existed is never dropped.
+fn drop_stray(home: &Path, line: &str, before: Option<&[String]>) {
+    let Some(other) = line
+        .strip_prefix("registered ")
+        .and_then(|r| r.split(' ').next())
+    else {
+        return;
+    };
+    if before.is_none_or(|b| b.iter().any(|i| i == other)) {
+        return;
+    }
+    if let Ok(mut reg) = hideout_registry::Registry::open_from_env(home) {
+        let _ = reg.remove(other);
     }
 }
 
@@ -2136,6 +2170,57 @@ mod tests {
         assert!(!registered_matches(&home, &id, &other, true));
         let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
         assert!(!reg.inventory.modules.contains_key(&id));
+    }
+
+    /// A card whose file names another id than the card does is refused before anything is
+    /// staged: nothing is registered, and a record of the id the file names is not touched.
+    #[test]
+    fn a_candidate_whose_text_names_another_id_is_refused_and_registers_nothing() {
+        let (install, f, _) = service_on_disk("svc-otherid", "vulpes.gadget", "svc.exe");
+        let home = temp("svc-otherid-home");
+        let mut c = from_folder(&f, &home, &install).unwrap();
+        c.id = "vulpes.other".into();
+        let stg = temp("svc-otherid-stg");
+        assert_eq!(add(&f, &home, &stg, &c, NOW), Err(words::changed(&c.name)));
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert!(reg.inventory.modules.is_empty());
+        drop(reg);
+        // A record of the id the file names was there already: refused, and it is left as it was.
+        c.id = "vulpes.gadget".into();
+        add(&f, &home, &stg, &c, NOW).unwrap();
+        let held = hideout_registry::Registry::open_from_env(&home)
+            .unwrap()
+            .inventory
+            .modules["vulpes.gadget"]
+            .clone();
+        c.id = "vulpes.other".into();
+        assert!(add(&f, &home, &stg, &c, NOW).is_err());
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert_eq!(reg.inventory.modules.len(), 1);
+        assert_eq!(reg.inventory.modules["vulpes.gadget"], held);
+    }
+
+    /// When the adopt code still reports another id, that record goes only if the call made it.
+    #[test]
+    fn a_stray_record_is_dropped_only_when_the_call_made_it() {
+        let (install, f, _) = service_on_disk("svc-stray", "vulpes.gadget", "svc.exe");
+        let home = temp("svc-stray-home");
+        let c = from_folder(&f, &home, &install).unwrap();
+        add(&f, &home, &temp("svc-stray-stg"), &c, NOW).unwrap();
+        let line = "registered vulpes.gadget 0.1.0 (installed separately)";
+        let has = || {
+            hideout_registry::Registry::open_from_env(&home)
+                .unwrap()
+                .inventory
+                .modules
+                .contains_key("vulpes.gadget")
+        };
+        drop_stray(&home, line, Some(&["vulpes.gadget".to_string()]));
+        assert!(has());
+        drop_stray(&home, line, None);
+        assert!(has());
+        drop_stray(&home, line, Some(&[]));
+        assert!(!has());
     }
 
     /// A refused pick says what to do next, in exact words.

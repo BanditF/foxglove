@@ -62,7 +62,9 @@ pub struct Installed {
     /// What the user had allowed before a void, the dialog's default (#1178).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub last_choice: Vec<String>,
-    /// What the grant is bound to (#1178); none for a grant made before the binding existed.
+    /// What the grant is bound to (#1178); none for a grant made before the binding existed. For
+    /// an adopted record that now counts as void: its grants go back to pending and are asked
+    /// again. The same holds for a binding with an empty program hash that still holds grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound: Option<Bound>,
     /// The user's grant of the reserved areas to the adopted legacy module (#1155-B): path and
@@ -157,7 +159,8 @@ pub struct Bound {
     pub at: String,
     /// `dialog` or `cli`.
     pub by: String,
-    /// `run[1..]` (the program's arguments) at the allow; empty = not recorded, not checked.
+    /// `run[1..]` (the program's arguments) at the allow; empty = no arguments, and the check
+    /// holds the program to that.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub run_args: Vec<String>,
     /// The program changed or moved since the allow.
