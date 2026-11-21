@@ -199,6 +199,9 @@ pub const TOOL_SCRIPT_RUNNERS: &[&str] = &[
     "powershell",
     "powershell_ise",
     "pwsh",
+    "pwsh-preview",
+    "python_d",
+    "pythonw_d",
     "cmd",
     "wscript",
     "cscript",
@@ -259,8 +262,16 @@ pub fn tool_runs_scripts(file: &str) -> bool {
     {
         return true;
     }
-    let base = stem.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
-    base.len() < stem.len() && !base.is_empty() && TOOL_SCRIPT_RUNNERS.contains(&base)
+    let versioned = |s: &str| {
+        let base = s.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+        base.len() < s.len() && !base.is_empty() && TOOL_SCRIPT_RUNNERS.contains(&base)
+    };
+    if versioned(stem) {
+        return true;
+    }
+    // One letter after the version: `python3.13t` (free-threaded), `python3.12d` (debug).
+    stem.strip_suffix(|c: char| c.is_ascii_lowercase())
+        .is_some_and(|s| s.ends_with(|c: char| c.is_ascii_digit()) && versioned(s))
 }
 
 /// Whether the fact pattern `pattern` (as asked in `facts.read:<pattern>`) lies wholly inside
@@ -812,6 +823,10 @@ mod tests {
             "fsi.exe",
             "electron.exe",
             "nw.exe",
+            "python3.13t.exe",
+            "Python3.12d.exe",
+            "python_d.exe",
+            "pwsh-preview.exe",
         ] {
             assert!(tool_runs_scripts(f), "{f}");
         }
@@ -821,6 +836,7 @@ mod tests {
             "shell.exe",
             "notes.exe",
             "spy.exe",
+            "mytool3t.exe",
         ] {
             assert!(!tool_runs_scripts(f), "{f}");
         }

@@ -400,6 +400,8 @@ pub struct Router {
     /// What the user allowed an outside tool, by the program (image path and hash), never by
     /// the name it gives itself. Only for a known program that is no script runner (S1).
     approved: HashMap<crate::ToolId, Vec<Capability>>,
+    /// The order programs were allowed, oldest first: the order `tools.json` drops them in.
+    approved_order: Vec<crate::ToolId>,
     /// Outside tools waiting for the user (S1): in memory, at most `QUEUE_MAX`.
     tool_queue: crate::tool_queue::ToolQueue,
     modules: BTreeMap<String, ModuleEntry>,
@@ -572,6 +574,7 @@ impl Router {
             settings,
             approve,
             approved: HashMap::new(),
+            approved_order: Vec::new(),
             tool_queue: Default::default(),
             modules: BTreeMap::new(),
             tokens: HashMap::new(),
@@ -1014,15 +1017,24 @@ impl Router {
         }
     }
 
-    /// Keeps what `id` was allowed, within `APPROVED_MAX` programs: when full, one other
-    /// program's answer is forgotten (it is asked again).
+    /// Keeps what `id` was allowed, within `APPROVED_MAX` programs. The program becomes the
+    /// newest; when there are more, the one allowed longest ago is forgotten and asks again,
+    /// the same order `tools.json` drops them in. Only a user's Allow (or the record loaded at
+    /// start) reaches here, so nothing a program does by connecting can push one out.
     fn remember_approved(&mut self, id: crate::ToolId, caps: Vec<Capability>) {
-        if !self.approved.contains_key(&id) && self.approved.len() >= APPROVED_MAX {
-            if let Some(old) = self.approved.keys().next().cloned() {
-                self.approved.remove(&old);
-            }
+        self.approved_order.retain(|k| k != &id);
+        self.approved_order.push(id.clone());
+        while self.approved_order.len() > APPROVED_MAX {
+            let old = self.approved_order.remove(0);
+            self.approved.remove(&old);
         }
         self.approved.insert(id, caps);
+    }
+
+    /// Forgets what was kept for `id`.
+    fn forget_approved(&mut self, id: &crate::ToolId) {
+        self.approved.remove(id);
+        self.approved_order.retain(|k| k != id);
     }
 
     /// The programs outside Hideout waiting for the user, newest first (S1). Display data:
@@ -1082,13 +1094,17 @@ impl Router {
                 granted: kept,
             });
         }
+        // A script runner's answer is for the one connection that asked; any other program's is
+        // for every connection of that file.
+        let only = ask.runs_scripts.then_some(ask.conn);
         let mut live: Vec<ConnId> = self
             .conns
             .iter()
-            .filter(|(_, c)| {
+            .filter(|(k, c)| {
                 c.identity.as_ref() == Some(id)
                     && c.app_container.is_none()
                     && matches!(c.who, Who::Tool { .. })
+                    && only.is_none_or(|o| o == Some(**k))
             })
             .map(|(k, _)| *k)
             .collect();
@@ -2259,17 +2275,26 @@ impl Router {
 
     /// [`Router::clean_holder_name`] cut at `max` characters.
     pub fn clean_name_to(raw: &str, max: usize) -> String {
+        Self::clean_name_opt(raw, max).unwrap_or_else(|| "An app".to_string())
+    }
+
+    /// [`Router::clean_name_to`] for a program outside Hideout, which is never "An app": `None`
+    /// when nothing is left after the hidden characters and spaces are dropped.
+    pub fn clean_name_opt(raw: &str, max: usize) -> Option<String> {
         // Control characters other than whitespace are dropped too (a name is one line).
         let raw: String = raw
             .chars()
             .filter(|c| !c.is_control() || c.is_whitespace())
             .collect();
-        let name = hideout_contract::module::display_name(&raw, "An app");
+        let name = hideout_contract::module::display_name(&raw, "");
+        if name.is_empty() {
+            return None;
+        }
         if name.chars().count() <= max {
-            return name;
+            return Some(name);
         }
         let cut: String = name.chars().take(max - 1).collect();
-        format!("{}\u{2026}", cut.trim_end())
+        Some(format!("{}\u{2026}", cut.trim_end()))
     }
 
     /// `lease.holders` (v1.21): keeps `names` as the callers `module` holds `family` for outside
@@ -2820,9 +2845,12 @@ impl Router {
         } else if self.tool_identity(conn).is_none() {
             "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.".to_string()
         } else {
-            let name = Self::clean_name_to(name, 40);
+            let who = match Self::clean_name_opt(name, 40) {
+                Some(n) => format!("\u{201c}{n}\u{201d}"),
+                None => "this program".to_string(),
+            };
             format!(
-                "Hideout hasn't let \u{201c}{name}\u{201d} {does} yet. Open Hideout, go to Apps and press Review\u{2026} on its line, then try again."
+                "Hideout hasn't let {who} {does} yet. Open Hideout, go to Apps and press Review\u{2026} on its line. If there is no line, close this program and start it again, then try again."
             )
         }
     }
@@ -2956,7 +2984,7 @@ impl Router {
             }
             return;
         }
-        // An outside tool (§8.2): granted by the approver (§6.4; no dialog yet, #1142).
+        // An outside tool (§8.2): granted by the approver (§6.4), or asks the user in the tool dialog (S1).
         let name = params["client"]["name"].as_str().unwrap_or("").to_string();
         if name.is_empty() {
             return refuse(
@@ -3011,11 +3039,12 @@ impl Router {
                 .collect();
             if !stale.is_empty() {
                 for k in stale {
-                    self.approved.remove(&k);
+                    self.forget_approved(&k);
                 }
-                self.tool_queue.remove_path(&id.image_path);
                 out.push(Out::ToolVoided(id.image_path.clone()));
             }
+            // The same file with other bytes: an ask waiting for the old bytes is void too.
+            self.tool_queue.remove_stale(id);
         }
         let known = key
             .as_ref()
@@ -3032,9 +3061,19 @@ impl Router {
             let yes = (self.approve)(&name, &new);
             granted.extend(yes.into_iter().filter(|c| new.contains(c)));
         }
+        // Only an answer is kept: a program that got just the free set leaves no record, so it
+        // can never push out one the user gave. A program already kept is updated in place.
         if let Some(k) = key {
-            if !granted.is_empty() {
-                self.remember_approved(k, granted.clone());
+            let user_level = granted.iter().any(|c| {
+                hideout_contract::capability::tool_class(c, None)
+                    != hideout_contract::capability::ToolClass::Free
+            });
+            if user_level {
+                if let Some(slot) = self.approved.get_mut(&k) {
+                    *slot = granted.clone();
+                } else {
+                    self.remember_approved(k, granted.clone());
+                }
             }
         }
         // What only the user can allow waits in the queue, by program file. Not for a program
@@ -3060,6 +3099,7 @@ impl Router {
                     name: name.clone(),
                     items,
                     runs_scripts: !id.remembered(),
+                    conn: Some(conn),
                 });
                 out.push(Out::ToolAsk);
             }

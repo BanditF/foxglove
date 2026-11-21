@@ -1484,35 +1484,59 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   narrows what it may get. The name is only text to show, untrusted, cleaned and cut. What the
   hub remembers it allowed is tied to the program: the image file of the connecting process
   (its canonical path and the SHA-256 of the file), taken from a process handle the hub opens
-  when the connection is accepted, so a reused process id cannot pass for another program. The
+  when the connection is accepted (the file is read and hashed at the first line), so a reused process id cannot pass for another program. The
   same name from another file, or the same path with other bytes, inherits nothing. When the
   program cannot be told, or is a script runner (a data list of image names such as an
-  interpreter or shell, `TOOL_SCRIPT_RUNNERS`, and name prefixes such as `python3`,
-  `TOOL_SCRIPT_RUNNER_PREFIXES`), nothing is remembered: each connection is
-  decided afresh. The same holds for a peer that runs contained (AppContainer or low
-  integrity): it is never remembered. A lab hub (§8.2) keeps the older rule, which grants every
+  interpreter or shell, `TOOL_SCRIPT_RUNNERS`, whose list holds `autohotkey` as its only
+  name prefix; `python3` and `python3.13t` match through the rule that drops trailing
+  digits and dots, and a version letter such as `t` or `d`; `python_d` and `pwsh-preview` are
+  listed), nothing is remembered: each connection is
+  decided afresh. The same holds for a peer that runs contained in an AppContainer: it is
+  never remembered. A low-integrity peer never gets this far: it is refused when it is admitted. A lab hub (§8.2) keeps the older rule, which grants every
   non-sensitive permission, and says so once at start. Only this user's own processes reach
   the pipes (not remote clients, not low-integrity ones).
+  What the dialog and `tools.json` hold against: a program that only speaks the pipe protocol
+  cannot allow itself anything. A program running as the same user can edit `tools.json` or
+  operate the hub window, and Hideout does not defend against that.
 - (S1) **The outside-tool dialog.** A tool that asks for more than the free set is queued
   (at most 5, one per program file, newest first). The Apps page shows a header line, "A program
   outside Hideout asks for {n} permission{s}", with the body "It calls itself “{name}”.
-  Nothing is allowed until you review it." and the buttons Review... and Not now. The header
-  never opens a dialog by itself; only Review... does. The dialog is hub-drawn (never by a
+  Nothing is allowed until you review it." and the buttons Review… and Not now. A tool that
+  gives no name (empty, spaces or hidden characters only) is never shown as "An app": the body
+  is "It gives no name. Nothing is allowed until you review it." The header
+  never opens a dialog by itself; only Review… does. The dialog is hub-drawn (never by a
   module panel) and titled "Allow a program outside Hideout?". It says "It calls itself
   “{name}”. Hideout can't confirm that name.", "Program file: {file}" (or "not known"),
-  and "It asks to:" with one line per item. The footer is "Hideout remembers your answer for
+  and "It asks to:" with one line per item. With no name the first line is "It gives no name,
+  so check the program file below." The file line drops hidden characters (controls, direction
+  marks, zero-width); a path over 160 characters shows its first 40, "…" and its last 110.
+  A tool must list a permission in `initialize` to ever be offered it. The footer is "Hideout remembers your answer for
   this program file. If the file changes, it asks again.", or for a script runner "This program
   runs scripts, so Hideout asks again the next time it connects." The identity is the program
-  that opened the connection, so anything that uses that program can use what the user allows
-  (the dialog says: "Anything that uses this program can use what you allow."). Buttons: **Not
+  that opened the connection, so other programs that start it can use what the user allows
+  (the dialog says: "Other programs that start this one can use what you allow too."). Buttons: **Not
   now** (default, focused; Enter, Esc and closing answer it) and **Allow** (armed after 1 s).
-  Not now drops the ask. Allow stores the grants in `tools.json` (format `hideout-tools/1`, at
-  most 64 programs, oldest dropped), bound to the program file's canonical path and SHA-256, and
-  the router sends the running connection `module.grants {added}`. A path whose bytes change
-  is voided and asks again. The name is cleaned and cut to 40 characters, always quoted.
+  Not now has the focus when the dialog opens; Enter answers the focused button, Esc and
+  closing always answer Not now. Before Allow is armed, Tab keeps the focus on Not now.
+  Not now drops the ask. It asks again the next time the program connects.
+  Allow stores the grants in `tools.json` (format `hideout-tools/1`) in the hub folder, bound
+  to the program file's canonical path and SHA-256. At most 64 programs are kept. When a 65th
+  is allowed, the program allowed longest ago is forgotten and asks again the next time it
+  connects. Removing an entry from `tools.json` with the hub stopped forgets it. Only a
+  user's Allow (or the loaded record) is kept: a connection that got only the free set leaves
+  no record. Every connection from that program file that is open now gets the allowed items
+  it asked for in `initialize`. A v2 connection is told with `module.grants {added}`; a v1
+  connection is not told, and its next call simply works. A tool only gets an item it listed
+  in `initialize`. For a script runner the Allow reaches only the connection that asked. A
+  path whose bytes change is voided and asks again, and so is an ask waiting for the old
+  bytes. The name is cleaned and cut to 40 characters, always quoted. The dialog and
+  `tools.json` protect against a program that only speaks the pipe protocol; a program running
+  as the user can edit `tools.json` or operate the hub window, and Hideout does not defend
+  against that.
 - (S1) **Words for a refused tool call.** R3 (ask-class, not yet reviewed): "Hideout hasn't let
-  “{name}” {does} yet. Open Hideout, go to Apps and press Review... on its line, then try
-  again." R4 (program not known): "Hideout couldn't check which program this is, so it may only
+  “{name}” {does} yet. Open Hideout, go to Apps and press Review… on its line. If there
+  is no line, close this program and start it again, then try again." With no name it reads
+  "Hideout hasn't let this program {does} yet. …" R4 (program not known): "Hideout couldn't check which program this is, so it may only
   read. Start it again from a normal window, not as administrator." R2 (never-class): "Hideout
   never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
 - The cut-over from Foxglove carries every existing grant over silently. Only new permissions ask.
@@ -1521,7 +1545,7 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
 - (#1155-B) The permission dialog is hub-drawn, never by a module panel. Its first section is the
   keyboard grant of §6.3 (title, plain list, footer, binding line with the path, **Allow** /
   **Not now**); Not now is the default, focused, and Enter, Esc and closing all answer it. The
-  dialog opens only on the user's own act (Turn on, Review...), never at sign-in, autostart, a
+  dialog opens only on the user's own act (Turn on, Review…), never at sign-in, autostart, a
   hub restart or an update; a start without that act gets a header line instead. "Update waiting
   for you" reuses the dialog.
 - (#1178) **The grant is bound to the list that was shown.** The dialog and `hideout modules
@@ -1578,7 +1602,7 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
     moves each held item from `granted` to `pending_permissions` and `last_choice`, voids
     the keyboard record (reason `changed`), and never tells the router to follow the keyboard to
     the new file (`attested_keyboard_move` ignores folder steps). The module keeps running with
-    what carried over. The Apps row reads "On, changed since you allowed it" with Review...,
+    what carried over. The Apps row reads "On, changed since you allowed it" with Review…,
     and the header and Allow dialog reuse the asks-for-more flow, with those items pre-checked
     as "Allowed before" and unconfirmed until the user confirms them. No new modal.
   - **An Allow never rebinds old Sensitive grants to new bytes.** `approve_listed` runs the
@@ -2159,6 +2183,9 @@ Rules:
   both come from that handle, so a reused process id cannot mix them. The program is read only
   when the first line is an `initialize` without a launch token; an app's connection is never
   read or hashed.
+  The tool dialog and `tools.json` protect against a program that only speaks the pipe protocol;
+  a program running as the user can edit `tools.json` or operate the hub window, and Hideout does
+  not defend against that.
 - **Legacy stdio plugins** (`transport = "stdio"`) are bridged by the hub.
 - **The bridge carries panels (v1.4).** A bridged connection is the module's connection: the
   hub reads its identity from the bridge, not a token, and treats its messages as any module's.

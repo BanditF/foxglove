@@ -3,7 +3,8 @@
 //! `review/design-s1-outside-tools.md` section 5). Drawn by the hub, never by the program. Its
 //! name is the program's own word for itself and is shown as quoted plain text (cleaned, cut
 //! at 40 characters, regular weight, never accent-colored); Hideout can't confirm it. "Not now"
-//! is the default: it has the focus, and Enter, Esc and the window's close button all answer it.
+//! is the default: it has the focus when the dialog opens; Enter answers the focused button, and
+//! Esc and the window's close button always answer Not now.
 //! "Allow" is armed one second after the dialog is first drawn, so a key already on its way
 //! can't allow something. Nothing here allows anything by itself: only Allow does, and only
 //! for the items listed.
@@ -28,12 +29,13 @@ pub const FOOTER_KEPT: &str =
     "Hideout remembers your answer for this program file. If the file changes, it asks again.";
 pub const FOOTER_RUNNER: &str =
     "This program runs scripts, so Hideout asks again the next time it connects.";
-/// The program that opened the connection is what is allowed, not whoever drives it.
-pub const SAME_PROGRAM: &str = "Anything that uses this program can use what you allow.";
+/// The program that opened the connection is what is allowed, not whoever starts it.
+pub const SAME_PROGRAM: &str = "Other programs that start this one can use what you allow too.";
 
-/// The program's own name as the words show it: cleaned, cut, always in quotes.
-pub fn quoted_name(raw: &str) -> String {
-    format!("\u{201c}{}\u{201d}", Router::clean_name_to(raw, NAME_MAX))
+/// The program's own name as the words show it: cleaned, cut, always in quotes. `None` when it
+/// gave no name (empty, spaces or hidden characters only): it is never shown as "An app".
+pub fn quoted_name(raw: &str) -> Option<String> {
+    Router::clean_name_opt(raw, NAME_MAX).map(|n| format!("\u{201c}{n}\u{201d}"))
 }
 
 /// The Apps page header's title; shown only when `n` is at least 1.
@@ -46,28 +48,45 @@ pub fn header_title(n: usize) -> String {
 
 /// The Apps page header's body.
 pub fn header_body(raw: &str) -> String {
-    format!(
-        "It calls itself {}. Nothing is allowed until you review it.",
-        quoted_name(raw)
-    )
+    match quoted_name(raw) {
+        Some(q) => format!("It calls itself {q}. Nothing is allowed until you review it."),
+        None => "It gives no name. Nothing is allowed until you review it.".into(),
+    }
 }
 
 /// What the program calls itself, and that Hideout can't confirm it.
 pub fn calls_itself(raw: &str) -> String {
-    format!(
-        "It calls itself {}. Hideout can't confirm that name.",
-        quoted_name(raw)
-    )
+    match quoted_name(raw) {
+        Some(q) => format!("It calls itself {q}. Hideout can't confirm that name."),
+        None => "It gives no name, so check the program file below.".into(),
+    }
 }
 
-/// The program file line. A path is plain text: control characters are dropped.
+/// The longest path shown whole, in characters; a longer one keeps its start and its end.
+pub const FILE_SHOWN_MAX: usize = 160;
+/// How much of a long path's start is kept.
+const FILE_HEAD: usize = 40;
+/// How much of a long path's end is kept: the file name is always visible.
+const FILE_TAIL: usize = 110;
+
+/// The program file line. A path is plain text: the characters a name never shows (controls,
+/// direction marks, zero-width characters) are dropped, and a path over
+/// [`FILE_SHOWN_MAX`] characters shows its first 40, an ellipsis and its last 110.
 pub fn file_line(path: &str) -> String {
-    let plain: String = path.chars().filter(|c| !c.is_control()).collect();
+    let plain: String = path
+        .chars()
+        .filter(|c| !hideout_contract::module::hidden_in_name(*c))
+        .collect();
     if plain.trim().is_empty() {
-        "Program file: not known".into()
-    } else {
-        format!("Program file: {plain}")
+        return "Program file: not known".into();
     }
+    let n = plain.chars().count();
+    if n <= FILE_SHOWN_MAX {
+        return format!("Program file: {plain}");
+    }
+    let head: String = plain.chars().take(FILE_HEAD).collect();
+    let tail: String = plain.chars().skip(n - FILE_TAIL).collect();
+    format!("Program file: {head}\u{2026}{tail}")
 }
 
 /// One permission the program asks for.
@@ -178,6 +197,29 @@ impl ToolDialog {
     }
 }
 
+/// Where Tab sends the focus, when it must be moved. `ids` is Allow then Not now. Before Allow is
+/// armed only Not now can hold the focus; after, focus that is outside the dialog is brought
+/// back to its first (last with Shift) button.
+pub(crate) fn tab_target(
+    ids: &[egui::Id],
+    armed: bool,
+    shift: bool,
+    focused: Option<egui::Id>,
+) -> Option<egui::Id> {
+    let not_now = *ids.last()?;
+    if !armed {
+        return Some(not_now);
+    }
+    if focused.is_some_and(|f| ids.contains(&f)) {
+        return None;
+    }
+    if shift {
+        ids.last().copied()
+    } else {
+        ids.first().copied()
+    }
+}
+
 /// The dialog. `first`: the first frame, when Not now takes the focus.
 pub fn tool_dialog_ui(
     ctx: &egui::Context,
@@ -247,16 +289,12 @@ pub(crate) fn tool_dialog_ids(
             ids.push(not_now.id);
         });
     });
-    // Tab stays inside the dialog.
+    // Tab stays inside the dialog, and never on Allow before it is armed.
     let (tab, shift) = ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
-    if tab
-        && !ctx
-            .memory(|m| m.focused())
-            .is_some_and(|f| ids.contains(&f))
-    {
-        let to = if shift { ids.last() } else { ids.first() };
-        if let Some(to) = to {
-            ctx.memory_mut(|m| m.request_focus(*to));
+    if tab {
+        let focused = ctx.memory(|m| m.focused());
+        if let Some(to) = tab_target(&ids, armed, shift, focused) {
+            ctx.memory_mut(|m| m.request_focus(to));
         }
     }
     let said = d.said();
@@ -292,6 +330,7 @@ mod tests {
                 })
                 .collect(),
             runs_scripts: runs,
+            conn: None,
         }
     }
 
@@ -323,19 +362,77 @@ mod tests {
 
     #[test]
     fn tool_name_cleaned_cut_quoted() {
-        assert_eq!(quoted_name("Tool"), "\u{201c}Tool\u{201d}");
+        assert_eq!(quoted_name("Tool").unwrap(), "\u{201c}Tool\u{201d}");
         // Control characters go; the name is one line.
-        assert_eq!(quoted_name("A\u{7}B\nC"), "\u{201c}AB C\u{201d}");
+        assert_eq!(quoted_name("A\u{7}B\nC").unwrap(), "\u{201c}AB C\u{201d}");
         // Cut at 40 characters with an ellipsis, inside the quotes.
         let long = "x".repeat(80);
-        let q = quoted_name(&long);
+        let q = quoted_name(&long).unwrap();
         assert!(
             q.starts_with('\u{201c}') && q.ends_with("\u{2026}\u{201d}"),
             "{q}"
         );
         assert_eq!(q.chars().count(), NAME_MAX + 2);
         // Markup in a name stays plain text.
-        assert!(quoted_name("<b>hi</b>").contains("<b>hi</b>"));
+        assert!(quoted_name("<b>hi</b>").unwrap().contains("<b>hi</b>"));
+    }
+
+    #[test]
+    fn a_blank_name_is_never_an_app() {
+        for blank in ["", "   ", "\u{200b}\u{202e} \u{feff}", "\t\n"] {
+            assert_eq!(quoted_name(blank), None, "{blank:?}");
+            assert_eq!(
+                header_body(blank),
+                "It gives no name. Nothing is allowed until you review it."
+            );
+            assert_eq!(
+                calls_itself(blank),
+                "It gives no name, so check the program file below."
+            );
+            assert!(!header_body(blank).contains("An app"));
+        }
+    }
+
+    #[test]
+    fn the_file_line_is_plain_and_keeps_the_file_name() {
+        // A direction override can't turn gpj.exe into exe.jpg.
+        assert_eq!(
+            file_line("C:\\T\\\u{202e}gpj.exe\u{200b}"),
+            "Program file: C:\\T\\gpj.exe"
+        );
+        assert_eq!(file_line("\u{202e}\u{200b}"), "Program file: not known");
+        // A path over 160 characters keeps its first 40 and its last 110.
+        let long = format!("C:\\{}\\tool.exe", "d\\".repeat(200));
+        let line = file_line(&long);
+        let shown = line.strip_prefix("Program file: ").unwrap();
+        assert_eq!(shown.chars().count(), 40 + 1 + 110);
+        assert!(shown.ends_with("tool.exe"), "{shown}");
+        assert!(shown.starts_with("C:\\d\\d\\"), "{shown}");
+        assert_eq!(shown.chars().nth(40), Some('\u{2026}'));
+        // Exactly 160 characters is shown whole.
+        let p = "p".repeat(160);
+        assert_eq!(file_line(&p), format!("Program file: {p}"));
+        // The accessible text carries the same clean path.
+        let mut a = ask("Tool", &[("lighting.write", "x", false)], false);
+        a.id.image_path = "C:\\\u{202e}x.exe".into();
+        assert!(!ToolDialog::from_ask(&a).said().contains('\u{202e}'));
+    }
+
+    #[test]
+    fn tab_before_arm_keeps_the_focus_on_not_now() {
+        let allow = egui::Id::new("allow");
+        let not_now = egui::Id::new("not_now");
+        let ids = [allow, not_now];
+        // Not armed: Tab, from anywhere, lands on Not now.
+        for focused in [None, Some(allow), Some(not_now), Some(egui::Id::new("x"))] {
+            for shift in [false, true] {
+                assert_eq!(tab_target(&ids, false, shift, focused), Some(not_now));
+            }
+        }
+        // Armed: focus inside the dialog moves on its own; outside comes back in.
+        assert_eq!(tab_target(&ids, true, false, Some(allow)), None);
+        assert_eq!(tab_target(&ids, true, false, None), Some(allow));
+        assert_eq!(tab_target(&ids, true, true, None), Some(not_now));
     }
 
     #[test]
@@ -373,6 +470,10 @@ mod tests {
             "This program runs scripts, so Hideout asks again the next time it connects."
         );
         assert_eq!(file_line(""), "Program file: not known");
+        assert_eq!(
+            SAME_PROGRAM,
+            "Other programs that start this one can use what you allow too."
+        );
 
         // Not now has the focus; Enter answers it; Allow is not armed at first.
         let t = crate::theme::tokens(true);
@@ -411,6 +512,77 @@ mod tests {
         );
         assert_eq!(got.last().unwrap(), &Some(ToolAnswer::NotNow), "{got:?}");
         assert!(got.iter().all(|a| *a != Some(ToolAnswer::Allow)));
+    }
+
+    /// A click on Allow before it is armed is ignored; the same click after one second allows.
+    #[test]
+    fn a_click_on_allow_before_one_second_does_nothing() {
+        let t = crate::theme::tokens(true);
+        let ctx = egui::Context::default();
+        let mut d = ToolDialog::from_ask(&ask("Tool", &[("lighting.write", "x", false)], false));
+        let screen = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(800.0, 600.0),
+        ));
+        let frame = |ctx: &egui::Context,
+                     d: &mut ToolDialog,
+                     time: f64,
+                     first: bool,
+                     events: Vec<egui::Event>|
+         -> (Option<ToolAnswer>, Vec<egui::Id>) {
+            let raw = egui::RawInput {
+                screen_rect: screen,
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut ans = (None, Vec::new());
+            let _ = ctx.run(raw, |c| {
+                ans = tool_dialog_ids(c, &t, d, first);
+            });
+            ans
+        };
+        let (_, ids) = frame(&ctx, &mut d, 0.0, true, vec![]);
+        for k in 1..4 {
+            frame(&ctx, &mut d, 0.05 * k as f64, false, vec![]);
+        }
+        let at = ctx
+            .read_response(ids[0])
+            .expect("Allow was drawn")
+            .rect
+            .center();
+        let click = |down: bool| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: down,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let e1 = frame(
+            &ctx,
+            &mut d,
+            0.1,
+            false,
+            vec![egui::Event::PointerMoved(at)],
+        )
+        .0;
+        let e2 = frame(&ctx, &mut d, 0.2, false, vec![click(true)]).0;
+        let e3 = frame(&ctx, &mut d, 0.3, false, vec![click(false)]).0;
+        let early = [e1, e2, e3];
+        assert!(
+            early.iter().all(|a| *a != Some(ToolAnswer::Allow)),
+            "{early:?}"
+        );
+        // Armed: the same click allows.
+        frame(
+            &ctx,
+            &mut d,
+            2.0,
+            false,
+            vec![egui::Event::PointerMoved(at)],
+        );
+        frame(&ctx, &mut d, 2.1, false, vec![click(true)]);
+        let late = frame(&ctx, &mut d, 2.2, false, vec![click(false)]).0;
+        assert_eq!(late, Some(ToolAnswer::Allow));
     }
 
     #[test]

@@ -104,7 +104,9 @@ fn plain_local(s: &str) -> Option<&str> {
         return None;
     }
     let plain = s.strip_prefix(r"\\?\").unwrap_or(s);
-    (!plain.starts_with(r"\\")).then_some(plain)
+    // Only `<letter>:\`: a device path, a volume GUID or a share is no program the hub names.
+    let b = plain.as_bytes();
+    (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\').then_some(plain)
 }
 
 /// The file opened for reading only: on Windows no one can write to it while it is open.
@@ -210,6 +212,19 @@ mod tests {
             plain_local(r"C:\Tools\tool.exe"),
             Some(r"C:\Tools\tool.exe")
         );
+        // Only `<letter>:\` is a local program file.
+        for p in [
+            r"\\?\Volume{0000-1111}\tool.exe",
+            r"\\.\pipe\x",
+            r"\\?\GLOBALROOT\Device\x\tool.exe",
+            r"C:tool.exe",
+            r"1:\tool.exe",
+            r"tool.exe",
+            r"C:",
+            "",
+        ] {
+            assert_eq!(plain_local(p), None, "{p}");
+        }
     }
 
     #[cfg(windows)]

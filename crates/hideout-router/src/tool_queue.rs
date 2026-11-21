@@ -34,8 +34,11 @@ pub struct ToolAsk {
     /// What the program calls itself: display text only, untrusted, never cleaned here.
     pub name: String,
     pub items: Vec<AskItem>,
-    /// The program runs scripts: what is allowed is for this connection only.
+    /// The program runs scripts: what is allowed is for the connection that asked (`conn`)
+    /// only.
     pub runs_scripts: bool,
+    /// The connection that made this ask.
+    pub conn: Option<crate::ConnId>,
 }
 
 #[derive(Default)]
@@ -62,10 +65,12 @@ impl ToolQueue {
         self.entries.remove(at)
     }
 
-    /// Drops every ask for this program file at any hash: the file changed.
-    pub fn remove_path(&mut self, image_path: &str) {
-        self.entries
-            .retain(|e| !e.id.image_path.eq_ignore_ascii_case(image_path));
+    /// Drops this program file's asks made for other bytes than `id`'s: the file changed.
+    pub fn remove_stale(&mut self, id: &ToolId) {
+        self.entries.retain(|e| {
+            !e.id.image_path.eq_ignore_ascii_case(&id.image_path)
+                || e.id.image_sha256 == id.image_sha256
+        });
     }
 
     /// The waiting programs, newest first.
@@ -101,6 +106,7 @@ mod tests {
                 red: false,
             }],
             runs_scripts: false,
+            conn: None,
         }
     }
 
@@ -149,7 +155,10 @@ mod tests {
         let mut q = ToolQueue::default();
         q.push(ask(1));
         q.push(ask(2));
-        q.remove_path(r"c:\t\1.EXE");
+        q.remove_stale(&ToolId {
+            image_path: r"c:\t\1.EXE".into(),
+            image_sha256: "other".into(),
+        });
         assert_eq!(q.len(), 1);
         assert!(q.remove(&ask(2).id).is_some());
         assert!(q.is_empty());
