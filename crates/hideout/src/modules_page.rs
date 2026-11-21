@@ -295,20 +295,7 @@ impl ModulesPage {
                 // The same act as the Found card's Update in Hideout: register the changed file
                 // again, then the Allow dialog. Apps stays.
                 (Does::UpdateInHideout, _) => {
-                    // An app that runs is stopped first, before the update voids its grants: the
-                    // old program must not keep running under an OK it no longer has. It starts
-                    // again only from the Allow the dialog asks next (Then::TurnOn).
-                    if self.installed.iter().any(|m| m.id == id && m.enabled) {
-                        if let Some(a) = a {
-                            a.turn_off(&id);
-                        }
-                        self.set_enabled(&id, false);
-                    }
-                    let ids: Vec<String> = self.installed.iter().map(|m| m.id.clone()).collect();
-                    let updated = self.discover.as_mut().and_then(|d| d.set_up(&id, &ids));
-                    if let Some(updated) = updated {
-                        self.after_add(&updated);
-                    }
+                    self.update_in_hideout(&id);
                     false
                 }
                 (Does::Force, Some(a)) => {
@@ -538,6 +525,53 @@ impl ModulesPage {
             then: crate::permission_actions::Then::TurnOn,
             handover: true,
         });
+    }
+
+    /// **Update in Hideout**, from the row or the Found card: an app that runs is stopped first
+    /// (before the update voids its grants, so the old program does not keep running under an OK
+    /// it no longer has), the changed file is registered again, and the Allow dialog opens. It
+    /// starts again only from the user's Allow. If the update fails the app that ran is turned
+    /// back on: a failed update must not leave it off.
+    fn update_in_hideout(&mut self, id: &str) {
+        let was_running = self.installed.iter().any(|m| m.id == id && m.enabled);
+        if was_running {
+            if let Some(a) = self.actions.as_deref() {
+                a.turn_off(id);
+            }
+            self.set_enabled(id, false);
+        }
+        let ids: Vec<String> = self.installed.iter().map(|m| m.id.clone()).collect();
+        let updated = self.discover.as_mut().and_then(|d| d.set_up(id, &ids));
+        let Some(updated) = updated else {
+            if was_running {
+                self.turn_on_now(id);
+            }
+            return;
+        };
+        self.after_add(&updated);
+        // Something waits for a choice: grants the update voided, or a permission the new file
+        // asks for and nobody granted (both are pending in the record now).
+        let waits = self.discover.as_ref().is_some_and(|d| {
+            hideout_registry::Registry::open_from_env(&d.home)
+                .ok()
+                .and_then(|r| {
+                    r.inventory
+                        .modules
+                        .get(&updated)
+                        .map(|m| !m.pending_permissions.is_empty())
+                })
+                .unwrap_or(true)
+        });
+        let name = self
+            .installed
+            .iter()
+            .find(|m| m.id == updated)
+            .map_or_else(|| updated.clone(), |m| m.name.clone());
+        if let Some(d) = self.discover.as_mut() {
+            d.state.note = Some(crate::discover::Note::info(
+                crate::discover::words::updated_after(&name, was_running, waits),
+            ));
+        }
     }
 
     /// An app was just added (Found card or Browse): the list takes it now and the normal
@@ -921,6 +955,9 @@ impl hideout_shell::Page for ModulesPage {
         self.settle_hand_over(false);
         if let Some(id) = added {
             self.after_add(&id);
+        }
+        if let Some(id) = self.discover.as_mut().and_then(|d| d.update_wanted.take()) {
+            self.update_in_hideout(&id);
         }
         if let Some(p) = pressed {
             self.on_done(p, &ids);
@@ -1797,6 +1834,7 @@ mod tests {
             home: home.clone(),
             state: Default::default(),
             quiet: false,
+            update_wanted: None,
         };
         let installed = read_installed(&home).unwrap();
         let ids: Vec<String> = installed.iter().map(|m| m.id.clone()).collect();
@@ -1886,51 +1924,56 @@ mod tests {
             Some("Review\u{2026}")
         );
         assert!(rows[0].stopped);
-        // Same staging folder, so one test after the other.
-        update_stops_a_running_old_app_first();
     }
 
-    /// Issue #1439: Update in Hideout on an app that runs. The old process is stopped (turn off)
-    /// before the update voids its grants, nothing starts the app until the user's Allow, and the
-    /// row reads Off meanwhile. The supervisor is a recording fake.
-    fn update_stops_a_running_old_app_first() {
+    /// A recording supervisor: what the registry holds the moment the app is stopped.
+    struct Probe {
+        home: std::path::PathBuf,
+        log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    }
+    impl Actions for Probe {
+        fn start_normally(&self) {}
+        fn start_again(&self, _: &str) {}
+        fn start_with_defaults(&self, _: &str) {}
+        fn go_back(&self, _: &str) {}
+        fn turn_off(&self, id: &str) {
+            let mut reg = hideout_registry::Registry::open_from_env(&self.home).unwrap();
+            let rec = &reg.inventory.modules[id];
+            self.log.borrow_mut().push(format!(
+                "turn-off {id} at {} granted={}",
+                rec.version,
+                rec.granted.len()
+            ));
+            // As the supervisor's turn off does: saved as off.
+            reg.set_enabled(id, false).unwrap();
+        }
+        fn turn_on(&self, id: &str) -> Result<(), String> {
+            self.log.borrow_mut().push(format!("turn-on {id}"));
+            Ok(())
+        }
+        fn check_for_updates(&self, _: &str) {}
+        fn force_update(&self, _: &str) {}
+    }
+
+    type CallLog = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
+
+    /// A page over a changed Gadget (added and allowed at 0.1.0, 0.2.0 on disk). `same_program`
+    /// keeps the program's bytes, so the update voids nothing and asks for nothing new. Each
+    /// caller names its own folders (and so its own staging folder).
+    fn changed_page(name: &str, running: bool, same_program: bool) -> (ModulesPage, CallLog) {
         use crate::discover::tests::{sib, sib_added_and_allowed, sib_write, Pick, GADGET};
         use crate::discover::DiscoverUi;
-        use hideout_shell::modules_list::{Click, Does};
-        struct Probe {
-            home: std::path::PathBuf,
-            log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
-        }
-        impl Actions for Probe {
-            fn start_normally(&self) {}
-            fn start_again(&self, _: &str) {}
-            fn start_with_defaults(&self, _: &str) {}
-            fn go_back(&self, _: &str) {}
-            fn turn_off(&self, id: &str) {
-                // What the registry holds the moment the old app is stopped.
-                let mut reg = hideout_registry::Registry::open_from_env(&self.home).unwrap();
-                let rec = &reg.inventory.modules[id];
-                self.log.borrow_mut().push(format!(
-                    "turn-off {id} at {} granted={}",
-                    rec.version,
-                    rec.granted.len()
-                ));
-                // As the supervisor's turn off does: saved as off.
-                reg.set_enabled(id, false).unwrap();
-            }
-            fn turn_on(&self, id: &str) -> Result<(), String> {
-                self.log.borrow_mut().push(format!("turn-on {id}"));
-                Ok(())
-            }
-            fn check_for_updates(&self, _: &str) {}
-            fn force_update(&self, _: &str) {}
-        }
-        let mut s = sib("row-changed-running");
+        let mut s = sib(name);
         sib_added_and_allowed(&s);
-        sib_write(&mut s, "0.2.0", "svc2.exe", b"program v2");
+        let body: &[u8] = if same_program {
+            b"program v1"
+        } else {
+            b"program v2"
+        };
+        sib_write(&mut s, "0.2.0", "svc.exe", body);
         let home = s.home.clone();
         let mut reg = hideout_registry::Registry::open_from_env(&home).unwrap();
-        reg.set_enabled(GADGET, true).unwrap();
+        reg.set_enabled(GADGET, running).unwrap();
         drop(reg);
         let router = hideout_router::Router::new(
             hideout_router::Settings::default(),
@@ -1944,13 +1987,14 @@ mod tests {
             home: home.clone(),
             state: Default::default(),
             quiet: false,
+            update_wanted: None,
         };
         let installed = read_installed(&home).unwrap();
-        assert!(installed[0].enabled);
+        assert_eq!(installed[0].enabled, running);
         let ids: Vec<String> = installed.iter().map(|m| m.id.clone()).collect();
         d.state.scan(d.machine.as_ref(), &home, &ids, true);
-        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut page = ModulesPage {
+        let log: CallLog = Default::default();
+        let page = ModulesPage {
             installed,
             facts: None,
             actions: Some(Box::new(Probe {
@@ -1968,6 +2012,25 @@ mod tests {
             ask: Default::default(),
             told: Default::default(),
         };
+        (page, log)
+    }
+
+    fn note_of(page: &ModulesPage) -> Option<String> {
+        page.discover
+            .as_ref()
+            .and_then(|d| d.state.note.as_ref())
+            .map(|n| n.text.clone())
+    }
+
+    /// Issue #1439: Update in Hideout on an app that runs. The old process is stopped (turn off)
+    /// before the update voids its grants, nothing starts the app until the user's Allow, and the
+    /// row reads Off meanwhile. The supervisor is a recording fake.
+    #[test]
+    fn update_stops_a_running_old_app_first() {
+        use crate::discover::tests::GADGET;
+        use hideout_shell::modules_list::{Click, Does};
+        let (mut page, log) = changed_page("row-changed-running", true, false);
+        let home = page.discover.as_ref().unwrap().home.clone();
         assert_eq!(page.rows().0[0].state, "Changed since you added it");
         page.on_click(Click::Primary(GADGET.into(), Does::UpdateInHideout));
         // Stopped while the old version and its grant were still registered, once, and not
@@ -1980,5 +2043,109 @@ mod tests {
         assert!(!reg.hub.enabled(GADGET));
         let (rows, _) = page.rows();
         assert_eq!(rows[0].state, "Off");
+    }
+
+    /// The Found card's Update is the same path as the row's: it asks the page, which stops
+    /// the running app first.
+    #[test]
+    fn the_found_cards_update_stops_a_running_app_too() {
+        use crate::discover::tests::GADGET;
+        let (mut page, log) = changed_page("row-changed-card", true, false);
+        let ids = vec![GADGET.to_string()];
+        let d = page.discover.as_mut().unwrap();
+        assert_eq!(
+            d.card_add(GADGET, &ids),
+            None,
+            "the card does not register itself"
+        );
+        assert_eq!(d.update_wanted.as_deref(), Some(GADGET));
+        // What the page does with it each frame.
+        let id = d.update_wanted.take().unwrap();
+        page.update_in_hideout(&id);
+        assert_eq!(*log.borrow(), ["turn-off vulpes.gadget at 0.1.0 granted=1"]);
+        assert_eq!(page.rows().0[0].state, "Off");
+        assert!(page.perm.as_ref().unwrap().dialog.is_some());
+    }
+
+    /// A failed update does not leave the app that ran off: it is turned on again.
+    #[test]
+    fn a_failed_update_turns_a_running_app_back_on() {
+        use crate::discover::tests::GADGET;
+        let (mut page, log) = changed_page("row-changed-failed", true, false);
+        // The file changes again between the look and the add: refused.
+        page.discover.as_mut().unwrap().state.found[0].text = Some("not the file".into());
+        page.update_in_hideout(GADGET);
+        assert_eq!(
+            *log.borrow(),
+            [
+                "turn-off vulpes.gadget at 0.1.0 granted=1",
+                "turn-on vulpes.gadget"
+            ]
+        );
+        assert_ne!(page.rows().0[0].state, "Off");
+        assert!(page.installed[0].enabled);
+        let home = page.discover.as_ref().unwrap().home.clone();
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert_eq!(reg.inventory.modules[GADGET].version, "0.1.0");
+    }
+
+    /// The note after an update says whether the app is off and what waits for the user.
+    #[test]
+    fn the_update_note_says_what_waits() {
+        use crate::discover::tests::GADGET;
+        for (name, running, same, want) in [
+            (
+                "row-changed-note-1",
+                true,
+                false,
+                "Updated Gadget. It stays off until you choose what it may do.",
+            ),
+            (
+                "row-changed-note-2",
+                false,
+                false,
+                "Updated Gadget. Choose what it may do.",
+            ),
+            ("row-changed-note-3", false, true, "Updated Gadget."),
+            (
+                "row-changed-note-4",
+                true,
+                true,
+                "Updated Gadget. It's off until you turn it on.",
+            ),
+        ] {
+            let (mut page, _log) = changed_page(name, running, same);
+            page.update_in_hideout(GADGET);
+            assert_eq!(note_of(&page).as_deref(), Some(want), "{name}");
+        }
+    }
+
+    /// The Found card's Update button is named for its app; the row's button is not.
+    #[test]
+    fn the_update_card_button_names_its_app() {
+        use hideout_shell::egui;
+        let (mut page, _log) = changed_page("row-changed-label", false, false);
+        let d = page.discover.as_mut().unwrap();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let t = hideout_shell::theme::tokens(false);
+        let out = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    d.ui(ui, &t, &["vulpes.gadget".to_string()]);
+                });
+            },
+        );
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        let labels: Vec<&str> = nodes.iter().filter_map(|(_, n)| n.label()).collect();
+        assert!(labels.contains(&"Update Gadget in Hideout"), "{labels:?}");
+        assert!(!labels.contains(&"Update in Hideout"), "{labels:?}");
     }
 }

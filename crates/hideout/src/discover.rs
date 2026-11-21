@@ -76,12 +76,32 @@ pub mod words {
     pub fn updated(name: &str) -> String {
         format!("Updated {name}. Choose what it may do.")
     }
+    /// The note after **Update in Hideout**: what happened, and whether the app is off and why.
+    /// `waits` is true when something needs the user's choice (the Allow dialog opens for it).
+    pub fn updated_after(name: &str, was_running: bool, waits: bool) -> String {
+        match (was_running, waits) {
+            (true, true) => {
+                format!("Updated {name}. It stays off until you choose what it may do.")
+            }
+            (false, true) => format!("Updated {name}. Choose what it may do."),
+            (false, false) => format!("Updated {name}."),
+            (true, false) => format!("Updated {name}. It's off until you turn it on."),
+        }
+    }
+    /// The accessible name of a Found card's Update button.
+    pub fn update_label(name: &str) -> String {
+        format!("Update {name} in Hideout")
+    }
     pub fn add_label(name: &str) -> String {
         format!("Add {name}")
     }
     /// The line for one found app.
     pub fn found_line(name: &str, version: &str) -> String {
-        format!("{name} {version}")
+        if version.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} {version}")
+        }
     }
     /// The Found card's line for a changed app Hideout holds: the new version and what Hideout
     /// has. Without the held version only the new one shows, never a made-up one; the same
@@ -835,6 +855,9 @@ mod ui {
         pub state: AddApp,
         /// The Done card lists the found apps itself, so the Found card waits.
         pub quiet: bool,
+        /// An Update on the Found card, waiting for the page: the page stops a running app,
+        /// updates it and opens the Allow dialog (one path with the row's button).
+        pub update_wanted: Option<String>,
     }
 
     enum Click {
@@ -857,16 +880,30 @@ mod ui {
                 home,
                 state: AddApp::default(),
                 quiet: false,
+                update_wanted: None,
             }
         }
 
         /// **Set up** on a found app from the Done card: the same step as the Found card's.
         pub fn set_up(&mut self, id: &str, _installed: &[String]) -> Option<String> {
-            self.act(Click::Add(id.to_string()), _installed)
+            let now = hideout_registry::catalogs::now_utc();
+            let staging = self.staging();
+            self.state
+                .add_found(self.machine.as_ref(), id, &self.home, &staging, &now)
         }
 
         fn staging(&self) -> PathBuf {
-            std::env::temp_dir().join("hideout-adopt")
+            // One folder per hub folder, so two hubs (or two tests) do not share a staging area.
+            std::env::temp_dir()
+                .join("hideout-adopt")
+                .join(self.home.file_name().unwrap_or_default())
+        }
+
+        /// What the Found card's button does for `id`: an add registers it, an update asks the
+        /// page (`update_wanted`) so that one path serves the card and the row.
+        #[cfg(test)]
+        pub(crate) fn card_add(&mut self, id: &str, installed: &[String]) -> Option<String> {
+            self.act(Click::Add(id.to_string()), installed)
         }
 
         /// Carries out a click; `Some(id)` when an app was added.
@@ -874,6 +911,17 @@ mod ui {
             let now = hideout_registry::catalogs::now_utc();
             let staging = self.staging();
             match click {
+                Click::Add(id)
+                    if self
+                        .state
+                        .found
+                        .iter()
+                        .any(|c| c.id == id && c.update_of.is_some()) =>
+                {
+                    // An update is the page's: it stops the running app first.
+                    self.update_wanted = Some(id);
+                    None
+                }
                 Click::Add(id) => {
                     self.state
                         .add_found(self.machine.as_ref(), &id, &self.home, &staging, &now)
@@ -948,7 +996,7 @@ mod ui {
                                             )
                                             .on_hover_text(f.hover());
                                         let label = if f.update_of.is_some() {
-                                            f.button()
+                                            words::update_label(&f.name)
                                         } else {
                                             words::add_label(&f.name)
                                         };
@@ -2195,6 +2243,12 @@ pub(crate) mod tests {
             words::update_line("PC sensors", "0.2.0", ""),
             "PC sensors 0.2.0"
         );
+        // An empty new version: just the name, no double space.
+        assert_eq!(
+            words::update_line("PC sensors", "", "0.1.0"),
+            "PC sensors \u{b7} you have 0.1.0"
+        );
+        assert_eq!(words::found_line("PC sensors", ""), "PC sensors");
         assert_eq!(
             words::update_hover("PC sensors", r"C:\Apps\x"),
             r"Update PC sensors in Hideout. Found in C:\Apps\x"

@@ -311,9 +311,9 @@ pub fn search_words(r: &mut Row, on: Option<bool>) {
     r.label = words::row_label(&r.name, state);
 }
 
-/// Turn on and Turn off: the buttons a search locks.
+/// Turn on, Turn off and Update in Hideout: the buttons a search locks.
 fn toggles(d: Does) -> bool {
-    matches!(d, Does::TurnOn | Does::TurnOff)
+    matches!(d, Does::TurnOn | Does::TurnOff | Does::UpdateInHideout)
 }
 
 /// Seconds left of a `restarting` module's backoff, counted from when its
@@ -1460,6 +1460,11 @@ mod tests {
             true,
         );
         assert_eq!(r.state, "Changed since you added it");
+        assert_eq!(
+            r.label,
+            "PC sensors, installed separately, changed since you added it"
+        );
+        assert_eq!(main(&r), update);
         // Off: stays an Off row, Update in Hideout instead of Turn on.
         let r = row_changed(&changed_app(false), &[], &|_: &str| None, None, true);
         assert_eq!(r.state, "Off \u{b7} changed since you added it");
@@ -1492,6 +1497,14 @@ mod tests {
                 "PC sensors, installed separately, changed since you added it"
             );
         }
+    }
+
+    /// A search locks Update in Hideout with Turn on and Turn off, and nothing else.
+    #[test]
+    fn a_search_locks_update_in_hideout() {
+        assert!(toggles(Does::UpdateInHideout));
+        assert!(toggles(Does::TurnOn) && toggles(Does::TurnOff));
+        assert!(!toggles(Does::Force));
     }
 
     /// The states that are not this one keep their own words and button, changed or not.
