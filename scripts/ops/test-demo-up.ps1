@@ -109,32 +109,26 @@ try {
     $o = & $ps -NoProfile -File $script_ -AreteModuleDir $mdir -HideoutExe $mock -FoxgloveExe $fox -DemoHome $home2 -Launch 2>&1 | Out-String
     Check '-Launch: starts the hub and records its pid' ($LASTEXITCODE -eq 0 -and $o -match 'started demo hub pid' -and (Test-Path (Join-Path $home2 'hub.pid')))
 
-    # -SensorsExe: the PC sensors app is copied to its fixed folder and adopted with the repo manifest's id and permissions
+    # -SensorsExe: the PC sensors app's files are only placed next to the hideout.exe in use; nothing is adopted
     $sens = Join-Path $tmp 'sensors.exe'; Set-Content $sens 'sensors build'
     $home4 = Join-Path $tmp 'demo4'
+    $sDir = Join-Path (Split-Path -Parent $mock) 'apps\sensors'
     $withS = @('-NoProfile', '-File', $script_, '-AreteModuleDir', $mdir, '-HideoutExe', $mock, '-FoxgloveExe', $fox, '-DemoHome', $home4, '-SensorsExe', $sens)
     $o = & $ps @withS 2>&1 | Out-String
-    Check '-SensorsExe dry run: planned, nothing written' ($LASTEXITCODE -eq 0 -and $o -match 'plan\s+: sensors\s+register' -and -not (Test-Path $home4))
+    Check '-SensorsExe dry run: planned, nothing written' ($LASTEXITCODE -eq 0 -and $o -match 'plan\s+: sensors\s+place' -and -not (Test-Path $home4) -and -not (Test-Path $sDir))
     $o = & $ps -NoProfile -File $script_ -AreteModuleDir $mdir -HideoutExe $mock -FoxgloveExe $fox -DemoHome $home4 -SensorsExe (Join-Path $tmp 'no-sensors.exe') 2>&1 | Out-String
     Check 'missing sensors.exe is a PROBLEM' ($LASTEXITCODE -eq 1 -and $o -match 'PROBLEM.*-SensorsExe not found')
     Remove-Item $log -ErrorAction SilentlyContinue
     $o = & $ps @withS -Adopt 2>&1 | Out-String
     $l = @(Get-Content $log)
-    $sFixed = Join-Path $home4 'apps\sensors\sensors.exe'
-    Check '-SensorsExe -Adopt: three --adopt calls, the last for the sensors folder' ($LASTEXITCODE -eq 0 -and $l.Count -eq 3 -and $l[2] -like "--adopt $home4\adopt\sensors *")
-    Check '-SensorsExe: the build was copied into its fixed folder' ((Test-Path $sFixed) -and ((Get-Content -Raw $sFixed) -match 'sensors build'))
-    $st = Get-Content -Raw (Join-Path $home4 'adopt\sensors\module.toml')
-    $repo = Get-Content -Raw (Join-Path (Split-Path (Split-Path $here)) 'crates\sensors\module.toml')
-    $perm = [regex]::Match($repo, '(?m)^permissions\s*=.*$').Value.Trim()
-    Check 'sensors manifest: adopted, absolute fixed run[0], id and permissions as the repo manifest' ($st -match '(?m)^kind = "adopted"' -and $st.Contains('run = ["' + $sFixed.Replace($bs, '/') + '"]') -and $st -match '(?m)^id = "org\.foxglove\.sensors"' -and $perm -and $st.Contains($perm) -and $st -notmatch 'kind = "service"')
-    # registered at the fixed path: skipped; without -SensorsExe the script never mentions sensors
-    $sm = Join-Path $home4 'hub\modules\org.foxglove.sensors\0.1.0'; New-Item -ItemType Directory -Force $sm | Out-Null
-    Copy-Item (Join-Path $home4 'adopt\sensors\module.toml') $sm
-    Set-Content (Join-Path $home4 'hub\inventory.json') '{"modules":{"org.foxglove.sensors":{"version":"0.1.0"}}}'
-    Remove-Item $log
+    Check '-SensorsExe -Adopt: only the two other apps are adopted, sensors is not' ($LASTEXITCODE -eq 0 -and $l.Count -eq 2 -and -not ($l | Where-Object { $_ -like '*sensors*' }))
+    $sFile = Join-Path $sDir 'sensors.exe'; $sMan = Join-Path $sDir 'module.toml'
+    Check '-SensorsExe: the build is placed in apps\sensors next to the hideout.exe' ((Test-Path $sFile) -and ((Get-Content -Raw $sFile) -match 'sensors build'))
+    $repoMan = Join-Path (Split-Path (Split-Path $here)) 'crates\sensors\module.toml'
+    Check 'sensors manifest: the repo file, byte for byte (kind = service, relative run)' ((Test-Path $sMan) -and ((Get-FileHash $sMan).Hash -eq (Get-FileHash $repoMan).Hash) -and ((Get-Content -Raw $sMan) -match '(?m)^kind = "service"'))
+    Check 'sensors: nothing in the demo folder (no adopt record, no apps\sensors there)' (-not (Test-Path (Join-Path $home4 'adopt\sensors')) -and -not (Test-Path (Join-Path $home4 'apps\sensors')))
     $o = & $ps @withS -Adopt 2>&1 | Out-String
-    $l = @(Get-Content $log)
-    Check 'sensors registered at the fixed path: not adopted again' ($LASTEXITCODE -eq 0 -and $o -match 'plan\s+: sensors\s+already registered' -and -not ($l | Where-Object { $_ -like '*adopt\sensors*' }))
+    Check 'sensors placed again: identical files are left alone' ($LASTEXITCODE -eq 0 -and $o -match 'already holds this build')
     $o = & $ps @common 2>&1 | Out-String
     Check 'no -SensorsExe: sensors is not planned' ($o -notmatch 'sensors')
 
