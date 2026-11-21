@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal, Optional, Union
 from ._model import Model
 
 HUB = '1.5'
-SPEC = '1.21'
+SPEC = '1.22'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -473,6 +473,25 @@ class ModuleDrain(Model):
     FIELDS: ClassVar[dict] = {
         'reason': ('reason', ('ref', 'DrainReason')),
     }
+
+
+@dataclass(kw_only=True)
+class ModuleGrants(Model):
+    """`module.grants` (H -> M notification, v1.22): what the module holds changed while it runs.
+`added` lists the permissions (as the module's manifest spells them) the user's Allow just
+gave this connection; a call that was denied for want of one of them, a `facts.subscribe`
+above all, is worth sending again. `ended` lists the module's own fact subscriptions that
+a turn-off just ended (then `added` is empty). Sent only to the connections it is about.
+It grants nothing by itself. A module that doesn't know it ignores it."""
+
+    added: list[str]
+    ended: Optional[list[int]] = None
+
+    FIELDS: ClassVar[dict] = {
+        'added': ('added', ('list', 'str')),
+        'ended': ('ended', ('list', 'int')),
+    }
+    CLOSED: ClassVar[bool] = True
 
 
 @dataclass(kw_only=True)
@@ -1082,6 +1101,7 @@ TYPES = {
     'messages.InitializeModule': InitializeModule,
     'messages.InitializeTool': InitializeTool,
     'messages.ModuleDrain': ModuleDrain,
+    'messages.ModuleGrants': ModuleGrants,
     'messages.ModuleIdParams': ModuleIdParams,
     'messages.ModuleReady': ModuleReady,
     'messages.ModuleRegister': ModuleRegister,

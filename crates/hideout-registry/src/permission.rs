@@ -268,6 +268,8 @@ pub struct Outcome {
     pub refused: Vec<(String, Error)>,
     /// The program the grant is bound to.
     pub bound_path: String,
+    /// That program's SHA-256 as the grant records it.
+    pub bound_sha256: String,
 }
 
 fn list_changed(shown: &str, now: &str) -> Failure {
@@ -644,6 +646,7 @@ impl Registry {
             granted: got,
             declined: declined.to_vec(),
             refused,
+            bound_sha256: list.exe_sha256,
             bound_path: list.exe_path,
         })
     }

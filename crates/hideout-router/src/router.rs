@@ -428,6 +428,11 @@ pub struct Router {
     /// The verified program image of each module connection (#1155-B), set at `initialize`.
     identity_lookup: Option<IdentityLookup>,
     identities: HashMap<ConnId, (String, String)>,
+    /// The program image (path, SHA-256) the latest Allow of each module was bound to: a
+    /// running connection takes a wider grant only when its verified image is that one.
+    grant_image: HashMap<String, (String, String)>,
+    /// The connections the last [`Router::sync_conn_caps`] widened.
+    widened: Vec<ConnId>,
     /// The user's keyboard grant per module, pushed by the hub from `inventory.json` (#1155-B).
     keyboards: HashMap<String, hideout_registry::keyboard::KeyboardGrant>,
     /// The method patterns the legacy module asked for at `module.register`, kept while it is
@@ -559,6 +564,8 @@ impl Router {
             launch_check: None,
             identity_lookup: None,
             identities: HashMap::new(),
+            grant_image: HashMap::new(),
+            widened: Vec::new(),
             keyboards: HashMap::new(),
             wanted: HashMap::new(),
             pending: HashMap::new(),
@@ -1032,8 +1039,16 @@ impl Router {
     pub fn set_module_grants_for(&mut self, id: &str, granted: Vec<String>, tag: &str) -> Vec<Out> {
         self.allow_seq += 1;
         self.grant_seq.insert(id.to_string(), self.allow_seq);
+        let mut added = Vec::new();
         match self.modules.get_mut(id) {
-            Some(e) => e.granted = granted,
+            Some(e) => {
+                added = granted
+                    .iter()
+                    .filter(|g| !e.granted.contains(g))
+                    .cloned()
+                    .collect();
+                e.granted = granted;
+            }
             None => {
                 let mut all = granted;
                 if let Some((t, old)) = self.early_grants.get(id) {
@@ -1047,7 +1062,136 @@ impl Router {
                     .insert(id.to_string(), (tag.to_string(), all));
             }
         }
-        self.revalidate_module_grants()
+        let mut out = self.revalidate_module_grants();
+        self.grants_widened(id, added, &mut out);
+        out
+    }
+
+    /// The program image the user's Allow for `id` was just bound to (the registry's record):
+    /// call it before [`Router::set_module_grants_for`]. With a verified-image lookup installed,
+    /// only a connection running that very image takes the wider grant while it runs; any
+    /// other keeps what it has until it connects again (and passes the launch check).
+    pub fn bind_module_grants(&mut self, id: &str, path: &str, sha256: &str) {
+        self.grant_image
+            .insert(id.to_string(), (path.to_string(), sha256.to_string()));
+    }
+
+    /// A module connection's capabilities are read from its grants at `initialize`; they follow
+    /// the grants in memory from then on. Narrower always and at once: the calls it makes next
+    /// are checked against the narrower grant, and a fact subscription or app watch it may no
+    /// longer hold ends (the module is told which subscriptions, `module.grants {ended}`).
+    /// Wider only for a connection whose verified image is the one the Allow was bound to
+    /// ([`Router::bind_module_grants`]); without a lookup (tests, lab) every connection.
+    /// Leases the connection holds, channels it has open and calls already under way are not
+    /// touched here.
+    fn sync_conn_caps(&mut self, out: &mut Vec<Out>) {
+        self.widened.clear();
+        let verify = self.identity_lookup.is_some();
+        let mut changed = Vec::new();
+        for (k, c) in self.conns.iter_mut() {
+            let Who::Module { id, .. } = &c.who else {
+                continue;
+            };
+            let Some(e) = self.modules.get(id) else {
+                continue;
+            };
+            let full = Caps::parse(&e.granted);
+            let have = c.caps.strings();
+            if full.strings() == have {
+                continue;
+            }
+            let widens = full.strings().iter().any(|s| !have.contains(s));
+            let same_image = || match (self.identities.get(k), self.grant_image.get(id)) {
+                (Some((path, sha)), Some((bound, bound_sha))) => {
+                    !sha.is_empty()
+                        && sha.eq_ignore_ascii_case(bound_sha)
+                        && hideout_registry::keyboard::same_path(path, bound)
+                }
+                _ => false,
+            };
+            let caps = if !widens || !verify || same_image() {
+                if widens {
+                    self.widened.push(*k);
+                }
+                full
+            } else {
+                log::info!(
+                    "permissions: {id}: a running instance is not the program the Allow is for; it gets the new grant at its next start"
+                );
+                Caps(
+                    full.0
+                        .into_iter()
+                        .filter(|c| have.contains(&c.to_string()))
+                        .collect(),
+                )
+            };
+            if caps.strings() != have {
+                c.caps = caps;
+                changed.push(*k);
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        let conns = &self.conns;
+        let mut ended: BTreeMap<ConnId, Vec<u64>> = BTreeMap::new();
+        self.subs.retain(|n, (owner, pattern)| {
+            if !changed.contains(owner) {
+                return true;
+            }
+            let grant = conns[owner].caps.kept();
+            let keep = grant.can_subscribe(pattern) || watches_app(&grant, pattern);
+            if !keep {
+                ended.entry(*owner).or_default().push(*n);
+            }
+            keep
+        });
+        for c in &changed {
+            let grant = conns[c].caps.kept();
+            if let Some(w) = self.app_watches.get_mut(c) {
+                w.retain(|label, _| watches_app(&grant, &format!("{}{label}", apps::RUNNING)));
+            }
+        }
+        if ended.is_empty() {
+            return;
+        }
+        for (c, mut subs) in ended {
+            subs.sort_unstable();
+            if !matches!(self.conns[&c].who, Who::Module { v1: true, .. }) {
+                out.push(Out::Send(
+                    c,
+                    json!({"jsonrpc": "2.0", "method": hideout_contract::messages::MODULE_GRANTS,
+                           "params": {"added": [], "ended": subs}}),
+                ));
+            }
+        }
+        self.demand_sync(out);
+    }
+
+    /// `module.grants {added}` (§8.8, v1.22) to the connections of module `id` the Allow just
+    /// widened ([`Router::sync_conn_caps`]): a call that was denied can be sent again. Nothing
+    /// is sent when nothing was added, to another module, or to a v1 connection (its wire has
+    /// no such message).
+    fn grants_widened(&mut self, id: &str, mut added: Vec<String>, out: &mut Vec<Out>) {
+        let mut conns = std::mem::take(&mut self.widened);
+        added.sort();
+        added.dedup();
+        if added.is_empty() {
+            return;
+        }
+        conns.retain(|c| {
+            self.conns
+                .get(c)
+                .is_some_and(|c| matches!(&c.who, Who::Module { id: m, v1: false, .. } if m == id))
+        });
+        conns.sort();
+        for c in conns {
+            out.push(Out::Send(
+                c,
+                json!({"jsonrpc": "2.0", "method": hideout_contract::messages::MODULE_GRANTS,
+                       "params": {"added": added}}),
+            ));
+        }
     }
 
     /// The router just learnt module `id` (build `tag`): an Allow kept for it joins what its
@@ -1060,12 +1204,20 @@ impl Router {
             log::info!("permissions: {id}: an Allow kept for another build of it was dropped");
             return Vec::new();
         }
+        let mut added = Vec::new();
         if let Some(e) = self.modules.get_mut(id) {
+            added = early
+                .iter()
+                .filter(|g| !e.granted.contains(g))
+                .cloned()
+                .collect();
             e.granted.extend(early);
             e.granted.sort();
             e.granted.dedup();
         }
-        self.revalidate_module_grants()
+        let mut out = self.revalidate_module_grants();
+        self.grants_widened(id, added, &mut out);
+        out
     }
 
     /// The count of Allows so far: note it before reading `inventory.json`, then narrow with
@@ -1155,6 +1307,7 @@ impl Router {
         self.revalidate_adopted_routes();
         self.restore_wanted();
         let mut out = Vec::new();
+        self.sync_conn_caps(&mut out);
         let gone: Vec<(String, String)> = self
             .leases
             .iter()

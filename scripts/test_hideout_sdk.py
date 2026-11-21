@@ -66,6 +66,61 @@ class SampleModule(unittest.TestCase):
         tree = nxt.panels("inst-1").to_json()["panels"][0]["tree"]
         self.assertEqual(tree["children"][0]["props"]["text"], "1")
 
+    def test_denied_subscribe_is_sent_again_on_module_grants(self):
+        out = io.BytesIO()
+        s, c = Session(io.BytesIO(), out), Counter()
+        denied = {"code": 5, "message": "denied"}
+        first = s.subscribe("keyboard.game_mode")
+        s.subscribe("keyboard.game_mode")
+        other = s.subscribe("gpu.*")
+        s.handle({"jsonrpc": "2.0", "id": first, "error": denied}, c)
+        s.handle({"jsonrpc": "2.0", "id": first + 1, "error": denied}, c)
+        # Only a denial is kept; another error is the module's own to handle.
+        s.handle({"jsonrpc": "2.0", "id": other, "error": {"code": 4, "message": "timeout"}}, c)
+        self.assertEqual(s.denied_subscriptions(), [{"pattern": "keyboard.game_mode"}])
+        sent = len(out.getvalue().splitlines())
+        s.handle({"jsonrpc": "2.0", "method": "module.grants", "params": {"added": ["x"]}}, c)
+        lines = [json.loads(line) for line in out.getvalue().splitlines()][sent:]
+        self.assertEqual([(m["method"], m["params"]) for m in lines],
+                         [("facts.subscribe", {"pattern": "keyboard.game_mode"})])
+        self.assertEqual(s.denied_subscriptions(), [])
+        # Allowed now: nothing is kept, and the next module.grants sends nothing.
+        s.handle({"jsonrpc": "2.0", "id": lines[0]["id"], "result": {"subscription": 1}}, c)
+        sent = len(out.getvalue().splitlines())
+        s.handle({"jsonrpc": "2.0", "method": "module.grants", "params": {"added": ["y"]}}, c)
+        self.assertEqual(len(out.getvalue().splitlines()), sent)
+
+    def test_subscription_the_hub_ended_waits_for_the_next_allow(self):
+        out = io.BytesIO()
+        s, c = Session(io.BytesIO(), out), Counter()
+        kept = s.subscribe("keyboard.game_mode")
+        gone = s.subscribe("gpu.*")
+        s.handle({"jsonrpc": "2.0", "id": kept, "result": {"subscription": 3}}, c)
+        s.handle({"jsonrpc": "2.0", "id": gone, "result": {"subscription": 4}}, c)
+        # The module ended this one itself: it never comes back.
+        s.request("facts.unsubscribe", {"subscription": 4})
+        sent = len(out.getvalue().splitlines())
+        # A turn-off: nothing is sent, the ended subscription waits.
+        s.handle({"jsonrpc": "2.0", "method": "module.grants",
+                  "params": {"added": [], "ended": [3, 4, 9]}}, c)
+        self.assertEqual(len(out.getvalue().splitlines()), sent)
+        self.assertEqual(s.denied_subscriptions(), [{"pattern": "keyboard.game_mode"}])
+        # The next Allow: asked for again.
+        s.handle({"jsonrpc": "2.0", "method": "module.grants", "params": {"added": ["x"]}}, c)
+        lines = [json.loads(line) for line in out.getvalue().splitlines()][sent:]
+        self.assertEqual([(m["method"], m["params"]) for m in lines],
+                         [("facts.subscribe", {"pattern": "keyboard.game_mode"})])
+
+    def test_denied_subscribes_kept_are_capped(self):
+        s, c = Session(io.BytesIO(), io.BytesIO()), Counter()
+        for n in range(70):
+            id_ = s.subscribe("a.%d" % n)
+            s.handle({"jsonrpc": "2.0", "id": id_, "error": {"code": 5, "message": "denied"}}, c)
+        kept = s.denied_subscriptions()
+        self.assertEqual(len(kept), 64)
+        self.assertEqual(kept[0], {"pattern": "a.6"})
+        self.assertEqual(kept[-1], {"pattern": "a.69"})
+
     def test_call_handles_hub_calls_meanwhile(self):
         hub = b'{"jsonrpc":"2.0","id":7,"method":"module.drain","params":{"reason":"reload"}}\n' \
               b'{"jsonrpc":"2.0","id":1,"result":{"rejected":[]}}\n'

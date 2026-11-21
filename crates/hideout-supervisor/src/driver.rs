@@ -2526,6 +2526,8 @@ fn grant_listed_inner(
     // The list the user answered: what the router matches the module's entry against later.
     let tag = list_code.to_string();
     hub.act(|r| {
+        // A running instance takes the wider grant only if it is this very program.
+        r.bind_module_grants(id, &out.bound_path, &out.bound_sha256);
         let mut now = r.module_grants(id);
         now.extend(new);
         now.sort();

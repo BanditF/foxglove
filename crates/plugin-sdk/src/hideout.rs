@@ -33,6 +33,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+/// `module.grants` (H -> M, v1.22): an Allow widened what the module holds while it runs.
+pub use foxglove_plugin_api::hideout::messages::MODULE_GRANTS;
 pub use foxglove_plugin_api::hideout::messages::{
     ActionInvoke, ChannelCreate, ChannelOpen, ChannelOpened, DrainReason, DrainResult, HubNotify,
     InitializeModule, ModuleDrain, ModuleReady, ModuleRegister, NotifyLevel, PatchOp, PatchOpKind,
@@ -342,7 +344,17 @@ pub struct Session<R, W> {
     writer: W,
     next_id: i64,
     pending: HashMap<i64, String>,
+    /// The params of each `facts.subscribe` not answered yet, by request id.
+    subscribing: HashMap<i64, Value>,
+    /// The params of each `facts.subscribe` the hub denied: sent again on `module.grants`.
+    denied_subs: Vec<Value>,
+    /// The params of each live subscription, by the hub's subscription id: one the hub ends
+    /// (`module.grants {ended}`) goes back to the denied ones.
+    live_subs: HashMap<u64, Value>,
 }
+
+/// Denied subscriptions a session keeps to send again (the oldest goes first).
+const MAX_DENIED_SUBS: usize = 64;
 
 impl<R: BufRead, W: Write> Session<R, W> {
     pub fn new(reader: R, writer: W) -> Session<R, W> {
@@ -351,6 +363,9 @@ impl<R: BufRead, W: Write> Session<R, W> {
             writer,
             next_id: 1,
             pending: HashMap::new(),
+            subscribing: HashMap::new(),
+            denied_subs: Vec::new(),
+            live_subs: HashMap::new(),
         }
     }
 
@@ -385,7 +400,66 @@ impl<R: BufRead, W: Write> Session<R, W> {
         let params = to_value(params)?;
         self.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         self.pending.insert(id, method.to_string());
+        if method == "facts.subscribe" {
+            self.subscribing.insert(id, params);
+        } else if method == "facts.unsubscribe" {
+            if let Some(n) = params.get("subscription").and_then(Value::as_u64) {
+                self.live_subs.remove(&n);
+            }
+        }
         Ok(id)
+    }
+
+    /// `facts.subscribe {pattern}`. One the hub denies (the user has not allowed it yet) is
+    /// kept and sent again by itself when the hub says the module's grants widened
+    /// (`module.grants`, v1.22): the new answer arrives as another [`Incoming::Response`].
+    pub fn subscribe(&mut self, pattern: &str) -> Result<i64> {
+        self.request("facts.subscribe", json!({ "pattern": pattern }))
+    }
+
+    /// The `facts.subscribe` params the hub denied and that wait for an Allow.
+    pub fn denied_subscriptions(&self) -> &[Value] {
+        &self.denied_subs
+    }
+
+    /// `module.grants` arrived: every denied subscription is asked for once more. One that is
+    /// denied again waits for the next `module.grants`; nothing is sent on a timer.
+    fn resubscribe(&mut self) -> Result<()> {
+        let mut again = std::mem::take(&mut self.denied_subs);
+        while !again.is_empty() {
+            let params = again.remove(0);
+            if let Err(e) = self.request("facts.subscribe", params.clone()) {
+                // Not sent: these still wait for the next `module.grants`.
+                self.denied_subs.push(params);
+                self.denied_subs.append(&mut again);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    fn keep_denied(&mut self, params: Value) {
+        if !self.denied_subs.contains(&params) {
+            if self.denied_subs.len() >= MAX_DENIED_SUBS {
+                self.denied_subs.remove(0);
+            }
+            self.denied_subs.push(params);
+        }
+    }
+
+    /// `module.grants`: subscriptions the hub ended wait for the next Allow; after an Allow
+    /// the waiting ones are asked for again.
+    fn grants_changed(&mut self, params: &Value) -> Result<()> {
+        let list = |k: &str| params.get(k).and_then(Value::as_array);
+        for n in list("ended").into_iter().flatten() {
+            if let Some(p) = n.as_u64().and_then(|n| self.live_subs.remove(&n)) {
+                self.keep_denied(p);
+            }
+        }
+        if list("added").is_some_and(|a| !a.is_empty()) {
+            self.resubscribe()?;
+        }
+        Ok(())
     }
 
     /// Sends a notification (no answer).
@@ -470,11 +544,23 @@ impl<R: BufRead, W: Write> Session<R, W> {
                 .pending
                 .remove(&id)
                 .ok_or_else(|| SessionError::Protocol(format!("no request {id} is waiting")))?;
+            let subscribed = self.subscribing.remove(&id);
             let outcome = match (msg.get("result"), msg.get("error")) {
                 (Some(r), None) => Ok(r.clone()),
                 (None, Some(e)) => Err(RpcError::from_value(e)),
                 _ => return Err(SessionError::Protocol("one of result and error".into())),
             };
+            if let Some(params) = subscribed {
+                match &outcome {
+                    Ok(r) => {
+                        if let Some(n) = r.get("subscription").and_then(Value::as_u64) {
+                            self.live_subs.insert(n, params);
+                        }
+                    }
+                    Err(e) if e.code == code::DENIED => self.keep_denied(params),
+                    Err(_) => {}
+                }
+            }
             return Ok(Incoming::Response {
                 id,
                 method,
@@ -486,6 +572,10 @@ impl<R: BufRead, W: Write> Session<R, W> {
         let Some(id) = msg.get("id").cloned() else {
             match method.as_str() {
                 "module.exit" => handler.exit(),
+                MODULE_GRANTS => {
+                    self.grants_changed(&params)?;
+                    handler.notification(&method, params);
+                }
                 _ => handler.notification(&method, params),
             }
             return Ok(Incoming::Notified { method });

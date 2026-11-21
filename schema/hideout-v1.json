@@ -59,7 +59,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.21",
+  "spec": "1.22",
   "streams": {
     "nodes": [
       "canvas",
@@ -863,6 +863,33 @@
         "reason"
       ],
       "title": "ModuleDrain",
+      "type": "object"
+    },
+    "messages.ModuleGrants": {
+      "additionalProperties": false,
+      "description": "`module.grants` (H -> M notification, v1.22): what the module holds changed while it runs.\n`added` lists the permissions (as the module's manifest spells them) the user's Allow just\ngave this connection; a call that was denied for want of one of them, a `facts.subscribe`\nabove all, is worth sending again. `ended` lists the module's own fact subscriptions that\na turn-off just ended (then `added` is empty). Sent only to the connections it is about.\nIt grants nothing by itself. A module that doesn't know it ignores it.",
+      "properties": {
+        "added": {
+          "description": "Permissions the connection holds now and did not before, sorted, each once.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ended": {
+          "description": "Subscription ids (`facts.subscribe` results) of this connection that ended because the\ngrant behind them is gone, sorted.",
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "added"
+      ],
+      "title": "ModuleGrants",
       "type": "object"
     },
     "messages.ModuleIdParams": {
