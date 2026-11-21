@@ -72,12 +72,35 @@ pub mod words {
     pub fn added(name: &str) -> String {
         format!("Added {name}. Choose what it may do.")
     }
+    /// After **Update in Hideout** on a changed app: it was not added, it was updated.
+    pub fn updated(name: &str) -> String {
+        format!("Updated {name}. Choose what it may do.")
+    }
     pub fn add_label(name: &str) -> String {
         format!("Add {name}")
     }
     /// The line for one found app.
     pub fn found_line(name: &str, version: &str) -> String {
         format!("{name} {version}")
+    }
+    /// The Found card's line for a changed app Hideout holds: the new version and what Hideout
+    /// has. Without the held version only the new one shows, never a made-up one; the same
+    /// version (only the program changed) says so in the state words.
+    pub fn update_line(name: &str, version: &str, held: &str) -> String {
+        if held.is_empty() {
+            found_line(name, version)
+        } else if held == version {
+            format!(
+                "{} \u{b7} {}",
+                found_line(name, version),
+                hideout_supervisor::words::CHANGED_SINCE_ADDED
+            )
+        } else {
+            format!("{} \u{b7} you have {held}", found_line(name, version))
+        }
+    }
+    pub fn update_hover(name: &str, folder: &str) -> String {
+        format!("Update {name} in Hideout. Found in {folder}")
     }
     pub fn add_hover(name: &str, folder: &str) -> String {
         format!("Add {name} to Hideout. Found in {folder}")
@@ -119,6 +142,23 @@ impl Candidate {
                 .unwrap_or_else(|| words::ADD.to_string())
         } else {
             words::ADD.to_string()
+        }
+    }
+
+    /// The Found card's line: the plain one for a new app, the held version too for an update.
+    pub fn line(&self) -> String {
+        match &self.update_of {
+            Some(held) => words::update_line(&self.name, &self.version, held),
+            None => words::found_line(&self.name, &self.version),
+        }
+    }
+
+    /// The Found card's hover for the button.
+    pub fn hover(&self) -> String {
+        if self.update_of.is_some() {
+            words::update_hover(&self.name, &self.folder())
+        } else {
+            words::add_hover(&self.name, &self.folder())
         }
     }
 
@@ -754,7 +794,11 @@ impl AddApp {
             Ok(id) => {
                 self.adding = false;
                 self.found.retain(|f| f.id != id);
-                self.note = Some(Note::info(words::added(&c.name)));
+                self.note = Some(Note::info(if c.update_of.is_some() {
+                    words::updated(&c.name)
+                } else {
+                    words::added(&c.name)
+                }));
                 Some(id)
             }
             Err(why) => {
@@ -887,10 +931,7 @@ mod ui {
                         ui.push_id(("hub.found", &f.id), |ui| {
                             ui.horizontal(|ui| {
                                 ui.vertical(|ui| {
-                                    ui.label(
-                                        RichText::new(words::found_line(&f.name, &f.version))
-                                            .color(c(t.text)),
-                                    );
+                                    ui.label(RichText::new(f.line()).color(c(t.text)));
                                     ui.label(
                                         RichText::new(f.folder()).small().color(c(t.text_muted)),
                                     );
@@ -905,7 +946,7 @@ mod ui {
                                                 )
                                                 .fill(c(t.accent)),
                                             )
-                                            .on_hover_text(words::add_hover(&f.name, &f.folder()));
+                                            .on_hover_text(f.hover());
                                         let label = if f.update_of.is_some() {
                                             f.button()
                                         } else {
@@ -995,12 +1036,12 @@ mod ui {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
     #[derive(Default)]
-    struct Fake {
+    pub(crate) struct Fake {
         reg: BTreeMap<(String, String), String>,
         subkeys: Vec<String>,
         env: BTreeMap<String, String>,
@@ -1062,7 +1103,7 @@ mod tests {
         }
     }
 
-    struct Pick(Option<PathBuf>);
+    pub(crate) struct Pick(pub(crate) Option<PathBuf>);
     impl Picker for Pick {
         fn pick_folder(&self) -> Option<PathBuf> {
             self.0.clone()
@@ -1230,6 +1271,7 @@ mod tests {
             home,
             state: AddApp::default(),
             quiet: false,
+            update_wanted: None,
         };
         d.state.adding = true;
         let t = hideout_shell::theme::tokens(true);
@@ -1254,7 +1296,7 @@ mod tests {
         assert_eq!(open, [true, true, false]);
     }
 
-    fn temp(name: &str) -> PathBuf {
+    pub(crate) fn temp(name: &str) -> PathBuf {
         let d =
             std::env::temp_dir().join(format!("hideout-discover-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -1283,7 +1325,7 @@ mod tests {
         (install, f)
     }
 
-    const NOW: &str = "2026-11-19T08:00:00Z";
+    pub(crate) const NOW: &str = "2026-11-19T08:00:00Z";
 
     #[test]
     fn browse_adds_the_app_in_the_folder_and_writes_no_grant() {
@@ -2026,10 +2068,10 @@ mod tests {
     // ---- a changed app next to Hideout is offered again ----
 
     /// A sibling app on real disk (`<exe dir>/apps/gadget`) with a fake `Machine` that reads it.
-    struct Sib {
-        f: Fake,
-        folder: PathBuf,
-        home: PathBuf,
+    pub(crate) struct Sib {
+        pub(crate) f: Fake,
+        pub(crate) folder: PathBuf,
+        pub(crate) home: PathBuf,
     }
 
     fn sib_text(version: &str, run0: &str) -> String {
@@ -2043,7 +2085,7 @@ mod tests {
     }
 
     /// Writes the sibling's file and program (`body`) to disk and to the fake.
-    fn sib_write(s: &mut Sib, version: &str, run0: &str, body: &[u8]) {
+    pub(crate) fn sib_write(s: &mut Sib, version: &str, run0: &str, body: &[u8]) {
         let text = sib_text(version, run0);
         std::fs::write(s.folder.join(run0), body).unwrap();
         std::fs::write(s.folder.join("module.toml"), &text).unwrap();
@@ -2053,7 +2095,7 @@ mod tests {
             .insert(s.folder.join(run0), ("0.1.0".into(), None));
     }
 
-    fn sib(name: &str) -> Sib {
+    pub(crate) fn sib(name: &str) -> Sib {
         let root = temp(name);
         let folder = root.join("apps").join("gadget");
         std::fs::create_dir_all(&folder).unwrap();
@@ -2071,10 +2113,10 @@ mod tests {
         s
     }
 
-    const GADGET: &str = "vulpes.gadget";
+    pub(crate) const GADGET: &str = "vulpes.gadget";
 
     /// Adds the sibling (as the card's Add does) and allows `hub.notify` for it.
-    fn sib_added_and_allowed(s: &Sib) {
+    pub(crate) fn sib_added_and_allowed(s: &Sib) {
         let mut a = AddApp::default();
         a.scan(&s.f, &s.home, &[], true);
         assert_eq!(a.found[0].button(), "Add");
@@ -2136,6 +2178,50 @@ mod tests {
         assert!(discover(&u.f, &u.home, &[GADGET.to_string()]).is_empty());
     }
 
+    /// The Found card's words for an update: the held version beside the new one, a hover that
+    /// says Update, and the plain Add words for a new app.
+    #[test]
+    fn an_update_card_says_what_you_have_and_hovers_as_update() {
+        assert_eq!(
+            words::update_line("PC sensors", "0.2.0", "0.1.0"),
+            "PC sensors 0.2.0 \u{b7} you have 0.1.0"
+        );
+        assert_eq!(
+            words::update_line("PC sensors", "0.1.0", "0.1.0"),
+            "PC sensors 0.1.0 \u{b7} Changed since you added it"
+        );
+        // No held version: only the new one, never a made-up one.
+        assert_eq!(
+            words::update_line("PC sensors", "0.2.0", ""),
+            "PC sensors 0.2.0"
+        );
+        assert_eq!(
+            words::update_hover("PC sensors", r"C:\Apps\x"),
+            r"Update PC sensors in Hideout. Found in C:\Apps\x"
+        );
+        assert_eq!(
+            words::updated("PC sensors"),
+            "Updated PC sensors. Choose what it may do."
+        );
+        let mut s = sib("upd-words");
+        sib_added_and_allowed(&s);
+        let held = [GADGET.to_string()];
+        sib_write(&mut s, "0.2.0", "svc.exe", b"program v2");
+        let c = discover(&s.f, &s.home, &held).remove(0);
+        assert_eq!(c.line(), "Gadget 0.2.0 \u{b7} you have 0.1.0");
+        assert_eq!(
+            c.hover(),
+            format!("Update Gadget in Hideout. Found in {}", c.folder())
+        );
+        let mut n = c.clone();
+        n.update_of = None;
+        assert_eq!(n.line(), "Gadget 0.2.0");
+        assert_eq!(
+            n.hover(),
+            format!("Add Gadget to Hideout. Found in {}", c.folder())
+        );
+    }
+
     #[test]
     fn pressing_update_registers_the_new_version_and_program_and_the_allow_is_asked_again() {
         let mut s = sib("upd-press");
@@ -2156,7 +2242,7 @@ mod tests {
         );
         assert_eq!(
             a.note,
-            Some(Note::info("Added Gadget. Choose what it may do."))
+            Some(Note::info("Updated Gadget. Choose what it may do."))
         );
         let reg = hideout_registry::Registry::open_from_env(&s.home).unwrap();
         let rec = &reg.inventory.modules[GADGET];

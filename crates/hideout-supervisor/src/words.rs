@@ -50,6 +50,16 @@ pub const COULDNT_START: &str = "Couldn't start";
 pub const OPEN: &str = "Open";
 pub const TURN_ON: &str = "Turn on";
 pub const UPDATE_HIDEOUT: &str = "Update Hideout";
+/// An app Hideout holds whose file next to Hideout now differs from the registered one (the Apps
+/// row's state words, the Found card's line). Not a store update: never borrows those words.
+pub const CHANGED_SINCE_ADDED: &str = "Changed since you added it";
+/// The button for [`CHANGED_SINCE_ADDED`]: registers the changed file again.
+pub const UPDATE_IN_HIDEOUT: &str = "Update in Hideout";
+/// The row of a changed app that is off: it stays an Off row, and Update in Hideout replaces
+/// Turn on (Turn on would only end in a refusal).
+pub fn off_changed() -> String {
+    format!("Off \u{b7} {}", CHANGED_SINCE_ADDED.to_lowercase())
+}
 
 /// A version its publisher withdrew (state `revoked`, §7.8 v1.9, docs/hideout-revoked-ux.md).
 /// The short name, for tooltips and the tray tile.

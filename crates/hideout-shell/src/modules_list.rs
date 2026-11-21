@@ -69,6 +69,9 @@ pub enum Does {
     /// Update waiting for you (`update-waiting`): Review, which opens the permission dialog
     /// (#1178) on the user's click.
     Review,
+    /// A changed app (its file next to Hideout differs from the registered one): Update in
+    /// Hideout registers the file again, then the Allow dialog opens.
+    UpdateInHideout,
 }
 
 /// The row menu's button (its accessible name is "More actions for <module>").
@@ -355,6 +358,23 @@ pub fn row_in(
     fact: &dyn Fn(&str) -> Option<Value>,
     restart: Option<(u64, usize)>,
 ) -> Row {
+    row_changed(m, all, fact, restart, false)
+}
+
+/// [`row_in`] for an app whose file next to Hideout differs from the registered one
+/// (`changed`, from the page's scan; only an installed-separately app can be changed). The
+/// changed state wins over On, Off, "Waits for your OK" and the missing-program and
+/// other-version sentences, and its one button is **Update in Hideout**. Every other state
+/// keeps its own words (withdrawn, safe mode, starting, waiting, updating, quarantined,
+/// crashed, couldn't start, needs a newer Hideout). The words are never the store update's.
+pub fn row_changed(
+    m: &Installed,
+    all: &[Installed],
+    fact: &dyn Fn(&str) -> Option<Value>,
+    restart: Option<(u64, usize)>,
+    changed: bool,
+) -> Row {
+    let changed = changed && m.adopted;
     let get =
         |k: &str| fact(&format!("module.{}.{k}", m.id)).and_then(|v| v.as_str().map(String::from));
     let state = get("state");
@@ -395,12 +415,23 @@ pub fn row_in(
             false,
             check_button(),
         ),
+        // Off but changed: still an Off row; Turn on would only end in a refusal.
+        None | Some("running") | Some("off") if changed && !m.enabled => (
+            words::off_changed(),
+            false,
+            primary(words::UPDATE_IN_HIDEOUT, Does::UpdateInHideout),
+        ),
         None | Some("running") | Some("off") if !m.enabled => (
             "Off".to_string(),
             false,
             primary(words::TURN_ON, Does::TurnOn),
         ),
         None if safe_mode => ("On \u{b7} not started in safe mode".into(), false, None),
+        None | Some("running") if changed => (
+            words::CHANGED_SINCE_ADDED.into(),
+            false,
+            primary(words::UPDATE_IN_HIDEOUT, Does::UpdateInHideout),
+        ),
         // A rebuild restart finished (`module.<id>.rebuilt` is the clock time) until the next
         // state change.
         None | Some("running") => (
@@ -463,6 +494,17 @@ pub fn row_in(
             let label = step.button(&m.name, previous.as_deref());
             (words::STOPPED.into(), true, primary(&label, does))
         }
+        // Refused (program missing, another version, or only the OK) and changed: the update is
+        // what fixes it. Still red and first, the app is not running.
+        Some("install-failed")
+            if changed && (sentence || get("failed").as_deref() == Some("ok")) =>
+        {
+            (
+                words::CHANGED_SINCE_ADDED.into(),
+                true,
+                primary(words::UPDATE_IN_HIDEOUT, Does::UpdateInHideout),
+            )
+        }
         // An adopted module whose program is missing, or that says another version than it was
         // registered as: the supervisor's one sentence (`module.<id>.reason`), not a bare
         // "Couldn't start". Rows that need the user keep Try again, as for any launch failure.
@@ -491,6 +533,7 @@ pub fn row_in(
         Some("off") => ("Off".into(), false, primary(words::TURN_ON, Does::TurnOn)),
         Some(s) => (state_words(s).to_string(), s == "install-failed", None),
     };
+    let shows_changed = matches!(&main, Some(p) if p.does == Does::UpdateInHideout);
     let checks = matches!(&main, Some(p) if p.does == Does::CheckUpdates);
     let check_note = checks
         .then(|| match check.as_deref() {
@@ -539,10 +582,16 @@ pub fn row_in(
         // "Art's page couldn't be shown" and the adopted failures' sentences already name the
         // module. An adopted module's name carries the marker, so a screen reader says
         // "Example AI, installed separately, on" (the visible version text is a separate node).
-        label: if state.as_deref() == Some("quarantined") || sentence {
+        label: if state.as_deref() == Some("quarantined") || (sentence && !shows_changed) {
             words.clone()
         } else if m.adopted {
-            words::row_label(&format!("{}, {ADOPTED}", m.name), &words)
+            // "Off · changed since you added it" is said with a comma, not "dot".
+            let said = if shows_changed {
+                words.replacen(" \u{b7} ", ", ", 1)
+            } else {
+                words.clone()
+            };
+            words::row_label(&format!("{}, {ADOPTED}", m.name), &said)
         } else {
             words::row_label(&m.name, &words)
         },
@@ -1369,6 +1418,159 @@ mod tests {
         assert_eq!(r.state, "Restarting\u{2026}");
         assert_eq!(r.rebuilt_said, None);
         assert_eq!(row(&a, &|_: &str| None, None).state, "On");
+    }
+
+    fn changed_app(enabled: bool) -> Installed {
+        let mut a = m("vulpes", enabled);
+        a.name = "PC sensors".into();
+        a.version = "0.1.0".into();
+        a.adopted = true;
+        a
+    }
+
+    fn facts_of(pairs: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<Value> {
+        let pairs: Vec<(String, &'static str)> = pairs
+            .iter()
+            .map(|(k, v)| (format!("module.vulpes.{k}"), *v))
+            .collect();
+        move |k: &str| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| json!(v))
+    }
+
+    /// An installed-separately app whose file changed: the changed words and **Update in
+    /// Hideout** win over On, Off, "Waits for your OK" and the missing/version sentences; a row
+    /// that is refused keeps the red mark.
+    #[test]
+    fn a_changed_row_says_so_and_offers_update_in_hideout() {
+        let update = Some(("Update in Hideout".to_string(), Does::UpdateInHideout));
+        let main = |r: &Row| r.primary.as_ref().map(|p| (p.label.clone(), p.does));
+        // On.
+        let r = row_changed(&changed_app(true), &[], &|_: &str| None, None, true);
+        assert_eq!(r.state, "Changed since you added it");
+        assert_eq!(main(&r), update);
+        assert!(!r.stopped && !r.off);
+        assert_eq!(
+            r.label,
+            "PC sensors, installed separately, changed since you added it"
+        );
+        let r = row_changed(
+            &changed_app(true),
+            &[],
+            &facts_of(&[("state", "running")]),
+            None,
+            true,
+        );
+        assert_eq!(r.state, "Changed since you added it");
+        // Off: stays an Off row, Update in Hideout instead of Turn on.
+        let r = row_changed(&changed_app(false), &[], &|_: &str| None, None, true);
+        assert_eq!(r.state, "Off \u{b7} changed since you added it");
+        assert!(r.off && !r.stopped);
+        assert_eq!(main(&r), update);
+        assert_eq!(
+            r.label,
+            "PC sensors, installed separately, off, changed since you added it"
+        );
+        // Waits for your OK, missing program, another version: the changed words, red mark.
+        for facts in [
+            vec![("state", "install-failed"), ("failed", "ok")],
+            vec![
+                ("state", "install-failed"),
+                ("failed", "missing"),
+                ("reason", "PC sensors isn't installed on this PC"),
+            ],
+            vec![
+                ("state", "install-failed"),
+                ("failed", "version"),
+                ("reason", "PC sensors is another version"),
+            ],
+        ] {
+            let r = row_changed(&changed_app(true), &[], &facts_of(&facts), None, true);
+            assert_eq!(r.state, "Changed since you added it", "{facts:?}");
+            assert_eq!(main(&r), update);
+            assert!(r.stopped, "red mark kept: {facts:?}");
+            assert_eq!(
+                r.label,
+                "PC sensors, installed separately, changed since you added it"
+            );
+        }
+    }
+
+    /// The states that are not this one keep their own words and button, changed or not.
+    #[test]
+    fn a_changed_row_leaves_the_other_states_alone() {
+        for facts in [
+            vec![("state", "revoked")],
+            vec![("state", "starting")],
+            vec![("state", "updating")],
+            vec![("state", "update-waiting")],
+            vec![("state", "update-busy")],
+            vec![("state", "quarantined")],
+            vec![("state", "crash-stopped")],
+            vec![("state", "needs-hub")],
+            vec![("state", "install-failed"), ("failed", "launch")],
+        ] {
+            let f = facts_of(&facts);
+            let a = changed_app(true);
+            let plain = row_in(&a, &[], &f, None);
+            let with = row_changed(&a, &[], &f, None, true);
+            assert_eq!(with, plain, "{facts:?}");
+            assert_ne!(with.state, "Changed since you added it");
+        }
+        // Withdrawn and then turned off, and safe mode.
+        let off = changed_app(false);
+        let f = facts_of(&[("state", "off")]);
+        let withdrawn = |k: &str| match k {
+            "module.vulpes.revoked" => Some(json!({"version": "0.1.0"})),
+            _ => f(k),
+        };
+        assert_eq!(
+            row_changed(&off, &[], &withdrawn, None, true).state,
+            "Off \u{b7} 0.1.0 was withdrawn"
+        );
+        let safe = |k: &str| (k == "hub.safe_mode").then_some(json!(true));
+        let r = row_changed(&changed_app(true), &[], &safe, None, true);
+        assert_eq!(r.state, "On \u{b7} not started in safe mode");
+        assert!(r.primary.is_none());
+    }
+
+    /// Not changed, or not installed separately: every row is what `row_in` gave before.
+    #[test]
+    fn a_row_that_is_not_changed_is_the_same_as_before() {
+        for (enabled, facts) in [
+            (true, vec![]),
+            (false, vec![]),
+            (false, vec![("state", "off")]),
+            (true, vec![("state", "running")]),
+            (true, vec![("state", "install-failed"), ("failed", "ok")]),
+            (
+                true,
+                vec![
+                    ("state", "install-failed"),
+                    ("failed", "version"),
+                    ("reason", "x"),
+                ],
+            ),
+        ] {
+            let f = facts_of(&facts);
+            let a = changed_app(enabled);
+            assert_eq!(
+                row_changed(&a, &[], &f, None, false),
+                row_in(&a, &[], &f, None)
+            );
+            // Not installed separately: the flag does nothing.
+            let mut own = changed_app(enabled);
+            own.adopted = false;
+            assert_eq!(
+                row_changed(&own, &[], &f, None, true),
+                row_in(&own, &[], &f, None)
+            );
+        }
+        let r = row_in(&changed_app(true), &[], &|_: &str| None, None);
+        assert_eq!(r.state, "On");
+        let r = row_in(&changed_app(false), &[], &|_: &str| None, None);
+        assert_eq!(
+            (r.state.as_str(), r.primary.unwrap().label.as_str()),
+            ("Off", "Turn on")
+        );
     }
 
     /// During a search (#1033): rows say on or off for the round, Off rows aren't part of it,

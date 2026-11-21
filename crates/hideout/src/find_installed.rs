@@ -452,7 +452,7 @@ impl Row {
             Row::WaitsForYourOk => "Waits for your OK",
             Row::Ready => "Ready",
             Row::NotInstalled => "Not installed",
-            Row::NeedsRefresh => "Changed since you added it",
+            Row::NeedsRefresh => hideout_supervisor::words::CHANGED_SINCE_ADDED,
         };
         format!("{name} \u{b7} {s}")
     }
@@ -462,7 +462,7 @@ impl Row {
             Row::GetIt => Some(format!("Get {name}")),
             Row::UseInHideout => Some("Use in Hideout".into()),
             Row::NotInstalled => Some("Remove from list".into()),
-            Row::NeedsRefresh => Some("Update in Hideout".into()),
+            Row::NeedsRefresh => Some(hideout_supervisor::words::UPDATE_IN_HIDEOUT.into()),
             _ => None,
         }
     }
