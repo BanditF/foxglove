@@ -511,6 +511,11 @@ pub fn add(
                 .map_err(|e| format!("{}: {e}", dir.display()))
                 .and_then(|()| crate::adopt::run(home, &dir, now));
             let _ = std::fs::remove_dir_all(&dir);
+            // An update re-registered a record that had grants: check them now, whatever the
+            // read-back below says, so no earlier Allow stays on a program it was not given for.
+            if staged.is_ok() && c.update_of.is_some() {
+                void_grants_after_update(home, &c.id, now);
+            }
             // What the registry now holds must be the staged text, byte for byte.
             if staged.is_ok() && !registered_matches(home, &c.id, &text, fresh) {
                 return Err(words::changed(&c.name));
@@ -521,12 +526,7 @@ pub fn add(
         (Origin::Product(found), _) => find_installed::adopt(m, home, staging, found, now),
     };
     match done {
-        Ok(line) if line.starts_with(&format!("registered {} ", c.id)) => {
-            if c.update_of.is_some() {
-                void_grants_after_update(home, &c.id, now);
-            }
-            Ok(c.id.clone())
-        }
+        Ok(line) if line.starts_with(&format!("registered {} ", c.id)) => Ok(c.id.clone()),
         Ok(line) => {
             log::warn!(
                 "discover: asked to add {} but the adopt code said: {line}",
