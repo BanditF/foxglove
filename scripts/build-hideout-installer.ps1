@@ -40,6 +40,8 @@ try {
     light.exe -nologo -ext WixUIExtension -ext WixUtilExtension -sice:ICE61 -out $msi (Join-Path $obj 'hideout.wixobj')
     if ($LASTEXITCODE -ne 0) { throw 'light failed' }
     if (-not (Test-Path $msi)) { throw 'No MSI was built' }
+    python (Join-Path $repo 'scripts/msi_tables.py') $msi --product hideout
+    if ($LASTEXITCODE -ne 0) { throw 'the built MSI failed its table checks (scripts/msi_tables.py)' }
     Write-Host "Built (unsigned, not installed): $msi"
 }
 finally { Pop-Location }

@@ -82,6 +82,9 @@ jobs:
           if ($LASTEXITCODE) { throw 'MSI build failed' }
           # cargo-wix's --version prints its own version and succeeds, so check the MSI is there.
           if (-not (Test-Path target/wix/foxglove-x64.msi)) { throw 'No MSI was built' }
+          # Offline table checks (upgrade, downgrade block, per-user, no autostart, uninstall, no stray files); installs nothing.
+          python ../scripts/msi_tables.py target/wix/foxglove-x64.msi --product foxglove
+          if ($LASTEXITCODE) { throw 'MSI table checks failed' }
       - uses: actions/upload-artifact@v4
         with:
           # A test build's artifact is named for it, so it can't be mistaken for a release's.
