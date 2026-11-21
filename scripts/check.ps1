@@ -146,7 +146,7 @@ try {
                 $t = @(cargo tree --locked --offline -e normal --target x86_64-pc-windows-msvc -p hideout-shell -i $c)
                 if ($LASTEXITCODE) { throw "cargo tree -i $c failed" }
                 $heads = @($t | Where-Object { $_ -match '^[a-z_0-9-]+ v[0-9]' })
-                if ($heads.Count -ne 1 -or $heads[0] -notmatch ('(?<!app)[\/]vendor[\/]' + $c)) {
+                if ($heads.Count -ne 1 -or $heads[0] -notmatch ('(?<!app.)vendor.' + $c)) {
                     Write-Host "$c is not the single vendored copy: $($heads -join ' | ')"
                     throw "$c is not the vendored copy"
                 }
