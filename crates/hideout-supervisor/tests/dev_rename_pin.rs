@@ -4,6 +4,9 @@
 //! signed, adopted elsewhere) keeps the strict pin. A windowless `ping.exe` copy stands in for
 //! the app; never the real Foxglove.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

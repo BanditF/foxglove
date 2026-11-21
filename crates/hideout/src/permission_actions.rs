@@ -2431,6 +2431,7 @@ on = [\"open\", \"call\"]
                 version: "1.0.0".into(),
                 at,
                 by: hideout_registry::dev_folder::DEV_ATTESTED_BY.into(),
+                held_back: false,
             });
         assert_eq!(header_kind(&v, true, true), Some(HeaderKind::MoreBuild));
         let p = asked_pending(&v);

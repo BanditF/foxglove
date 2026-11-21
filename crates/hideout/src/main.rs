@@ -794,11 +794,7 @@ mod tests {
     #[test]
     fn capture_without_a_lab_hub_fails_fast() {
         let dir = std::env::temp_dir().join(format!("hideout-main-cap-{}", std::process::id()));
-        let root = dir.as_os_str().to_owned();
-        let paths = hideout_shell::paths::HubPaths::resolve(|k| {
-            (k == "HIDEOUT_CONFIG_DIR").then(|| root.clone())
-        })
-        .unwrap();
+        let paths = hideout_shell::paths::HubPaths::in_folder(&dir);
         let args = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
         let out = dir.join("x.png");
         let cap = args(&["--capture", out.to_str().unwrap()]);
@@ -824,14 +820,16 @@ mod tests {
     }
 
     /// The supervisor's first line reaches `hideout.log` (#986). Window-free: no shell, a temp
-    /// `HIDEOUT_CONFIG_DIR`, and a user name of its own so the router pipe and lock are its own.
+    /// hub folder given directly (never read from the environment: a build without `lab-switches`
+    /// ignores `HIDEOUT_CONFIG_DIR` and would start on the user's own folder), and a user name of
+    /// its own so the router pipe and lock are its own.
     #[test]
     fn the_first_supervisor_line_lands_in_the_log() {
         let dir = std::env::temp_dir().join(format!("hideout-main-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::env::set_var("HIDEOUT_CONFIG_DIR", &dir);
         std::env::set_var("USERNAME", format!("hideouttest{}", std::process::id()));
-        let paths = hideout_shell::paths::HubPaths::from_env().unwrap();
+        let paths = hideout_shell::paths::HubPaths::in_folder(&dir);
         let started = start(&paths);
         assert!(started.hooks.is_some(), "the supervisor didn't start");
         log::logger().flush();

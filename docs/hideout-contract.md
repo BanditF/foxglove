@@ -1614,6 +1614,12 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   - **A folder that syncs** with a cloud service, or whose state cannot be read, carries
     nothing: the step is refused (fail closed) and the existing changed flow runs, which stops
     the app. The Keep row stays On with Turn off, and shows why nothing carries.
+  - **Folder steps recorded before this rule get it once.** A folder step that held items
+    back carries `held_back` in its attestation. When the registry opens, a binding whose
+    newest step is a folder step without it has its held items moved to waiting and its `on`
+    keyboard record voided, as above, and the step is marked, so it happens once; other grants,
+    updater, installer and dev-folder steps are not touched. An unmarked step is always read
+    as not held back yet (fail closed: at most one extra ask).
   - Dev-folder steps (`dev-folder` attestations) are a separate carry and are unchanged.
 - (#1178) **After a grant only narrowing.** Turn off (one item or all) acts at once and needs no
   confirmation: the router drops the grant (routes and the leases through them end) before the

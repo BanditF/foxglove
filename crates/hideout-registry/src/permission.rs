@@ -300,6 +300,57 @@ pub(crate) fn io_invalid(msg: &str) -> Failure {
     Failure::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))
 }
 
+/// What a folder step does to a module's grants (#1465): the held items go from `granted` to
+/// `pending_permissions` and `last_choice`, and the keyboard record `voids` picks goes void
+/// (reason `changed`). Nothing else changes.
+fn hold_back(
+    m: &mut crate::inventory::Installed,
+    now: &str,
+    voids: impl Fn(&crate::keyboard::KeyboardGrant) -> bool,
+) {
+    let moved: Vec<String> = m
+        .granted
+        .iter()
+        .filter(|g| held_on_change(g))
+        .cloned()
+        .collect();
+    m.granted.retain(|g| !moved.contains(g));
+    m.pending_permissions.extend(moved.iter().cloned());
+    m.pending_permissions.sort();
+    m.pending_permissions.dedup();
+    m.last_choice.extend(moved);
+    m.last_choice.sort();
+    m.last_choice.dedup();
+    if let Some(k) = m.keyboard.as_mut().filter(|k| voids(k)) {
+        k.state = crate::keyboard::GrantState::Void;
+        k.sha256.clear();
+        k.reason = Some(crate::keyboard::VoidReason::Changed);
+        k.at = now.into();
+    }
+}
+
+/// Whether the binding's newest step is a folder step that has not held anything back: one
+/// recorded before #1465.
+fn old_folder_step(m: &crate::inventory::Installed) -> bool {
+    m.bound
+        .as_ref()
+        .and_then(|b| b.attested.last())
+        .is_some_and(|a| a.by == FOLLOW_ATTESTED_BY && !a.held_back)
+}
+
+/// [`Registry::reask_old_folder_steps`] for one module; false when there is nothing to do.
+fn reask_old_folder_step(m: &mut crate::inventory::Installed, now: &str) -> bool {
+    if !old_folder_step(m) {
+        return false;
+    }
+    // Any `on` keyboard record: the old step moved it to the changed bytes.
+    hold_back(m, now, |k| k.state == crate::keyboard::GrantState::On);
+    if let Some(a) = m.bound.as_mut().and_then(|b| b.attested.last_mut()) {
+        a.held_back = true;
+    }
+    true
+}
+
 /// The only `by` that may set a follow-folder grant: the hub's own dialog.
 pub const FOLLOW_SET_BY: &str = "dialog";
 /// `attested[].by` of a program change kept by a follow-folder grant.
@@ -882,6 +933,7 @@ impl Registry {
             version,
             at: now.into(),
             by: by.into(),
+            held_back: !dev_step,
         };
         let mut kept = false;
         let inv = crate::inventory::Inventory::update(&self.home.join("inventory.json"), |inv| {
@@ -920,25 +972,7 @@ impl Registry {
             } else {
                 // Bytes changed under the folder's grant: Sensitive items and the keyboard
                 // wait for the user's OK again; the rest carries.
-                let moved: Vec<String> = m
-                    .granted
-                    .iter()
-                    .filter(|g| held_on_change(g))
-                    .cloned()
-                    .collect();
-                m.granted.retain(|g| !moved.contains(g));
-                m.pending_permissions.extend(moved.iter().cloned());
-                m.pending_permissions.sort();
-                m.pending_permissions.dedup();
-                m.last_choice.extend(moved);
-                m.last_choice.sort();
-                m.last_choice.dedup();
-                if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&old_path, &old)) {
-                    k.state = crate::keyboard::GrantState::Void;
-                    k.sha256.clear();
-                    k.reason = Some(crate::keyboard::VoidReason::Changed);
-                    k.at = now.into();
-                }
+                hold_back(m, now, |k| k.allows(&old_path, &old));
             }
             kept = true;
         })?;
@@ -946,6 +980,43 @@ impl Registry {
             self.inventory.modules.insert(id.into(), m.clone());
         }
         Ok(kept)
+    }
+
+    /// Applies the #1465 rule once to folder steps recorded before it. Such a step carried
+    /// every grant and the keyboard record to changed bytes; a binding whose newest step is one
+    /// gets what a step made now gets: the held items ([`held_on_change`]) wait for the user's
+    /// OK again (kept in `last_choice`), an `on` keyboard record goes void (reason `changed`),
+    /// everything else stays, and the row reads as changed since the user allowed it. The step
+    /// is then marked `held_back`, so a later open changes nothing.
+    ///
+    /// A step without the mark cannot be told from one a build with the rule but without the
+    /// mark wrote, nor is an Allow made after the old step proof that the user saw the held
+    /// items for the new bytes: both read as "not held back yet" (fail closed; the cost is one
+    /// more ask). A binding whose newest step is an updater's, installer's or dev folder's is
+    /// not touched. Returns the ids changed. Runs when the registry opens.
+    pub fn reask_old_folder_steps(&mut self, now: &str) -> Result<Vec<String>, Failure> {
+        let ids: Vec<String> = self
+            .inventory
+            .modules
+            .iter()
+            .filter(|(_, m)| old_folder_step(m))
+            .map(|(id, _)| id.clone())
+            .collect();
+        if ids.is_empty() {
+            return Ok(ids);
+        }
+        // In memory first, so a failed write still leaves this process without the carry (and
+        // the next open tries again).
+        for m in self.inventory.modules.values_mut() {
+            reask_old_folder_step(m, now);
+        }
+        let path = self.home.join("inventory.json");
+        crate::inventory::Inventory::update(&path, |inv| {
+            for m in inv.modules.values_mut() {
+                reask_old_folder_step(m, now);
+            }
+        })?;
+        Ok(ids)
     }
 
     /// The check at every turn on and launch: if the app is not the one the grant is bound
@@ -1047,6 +1118,7 @@ impl Registry {
             version: version.into(),
             at: now.into(),
             by: by.into(),
+            held_back: false,
         };
         let inv = crate::inventory::Inventory::update(&self.home.join("inventory.json"), |inv| {
             if let Some(m) = inv.modules.get_mut(id) {

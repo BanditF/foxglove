@@ -9,6 +9,9 @@
 //!   pipes, it can't read the user's file, it can write its `data\`, and the router pipe gets
 //!   no guest for it.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

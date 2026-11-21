@@ -3,6 +3,9 @@
 //! with no process ever started. With the switch off a rebuild that would otherwise pass stops
 //! nothing, starts nothing and pins nothing. Windowless.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

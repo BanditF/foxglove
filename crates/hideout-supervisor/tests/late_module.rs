@@ -6,6 +6,9 @@
 //! so; once it is, the router knows it and it runs. The module is a copy of `cmd.exe` waiting
 //! a few seconds; its job is ended at the end. Windowless.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

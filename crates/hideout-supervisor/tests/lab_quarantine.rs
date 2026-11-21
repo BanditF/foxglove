@@ -5,6 +5,9 @@
 //! host service, so a start can only fail in the quarantine → Start again path itself (not a
 //! missing `net.*`, #1102). Windowless; every job is ended at the end.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

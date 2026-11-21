@@ -4,6 +4,9 @@
 //! dropped (its Job Object handles close, as when hub.exe dies) and a second one started on the
 //! same folder. Every process a test starts is ended by its handle when the test ends.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};

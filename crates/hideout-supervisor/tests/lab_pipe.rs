@@ -5,6 +5,9 @@
 //! script that opens `%HIDEOUT_PIPE%`, as the SDKs' `connect_env` does, and says `initialize`
 //! with its launch token and `module.ready`. Windowless; the module's job is ended at the end.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

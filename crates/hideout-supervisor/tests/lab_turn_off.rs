@@ -6,6 +6,9 @@
 //! otherwise" stays in memory), and a new supervisor on the same folder keeps it off. Turn on
 //! saves it on again. Windowless: the modules' exe doesn't exist, so no process starts.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

@@ -1460,8 +1460,7 @@ mod tests {
     use std::ffi::OsString;
 
     fn lab_paths() -> HubPaths {
-        HubPaths::resolve(|k| (k == "HIDEOUT_CONFIG_DIR").then(|| OsString::from(r"C:\lab\h")))
-            .unwrap()
+        HubPaths::in_folder(std::path::Path::new(r"C:\lab\h"))
     }
 
     #[test]

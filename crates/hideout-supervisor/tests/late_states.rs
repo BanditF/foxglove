@@ -6,6 +6,9 @@
 //! the one that runs says `initialize` and `module.ready` on its pipe as lab_pipe.rs's does.
 //! Windowless; every job is ended at the end.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

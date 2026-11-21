@@ -10,6 +10,9 @@
 //! The same hub without the setting starts it outside a container. The module's job and its
 //! AppContainer profile are removed at the end.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

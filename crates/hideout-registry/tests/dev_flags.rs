@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use hideout_registry::keyboard::VoidReason;
-use hideout_registry::{dev_folders_from_env, dev_unsigned_from_env, DevFlags, Failure, Registry};
+use hideout_registry::{DevFlags, Failure, Registry};
 
 const NOW: &str = "2026-11-19T12:00:00Z";
 const LATER: &str = "2026-11-19T20:40:00Z";
@@ -147,9 +147,12 @@ fn dev_folders_alone_carry_an_enrolled_app_over_a_rebuild() {
     assert_eq!(reg.binding_void(ID), None);
 }
 
-/// One test owns the process environment (the tests above never read it).
+/// One test owns the process environment (the tests above never read it). Only a build with
+/// `lab-switches` reads these variables; `lab::tests` covers the build without.
+#[cfg(feature = "lab-switches")]
 #[test]
 fn the_environment_flags_are_independent_and_exact() {
+    use hideout_registry::{dev_folders_from_env, dev_unsigned_from_env};
     const VARS: [&str; 3] = [
         "HIDEOUT_DEV_UNSIGNED",
         "HIDEOUT_DEV_MODE",

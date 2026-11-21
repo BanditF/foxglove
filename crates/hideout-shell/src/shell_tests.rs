@@ -54,8 +54,7 @@ fn hub_with_pages(
     feed: Option<Box<dyn PanelFeed>>,
     pages: Vec<Box<dyn Page>>,
 ) -> Hub {
-    let root = dir.as_os_str().to_owned();
-    let paths = HubPaths::resolve(|k| (k == "HIDEOUT_CONFIG_DIR").then(|| root.clone())).unwrap();
+    let paths = HubPaths::in_folder(dir);
     let shared = Arc::new(Shared {
         paths,
         prefs: Mutex::new(Prefs::default()),
@@ -2509,8 +2508,7 @@ fn renders_the_modules_page_for_review() {
     .map(|i| row(i, &safe_facts, None))
     .collect();
     let dir = temp_dir("png-modules");
-    let root = dir.as_os_str().to_owned();
-    let paths = HubPaths::resolve(|k| (k == "HIDEOUT_CONFIG_DIR").then(|| root.clone())).unwrap();
+    let paths = HubPaths::in_folder(&dir);
     let shared = Arc::new(Shared {
         paths,
         prefs: Mutex::new(Prefs::default()),

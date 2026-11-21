@@ -7,6 +7,9 @@
 //! no drain handler); the router's call timeout is short, so its drain "answer" (an error) comes
 //! quickly. Windowless; every job is ended at the end.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 mod common;
 

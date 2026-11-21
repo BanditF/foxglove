@@ -8,6 +8,9 @@
 //! version, Check for updates clears it and the hub tries to start it. Windowless: the module's
 //! exe doesn't exist, so no process is ever started.
 #![cfg(windows)]
+// It turns on lab mode, developer mode or unsigned sideload from the environment, which only a
+// build with `lab-switches` reads: the installed build (no feature) has no such test.
+#![cfg(feature = "lab-switches")]
 
 use std::path::PathBuf;
 use std::sync::mpsc;
