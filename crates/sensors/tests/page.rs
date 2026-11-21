@@ -517,6 +517,13 @@ fn the_manifest_declares_the_page() {
         assert_eq!(p.title, "PC sensors");
         assert_eq!(p.icon, "chart");
     }
+    // OMEN parity row 2: the tile is hidden until added from Edit tiles. Its `when` names a
+    // fact outside the module's own namespace, so nothing the module publishes can show it;
+    // the page has no such gate.
+    let gate = m.panels[0].when.as_deref().expect("the tile's gate");
+    let own = registered_pattern();
+    assert!(!gate.starts_with(own.trim_end_matches('*')), "{gate}");
+    assert_eq!(m.panels[1].when, None);
 }
 
 /// The NVIDIA sentence only when the whole card is unavailable (and something else reads);
