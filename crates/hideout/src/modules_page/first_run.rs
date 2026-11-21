@@ -299,6 +299,7 @@ impl Fx {
                 home,
                 state: Default::default(),
                 quiet: false,
+                update_wanted: None,
             }),
             restarts: Default::default(),
             done: Default::default(),
