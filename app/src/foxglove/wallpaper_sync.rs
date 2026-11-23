@@ -1624,12 +1624,13 @@ impl Apply for Cli {
     }
 }
 
-/// Whether an exit code other than 0 counts as a failed command (#1399). Off until the lab
-/// check has recorded what the real program exits with: nothing documents what
-/// `wallpaper64.exe -control ...` or `applyProperties` exit with, and a success that exits
-/// non-zero would make every pause, play and push read as failed. Until then such a code is
-/// only logged, with the command, in foxglove.log. Turn this on once the codes are known.
-const NONZERO_EXIT_FAILS: bool = false;
+/// Whether an exit code other than 0 counts as a failed command (#1399). On since the lab
+/// run on the real program (11/23): `-control play`, an unknown verb, a bare `-control` and a
+/// well-formed `applyProperties` (also for a monitor it doesn't know) all exit 0; an
+/// `applyProperties` whose properties are not valid JSON exits 4. So a failed push shows, but a
+/// refused pause or play cannot be seen from the exit code. Any other code is still logged,
+/// with the command, in foxglove.log.
+const NONZERO_EXIT_FAILS: bool = true;
 
 /// Runs one Wallpaper Engine command and says whether it went through (#1399): the program
 /// has to start and end within `PUSH_LIMIT`. Anything else is a failure, never a crash. An
