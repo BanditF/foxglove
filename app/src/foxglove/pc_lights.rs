@@ -9,6 +9,9 @@
 //! The colours the user picks are saved in the store's `[pc_lighting]` and put back when the
 //! board arrives (at startup too), unless an app its catalog entry names as a conflict (a
 //! vendor's lighting tool) is running.
+//! They are put back once more when the PC wakes (the display coming back on, `away`'s event:
+//! a board that kept its interface through sleep can still have lost its colours), and one
+//! more time a few seconds later for a controller that is ready late ([`WAKE_SETTLE`]).
 //!
 //! Each device carries what it can do (`LightCaps`): from the catalog, or from a LampArray's own
 //! attributes, read through Windows when one arrives. Boards the catalog doesn't know can be
@@ -339,6 +342,20 @@ pub enum Msg {
     },
     /// The last lease on a board ended (or Foxglove paused): its colours from before it go back.
     LeaseEnd(String),
+    /// The PC woke (the display came back on): every board's saved colours again, as on its
+    /// arrival. `settled`: the one later pass ([`WAKE_SETTLE`]), which asks for no further one.
+    Woke {
+        settled: bool,
+    },
+}
+
+/// How long after a wake the saved colours go on a second (last) time: a controller can come
+/// back after the display does and take its own default look then.
+pub const WAKE_SETTLE: Duration = Duration::from_secs(5);
+
+/// What an `away` edge asks of the worker: the display coming back on is the wake.
+pub fn wake_msg(change: super::away::Change) -> Option<Msg> {
+    (change == super::away::Change::DisplayOn).then_some(Msg::Woke { settled: false })
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -1097,6 +1114,31 @@ impl Worker {
         self.effect_start(&f.key, Some(f));
     }
 
+    /// The PC woke: saved colours (and a device's own effect) again on every board Foxglove
+    /// drives, as on arrival, and how many boards that was. None while paused, during a scene
+    /// (its frames draw the boards), on a board a lease draws on, or on one a vendor's app that
+    /// is running sets (as of the last scan).
+    pub fn woke(&mut self, paused: bool) -> usize {
+        if paused || self.scene.is_some() {
+            return 0;
+        }
+        let due: Vec<Found> = self
+            .found
+            .iter()
+            .filter(|f| {
+                f.control != Control::NotYet
+                    && self.drivers.contains_key(&f.key)
+                    && !self.leased.contains_key(&f.key)
+                    && !self.conflicts.iter().any(|c| c.key == f.key)
+            })
+            .cloned()
+            .collect();
+        for f in &due {
+            self.restore(f);
+        }
+        due.len()
+    }
+
     /// The effect of its own a device is set to play, if its driver offers it.
     fn saved_effect(&self, key: &str) -> Option<pcl::OnboardEffect> {
         let name = self.settings.devices.get(key)?.effect.as_ref()?;
@@ -1294,6 +1336,7 @@ impl Worker {
                 | Msg::OpenRgbEvent(..)
                 | Msg::KeyboardLampRelease
                 | Msg::LeaseEnd(_)
+                | Msg::Woke { .. }
         );
         if paused && writes {
             let place = place_of(&msg);
@@ -1306,6 +1349,14 @@ impl Worker {
         }
         match msg {
             Msg::Scan => {}
+            Msg::Woke { .. } => {
+                let boards = self.woke(paused);
+                if boards > 0 {
+                    eprintln!(
+                        "Foxglove: the PC woke: saved colours again on {boards} light device(s)"
+                    );
+                }
+            }
             Msg::OpenRgbSettings(settings) => {
                 if settings != self.openrgb.settings {
                     self.openrgb.settings = settings;
@@ -2143,6 +2194,17 @@ pub fn start() {
     if QUEUE.set(Mutex::new(tx.clone())).is_err() {
         return;
     }
+    // The PC waking (the display back on), on `away`'s event: one message to this queue. Kept
+    // for the app's life.
+    {
+        let tx = Mutex::new(tx.clone());
+        std::mem::forget(super::away::subscribe_changes(move |c| {
+            if let Some(msg) = wake_msg(c) {
+                let tx = tx.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = ticketed(&tx, msg);
+            }
+        }));
+    }
     // Supervised (#587): the queue outlives a panicking attempt, so `QUEUE` stays good and
     // nothing queued is lost; a restart reloads the settings and scans again.
     let rx = Mutex::new(rx);
@@ -2213,6 +2275,8 @@ pub fn start() {
             let own_may_change = batch.iter().any(|m| !matches!(m, Msg::SceneFrame { .. }));
             let boards = worker.scene_boards();
             let mut scanned = false;
+            let mut woke = false;
+            let mut settle = false;
             for msg in batch {
                 if msg == Msg::Scan {
                     if !scanned {
@@ -2221,10 +2285,32 @@ pub fn start() {
                     }
                     continue;
                 }
+                if let Msg::Woke { settled } = msg {
+                    settle |= !settled;
+                    // Several edges in one round are one wake.
+                    if std::mem::replace(&mut woke, true) {
+                        continue;
+                    }
+                    // What is there now, and which vendor apps run, first; the wake itself
+                    // writes the colours (arrivals too), so this scan doesn't.
+                    if !scanned {
+                        scanned = true;
+                        scan(&mut worker, false);
+                    }
+                }
                 worker.handle(msg, write_hold(), &mut std::thread::sleep);
             }
             if own_may_change || worker.scene_boards() != boards {
                 worker.publish_scene_own();
+            }
+            // One later pass per wake, on a bounded wait; a wake during the wait shares it.
+            if settle && !WAKE_SETTLING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let tx = tx.clone();
+                let _ = super::services::spawn_named("pc-lights-wake", move || {
+                    std::thread::sleep(WAKE_SETTLE);
+                    WAKE_SETTLING.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = ticketed(&tx, Msg::Woke { settled: true });
+                });
             }
             if std::mem::take(&mut worker.rescan) {
                 scan(&mut worker, false);
@@ -2276,6 +2362,9 @@ pub fn start() {
         }
     });
 }
+
+/// A wake's later pass is waiting ([`WAKE_SETTLE`]).
+static WAKE_SETTLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The store's section for the OpenRGB settings (#471).
 pub const OPENRGB_SECTION: &str = "openrgb";
@@ -2837,6 +2926,54 @@ mod tests {
         w.scan(&[], &mut nothing(), false, true);
         w.scan(&case_hid(), &mut nothing(), false, true);
         assert_eq!(sent.lock().unwrap().len(), 2, "replugged: put back again");
+    }
+
+    /// The display coming back on (the wake) puts the saved colours on again though the board
+    /// never left; not while paused, during a scene, or while its vendor's app runs.
+    #[test]
+    fn a_wake_puts_the_saved_colours_back_on_a_board_that_stayed() {
+        use super::super::away::Change;
+        assert_eq!(
+            wake_msg(Change::DisplayOn),
+            Some(Msg::Woke { settled: false })
+        );
+        for c in [Change::DisplayOff, Change::Locked, Change::Unlocked] {
+            assert_eq!(wake_msg(c), None);
+        }
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            "103c:84fd".into(),
+            Saved {
+                colors: [("2".to_string(), "#112233".to_string())].into(),
+                match_keyboard: false,
+                effect: None,
+            },
+        );
+        let wake = || wake_msg(Change::DisplayOn).unwrap();
+        let (mut w, sent) = worker(settings.clone());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert_eq!(sent.lock().unwrap().len(), 1, "on arrival");
+        w.handle(wake(), false, &mut |_| {});
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![report(2, [0x11, 0x22, 0x33]); 2],
+            "again at the wake"
+        );
+        w.handle(Msg::Woke { settled: true }, false, &mut |_| {});
+        assert_eq!(sent.lock().unwrap().len(), 3, "and once after the wait");
+        // Paused: nothing written, and nothing said about it.
+        w.handle(wake(), true, &mut |_| {});
+        assert_eq!(sent.lock().unwrap().len(), 3);
+        assert!(w.snapshot().results.is_empty());
+        // A scene has the boards: its frames draw them.
+        w.handle(Msg::SceneStart, false, &mut |_| {});
+        w.handle(wake(), false, &mut |_| {});
+        assert_eq!(sent.lock().unwrap().len(), 3);
+        // The vendor's app runs: it sets the board, as on arrival.
+        let (mut w, sent) = worker(settings);
+        w.scan(&case_hid(), &mut studio(), false, true);
+        w.handle(wake(), false, &mut |_| {});
+        assert!(sent.lock().unwrap().is_empty(), "Light Studio is running");
     }
 
     /// The keyboard reports a solid colour at full saturation and brightness.
