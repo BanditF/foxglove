@@ -1114,10 +1114,13 @@ impl Worker {
         self.effect_start(&f.key, Some(f));
     }
 
-    /// The PC woke: saved colours (and a device's own effect) again on every board Foxglove
-    /// drives, as on arrival, and how many boards that was. None while paused, during a scene
-    /// (its frames draw the boards), on a board a lease draws on, or on one a vendor's app that
-    /// is running sets (as of the last scan).
+    /// The PC woke: every board Foxglove drives is written again, and how many took it. The
+    /// board may have lost its look in sleep while the driver still holds what it last sent,
+    /// so this writes whatever the driver says: the device's own effect if it is set to play
+    /// one (started once, not drawn over first), else the colours Foxglove knows it shows (a
+    /// preview or a followed colour included), else the saved ones. None while paused, during
+    /// a scene (its frames draw the boards), on a board a lease draws on, or on one a vendor's
+    /// app that is running sets (as of the last scan).
     pub fn woke(&mut self, paused: bool) -> usize {
         if paused || self.scene.is_some() {
             return 0;
@@ -1133,10 +1136,34 @@ impl Worker {
             })
             .cloned()
             .collect();
+        let mut written = 0;
         for f in &due {
-            self.restore(f);
+            let effect = self.effect_wanted(&f.key, Some(f), true);
+            let saved = self.saved_colors(f);
+            let Some(d) = self.drivers.get_mut(&f.key) else {
+                continue;
+            };
+            let result = if let Some((name, colors)) = effect {
+                d.set_effect(&name, &colors)
+            } else {
+                let known = d.colors();
+                let colors: Vec<(usize, Rgb)> = (0..f.zones.len())
+                    .filter_map(|i| {
+                        let c = known.get(i).copied().flatten();
+                        Some((i, c.or(saved.get(i).copied().flatten())?))
+                    })
+                    .collect();
+                if colors.is_empty() {
+                    continue;
+                }
+                d.set_zones(&colors)
+            };
+            match result {
+                Ok(()) => written += 1,
+                Err(e) => eprintln!("Foxglove: {}: {e}", f.name),
+            }
         }
-        due.len()
+        written
     }
 
     /// The effect of its own a device is set to play, if its driver offers it.
@@ -1151,12 +1178,18 @@ impl Worker {
     /// spectrum. `None` while a scene or a lease holds the lights: their end asks again.
     /// `arriving`: the device, while a scan is still listing it.
     fn effect_due(&self, key: &str, arriving: Option<&Found>) -> Option<DueEffect> {
+        self.effect_wanted(key, arriving, false)
+    }
+
+    /// [`Self::effect_due`]; `again`: also when the driver says it plays already (a wake: the
+    /// board may not).
+    fn effect_wanted(&self, key: &str, arriving: Option<&Found>, again: bool) -> Option<DueEffect> {
         let effect = self.saved_effect(key)?;
         if self.scene.is_some() || self.leased.contains_key(key) {
             return None;
         }
         let d = self.drivers.get(key)?;
-        if d.effect().as_deref() == Some(effect.name.as_str()) {
+        if !again && d.effect().as_deref() == Some(effect.name.as_str()) {
             return None;
         }
         let colors = if effect.own_colours {
@@ -2291,11 +2324,11 @@ pub fn start() {
                     if std::mem::replace(&mut woke, true) {
                         continue;
                     }
-                    // What is there now, and which vendor apps run, first; the wake itself
-                    // writes the colours (arrivals too), so this scan doesn't.
+                    // What is there now, and which vendor apps run, first. It stands in for
+                    // any scan in this round, so it restores arrivals as that would.
                     if !scanned {
                         scanned = true;
-                        scan(&mut worker, false);
+                        scan(&mut worker, true);
                     }
                 }
                 worker.handle(msg, write_hold(), &mut std::thread::sleep);
@@ -2306,11 +2339,16 @@ pub fn start() {
             // One later pass per wake, on a bounded wait; a wake during the wait shares it.
             if settle && !WAKE_SETTLING.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 let tx = tx.clone();
-                let _ = super::services::spawn_named("pc-lights-wake", move || {
+                let waiter = std::thread::Builder::new().name("pc-lights-wake".into());
+                let started = waiter.spawn(move || {
                     std::thread::sleep(WAKE_SETTLE);
                     WAKE_SETTLING.store(false, std::sync::atomic::Ordering::SeqCst);
                     let _ = ticketed(&tx, Msg::Woke { settled: true });
                 });
+                // No thread, no later pass this time; the next wake asks again.
+                if started.is_err() {
+                    WAKE_SETTLING.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
             }
             if std::mem::take(&mut worker.rescan) {
                 scan(&mut worker, false);
@@ -2974,6 +3012,31 @@ mod tests {
         w.scan(&case_hid(), &mut studio(), false, true);
         w.handle(wake(), false, &mut |_| {});
         assert!(sent.lock().unwrap().is_empty(), "Light Studio is running");
+        // A board set to play its own effect, no colours saved: the effect is started again,
+        // though the driver says it plays already, and with nothing steady written first.
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            "103c:84fd".into(),
+            Saved {
+                effect: Some("breathing".into()),
+                ..Default::default()
+            },
+        );
+        let (mut w, sent) = worker(settings);
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let arrival = take(&sent);
+        assert!(!arrival.is_empty());
+        w.handle(wake(), false, &mut |_| {});
+        assert_eq!(take(&sent), arrival, "the same effect reports again");
+        // A colour shown but not saved (a preview) is what goes back, not an older saved one.
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert_eq!(
+            w.woke(false),
+            0,
+            "nothing known, nothing saved: nothing written"
+        );
+        assert!(take(&sent).is_empty());
     }
 
     /// The keyboard reports a solid colour at full saturation and brightness.
