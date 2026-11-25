@@ -1079,7 +1079,7 @@ fn renders_the_state_tray_for_review() {
 // ---- The sidebar draws the tab's ring (#1094) -------------------------------------------------
 
 /// The open-arc rings in a frame: (in the sidebar, in the tab strip). Both draw the same shape
-/// from `strip::ring_points`; the sidebar is the left 200 px.
+/// from `strip::ring_points`; the rail is the left 56 px.
 fn rings(out: &egui::FullOutput) -> (usize, usize) {
     fn walk(s: &epaint::Shape, v: &mut Vec<f32>) {
         match s {
@@ -1092,7 +1092,7 @@ fn rings(out: &egui::FullOutput) -> (usize, usize) {
     for c in &out.shapes {
         walk(&c.shape, &mut xs);
     }
-    let side = xs.iter().filter(|x| **x < 200.0).count();
+    let side = xs.iter().filter(|x| **x < crate::kit::RAIL).count();
     (side, xs.len() - side)
 }
 
