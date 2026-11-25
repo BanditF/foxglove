@@ -3328,7 +3328,6 @@ impl Router {
         out.push(Out::Send(conn, ok(id, result)));
     }
 
-    /// The catalog's class of the channel a `channel.open` permission names.
     /// Whether no outside program may hold `c`, by the contract's classes: the router's own
     /// rule, not the approver's.
     fn never_a_tools(&self, c: &Capability) -> bool {
@@ -3336,6 +3335,7 @@ impl Router {
             == hideout_contract::capability::ToolClass::Never
     }
 
+    /// The catalog's class of the channel a `channel.open` permission names.
     fn channel_risk(&self, c: &Capability) -> Option<&str> {
         match c {
             Capability::ChannelOpen { module, channel } => self
