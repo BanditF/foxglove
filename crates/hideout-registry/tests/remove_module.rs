@@ -561,14 +561,14 @@ fn links_in_kept_data_do_not_wedge_install() {
 fn an_update_does_not_revive_old_settings() {
     let home = temp("upd-home");
     let src = temp("upd-src");
-    let mut reg = hub_copy(&home, &src, "example.rm.upd");
-    let pkg = src.join("example.rm.upd");
-    let base = home.join("modules").join("example.rm.upd");
-    bump(&src, "example.rm.upd", "0.1.0", "0.2.0");
+    let mut reg = hub_copy(&home, &src, "example.rm.update");
+    let pkg = src.join("example.rm.update");
+    let base = home.join("modules").join("example.rm.update");
+    bump(&src, "example.rm.update", "0.1.0", "0.2.0");
     reg.install(&pkg, NOW).unwrap();
     put(&base.join("0.1.0"), "settings/s.json", "v1");
     put(&base.join("0.0.9"), "settings/s.json", "v09");
-    bump(&src, "example.rm.upd", "0.2.0", "0.3.0");
+    bump(&src, "example.rm.update", "0.2.0", "0.3.0");
     reg.install(&pkg, NOW).unwrap();
     let cur = base.join("0.3.0");
     assert!(!cur.join("settings").exists());
