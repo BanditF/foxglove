@@ -152,7 +152,7 @@ fn ignored_switches(
     env: impl Fn(&str) -> Option<OsString>,
     args: impl IntoIterator<Item = OsString>,
 ) -> Vec<&'static str> {
-    const VARS: [&str; 7] = [
+    const VARS: [&str; 9] = [
         LAB_ENV,
         "HIDEOUT_CONFIG_DIR",
         "HIDEOUT_HOME",
@@ -160,6 +160,8 @@ fn ignored_switches(
         "HIDEOUT_DEV_UNSIGNED",
         "FOXGLOVE_DEV_UNSIGNED_PLUGINS",
         "HIDEOUT_LAB_CAPTURE",
+        "HIDEOUT_DISABLE",
+        "HIDEOUT_WAKE_REPORT_S",
     ];
     let mut names: Vec<&'static str> = VARS
         .into_iter()
@@ -269,11 +271,19 @@ mod tests {
             ("HIDEOUT_LAB", "1"),
             ("HIDEOUT_DEV_MODE", ""),
             ("HIDEOUT_HOME", "C:/x"),
+            ("HIDEOUT_DISABLE", "mic"),
+            ("HIDEOUT_WAKE_REPORT_S", "5"),
         ]);
         let args = ["--tray", "--lab"].map(OsString::from);
         assert_eq!(
             ignored_switches(e, args),
-            ["HIDEOUT_LAB", "HIDEOUT_HOME", "--lab"]
+            [
+                "HIDEOUT_LAB",
+                "HIDEOUT_HOME",
+                "HIDEOUT_DISABLE",
+                "HIDEOUT_WAKE_REPORT_S",
+                "--lab"
+            ]
         );
         assert!(ignored_switches(env(&[]), []).is_empty());
     }

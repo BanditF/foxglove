@@ -78,6 +78,16 @@ pub fn report_every(env: Option<&str>) -> Duration {
         .map_or(REPORT_EVERY, |d| d.clamp(REPORT_MIN, REPORT_EVERY))
 }
 
+/// `HIDEOUT_WAKE_REPORT_S` as set: a lab switch, so the installed build (no `lab-switches`)
+/// doesn't read it and keeps [`REPORT_EVERY`].
+fn report_switch() -> Option<String> {
+    if cfg!(feature = "lab-switches") {
+        std::env::var("HIDEOUT_WAKE_REPORT_S").ok()
+    } else {
+        None
+    }
+}
+
 /// What woke the loop, for the report line (#1000). One per wake, the first that applies:
 /// a window event, a repaint request (eframe's user event: our wakers, the show signal, tray
 /// commands, egui), an AccessKit request (a screen reader or a UI Automation client walking the
@@ -540,10 +550,7 @@ impl<A> Gate<A> {
         root: fn() -> Option<WindowId>,
         tray_sync: fn(),
     ) -> Self {
-        let mut wakes = WakeCount::new(
-            Instant::now(),
-            report_every(std::env::var("HIDEOUT_WAKE_REPORT_S").ok().as_deref()),
-        );
+        let mut wakes = WakeCount::new(Instant::now(), report_every(report_switch().as_deref()));
         wakes.label = crate::platform::message_label;
         Self {
             app,
