@@ -1670,8 +1670,9 @@ impl Apply for Cli {
 const NONZERO_EXIT_FAILS: bool = true;
 
 /// Runs one Wallpaper Engine command and says whether it went through (#1399): the program
-/// has to start and end within `PUSH_LIMIT`. Anything else is a failure, never a crash. An
-/// exit code other than 0 is logged (see `NONZERO_EXIT_FAILS`); `what` names the command there.
+/// has to start, end within `PUSH_LIMIT` and exit with code 0 (see `NONZERO_EXIT_FAILS`).
+/// Anything else is a failure, never a crash. `what` names the command in the log line that
+/// is written only if that switch is ever turned off again.
 #[cfg(windows)]
 fn run_cli(exe: &std::path::Path, args: &[String], raw: &str, what: &str) -> Result<(), String> {
     let code = run_cli_with(exe, args, raw, PUSH_LIMIT)?;
@@ -1689,7 +1690,7 @@ fn note_odd_exit(what: &str, odd: &str) {
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if *last != line {
         eprintln!(
-            "Foxglove: wallpaper sync: {line}; not counted as a failure until the exit codes are checked (#1399)"
+            "Foxglove: wallpaper sync: {line}; not counted as a failure (#1399)"
         );
         *last = line;
     }
@@ -2505,8 +2506,8 @@ mod tests {
         };
         assert_eq!(run("0"), Ok(Some(0)));
         assert_eq!(run("3"), Ok(Some(3)));
-        // The whole path: until the real codes are checked (#1399) a non-zero exit is
-        // logged and not a failure. This flips with `NONZERO_EXIT_FAILS`.
+        // The whole path: a non-zero exit is a failure (#1399), for as long as
+        // `NONZERO_EXIT_FAILS` is on.
         assert_eq!(
             run_cli(&cmd, &["/c".into(), "exit".into(), "3".into()], "", "test").is_err(),
             NONZERO_EXIT_FAILS
