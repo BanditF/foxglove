@@ -454,7 +454,8 @@ impl<A: Apply> Pusher<A> {
                 }
                 Err(e) => {
                     self.sent.remove(location);
-                    eprintln!("Foxglove: wallpaper sync: can't reach {location}: {e}");
+                    // The monitor's location names the user's hardware: it stays out of the log.
+                    eprintln!("Foxglove: wallpaper sync: can't reach a monitor's wallpaper: {e}");
                     out.failed = Some(e);
                     out.failed_count += 1;
                 }
@@ -2272,6 +2273,19 @@ mod tests {
         );
         assert_ne!(ticket_in(&fake.pushes[1].1), ticket_in(&fake.pushes[2].1));
         assert_eq!(fake.ticket_outs, 3, "one wait per ticket, not per push");
+    }
+
+    /// No log line of this file names a monitor's location (the user's hardware) or a property
+    /// string (it can carry a ticket).
+    #[test]
+    fn no_log_line_names_a_monitor_or_its_properties() {
+        let code = include_str!("wallpaper_sync.rs");
+        for (n, line) in code.lines().enumerate() {
+            let said = line.contains("eprintln!(") || line.trim_start().starts_with("\"Foxglove:");
+            for word in ["{location", "{props", "{wire", "{ticket", "{raw"] {
+                assert!(!(said && line.contains(word)), "line {}: {line}", n + 1);
+            }
+        }
     }
 
     /// Handing a waiting ticket over again can fail like any push: the ticket stays as it was,
