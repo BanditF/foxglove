@@ -636,7 +636,7 @@ fn with_device<R>(
 }
 
 /// The name shown for a local caller that gave none.
-const NAMELESS_CALLER: &str = "An app";
+pub(crate) const NAMELESS_CALLER: &str = "An app";
 
 /// The longest name kept of a local caller (the hub's `HOLDER_NAME_MAX`).
 const CLIENT_NAME_MAX: usize = 32;

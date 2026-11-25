@@ -3,8 +3,8 @@
 Foxglove's side of the live keyboard wallpaper (#498, #499). Off by default: Settings → Live
 wallpaper. This page is also the public spec: any wallpaper, or another host (#501), can be
 a client. A Wallpaper Engine wallpaper opts in to the port push with its `foxglove.json`
-(docs/wallpaper-manifest.md, `supports: ["foxglove_live"]`). The code is `app/src/foxglove/live_feed.rs` (runtime) and `live_wire.rs` (format,
-checks, batching).
+(docs/wallpaper-manifest.md, `supports: ["foxglove_live"]`). The code is `app/src/foxglove/live_feed.rs` (runtime), `live_wire.rs` (format,
+checks, batching), `live_pairing.rs` (tickets) and `live_peer.rs` (which program connected).
 
 ## Can a Wallpaper Engine wallpaper open `ws://127.0.0.1`? (#320)
 
@@ -24,7 +24,8 @@ Yes.
 So the feed is a WebSocket on `127.0.0.1` only. Origin `null`, `file://`, or none (a local
 program) is admitted; any web origin is refused. On top of that, the wallpaper must present the
 install's pairing token. A sandboxed iframe on any website also sends `null`, so the token is
-the real check.
+the real check. A one-time ticket (below) also works only from the wallpaper host, the
+program that shows the wallpaper.
 
 ## Pairing and discovery
 
@@ -61,14 +62,35 @@ on, the wallpaper is allowed, its monitor has no live socket and no ticket outst
 - **Which monitor:** the server takes it from the ticket (it was minted for one monitor); the
   client sends no monitor, so nothing it says can claim another one's. The binding is a guard
   against mix-ups, not a second secret: the origin check and the ticket are the gate.
-- **Refusal:** a refused connection re-pushes a fresh ticket only to monitors Foxglove pushed
-  to that have no socket and no ticket outstanding, at most 3 times per monitor per 10 minutes
-  (counted server-side). When the budget is spent, Keyboard health warns "a wallpaper couldn't
-  reconnect" until Reconnect. No timer is involved.
-- **Reconnect / Disconnect all** (functions only; the Hideout panel is S5): Reconnect resets the
-  budget and hands every monitor without a socket a fresh ticket. Disconnect all clears the
-  tickets, closes every socket and hands out no ticket until Reconnect. The pasted token
-  no longer reconnects anything once a ticket has been redeemed.
+- **Who may use a ticket (#1445):** only the wallpaper host. For each accepted connection
+  Foxglove asks Windows once which program owns the other end of it (`live_peer.rs`; no timer,
+  nothing repeats). A ticket is looked at only when that program's file is inside the folder of
+  the wallpaper host Foxglove drives and the program was started before the connection came in.
+  From any other program a ticket is not compared, not used up and not cancelled, so the
+  wallpaper it was made for can still use it.
+- **Another program:** a program that isn't the wallpaper host is admitted only the old way,
+  with the pasted token while that still works. Otherwise it gets `refused` and a close `4001`,
+  no new ticket is pushed, the log says `live feed refused a program that isn't the wallpaper
+  host: <file name>` (then a count at most every 10 minutes), and the wallpaper list says which
+  program it was (its file name only, or "a program Foxglove couldn't identify") and what to
+  do. Connected wallpapers are left alone. The line goes away on Reconnect, Disconnect all,
+  when the feed stops, or 10 minutes after the last such refusal. A wallpaper page opened in a
+  browser for testing is another program too: a ticket does not work there.
+- **A program Foxglove can't check** (Windows gave no answer, the connection doesn't come from
+  `127.0.0.1` itself, or the wallpaper host's folder is unknown or not on a local drive): refused the same way, the ticket untouched. Keyboard health
+  warns "Foxglove couldn't check which program connected to the live keyboard feed, so the
+  connection was refused."
+  with what to do next. A connection that is already gone when Foxglove looks is closed and
+  only counted.
+- **Refusal:** a refused connection from the wallpaper host, or from a program Foxglove can't
+  check, re-pushes a fresh ticket only to monitors Foxglove pushed to that have no socket and no
+  ticket outstanding, at most 3 times per monitor per 10 minutes (counted server-side). When the
+  budget is spent, Keyboard health warns "a wallpaper couldn't reconnect" until Reconnect. No
+  timer is involved.
+- **Reconnect / Disconnect all:** Reconnect resets the budget and hands every monitor without a
+  socket a fresh ticket; it closes nothing. Disconnect all clears the tickets, closes every
+  socket and hands out no ticket until Reconnect. The pasted token no longer reconnects
+  anything once a ticket has been redeemed.
 - **Logs:** counts only. The ticket, the protocol header and the wallpaper command line are
   never logged.
 

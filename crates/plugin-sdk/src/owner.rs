@@ -108,6 +108,27 @@ fn canon_key(paths: &dyn PeerPaths, p: &std::path::Path) -> Option<String> {
     path_key(&paths.canonical(p)?)
 }
 
+/// Whether `image` lies inside the folder `dir`, at any depth (#1445). Both are compared on
+/// canonical paths (links and 8.3 names resolved, case folded), and the match is `dir` plus a
+/// separator, so a sibling folder with the same prefix is outside. A network (UNC) path, or one
+/// that cannot be resolved, is never inside.
+pub fn inside(image: &std::path::Path, dir: &std::path::Path, paths: &dyn PeerPaths) -> bool {
+    let (Some(image), Some(dir)) = (canon_key(paths, image), canon_key(paths, dir)) else {
+        return false;
+    };
+    let dir = dir.trim_end_matches('\\');
+    // A whole drive is not a program's folder.
+    if dir.len() < 4 {
+        return false;
+    }
+    image.len() > dir.len() + 1 && image.starts_with(dir) && image.as_bytes()[dir.len()] == b'\\'
+}
+
+/// Whether `dir` resolves to a local drive path (the only kind [`inside`] accepts).
+pub fn local(dir: &std::path::Path, paths: &dyn PeerPaths) -> bool {
+    canon_key(paths, dir).is_some()
+}
+
 /// Opens `pipe` as a client for at most `timeout` and verifies the server's process.
 pub fn probe(pipe: &str, expect: Expect, timeout: Duration) -> Probe {
     probe_with(pipe, expect, timeout, &NoRecords)
@@ -184,6 +205,22 @@ pub fn image_of(pid: u32) -> Option<PathBuf> {
     #[cfg(windows)]
     {
         win::image_of(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The full image path of process `pid` and when that process was created, both read from one
+/// handle (#1445); `None` when it is not running or not readable. A process created after the
+/// caller first saw the pid is another process that was given the same number.
+pub fn image_and_birth(pid: u32) -> Option<(PathBuf, std::time::SystemTime)> {
+    #[cfg(windows)]
+    {
+        let p = win::PeerProcess::open(pid)?;
+        Some((p.image()?, p.born()?))
     }
     #[cfg(not(windows))]
     {
@@ -269,8 +306,8 @@ mod win {
     };
     use windows_sys::Win32::System::Pipes::{GetNamedPipeServerProcessId, WaitNamedPipeW};
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken,
+        QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     fn denied(why: impl Into<String>) -> io::Error {
@@ -433,6 +470,31 @@ mod win {
             Some(PathBuf::from(std::ffi::OsString::from_wide(
                 &buf[..len as usize],
             )))
+        }
+
+        /// When the process was created.
+        pub fn born(&self) -> Option<std::time::SystemTime> {
+            use windows_sys::Win32::Foundation::FILETIME;
+            let zero = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+            // SAFETY: a valid process handle and four valid out pointers.
+            let ok = unsafe {
+                GetProcessTimes(self.0 .0, &mut created, &mut exited, &mut kernel, &mut user)
+            };
+            if ok == 0 {
+                return None;
+            }
+            // 100 ns ticks since 1601; the Unix epoch is 11 644 473 600 s later.
+            const EPOCH: u64 = 116_444_736_000_000_000;
+            let ticks = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
+            let since = ticks.checked_sub(EPOCH)?;
+            std::time::UNIX_EPOCH.checked_add(Duration::new(
+                since / 10_000_000,
+                (since % 10_000_000) as u32 * 100,
+            ))
         }
     }
 
@@ -938,6 +1000,49 @@ mod tests {
             &gone_record
         )
         .is_err());
+    }
+
+    #[test]
+    fn inside_means_the_folder_plus_a_separator_on_resolved_local_paths() {
+        use std::path::Path;
+        let m = Mock {
+            links: vec![
+                (r"C:\Temp\J", r"C:\Apps\Host"),
+                (r"C:\Share", r"\\?\UNC\server\share"),
+            ],
+            missing: vec![r"C:\Apps\Host\gone.exe"],
+            ..Mock::default()
+        };
+        let dir = Path::new(r"C:\Apps\Host");
+        let yes = |image: &str, dir: &Path| inside(Path::new(image), dir, &m);
+        assert!(yes(r"C:\Apps\Host\host.exe", dir));
+        assert!(yes(r"c:\apps\HOST\bin\helper.exe", dir), "case, any depth");
+        assert!(yes(r"C:\Temp\J\host.exe", dir), "a link into the folder");
+        assert!(yes(r"C:\Apps\Host\host.exe", Path::new(r"C:\Temp\J")));
+        // The folder itself, a sibling with the same prefix, and anywhere else are outside.
+        assert!(!yes(r"C:\Apps\Host", dir));
+        assert!(!yes(r"C:\Apps\Host2\host.exe", dir));
+        assert!(!yes(r"C:\Apps\Hostile.exe", dir));
+        assert!(!yes(r"C:\Other\host.exe", dir));
+        assert!(
+            !yes(r"C:\Apps\Host\host.exe", Path::new(r"C:\")),
+            "a whole drive"
+        );
+        // What cannot be resolved, and a network path on either side, never qualify.
+        assert!(!yes(r"C:\Apps\Host\gone.exe", dir));
+        let unc = Path::new(r"\\server\share\Host");
+        assert!(!yes(r"\\server\share\Host\host.exe", unc));
+        assert!(!yes(r"C:\Share\Host\host.exe", Path::new(r"C:\Share\Host")));
+        assert!(local(dir, &m));
+        assert!(!local(unc, &m));
+        assert!(!local(Path::new(r"C:\Share\Host"), &m), "a link to a share");
+    }
+
+    #[test]
+    fn this_process_has_an_image_and_was_born_before_now() {
+        let (image, born) = image_and_birth(std::process::id()).expect("our own process");
+        assert!(image.is_absolute());
+        assert!(born <= std::time::SystemTime::now());
     }
 
     #[test]

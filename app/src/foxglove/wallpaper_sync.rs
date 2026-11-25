@@ -862,12 +862,11 @@ pub fn repush() {
 }
 
 /// The user's Reconnect on `store`: the re-push budget is new and every monitor without a socket
-/// gets a fresh ticket, pushed now. Returns the sockets to close (non-empty only while another
-/// app's connection attempt was reported). Event-driven: nothing retries on its own after this.
-pub fn reconnect(store: super::live_pairing::Store) -> Vec<u64> {
-    let close = super::live_pairing::reconnect(store);
+/// gets a fresh ticket, pushed now. Connected wallpapers keep their sockets. Event-driven:
+/// nothing retries on its own after this.
+pub fn reconnect(store: super::live_pairing::Store) {
+    super::live_pairing::reconnect(store);
     repush();
-    close
 }
 
 fn wake(w: Wake) {
@@ -2148,10 +2147,12 @@ mod tests {
         let mut pairing = store.lock().unwrap();
         for (t, m) in tickets.iter().zip([WE_LEFT, WE_RIGHT]) {
             assert_eq!(
-                pairing.admit(Some("null"), Some(t), "x", now),
+                pairing.admit(Some("null"), Some(t), "x", true, now),
                 Ok(Some(m.to_string()))
             );
-            assert!(pairing.admit(Some("null"), Some(t), "x", now).is_err());
+            assert!(pairing
+                .admit(Some("null"), Some(t), "x", true, now)
+                .is_err());
         }
     }
 

@@ -668,11 +668,11 @@ fn the_panels_match_the_hub_vectors() {
             panels(&we_view(allow_case("hold"))),
         ),
         (
-            "Allow list: another app tried to connect",
+            "Allow list: another program tried to connect",
             panels(&we_view(allow_case("shared"))),
         ),
         (
-            "Allow list: another app tried to connect, one wallpaper reconnecting",
+            "Allow list: another program tried to connect, one wallpaper reconnecting",
             panels(&we_view(allow_case("shared-reloading"))),
         ),
         (
@@ -693,7 +693,7 @@ fn the_panels_match_the_hub_vectors() {
 
 /// The allow list's states for the vectors and the review images (S5b).
 fn allow_case(case: &str) -> Wallpaper {
-    use super::super::live_pairing::{Link, Links};
+    use super::super::live_pairing::{Intruder, Link, Links};
     use super::super::we_panel::{Ask, Inputs};
     let ask = |key: &str, title: &str, on_screen, allowed| Ask {
         key: key.into(),
@@ -740,21 +740,23 @@ fn allow_case(case: &str) -> Wallpaper {
             inputs.hold = Some(super::super::we_panel::Hold::Paused);
         }
         "update" => inputs.asks[2].needs_update = true,
-        // Both allowed wallpapers are on screen and connected; a refusal came.
+        // Both allowed wallpapers are connected; a program that isn't the host was refused.
         "shared" => {
             inputs.asks[1].on_screen = true;
             links.by_dir.insert("d:/we/hud".into(), Link::Connected);
             links.by_dir.insert("d:/we/courier".into(), Link::Connected);
-            links.foreign = true;
+            links.foreign = Some(Intruder {
+                name: Some("tool.exe".into()),
+            });
         }
-        // The flag alone is not enough: one wallpaper is still reconnecting.
+        // The line shows whatever the wallpapers do; here the program has no name.
         "shared-reloading" => {
             inputs.asks[1].on_screen = true;
             links.by_dir.insert("d:/we/hud".into(), Link::Connected);
             links
                 .by_dir
                 .insert("d:/we/courier".into(), Link::Reconnecting);
-            links.foreign = true;
+            links.foreign = Some(Intruder::default());
         }
         "engine-off" => {}
         other => panic!("{other}"),

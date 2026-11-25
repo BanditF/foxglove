@@ -7,6 +7,9 @@
 //!   install's token. Web pages are refused by their origin. A local client with a wrong token
 //!   is told `refused` and closed with 4001; the log says the first in full and then sums them at
 //!   most every 10 min, and the health view warns while they keep coming (`wire::Refusals`).
+//!   A one-time ticket counts only when the connection's other end is the wallpaper program
+//!   Foxglove drives (`live_peer`, #1445): one lookup per accepted connection, on that
+//!   connection's thread. Any other program is refused the same way, its ticket left alone.
 //! - **When nothing is sent:** Foxglove paused, the session locked or the display off, a
 //!   full-screen program in front, or the wallpaper itself paused. The wallpaper is told once
 //!   (`quiet`), then hears nothing until `live`.
@@ -37,10 +40,10 @@
 
 use std::io::Write;
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use foxglove_devices::facts::{Facts, Value};
 use foxglove_devices::DeviceEvent;
@@ -48,6 +51,7 @@ use foxglove_plugin::ws;
 use serde::{Deserialize, Serialize};
 
 use super::live_pairing::{self as pairing, Store};
+use super::live_peer::{self as peer, Peer, PeerLookup};
 use super::live_wire::{self as wire, Message, Why};
 use super::notice::Note;
 
@@ -507,49 +511,153 @@ static STATUS: Mutex<String> = Mutex::new(String::new());
 static CONNECTED: AtomicUsize = AtomicUsize::new(0);
 /// Token refusals: the log's summaries and the health warning (`wire::Refusals`).
 static REFUSALS: Mutex<wire::Refusals> = Mutex::new(wire::Refusals::new());
+/// Refused programs that aren't the wallpaper host (#1445): the log's first line and its sums.
+static INTRUDERS: Mutex<wire::Summed> = Mutex::new(wire::Summed::new());
+/// Refused peers that couldn't be checked: the log's lines and the health warning.
+static UNCHECKED: Mutex<wire::Summed> = Mutex::new(wire::Summed::new());
+/// Why the last peer couldn't be checked, as far as the health row's advice differs
+/// (`Unchecked as u8`).
+static UNCHECKED_WHY: AtomicU8 = AtomicU8::new(Unchecked::Other as u8);
+
+/// What the health row about an unchecked peer has to tell apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+enum Unchecked {
+    /// Windows gave no answer; it usually mends itself.
+    Other = 0,
+    /// The wallpaper host's folder isn't on a local drive, which Reconnect can't mend.
+    NotLocal = 1,
+    /// The wallpaper host's folder isn't known.
+    NoHost = 2,
+}
+
+impl Unchecked {
+    fn of(why: peer::Unknown) -> Self {
+        match why {
+            peer::Unknown::HostNotLocal => Unchecked::NotLocal,
+            peer::Unknown::NoHostFolder => Unchecked::NoHost,
+            _ => Unchecked::Other,
+        }
+    }
+    fn last() -> Self {
+        match UNCHECKED_WHY.load(Ordering::Relaxed) {
+            1 => Unchecked::NotLocal,
+            2 => Unchecked::NoHost,
+            _ => Unchecked::Other,
+        }
+    }
+}
+/// Connections whose peer was gone before it could be checked; said once, when the feed stops.
+static GONE: AtomicU64 = AtomicU64::new(0);
+/// How a summed line about refused programs ends.
+const NOT_HOST: &str = "not the wallpaper host";
+/// How a summed line about unchecked peers ends.
+const NOT_CHECKED: &str = "the program couldn't be checked";
+/// How the health row about an unchecked peer starts (`health_notice` knows it by this).
+const UNCHECKED_SAYS: &str =
+    "Foxglove couldn't check which program connected to the live keyboard feed, so the connection was refused.";
+
+fn summed(log: &'static Mutex<wire::Summed>) -> std::sync::MutexGuard<'static, wire::Summed> {
+    log.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The log line for a refused program that isn't the wallpaper host. `name` is its cleaned file
+/// name (`live_peer`): never a path, a ticket or a process number.
+fn intruder_line(name: Option<&str>) -> String {
+    let who = name.unwrap_or("a program Foxglove couldn't identify");
+    format!("live feed refused a program that isn't the wallpaper host: {who}")
+}
+
+/// The log line for a refused peer that couldn't be checked.
+fn unchecked_line(why: peer::Unknown) -> String {
+    format!(
+        "live feed couldn't check which program connected ({}), refused",
+        why.word()
+    )
+}
 
 /// The health view's rows (registered with `health::register` as "live_feed"): a warning while
-/// a wallpaper keeps being refused; and while the feed runs and the keyboard
-/// shows a piece, the art the feed has for it (`live_parity`, #1053).
+/// a wallpaper keeps being refused, or a peer couldn't be checked; and while the feed runs and
+/// the keyboard shows a piece, the art the feed has for it (`live_parity`, #1053).
 pub fn health_rows() -> Vec<super::health::HealthRow> {
+    let now = Instant::now();
     let warns = REFUSALS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .warns(Instant::now());
-    let mut rows = refusal_rows(warns);
+        .warns(now);
+    let hub = super::hub_link::module_mode();
+    let mut rows = refusal_rows(warns, hub);
+    if summed(&UNCHECKED).warns(now) {
+        rows.push(unchecked_row(Unchecked::last(), hub));
+    }
     if pairing::stuck(pairing::store()) {
-        rows.push(stuck_row(super::hub_link::module_mode()));
+        rows.push(stuck_row(hub));
     }
     rows.extend(super::live_parity::rows_now());
     rows
 }
 
-/// The row for a wallpaper whose re-push budget is spent. Its fix is the Reconnect the user can
-/// reach: Hideout's section when the hub has the module, else Settings (S5d).
-pub(crate) fn stuck_row(hub: bool) -> super::health::HealthRow {
-    let fix = if hub {
+/// The Reconnect the user can reach: Hideout's section when the hub has the module, else
+/// Settings (S5d).
+fn reconnect_fix(hub: bool) -> &'static str {
+    if hub {
         "Press Reconnect in Hideout's Wallpaper Engine section."
     } else {
         "Press Reconnect in Settings \u{203a} Live wallpaper."
-    };
+    }
+}
+
+/// Where that Reconnect is, for a sentence that only advises it.
+fn reconnect_place(hub: bool) -> &'static str {
+    if hub {
+        "Hideout's Wallpaper Engine section"
+    } else {
+        "Settings \u{203a} Live wallpaper"
+    }
+}
+
+fn warn_row(detail: String) -> super::health::HealthRow {
     super::health::HealthRow::new(
         "live_feed",
         "Live wallpaper",
         super::health::Level::Warn,
-        format!("a wallpaper couldn't reconnect. {fix}"),
+        detail,
     )
 }
 
-fn refusal_rows(warns: bool) -> Vec<super::health::HealthRow> {
+/// The row for a wallpaper whose re-push budget is spent. Its fix is the Reconnect the user can
+/// reach.
+pub(crate) fn stuck_row(hub: bool) -> super::health::HealthRow {
+    let fix = reconnect_fix(hub);
+    warn_row(format!("a wallpaper couldn't reconnect. {fix}"))
+}
+
+fn refusal_rows(warns: bool, hub: bool) -> Vec<super::health::HealthRow> {
     if !warns {
         return Vec::new();
     }
-    vec![super::health::HealthRow::new(
-        "live_feed",
-        "Live wallpaper",
-        super::health::Level::Warn,
-        "a wallpaper couldn't connect",
-    )]
+    let place = reconnect_place(hub);
+    vec![warn_row(format!(
+        "a wallpaper couldn't connect. If it stops showing your typing, press Reconnect in {place}."
+    ))]
+}
+
+/// The row for a peer that couldn't be checked and so was refused (#1445).
+fn unchecked_row(why: Unchecked, hub: bool) -> super::health::HealthRow {
+    let host = super::wallpaper_engine::NAME;
+    let place = reconnect_place(hub);
+    let next = match why {
+        Unchecked::NotLocal => format!(
+            "{host} isn't installed on a drive in this PC. Install it on one to use the live keyboard feed."
+        ),
+        Unchecked::NoHost => format!(
+            "Foxglove can't find {host} on this PC. Start {host}, then press Reconnect in {place}."
+        ),
+        Unchecked::Other => format!(
+            "If a wallpaper stops showing your typing, press Reconnect in {place}. If it keeps happening, restart {host}."
+        ),
+    };
+    warn_row(format!("{UNCHECKED_SAYS} {next}"))
 }
 
 fn send(msg: Msg) {
@@ -696,17 +804,16 @@ fn apply_allowed(s: &LiveSettings) {
 }
 
 /// The user's Reconnect: wallpapers that lost their ticket or their socket get a fresh ticket
-/// (`wallpaper_sync::reconnect`).
+/// (`wallpaper_sync::reconnect`). Connected wallpapers keep their sockets.
 pub fn reconnect() {
     let store = RUNNING
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .map_or_else(pairing::store, |r| r.store);
-    let close = super::wallpaper_sync::reconnect(store);
-    if !close.is_empty() {
-        send(Msg::Close(close));
-    }
+    summed(&INTRUDERS).clear();
+    summed(&UNCHECKED).clear();
+    super::wallpaper_sync::reconnect(store);
 }
 
 fn set_status(text: impl Into<String>) {
@@ -843,19 +950,31 @@ pub fn stop() {
         let _ = accept.join();
     }
     locked(r.store).stopped();
+    summed(&INTRUDERS).clear();
+    summed(&UNCHECKED).clear();
+    let gone = GONE.swap(0, Ordering::Relaxed);
+    if gone > 0 {
+        eprintln!("Foxglove: live feed: {gone} connection(s) were gone before the check");
+    }
     super::wallpaper_sync::live(None);
     set_status("");
 }
 
 fn listen(s: &LiveSettings) -> Result<(), String> {
-    listen_in(s, pairing::store())
+    #[cfg(not(test))]
+    let lookup = Arc::new(peer::System);
+    // In tests every peer of the shared feed is the wallpaper host; a test of the peer check
+    // passes its own lookup to `listen_in`.
+    #[cfg(test)]
+    let lookup = Arc::new(peer::Fake::host());
+    listen_in(s, pairing::store(), lookup)
 }
 
 fn locked(store: Store) -> std::sync::MutexGuard<'static, pairing::Pairing> {
     store.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn listen_in(s: &LiveSettings, store: Store) -> Result<(), String> {
+fn listen_in(s: &LiveSettings, store: Store, lookup: Arc<dyn PeerLookup>) -> Result<(), String> {
     stop();
     let listener = TcpListener::bind(("127.0.0.1", s.port))
         .map_err(|e| format!("Can't listen on 127.0.0.1:{}: {e}", s.port))?;
@@ -875,7 +994,7 @@ fn listen_in(s: &LiveSettings, store: Store) -> Result<(), String> {
     // Both supervised (#587). The hub's queue outlives a panicking attempt, so the accept
     // thread, the clients and `send` keep a good sender.
     let accept = super::services::spawn_supervised("live-accept", move || {
-        accept_loop(&listener, &accept_stop, &accept_tx, &token, store)
+        accept_loop(&listener, &accept_stop, &accept_tx, &token, store, &lookup)
     });
     *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
         tx: tx.clone(),
@@ -906,11 +1025,23 @@ fn accept_loop(
     tx: &Sender<Msg>,
     token: &str,
     store: Store,
+    lookup: &Arc<dyn PeerLookup>,
 ) {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let pending = Arc::new(AtomicUsize::new(0));
+    // Without its own port no peer can be found in the system's table.
+    let feed_port = match listener.local_addr() {
+        Ok(a) => a.port(),
+        Err(e) => {
+            eprintln!("Foxglove: live feed stops accepting: {e}");
+            set_status(format!("Stopped: {e}"));
+            return;
+        }
+    };
     let mut errors = 0;
     for conn in listener.incoming() {
+        // Taken before anything else: the peer's process must have been running by now.
+        let accepted = SystemTime::now();
         if stop.load(Ordering::SeqCst) {
             break;
         }
@@ -935,9 +1066,18 @@ fn accept_loop(
             continue;
         }
         let (tx, token, pending) = (tx.clone(), token.to_string(), pending.clone());
+        let lookup = lookup.clone();
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         super::services::spawn_named("live-client", move || {
-            serve(stream, id, &tx, &token, &pending, store)
+            // One lookup for this connection, on its own thread: accepting never waits for it.
+            // A lookup that fails in any way is a peer that couldn't be checked; `serve` still
+            // runs and gives the pending slot back.
+            let looked = std::panic::AssertUnwindSafe(|| {
+                peer::peer_of(&stream, feed_port, accepted, &*lookup)
+            });
+            let peer =
+                std::panic::catch_unwind(looked).unwrap_or(Peer::Unknown(peer::Unknown::Table));
+            serve(stream, id, &tx, &token, &pending, store, &peer)
         });
     }
 }
@@ -960,7 +1100,21 @@ fn join(store: Store, tx: &Sender<Msg>, id: u64, monitor: Option<&str>, writer: 
     true
 }
 
-/// One connection: the upgrade, the checks, then the wallpaper's own messages until it closes.
+/// A refused connection that may be a wallpaper's own: one that lost its ticket asks for
+/// another, at most 3 times per monitor in 10 min and only for monitors Foxglove pushed to
+/// (`live_pairing`).
+fn ask_again(store: Store) {
+    let again = locked(store).refused(Instant::now());
+    if again > 0 {
+        eprintln!("Foxglove: live feed: {again} wallpaper(s) are handed a new ticket");
+        super::wallpaper_sync::repush();
+    }
+    // The refusal may have changed a wallpaper's row.
+    super::we_panel::changed();
+}
+
+/// One connection: the checks on `peer` (who is at the other end, `live_peer`), the upgrade,
+/// then the wallpaper's own messages until it closes.
 fn serve(
     mut stream: TcpStream,
     id: u64,
@@ -968,18 +1122,27 @@ fn serve(
     token: &str,
     pending: &AtomicUsize,
     store: Store,
+    peer: &Peer,
 ) {
-    let admitted = handshake_in(&mut stream, token, store);
+    if matches!(peer, Peer::Unknown(peer::Unknown::Gone)) {
+        // Nobody is there any more: nothing is read and nothing is said, only counted.
+        pending.fetch_sub(1, Ordering::SeqCst);
+        GONE.fetch_add(1, Ordering::Relaxed);
+        let _ = stream.shutdown(Shutdown::Both);
+        return;
+    }
+    let admitted = handshake_in(&mut stream, token, store, peer);
     pending.fetch_sub(1, Ordering::SeqCst);
     let monitor = match admitted {
         Ok(monitor) => {
             REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).paired();
+            summed(&UNCHECKED).clear();
             if monitor.is_some() {
                 ticket_redeemed(store);
             }
             monitor
         }
-        Err(NotAdmitted::Token) => {
+        Err(NotAdmitted::Token | NotAdmitted::Peer(Peer::Host)) => {
             let lines = REFUSALS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -988,15 +1151,32 @@ fn serve(
                 eprintln!("Foxglove: {line}");
             }
             let _ = stream.shutdown(Shutdown::Both);
-            // A wallpaper that lost its ticket asks for another, at most 3 times per monitor
-            // in 10 min and only for monitors Foxglove pushed to (`live_pairing`).
-            let again = locked(store).refused(Instant::now());
-            if again > 0 {
-                eprintln!("Foxglove: live feed: {again} wallpaper(s) are handed a new ticket");
-                super::wallpaper_sync::repush();
+            ask_again(store);
+            return;
+        }
+        // Another program: said in the log and in the section. No ticket is touched and none
+        // is handed out again, whatever it sent.
+        Err(NotAdmitted::Peer(Peer::Other { name })) => {
+            let line = intruder_line(name.as_deref());
+            let lines = summed(&INTRUDERS).refused(Instant::now(), line, NOT_HOST);
+            for line in lines {
+                eprintln!("Foxglove: {line}");
             }
-            // The refusal may have raised (or kept) the section's line about another app.
+            let _ = stream.shutdown(Shutdown::Both);
+            locked(store).intruder(name, Instant::now());
             super::we_panel::changed();
+            return;
+        }
+        // It couldn't be checked, so it may be a wallpaper: the wallpapers' own rule applies.
+        Err(NotAdmitted::Peer(Peer::Unknown(why))) => {
+            UNCHECKED_WHY.store(Unchecked::of(why) as u8, Ordering::Relaxed);
+            let line = unchecked_line(why);
+            let lines = summed(&UNCHECKED).refused(Instant::now(), line, NOT_CHECKED);
+            for line in lines {
+                eprintln!("Foxglove: {line}");
+            }
+            let _ = stream.shutdown(Shutdown::Both);
+            ask_again(store);
             return;
         }
         Err(NotAdmitted::Other(e)) => {
@@ -1058,22 +1238,26 @@ impl std::io::Read for Deadline<'_> {
 enum NotAdmitted {
     /// A wrong or missing token: the client was told `refused` (the log sums these).
     Token,
+    /// The same, from a peer that isn't the wallpaper host (#1445): who it was instead.
+    Peer(Peer),
     /// Anything else (a web origin, a wrong path, a broken upgrade), logged as it is.
     Other(String),
 }
 
 #[cfg(test)]
 fn handshake(stream: &mut TcpStream, token: &str) -> Result<(), NotAdmitted> {
-    handshake_in(stream, token, pairing::store()).map(|_| ())
+    handshake_in(stream, token, pairing::store(), &Peer::Host).map(|_| ())
 }
 
 /// The upgrade and the checks. `Ok(Some(monitor))`: a one-time ticket admitted, and the monitor
-/// is the one it was minted for (the client sends none); `Ok(None)`: the old token did. The
-/// offered sub-protocols and the query are never logged.
+/// is the one it was minted for (the client sends none); `Ok(None)`: the old token did. A
+/// ticket is only looked at when `peer` is the wallpaper host. The offered sub-protocols and
+/// the query are never logged.
 fn handshake_in(
     stream: &mut TcpStream,
     token: &str,
     store: Store,
+    peer: &Peer,
 ) -> Result<Option<String>, NotAdmitted> {
     let other = |e: std::io::Error| NotAdmitted::Other(e.to_string());
     let h = ws::read_handshake(&mut Deadline(stream, Instant::now() + HANDSHAKE_LIMIT))
@@ -1091,10 +1275,12 @@ fn handshake_in(
         .is_some_and(|p| p.split(',').any(|p| p.trim() == wire::PROTOCOL))
         .then_some(wire::PROTOCOL);
     // The ticket store is asked under its one lock, at the moment of the handshake.
+    let host = matches!(peer, Peer::Host);
     let decided = locked(store).admit(
         h.origin(),
         wire::token_from(&h.path, offered),
         token,
+        host,
         Instant::now(),
     );
     let monitor = match decided {
@@ -1106,10 +1292,14 @@ fn handshake_in(
         }
         // A local client with a wrong token: a browser can't see a refused upgrade's status
         // (only close 1006), so the upgrade completes and it is told `refused` and closed with
-        // CLOSE_REFUSED. That is all it learns.
+        // CLOSE_REFUSED. That is all it learns, whoever it is.
         Err(wire::Denied::Token) => {
             refuse(stream, &h, protocol);
-            return Err(NotAdmitted::Token);
+            return Err(if host {
+                NotAdmitted::Token
+            } else {
+                NotAdmitted::Peer(peer.clone())
+            });
         }
     };
     ws::accept(stream, &h, protocol).map_err(other)?;
@@ -2106,6 +2296,7 @@ mod tests {
         let (mut stream, _) = listener.accept().unwrap();
         let r = handshake(&mut stream, token).map_err(|e| match e {
             NotAdmitted::Token => "token".to_string(),
+            NotAdmitted::Peer(p) => format!("{p:?}"),
             NotAdmitted::Other(e) => e,
         });
         let _ = stream.shutdown(Shutdown::Both);
@@ -2183,11 +2374,14 @@ mod tests {
     /// The health row: a warning only while a wallpaper keeps presenting an old token.
     #[test]
     fn the_health_row_uses_ticket_wording() {
-        assert!(refusal_rows(false).is_empty());
-        let rows = refusal_rows(true);
+        assert!(refusal_rows(false, false).is_empty());
+        let rows = refusal_rows(true, false);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].level, super::super::health::Level::Warn);
-        assert_eq!(rows[0].detail, "a wallpaper couldn't connect");
+        assert_eq!(
+            rows[0].detail,
+            "a wallpaper couldn't connect. If it stops showing your typing, press Reconnect in Settings \u{203a} Live wallpaper."
+        );
         // Health card only: no Windows notification for a refused wallpaper connection.
         assert!(rows[0].notice.is_none());
         assert!(super::super::health_notice::health_only(&rows[0]));
@@ -3210,7 +3404,7 @@ mod tests {
             let now = Instant::now();
             let t = locked(store).mint(m, "hud/index.html", now).unwrap();
             assert_eq!(
-                locked(store).admit(Some("null"), Some(&t), "", now),
+                locked(store).admit(Some("null"), Some(&t), "", true, now),
                 Ok(Some(m.to_string()))
             );
         };
@@ -3258,6 +3452,7 @@ mod tests {
                 ..LiveSettings::default()
             },
             store,
+            Arc::new(peer::Fake::host()),
         )
         .unwrap();
         let mint = |monitor: &str| {
@@ -3339,6 +3534,209 @@ mod tests {
             crate::foxglove::store::section(STORE_OWNER, SECTION).save(&LiveSettings::default());
     }
 
+    /// #1445, end to end on loopback with a stand-in lookup and a store of its own: a ticket
+    /// pairs only the wallpaper host. Another program holding it is refused and reported, the
+    /// ticket stays good and the wallpaper then pairs with it; a peer that can't be checked is
+    /// refused with its ticket untouched; a peer that is gone is closed without an upgrade.
+    /// Each connection is looked up once (twice when the system lists no such connection).
+    #[test]
+    fn a_ticket_pairs_only_the_wallpaper_host() {
+        let _one_feed_at_a_time = FEED.lock().unwrap_or_else(|e| e.into_inner());
+        crate::foxglove::store::test_config_dir();
+        let store: Store = Box::leak(Box::new(Mutex::new(pairing::Pairing::new())));
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        *GEOMETRY.lock().unwrap() = Some(corne());
+        let who = Arc::new(peer::Fake::new(peer::Fake::program("C:/Tools/tool.exe")));
+        listen_in(
+            &LiveSettings {
+                enabled: true,
+                port,
+                allowed: vec!["hud".into()],
+                ticket_verified: true,
+                ..LiveSettings::default()
+            },
+            store,
+            who.clone(),
+        )
+        .unwrap();
+        let mint = |monitor: &str| {
+            locked(store)
+                .mint(monitor, "hud/index.html", Instant::now())
+                .expect("a ticket")
+        };
+        let refused = |s: &mut StandIn| {
+            assert_eq!(
+                s.next(Duration::from_secs(5)).as_deref(),
+                Some(r#"{"t":"refused","why":"token"}"#)
+            );
+        };
+        let open = || locked(store).open(Instant::now());
+
+        // Another program with a good ticket: told what a wrong token is told, and no more.
+        let t1 = mint("M1");
+        let mut tool = StandIn::connect_with_ticket(port, &t1).expect("upgraded, to be refused");
+        refused(&mut tool);
+        assert_eq!(who.reads(), 1, "one lookup for the connection");
+        drop(tool);
+        let tool = Some(pairing::Intruder {
+            name: Some("tool.exe".into()),
+        });
+        let mut said = None;
+        for _ in 0..50 {
+            said = locked(store).links(Instant::now()).foreign;
+            if said.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(said, tool, "the section is told who");
+        assert_eq!(open(), 1, "the ticket is still good");
+        assert!(locked(store).take_due().is_empty(), "and no new one is due");
+
+        // The wallpaper host then pairs with that same ticket; the line about the program stays.
+        who.set(peer::Fake::program("C:/Host/host64.exe"));
+        let mut w1 = StandIn::connect_with_ticket(port, &t1).expect("upgraded");
+        let hello = w1.next(Duration::from_secs(5)).unwrap();
+        assert!(hello.starts_with(r#"{"t":"hello","v":1"#), "{hello}");
+        assert_eq!(who.reads(), 2);
+        assert_eq!(locked(store).links(Instant::now()).foreign, tool);
+
+        // A peer that can't be checked is refused, and its ticket is left alone.
+        let t2 = mint("M2");
+        who.set(Err(peer::UNREADABLE.into()));
+        let mut unknown = StandIn::connect_with_ticket(port, &t2).expect("upgraded, to be refused");
+        refused(&mut unknown);
+        drop(unknown);
+        assert_eq!(who.reads(), 3);
+        assert_eq!(open(), 1, "M2's ticket is still good");
+
+        // A peer the system no longer lists is closed without an upgrade.
+        who.set(Ok(None));
+        assert!(StandIn::connect_with_ticket(port, &t2).is_none());
+        assert_eq!(who.reads(), 5, "read once more, and no further");
+        assert_eq!(open(), 1);
+
+        // And the host still pairs with it.
+        who.set(peer::Fake::program("C:/Host/host64.exe"));
+        let mut w2 = StandIn::connect_with_ticket(port, &t2).expect("upgraded");
+        assert!(w2
+            .next(Duration::from_secs(5))
+            .unwrap()
+            .contains(r#""t":"hello""#));
+        stop();
+        // Leave the shared test settings as found.
+        *SETTINGS.lock().unwrap() = None;
+        let _ =
+            crate::foxglove::store::section(STORE_OWNER, SECTION).save(&LiveSettings::default());
+    }
+
+    /// #1445: a peer that is gone gets no handshake read (which would wait for a request).
+    #[test]
+    fn a_peer_that_is_gone_is_closed_without_reading_it() {
+        let store: Store = Box::leak(Box::new(Mutex::new(pairing::Pairing::new())));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let pending = AtomicUsize::new(1);
+        let began = Instant::now();
+        let gone = Peer::Unknown(peer::Unknown::Gone);
+        // The client sends nothing: a read would wait out the handshake's limit.
+        serve(stream, 1, &tx, "", &pending, store, &gone);
+        assert!(began.elapsed() < HANDSHAKE_LIMIT, "nothing was waited for");
+        assert_eq!(pending.load(Ordering::SeqCst), 0);
+        assert!(rx.try_recv().is_err(), "nothing joined");
+        assert_eq!(locked(store).links(Instant::now()).foreign, None);
+        assert!(locked(store).take_due().is_empty());
+        drop(client);
+    }
+
+    /// #1445: the log names a refused program once, by its file name only, then sums.
+    #[test]
+    fn a_refused_program_is_logged_once_then_summed() {
+        let mut log = wire::Summed::new();
+        let now = Instant::now();
+        assert_eq!(
+            log.refused(now, intruder_line(Some("tool.exe")), NOT_HOST),
+            ["live feed refused a program that isn't the wallpaper host: tool.exe"]
+        );
+        let mut later = Vec::new();
+        for s in 1..=20 {
+            let at = now + Duration::from_secs(s);
+            later.extend(log.refused(at, intruder_line(Some("tool.exe")), NOT_HOST));
+        }
+        assert!(later.is_empty(), "{later:?}");
+        let sum = log.refused(
+            now + wire::REFUSAL_QUIET,
+            intruder_line(Some("tool.exe")),
+            NOT_HOST,
+        );
+        assert_eq!(
+            sum,
+            ["live feed refused 21 more connections: not the wallpaper host"]
+        );
+        // No name to show: said so, never an empty one.
+        assert_eq!(
+            intruder_line(None),
+            "live feed refused a program that isn't the wallpaper host: a program Foxglove couldn't identify"
+        );
+        assert_eq!(
+            unchecked_line(peer::Unknown::Unreadable),
+            "live feed couldn't check which program connected (unreadable), refused"
+        );
+    }
+
+    /// #1445: every refusal the health view shows says what to do next.
+    #[test]
+    fn every_refusal_row_says_what_to_do_next() {
+        use super::super::health::Level;
+        for hub in [false, true] {
+            let fix = reconnect_fix(hub);
+            let place = reconnect_place(hub);
+            let press = format!("press Reconnect in {place}.");
+            let refusal = refusal_rows(true, hub).remove(0);
+            assert!(refusal.detail.ends_with(&press), "{}", refusal.detail);
+            let unchecked = unchecked_row(Unchecked::Other, hub);
+            assert_eq!(
+                unchecked.detail,
+                format!("{UNCHECKED_SAYS} If a wallpaper stops showing your typing, {press} If it keeps happening, restart Wallpaper Engine.")
+            );
+            let far = unchecked_row(Unchecked::NotLocal, hub);
+            assert_eq!(
+                far.detail,
+                format!("{UNCHECKED_SAYS} Wallpaper Engine isn't installed on a drive in this PC. Install it on one to use the live keyboard feed.")
+            );
+            // A host Foxglove can't find is never the one it says to restart.
+            let lost = unchecked_row(Unchecked::NoHost, hub);
+            assert_eq!(
+                lost.detail,
+                format!("{UNCHECKED_SAYS} Foxglove can't find Wallpaper Engine on this PC. Start Wallpaper Engine, then {press}")
+            );
+            assert_eq!(
+                Unchecked::of(peer::Unknown::NoHostFolder),
+                Unchecked::NoHost
+            );
+            assert_eq!(
+                Unchecked::of(peer::Unknown::HostNotLocal),
+                Unchecked::NotLocal
+            );
+            assert_eq!(Unchecked::of(peer::Unknown::Unreadable), Unchecked::Other);
+            assert!(UNCHECKED_SAYS.starts_with("Foxglove couldn't check which program connected"));
+            assert!(stuck_row(hub).detail.ends_with(fix));
+            for row in [&refusal, &unchecked, &far, &lost] {
+                assert_eq!(row.level, Level::Warn);
+                // Health card only: these mend themselves or end in the row that offers Reconnect.
+                assert!(row.notice.is_none());
+                assert!(super::super::health_notice::health_only(row));
+            }
+            assert!(!super::super::health_notice::health_only(&stuck_row(hub)));
+        }
+    }
+
     /// WE handover S4: the store half of the migration, on a temp file. Unverified keeps the
     /// token and admits it; the first redeem sets the flag and blanks the token; verified refuses
     /// the old value; running it again changes nothing; nothing it says holds a token.
@@ -3364,7 +3762,7 @@ mod tests {
         let now = Instant::now();
         let mut pairing = pairing::Pairing::new();
         assert!(!load().unwrap().unwrap().ticket_verified);
-        assert!(pairing.admit(None, Some(pasted), pasted, now).is_ok());
+        assert!(pairing.admit(None, Some(pasted), pasted, true, now).is_ok());
         assert!(pairing.joined(7, None), "an old-token connection joins");
         // Turning it on keeps the token.
         let (s, why) = change(Change::Turn(true), upd(&path)).unwrap();
@@ -3381,8 +3779,10 @@ mod tests {
         assert!(!std::fs::read_to_string(&path).unwrap().contains(pasted));
         // The connection the old token admitted is handed back to be closed, and no more join.
         assert_eq!(pairing.retire_old_token(), [7]);
-        assert!(pairing.admit(None, Some(pasted), pasted, now).is_err());
-        assert!(pairing.admit(None, Some(""), "", now).is_err());
+        assert!(pairing
+            .admit(None, Some(pasted), pasted, true, now)
+            .is_err());
+        assert!(pairing.admit(None, Some(""), "", true, now).is_err());
         assert!(
             !pairing.joined(8, None),
             "admitted just before, joining after"
@@ -3416,7 +3816,7 @@ mod tests {
         assert!(load().unwrap().unwrap().token.is_empty());
 
         // Nothing shown or logged holds the token.
-        let rows = refusal_rows(true);
+        let rows = refusal_rows(true, false);
         let mut texts = vec![format!("{:?}", load().unwrap().unwrap())];
         texts.push(rows[0].detail.clone());
         texts.extend([EXPLAINER.to_string(), token_line(TokenReason::FirstEnable)]);
@@ -3488,6 +3888,8 @@ mod tests {
 
     #[test]
     fn allow_adds_removes_caps_and_never_quotes_the_store() {
+        // It hands the allow list to whichever feed is running.
+        let _one_feed_at_a_time = FEED.lock().unwrap_or_else(|e| e.into_inner());
         use std::cell::RefCell;
         let saved = RefCell::new(LiveSettings::default());
         let upd = |f: &mut dyn FnMut(&mut LiveSettings)| {
@@ -3520,6 +3922,8 @@ mod tests {
     /// a look with something on screen (feed on) uses it up.
     #[test]
     fn the_seed_keeps_what_worked_once_and_widens_nothing() {
+        // It hands the allow list to whichever feed is running.
+        let _one_feed_at_a_time = FEED.lock().unwrap_or_else(|e| e.into_inner());
         use std::cell::RefCell;
         let hud = vec!["d:/w/hud".to_string()];
         let worked = LiveSettings {

@@ -151,6 +151,8 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Dxgi_Common",
     # Foxglove (#1085): a screen's SDR white level, for Screen glow on an HDR desktop.
     "Win32_Devices_Display",
+    # Foxglove (#1445): which process owns a live-feed connection (GetExtendedTcpTable).
+    "Win32_NetworkManagement_IpHelper",
 ] }
 winreg = "0.56.0"
 

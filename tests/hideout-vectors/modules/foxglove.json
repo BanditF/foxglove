@@ -9685,17 +9685,9 @@
                   {
                     "id": "we-line",
                     "props": {
-                      "text": "An app that isn't one of your wallpapers tried to connect. If a wallpaper stops showing your typing, press Reconnect."
+                      "text": "A program called tool.exe tried to connect to the live keyboard feed and was refused. It got none of your typing. Your wallpapers are not affected. If you don't know this program, close it."
                     },
                     "type": "label"
-                  },
-                  {
-                    "id": "we-reconnect:all",
-                    "props": {
-                      "label": "Reconnect",
-                      "name": "Reconnect all wallpapers"
-                    },
-                    "type": "button"
                   },
                   {
                     "children": [
@@ -9858,7 +9850,7 @@
           }
         }
       ],
-      "state": "Allow list: another app tried to connect"
+      "state": "Allow list: another program tried to connect"
     },
     {
       "panels": [
@@ -10114,6 +10106,13 @@
                     "type": "value"
                   },
                   {
+                    "id": "we-line",
+                    "props": {
+                      "text": "A program Foxglove couldn't identify tried to connect to the live keyboard feed and was refused. It got none of your typing. Your wallpapers are not affected. You don't need to do anything now. If this keeps coming back, close programs you don't know, one at a time, until it stops."
+                    },
+                    "type": "label"
+                  },
+                  {
                     "children": [
                       {
                         "children": [
@@ -10274,7 +10273,7 @@
           }
         }
       ],
-      "state": "Allow list: another app tried to connect, one wallpaper reconnecting"
+      "state": "Allow list: another program tried to connect, one wallpaper reconnecting"
     },
     {
       "panels": [

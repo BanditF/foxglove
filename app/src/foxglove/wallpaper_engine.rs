@@ -97,6 +97,13 @@ pub fn cli_exe(presence: &Presence) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// The folder of the program Foxglove drives (#1445: the live feed pairs only with programs
+/// inside it). The same record every push uses, never a name.
+#[cfg_attr(test, allow(dead_code))]
+pub fn host_dir() -> Option<PathBuf> {
+    cli_exe(&presence())?.parent().map(Path::to_path_buf)
+}
+
 fn look() -> Presence {
     match find(&Places::system()) {
         Some(dir) => Presence::Installed {

@@ -12,19 +12,22 @@
 //!   under the same lock. The monitor binding is therefore a guard against mix-ups, not a
 //!   second secret (S2-2); the origin check and the ticket are the gate. The old pasted token
 //!   still admits, unchanged, until the first ticket is redeemed (S4, `set_old_token_off`).
-//! - **Refusal:** a refused connection (any local client) may ask for a re-push, but only for
-//!   monitors Foxglove itself pushed to, whose wallpaper has no socket and whose ticket is
-//!   spent or expired (so a refusal never cancels a ticket still waiting to be used), and at
-//!   most [`REPUSH_MAX`] times per monitor per [`REPUSH_WINDOW`]. The count lives here, so a
-//!   client cannot reset it; only the user's Reconnect does. No timer: a refusal, a wallpaper
-//!   change or Reconnect are the only triggers.
-//! - **Shared:** a refusal while every allowed wallpaper on a monitor already has its socket
-//!   cannot be a wallpaper reloading (that one would have no socket), so some other app tried
-//!   to connect. That is one section-level fact ([`Links::foreign`]), never a per-wallpaper one:
-//!   the refusal names no monitor. It clears on Reconnect, on any join, on any socket closing,
-//!   and on Disconnect all. Reconnect with it up also closes the allowed wallpapers' sockets
-//!   (the store tracks one per monitor, so an app that redeemed a ticket first is among them)
-//!   and pushes fresh tickets.
+//! - **Who:** a ticket is only looked at when the connection's peer is the wallpaper host
+//!   (`live_peer`, #1445). From any other peer it is not compared, not used up and not
+//!   cancelled; only the old token can admit that peer.
+//! - **Refusal:** a refused connection from the wallpaper host (or from a peer that couldn't
+//!   be checked) may ask for a re-push, but only for monitors Foxglove itself pushed to, whose
+//!   wallpaper has no socket and whose ticket is spent or expired (so a refusal never cancels a
+//!   ticket still waiting to be used), and at most [`REPUSH_MAX`] times per monitor per
+//!   [`REPUSH_WINDOW`]. The count lives here, so a client cannot reset it; only the user's
+//!   Reconnect does. No timer: a refusal, a wallpaper change or Reconnect are the only
+//!   triggers. A refused program that isn't the wallpaper host never causes a re-push.
+//! - **Another program:** a refused program that isn't the wallpaper host is recorded by
+//!   [`Pairing::intruder`]: a fact from the peer check on that connection, whatever the
+//!   wallpapers' connections are. It is one section-level fact ([`Links::foreign`]), never a
+//!   per-wallpaper one. It clears on Reconnect, on Disconnect all, when the feed stops, and
+//!   once [`wire::REFUSAL_QUIET`] passed without another (worked out when it is read). The
+//!   wallpapers' sockets are left alone: the program never got one.
 //! - **Disconnect all:** cancels every ticket, closes the sockets and holds the feed's
 //!   ticket path (no mint, no re-push) until Reconnect. Allowances stay.
 
@@ -77,9 +80,22 @@ pub struct Links {
     pub held: bool,
     /// Connections the old pasted token admitted (they name no wallpaper).
     pub old_way: usize,
-    /// Some other app (not one of the user's wallpapers) tried to connect while every allowed
-    /// wallpaper was connected. The section says so once; no row does.
-    pub foreign: bool,
+    /// A program that isn't the wallpaper host tried to connect and was refused (#1445). The
+    /// section says so once; no row does.
+    pub foreign: Option<Intruder>,
+}
+
+/// The refused program, as the section may name it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Intruder {
+    /// Its file name, already cleaned and cut; `None` when it has none to show.
+    pub name: Option<String>,
+}
+
+/// The last refused program that isn't the wallpaper host, and when.
+struct Foreign {
+    name: Option<String>,
+    at: Instant,
 }
 
 fn allowed_in(allow: Option<&BTreeSet<String>>, file: &str) -> bool {
@@ -99,8 +115,8 @@ pub struct Pairing {
     old_off: bool,
     /// Connections admitted with the old pasted token (they hold no monitor).
     old_clients: BTreeSet<u64>,
-    /// A refusal came while every allowed wallpaper was already connected: see the module docs.
-    foreign: bool,
+    /// Another program was refused: see the module docs.
+    foreign: Option<Foreign>,
 }
 
 /// The one store: a [`Pairing`] behind a lock.
@@ -128,7 +144,7 @@ impl Pairing {
             held: false,
             old_off: false,
             old_clients: BTreeSet::new(),
-            foreign: false,
+            foreign: None,
         }
     }
 
@@ -155,7 +171,6 @@ impl Pairing {
     /// connections to close are returned (S5a).
     pub fn set_allowed(&mut self, files: Option<BTreeSet<String>>) -> Vec<u64> {
         let before = std::mem::replace(&mut self.allow, files);
-        self.foreign = false;
         let mut close = Vec::new();
         // Wallpapers just allowed are pushed again, with a ticket, at the next sync.
         for s in self.slots.values_mut() {
@@ -212,21 +227,24 @@ impl Pairing {
 
     /// The handshake's decision, at the moment of the handshake (`now`): the origin first, then
     /// a ticket, then the old token (`admit_or_ticket`). `Ok(Some(monitor))` when a ticket
-    /// admitted, `Ok(None)` when the old token did.
+    /// admitted, `Ok(None)` when the old token did. `host`: the peer is the wallpaper host
+    /// (`live_peer`); from any other peer the ticket store is not asked at all.
     pub fn admit(
         &mut self,
         origin: Option<&str>,
         given: Option<&str>,
         token: &str,
+        host: bool,
         now: Instant,
     ) -> Result<Option<String>, Denied> {
         let monitor = given
+            .filter(|_| host)
             .and_then(|g| self.tickets.monitor_of(g, now))
             .unwrap_or_default();
         // A blank stored token admits nothing, so once verified only tickets pass. Disconnect
         // all holds the old path too (sec-1298 L4).
         let token = if self.old_off || self.held { "" } else { token };
-        wire::admit_or_ticket(origin, given, token, &mut self.tickets, &monitor, now)?;
+        wire::admit_or_ticket(origin, given, token, &mut self.tickets, &monitor, host, now)?;
         Ok((!monitor.is_empty()).then_some(monitor))
     }
 
@@ -236,7 +254,6 @@ impl Pairing {
         if monitor.is_some() && self.held {
             return false;
         }
-        self.foreign = false;
         if monitor.is_none() {
             // Admitted with the old token just before it was retired, or while held: not kept.
             if self.old_off || self.held {
@@ -253,23 +270,26 @@ impl Pairing {
 
     /// Connection `conn` closed.
     pub fn left(&mut self, conn: u64) {
-        self.foreign = false;
         self.old_clients.remove(&conn);
         for s in self.slots.values_mut().filter(|s| s.conn == Some(conn)) {
             s.conn = None;
         }
     }
 
-    /// A connection was refused at `now`: marks the monitors that get a fresh ticket at the next
-    /// sync and returns how many. See the module docs for who qualifies.
+    /// A program that isn't the wallpaper host was refused at `now` (`name`: its cleaned file
+    /// name, if it has one). Recorded for the section's line; no monitor is marked, no ticket
+    /// is touched and no budget is spent.
+    pub fn intruder(&mut self, name: Option<String>, now: Instant) {
+        self.foreign = Some(Foreign { name, at: now });
+    }
+
+    /// A connection from the wallpaper host (or from a peer that couldn't be checked) was
+    /// refused at `now`: marks the monitors that get a fresh ticket at the next sync and returns
+    /// how many. See the module docs for who qualifies.
     pub fn refused(&mut self, now: Instant) -> usize {
         if self.held {
             return 0;
         }
-        // Every wallpaper on screen has its socket: a reloading wallpaper, or one the user
-        // switched Off (which retries on its own), would be missing one, so this refusal is
-        // some other app's. Honesty beats coverage: an Off wallpaper on screen hides it.
-        self.foreign = !self.slots.is_empty() && self.slots.values().all(|s| s.conn.is_some());
         let mut n = 0;
         for (monitor, s) in &mut self.slots {
             // A wallpaper the user hasn't allowed is never re-pushed, and never counts as stuck.
@@ -309,10 +329,6 @@ impl Pairing {
             .filter(|m| !monitors.contains(&m.as_str()))
             .cloned()
             .collect();
-        if !gone.is_empty() {
-            // Called on every sync: only a monitor really going away changes the picture.
-            self.foreign = false;
-        }
         for m in gone {
             self.slots.remove(&m);
             self.tickets.cancel(&m);
@@ -320,27 +336,19 @@ impl Pairing {
     }
 
     /// The user's Reconnect: the budget is new, and every monitor without a socket gets a fresh
-    /// ticket at the next sync (the outstanding one is cancelled). While the shared warning is up
-    /// the allowed wallpapers' sockets are let go too, and returned for the feed to close: one of
-    /// them may be the other app's, and the wallpaper joins again with its fresh ticket.
-    pub fn reconnect(&mut self) -> Vec<u64> {
+    /// ticket at the next sync (the outstanding one is cancelled). A connected wallpaper keeps
+    /// its socket. The line about another program goes.
+    pub fn reconnect(&mut self) {
         self.held = false;
-        // Only when the claim still holds: the same condition as its raise.
-        let shared =
-            std::mem::take(&mut self.foreign) && self.slots.values().all(|s| s.conn.is_some());
-        let mut close = Vec::new();
+        self.foreign = None;
         for (m, s) in &mut self.slots {
             s.repushes.clear();
             s.capped = false;
-            if shared && allowed_in(self.allow.as_ref(), &s.file) {
-                close.extend(s.conn.take());
-            }
             if s.conn.is_none() {
                 self.tickets.cancel(m);
                 s.due = true;
             }
         }
-        close
     }
 
     /// Disconnect all: every ticket is cancelled and the ticket path is held until Reconnect.
@@ -349,7 +357,7 @@ impl Pairing {
     pub fn disconnect_all(&mut self) -> Vec<u64> {
         self.tickets.clear();
         self.held = true;
-        self.foreign = false;
+        self.foreign = None;
         for s in self.slots.values_mut() {
             s.conn = None;
             s.due = false;
@@ -359,7 +367,7 @@ impl Pairing {
 
     /// The feed stopped: nothing outstanding, nothing connected.
     pub fn stopped(&mut self) {
-        self.foreign = false;
+        self.foreign = None;
         self.tickets.clear();
         for s in self.slots.values_mut() {
             s.conn = None;
@@ -400,7 +408,14 @@ impl Pairing {
             by_dir,
             held: self.held,
             old_way: self.old_clients.len(),
-            foreign: self.foreign,
+            // Said for a while after the last one, then it goes on its own.
+            foreign: self
+                .foreign
+                .as_ref()
+                .filter(|f| now.saturating_duration_since(f.at) < wire::REFUSAL_QUIET)
+                .map(|f| Intruder {
+                    name: f.name.clone(),
+                }),
         }
     }
 
@@ -417,7 +432,7 @@ fn locked(store: Store) -> std::sync::MutexGuard<'static, Pairing> {
 
 /// The user's Reconnect (the Hideout panel's button calls this, S5): see
 /// [`Pairing::reconnect`]. The caller (`wallpaper_sync::reconnect`) wakes the pusher.
-pub fn reconnect(store: Store) -> Vec<u64> {
+pub fn reconnect(store: Store) {
     locked(store).reconnect()
 }
 
@@ -458,19 +473,24 @@ mod tests {
         let (mut p, now) = (Pairing::new(), Instant::now());
         let t = ticket(&mut p, A, now);
         assert_eq!(
-            p.admit(Some("null"), Some(&t), "", now),
+            p.admit(Some("null"), Some(&t), "", true, now),
             Ok(Some(A.to_string()))
         );
         assert!(
-            p.admit(Some("null"), Some(&t), "", now).is_err(),
+            p.admit(Some("null"), Some(&t), "", true, now).is_err(),
             "single use"
         );
         // A web page doesn't burn it.
         let t = ticket(&mut p, A, now);
-        assert!(p.admit(Some("https://x.test"), Some(&t), "", now).is_err());
+        assert!(p
+            .admit(Some("https://x.test"), Some(&t), "", true, now)
+            .is_err());
         assert_eq!(p.open(now), 1);
         // The old token still admits, and names no monitor.
-        assert_eq!(p.admit(None, Some("old-token"), "old-token", now), Ok(None));
+        assert_eq!(
+            p.admit(None, Some("old-token"), "old-token", true, now),
+            Ok(None)
+        );
     }
 
     fn only(keys: &[&str]) -> Option<BTreeSet<String>> {
@@ -484,12 +504,12 @@ mod tests {
         let t = ticket(&mut p, A, now);
         assert!(p.set_allowed(only(&[])).is_empty(), "no socket yet");
         assert!(
-            p.admit(None, Some(&t), "", now).is_err(),
+            p.admit(None, Some(&t), "", true, now).is_err(),
             "ticket cancelled"
         );
         p.set_allowed(only(&["hud"]));
         let t = ticket(&mut p, A, now);
-        assert_eq!(p.admit(None, Some(&t), "", now), Ok(Some(A.into())));
+        assert_eq!(p.admit(None, Some(&t), "", true, now), Ok(Some(A.into())));
         p.joined(7, Some(A));
         assert_eq!(p.set_allowed(only(&[])), vec![7]);
         assert!(
@@ -512,11 +532,11 @@ mod tests {
     #[test]
     fn disconnect_all_returns_old_way_sockets_and_retires_the_token() {
         let (mut p, now) = (Pairing::new(), Instant::now());
-        assert_eq!(p.admit(None, Some("old"), "old", now), Ok(None));
+        assert_eq!(p.admit(None, Some("old"), "old", true, now), Ok(None));
         p.joined(9, None);
         assert_eq!(p.disconnect_all(), vec![9]);
         assert!(
-            p.admit(None, Some("old"), "old", now).is_err(),
+            p.admit(None, Some("old"), "old", true, now).is_err(),
             "token retired"
         );
     }
@@ -526,7 +546,7 @@ mod tests {
         let (mut p, now) = (Pairing::new(), Instant::now());
         let t = ticket(&mut p, A, now);
         assert!(p.mint(A, "hud/index.html", now).is_none(), "one waits");
-        assert_eq!(p.admit(None, Some(&t), "", now), Ok(Some(A.into())));
+        assert_eq!(p.admit(None, Some(&t), "", true, now), Ok(Some(A.into())));
         p.joined(7, Some(A));
         assert!(p.mint(A, "hud/index.html", now).is_none(), "socket open");
         p.left(7);
@@ -551,7 +571,7 @@ mod tests {
         // Both have tickets waiting: a refusal cancels neither.
         assert_eq!(p.refused(now), 0);
         assert_eq!(p.open(now), 2);
-        p.admit(None, Some(&ta), "", now).unwrap();
+        p.admit(None, Some(&ta), "", true, now).unwrap();
         assert!(p.joined(1, Some(A)));
         // A has a socket, B a ticket: still nobody.
         assert_eq!(p.refused(now), 0);
@@ -609,7 +629,7 @@ mod tests {
         let t = ticket(&mut p, A, now);
         p.disconnect_all();
         assert!(
-            p.admit(None, Some(&t), "", now).is_err(),
+            p.admit(None, Some(&t), "", true, now).is_err(),
             "ticket cancelled"
         );
         assert!(p.mint(A, "hud/index.html", now).is_none(), "held");
@@ -628,126 +648,138 @@ mod tests {
         let (mut p, now) = (Pairing::new(), Instant::now());
         let ta = ticket(&mut p, A, now);
         let tb = ticket(&mut p, B, now);
-        p.admit(None, Some(&tb), "", now).unwrap();
+        p.admit(None, Some(&tb), "", true, now).unwrap();
         p.joined(2, Some(B));
         p.reconnect();
         assert_eq!(p.take_due(), [A.to_string()]);
-        assert!(p.admit(None, Some(&ta), "", now).is_err());
+        assert!(p.admit(None, Some(&ta), "", true, now).is_err());
     }
 
     /// Joins `m` the way the feed does: mint, redeem, join.
     fn join(p: &mut Pairing, m: &str, conn: u64, now: Instant) {
         let t = ticket(p, m, now);
-        assert_eq!(p.admit(None, Some(&t), "", now), Ok(Some(m.to_string())));
+        assert_eq!(
+            p.admit(None, Some(&t), "", true, now),
+            Ok(Some(m.to_string()))
+        );
         assert!(p.joined(conn, Some(m)));
     }
 
-    #[test]
-    fn a_refusal_with_every_wallpaper_connected_is_another_app() {
-        let (mut p, now) = (Pairing::new(), Instant::now());
-        join(&mut p, A, 1, now);
-        join(&mut p, B, 2, now);
-        assert!(!p.links(now).foreign, "nothing refused yet");
-        p.refused(now);
-        assert!(p.links(now).foreign);
+    fn named(name: &str) -> Option<Intruder> {
+        Some(Intruder {
+            name: Some(name.into()),
+        })
     }
 
     #[test]
-    fn a_refusal_while_a_wallpaper_is_still_connecting_is_not_reported() {
+    fn a_ticket_from_a_peer_that_is_not_the_host_is_left_alone() {
         let (mut p, now) = (Pairing::new(), Instant::now());
-        join(&mut p, A, 1, now);
-        // B reloaded and presents its spent ticket: it has no socket, so it is the likely sender.
-        ticket(&mut p, B, now);
-        p.refused(now);
-        assert!(!p.links(now).foreign);
-        // Nothing allowed is on screen: nothing to report either.
-        let mut none = Pairing::new();
-        none.refused(now);
-        assert!(!none.links(now).foreign);
-    }
-
-    #[test]
-    fn an_off_wallpaper_on_screen_may_be_the_sender() {
-        let (mut p, now) = (Pairing::new(), Instant::now());
-        join(&mut p, A, 1, now);
-        // B shows a wallpaper the user switched Off: it has no socket and retries on its own,
-        // so a refusal may be its own.
-        p.mint(B, "other/index.html", now);
-        p.set_allowed(Some(BTreeSet::from(["hud".to_string()])));
-        p.refused(now);
-        assert!(!p.links(now).foreign);
-    }
-
-    #[test]
-    fn keep_clears_the_shared_flag_only_when_a_monitor_goes() {
-        let (mut p, now) = (Pairing::new(), Instant::now());
-        join(&mut p, A, 1, now);
-        join(&mut p, B, 2, now);
-        p.refused(now);
-        p.keep(&[A, B]);
-        assert!(p.links(now).foreign, "a sync with the same monitors");
-        p.keep(&[A]);
-        assert!(!p.links(now).foreign, "a monitor was removed");
-    }
-
-    #[test]
-    fn the_shared_flag_clears_on_a_join_a_close_reconnect_and_disconnect_all() {
-        let raise = |p: &mut Pairing, now| {
-            p.refused(now);
-            assert!(p.links(now).foreign);
-        };
-        let (mut p, now) = (Pairing::new(), Instant::now());
-        join(&mut p, A, 1, now);
-        raise(&mut p, now);
-        p.left(1);
-        assert!(!p.links(now).foreign, "a socket closed");
-        join(&mut p, A, 1, now);
-        raise(&mut p, now);
-        let t = ticket(&mut p, B, now);
-        p.admit(None, Some(&t), "", now).unwrap();
-        p.joined(2, Some(B));
-        assert!(!p.links(now).foreign, "a new join");
-        raise(&mut p, now);
-        p.reconnect();
-        assert!(!p.links(now).foreign, "Reconnect");
-        join(&mut p, A, 3, now);
-        join(&mut p, B, 4, now);
-        raise(&mut p, now);
-        p.disconnect_all();
-        assert!(!p.links(now).foreign, "Disconnect all");
-    }
-
-    #[test]
-    fn reconnect_closes_the_open_sockets_while_the_shared_flag_is_up() {
-        let (mut p, now) = (Pairing::new(), Instant::now());
-        // The other app redeemed A's ticket first: its socket is the slot's.
-        join(&mut p, A, 1, now);
-        join(&mut p, B, 2, now);
-        p.refused(now);
-        let mut closed = p.reconnect();
-        closed.sort();
-        assert_eq!(closed, [1, 2], "the sockets of the allowed wallpapers");
-        let mut due = p.take_due();
-        due.sort();
+        let t = ticket(&mut p, A, now);
         assert_eq!(
-            due,
-            [A.to_string(), B.to_string()],
-            "both get fresh tickets"
+            p.admit(None, Some(&t), "", false, now),
+            Err(Denied::Token),
+            "not the host"
         );
-        // The old socket's own close arrives later and finds nothing to clear.
-        p.left(1);
-        // Without the flag Reconnect leaves a connected monitor alone, as before.
-        join(&mut p, A, 3, now);
-        assert!(p.reconnect().is_empty());
+        assert_eq!(p.open(now), 1, "not used up, not cancelled");
+        // The wallpaper host then pairs with that same ticket.
+        assert_eq!(
+            p.admit(None, Some(&t), "", true, now),
+            Ok(Some(A.to_string()))
+        );
     }
 
     #[test]
-    fn reconnect_leaves_a_not_allowed_wallpapers_socket_to_its_own_rules() {
+    fn the_old_token_admits_a_program_until_a_ticket_was_redeemed() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        assert_eq!(p.admit(None, Some("old"), "old", false, now), Ok(None));
+        assert!(p.admit(None, Some("wrong"), "old", false, now).is_err());
+        p.set_old_token_off(true);
+        assert!(p.admit(None, Some("old"), "old", false, now).is_err());
+    }
+
+    #[test]
+    fn another_program_is_reported_whatever_is_connected() {
+        let now = Instant::now();
+        // No wallpaper on screen.
+        let mut p = Pairing::new();
+        assert_eq!(p.links(now).foreign, None, "nothing refused yet");
+        p.intruder(Some("tool.exe".into()), now);
+        assert_eq!(p.links(now).foreign, named("tool.exe"));
+        // One connected, one still connecting.
+        let mut p = Pairing::new();
+        join(&mut p, A, 1, now);
+        let tb = ticket(&mut p, B, now);
+        p.intruder(Some("tool.exe".into()), now);
+        assert_eq!(p.links(now).foreign, named("tool.exe"));
+        // All connected; a program with no name to show is still reported.
+        p.admit(None, Some(&tb), "", true, now).unwrap();
+        assert!(p.joined(2, Some(B)));
+        p.intruder(None, now);
+        assert_eq!(p.links(now).foreign, Some(Intruder { name: None }));
+    }
+
+    #[test]
+    fn joins_and_closes_do_not_hide_another_program_but_reconnect_does() {
         let (mut p, now) = (Pairing::new(), Instant::now());
         join(&mut p, A, 1, now);
-        p.refused(now);
-        p.set_allowed(Some(BTreeSet::new()));
-        assert!(p.reconnect().is_empty(), "set_allowed already closed it");
+        p.intruder(Some("tool.exe".into()), now);
+        join(&mut p, B, 2, now);
+        assert_eq!(p.links(now).foreign, named("tool.exe"), "a new join");
+        p.left(2);
+        assert_eq!(p.links(now).foreign, named("tool.exe"), "a socket closed");
+        p.keep(&[A]);
+        assert_eq!(p.links(now).foreign, named("tool.exe"), "a monitor went");
+        p.set_allowed(None);
+        assert_eq!(p.links(now).foreign, named("tool.exe"), "the allow list");
+        p.reconnect();
+        assert_eq!(p.links(now).foreign, None, "Reconnect");
+        p.intruder(None, now);
+        p.disconnect_all();
+        assert_eq!(p.links(now).foreign, None, "Disconnect all");
+        p.intruder(None, now);
+        p.stopped();
+        assert_eq!(p.links(now).foreign, None, "the feed stopped");
+    }
+
+    #[test]
+    fn another_program_is_no_longer_reported_after_the_quiet_time() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        p.intruder(Some("tool.exe".into()), now);
+        let almost = now + wire::REFUSAL_QUIET - Duration::from_secs(1);
+        assert_eq!(p.links(almost).foreign, named("tool.exe"));
+        assert_eq!(p.links(now + wire::REFUSAL_QUIET).foreign, None);
+        // A later one starts the time again, with its own name.
+        p.intruder(Some("other.exe".into()), almost);
+        assert_eq!(
+            p.links(now + wire::REFUSAL_QUIET).foreign,
+            named("other.exe")
+        );
+    }
+
+    #[test]
+    fn another_program_never_marks_a_monitor_for_a_new_ticket() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        ticket(&mut p, A, now);
+        // A's ticket has expired: a refusal of the host would re-push it.
+        let later = now + wire::TICKET_TTL + Duration::from_secs(1);
+        for _ in 0..50 {
+            p.intruder(Some("tool.exe".into()), later);
+        }
+        assert!(p.take_due().is_empty());
+        assert!(!p.stuck(), "no budget spent");
+        assert_eq!(p.refused(later), 1, "the host's own refusal still does");
+    }
+
+    #[test]
+    fn reconnect_leaves_connected_wallpapers_alone() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        join(&mut p, A, 1, now);
+        join(&mut p, B, 2, now);
+        p.intruder(Some("tool.exe".into()), now);
+        p.reconnect();
+        assert!(p.take_due().is_empty(), "nothing to push again");
+        let links = p.links(now);
+        assert!(links.by_dir.values().all(|l| *l == Link::Connected));
     }
 
     #[test]
@@ -756,7 +788,7 @@ mod tests {
         let t = ticket(&mut p, A, now);
         ticket(&mut p, B, now);
         p.keep(&[B]);
-        assert!(p.admit(None, Some(&t), "", now).is_err());
+        assert!(p.admit(None, Some(&t), "", true, now).is_err());
         assert_eq!(p.open(now), 1);
     }
 
@@ -777,7 +809,7 @@ mod tests {
     fn a_connection_admitted_before_disconnect_all_cannot_join_after_it() {
         let (mut p, now) = (Pairing::new(), Instant::now());
         let t = ticket(&mut p, A, now);
-        assert_eq!(p.admit(None, Some(&t), "", now), Ok(Some(A.into())));
+        assert_eq!(p.admit(None, Some(&t), "", true, now), Ok(Some(A.into())));
         p.disconnect_all();
         assert!(!p.joined(9, Some(A)), "held: the socket must close");
         // Nothing recorded a socket, so Reconnect hands the monitor a fresh ticket.
