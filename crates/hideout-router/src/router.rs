@@ -3640,7 +3640,8 @@ impl Router {
     /// its `provides facts:` to cover the pattern. One with no catalog entry (adopted, sideloaded,
     /// private) also gets no first-party area but `gpu.*`, and that only while it is the
     /// user-granted GPU broker (`may_provide`); nothing a catalog assigns to another module; and
-    /// nothing another such candidate would also qualify for (both refused, no order decides). A
+    /// nothing another such candidate would also qualify for (both refused, no order decides);
+    /// and nothing another app was granted `facts.write` into (`written_elsewhere`). A
     /// module with a catalog entry may not take a first-party area or another entry's area.
     fn may_own_fact(&self, module: &str, pattern: &str) -> bool {
         self.may_own_fact_in(module, pattern, true)
@@ -3695,7 +3696,20 @@ impl Router {
                 .filter(|a| overlap(a, &area))
                 .all(|a| self.may_provide(module, &caps, a))
             && !self.assigned_elsewhere(module, &area)
-            && !(rivals && self.rival_fact(module, &area))
+            && !(rivals
+                && (self.rival_fact(module, &area) || self.written_elsewhere(module, &area)))
+    }
+
+    /// Whether another app holds a `facts.write` grant that overlaps the facts `area`: what
+    /// the user allowed is never shut out by a bare declaration (#1466).
+    fn written_elsewhere(&self, module: &str, area: &str) -> bool {
+        self.modules.values().any(|m| {
+            m.id != module
+                && m.granted.iter().any(|g| {
+                    g.strip_prefix("facts.write:")
+                        .is_some_and(|p| overlap(p, area))
+                })
+        })
     }
 
     /// Whether another candidate (no catalog entry, not first-party) that would itself qualify
@@ -4415,15 +4429,16 @@ impl Router {
 
     /// The answer to a fact call the caller may not make. A program outside Hideout gets the
     /// tool refusal words (R2 to R5) for the key or pattern it asked for; a Hideout app gets
-    /// the bare refusal, as before. `hub_owned`: a write to a fact Hideout sets itself, which
-    /// no permission covers, so the words don't send the user to allow it.
+    /// the bare refusal, as before. `set_by`: who sets the fact, for a write no permission
+    /// covers (Hideout's own facts, and the ones a program outside reads without asking), so
+    /// the words don't send the user to allow it.
     fn fact_denied(
         &self,
         conn: ConnId,
         id: &Value,
         read: bool,
         pattern: &str,
-        hub_owned: bool,
+        set_by: Option<&str>,
     ) -> Value {
         use hideout_contract::capability::{tool_class, ToolClass};
         use hideout_contract::permission::Permission;
@@ -4437,11 +4452,11 @@ impl Router {
         });
         let never = tool_class(&cap, None) == ToolClass::Never;
         let does = hideout_contract::permission::fact_words(read, pattern);
-        if hub_owned {
+        if let Some(who) = set_by {
             return denied(
                 id,
                 Some(&format!(
-                    "Hideout never lets a program outside Hideout {does}. Hideout sets this itself, so there is nothing to allow."
+                    "Hideout never lets a program outside Hideout {does}. {who}, so there is nothing to allow."
                 )),
             );
         }
@@ -4471,7 +4486,7 @@ impl Router {
             "facts.get" => {
                 let key = s("key");
                 if !grant.can_read_fact(&key) && !watches_app(&grant, &key) {
-                    return self.fact_denied(conn, id, true, &key, false);
+                    return self.fact_denied(conn, id, true, &key, None);
                 }
                 ok(
                     id,
@@ -4481,7 +4496,7 @@ impl Router {
             "facts.list" => {
                 let pattern = s("pattern");
                 if !grant.can_subscribe(&pattern) && !watches_app(&grant, &pattern) {
-                    return self.fact_denied(conn, id, true, &pattern, false);
+                    return self.fact_denied(conn, id, true, &pattern, None);
                 }
                 let facts: Vec<Value> = self
                     .facts
@@ -4494,7 +4509,7 @@ impl Router {
             "facts.subscribe" => {
                 let pattern = s("pattern");
                 if !grant.can_subscribe(&pattern) && !watches_app(&grant, &pattern) {
-                    return self.fact_denied(conn, id, true, &pattern, false);
+                    return self.fact_denied(conn, id, true, &pattern, None);
                 }
                 let n = self.next_sub;
                 self.next_sub += 1;
@@ -4515,29 +4530,61 @@ impl Router {
                 let key = s("key");
                 // §8.8: `facts.write:<pattern>`, or `facts:` in `provides` (the registered pattern
                 // the manifest declares): registering alone writes nothing (#1150).
+                let declares = |m: &str| {
+                    self.facts_decl
+                        .get(m)
+                        .is_some_and(|d| d.iter().any(|d| key_matches(d, &key)))
+                        // The first-party link owns `device.*`, which `facts.write` never
+                        // covers (§6.6); its registration was checked by `may_own_fact`.
+                        || self.modules.get(m).is_some_and(|e| {
+                            matches!(e.holder, Holder::FirstParty | Holder::ModulesModule)
+                        })
+                };
                 let owned = module.is_some_and(|m| {
                     self.fact_owners
                         .iter()
                         .any(|r| r.module == m && key_matches(&r.pattern, &key))
-                        && (self
-                            .facts_decl
-                            .get(m)
-                            .is_some_and(|d| d.iter().any(|d| key_matches(d, &key)))
-                            // The first-party link owns `device.*`, which `facts.write` never
-                            // covers (§6.6); its registration was checked by `may_own_fact`.
-                            || self.modules.get(m).is_some_and(|e| {
-                                matches!(e.holder, Holder::FirstParty | Holder::ModulesModule)
-                            }))
+                        && declares(m)
                 });
                 // The app watch's facts are the hub's too (§4.6, v1.7).
                 // (v1.12) So are the microphone's `mic.*` (§8.11).
                 let hub_fact = ["module.", "hub.", "apps.", "mic."]
                     .iter()
                     .any(|p| key.starts_with(p));
+                // A key another app's registered pattern covers is that app's: `facts.write`
+                // held by anyone else doesn't write it (#1466 T5). A route its owner could no
+                // longer write under shuts nobody out.
+                let foreign = self.fact_owners.iter().any(|r| {
+                    module != Some(r.module.as_str())
+                        && key_matches(&r.pattern, &key)
+                        && declares(&r.module)
+                });
+                // A fact a program outside Hideout reads without asking is trusted as the hub's
+                // or an app's word, so no such program writes it, whatever it was allowed
+                // (#1466 M3).
+                let outside = matches!(
+                    self.conns.get(&conn).map(|c| &c.who),
+                    Some(Who::Tool { .. })
+                );
+                let free = outside && hideout_contract::permission::tool_free_fact(&key);
                 // `facts.write` never covers device.* (§6.6); a registered owner may.
-                let ok_write = !hub_fact && (owned || grant.can_write_fact(&key));
+                let ok_write =
+                    !hub_fact && !free && (owned || (!foreign && grant.can_write_fact(&key)));
                 if !ok_write {
-                    return self.fact_denied(conn, id, false, &key, hub_fact);
+                    let set_by = if hub_fact {
+                        Some("Hideout sets this itself")
+                    } else if free {
+                        Some("Only Hideout and its apps set this")
+                    } else if foreign {
+                        Some("One of your apps sets this")
+                    } else {
+                        None
+                    };
+                    if foreign && !hub_fact && !outside {
+                        // An app with the grant: not a withdrawn grant, so it is told why.
+                        return denied(id, Some("Another app sets this status."));
+                    }
+                    return self.fact_denied(conn, id, false, &key, set_by);
                 }
                 let value = params.get("value").cloned().unwrap_or(Value::Null);
                 self.set_fact(&key, value, out);

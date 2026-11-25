@@ -348,6 +348,50 @@ fn foxglove_with_its_real_grant_keeps_writing_under_a_rival_or_a_catalog_assignm
     assert_eq!(code(&set(&mut r, c, "gpu.reserved", now)), 5);
 }
 
+/// What must hold (#1466 T5): only a fact's registered owner writes it. Another app's
+/// `facts.write` doesn't cover a key the owner's pattern does; it still writes the rest of
+/// what it was granted, and writes the key again once the owner's registration is gone.
+#[test]
+fn a_grant_never_writes_a_fact_another_app_registered() {
+    let now = Instant::now();
+    let (mut r, owner) = rig_one(ARETE, r#""facts:notes.shared.*""#, now);
+    assert_eq!(register(&mut r, owner, &["notes.shared.*"], now), json!([]));
+    r.add_module(adopted("example.writer", &["facts.write:notes.*"]));
+    let w = module(&mut r, "example.writer", now);
+    let no = set(&mut r, w, "notes.shared.title", now);
+    assert_eq!(code(&no), 5);
+    // It is told why: this is not a withdrawn grant.
+    assert_eq!(
+        no["error"]["data"]["reason"],
+        "Another app sets this status."
+    );
+    assert!(r.fact("notes.shared.title").is_none());
+    assert!(set(&mut r, w, "notes.own", now)["result"].is_object());
+    assert!(set(&mut r, owner, "notes.shared.title", now)["result"].is_object());
+    // A second connection of the owner is still the owner.
+    let again = module(&mut r, ARETE, now);
+    assert!(set(&mut r, again, "notes.shared.title", now)["result"].is_object());
+    // The owner registers nothing any more: the area is free again for a holder of the grant.
+    assert_eq!(register(&mut r, again, &[], now), json!([]));
+    assert!(set(&mut r, w, "notes.shared.title", now)["result"].is_object());
+}
+
+/// What must hold (#1466): what the user allowed an app to write is never shut out by another
+/// app's bare declaration. The declaring app's registration is refused, before or after.
+#[test]
+fn a_declaration_never_shuts_out_a_writer_the_user_allowed() {
+    let now = Instant::now();
+    let (mut r, squat) = rig_one(ARETE, r#""facts:notes.*""#, now);
+    r.add_module(adopted("example.writer", &["facts.write:notes.*"]));
+    assert_eq!(
+        register(&mut r, squat, &["notes.*"], now),
+        json!([rej("notes.*")])
+    );
+    let w = module(&mut r, "example.writer", now);
+    assert!(set(&mut r, w, "notes.title", now)["result"].is_object());
+    assert_eq!(code(&set(&mut r, squat, "notes.title", now)), 5);
+}
+
 #[test]
 fn two_adopted_candidates_for_a_fact_area_are_both_refused() {
     let now = Instant::now();
