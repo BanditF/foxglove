@@ -549,6 +549,9 @@ impl Unchecked {
 }
 /// Connections whose peer was gone before it could be checked; said once, when the feed stops.
 static GONE: AtomicU64 = AtomicU64::new(0);
+/// Wallpapers that asked for a ticket (a knock) since the feed started: said once, as a count,
+/// when it stops, so a page that asks without end leaves a trace.
+static KNOCKS: AtomicU64 = AtomicU64::new(0);
 /// How a summed line about refused programs ends.
 const NOT_HOST: &str = "not the wallpaper host";
 /// How a summed line about unchecked peers ends.
@@ -956,6 +959,10 @@ pub fn stop() {
     if gone > 0 {
         eprintln!("Foxglove: live feed: {gone} connection(s) were gone before the check");
     }
+    let knocks = KNOCKS.swap(0, Ordering::Relaxed);
+    if knocks > 0 {
+        eprintln!("Foxglove: live feed: wallpapers asked for a ticket {knocks} time(s)");
+    }
     super::wallpaper_sync::live(None);
     set_status("");
 }
@@ -1106,7 +1113,7 @@ fn join(store: Store, tx: &Sender<Msg>, id: u64, monitor: Option<&str>, writer: 
 fn ask_again(store: Store) {
     let again = locked(store).refused(Instant::now());
     if again > 0 {
-        eprintln!("Foxglove: live feed: {again} wallpaper(s) are handed a new ticket");
+        eprintln!("Foxglove: live feed: {again} wallpaper(s) are handed a ticket again");
         super::wallpaper_sync::repush();
     }
     // The refusal may have changed a wallpaper's row.
@@ -1142,6 +1149,7 @@ fn serve(
             }
             monitor
         }
+        // (`Peer(Host)` is never made: the host's refusals are `Token` or `Knock`.)
         Err(NotAdmitted::Token | NotAdmitted::Peer(Peer::Host)) => {
             let lines = REFUSALS
                 .lock()
@@ -1150,6 +1158,15 @@ fn serve(
             for line in lines {
                 eprintln!("Foxglove: {line}");
             }
+            let _ = stream.shutdown(Shutdown::Both);
+            ask_again(store);
+            return;
+        }
+        // A wallpaper without a ticket asks for one: no failed try, so no refusal line and no
+        // warning, only a count said when the feed stops. The same budget as a refusal decides
+        // whether a ticket goes out.
+        Err(NotAdmitted::Knock) => {
+            KNOCKS.fetch_add(1, Ordering::Relaxed);
             let _ = stream.shutdown(Shutdown::Both);
             ask_again(store);
             return;
@@ -1194,6 +1211,10 @@ fn serve(
         let _ = stream.shutdown(Shutdown::Both);
         return;
     }
+    if monitor.is_some() {
+        // Every one, so a wallpaper that did or didn't come back after a restart shows.
+        eprintln!("Foxglove: live feed: a wallpaper connected");
+    }
     let mut reader = ws::Reader::default();
     loop {
         match reader.read(&mut stream) {
@@ -1236,8 +1257,12 @@ impl std::io::Read for Deadline<'_> {
 
 /// Why a connection didn't get the feed.
 enum NotAdmitted {
-    /// A wrong or missing token: the client was told `refused` (the log sums these).
+    /// A wrong token, or none from a peer that can use the old token: the client was told
+    /// `refused` (the log sums these).
     Token,
+    /// The wallpaper host with no ticket at all: a wallpaper that loaded without one asks for
+    /// one. Told `refused` like any other; it gets nothing but the next ticket, by the push.
+    Knock,
     /// The same, from a peer that isn't the wallpaper host (#1445): who it was instead.
     Peer(Peer),
     /// Anything else (a web origin, a wrong path, a broken upgrade), logged as it is.
@@ -1295,10 +1320,12 @@ fn handshake_in(
         // CLOSE_REFUSED. That is all it learns, whoever it is.
         Err(wire::Denied::Token) => {
             refuse(stream, &h, protocol);
-            return Err(if host {
-                NotAdmitted::Token
-            } else {
+            return Err(if !host {
                 NotAdmitted::Peer(peer.clone())
+            } else if wire::token_from(&h.path, offered).is_none() {
+                NotAdmitted::Knock
+            } else {
+                NotAdmitted::Token
             });
         }
     };
@@ -2295,7 +2322,8 @@ mod tests {
         });
         let (mut stream, _) = listener.accept().unwrap();
         let r = handshake(&mut stream, token).map_err(|e| match e {
-            NotAdmitted::Token => "token".to_string(),
+            // Without a token at all it is a knock: refused on the wire the same way.
+            NotAdmitted::Token | NotAdmitted::Knock => "token".to_string(),
             NotAdmitted::Peer(p) => format!("{p:?}"),
             NotAdmitted::Other(e) => e,
         });
@@ -3113,6 +3141,14 @@ mod tests {
             )
         }
 
+        /// A wallpaper that loaded without a ticket: the sub-protocol and nothing else.
+        fn knock(port: u16) -> Option<StandIn> {
+            StandIn::open(
+                port,
+                "GET /live HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: null\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: foxglove-live.v1\r\n\r\n",
+            )
+        }
+
         /// The way a paired wallpaper connects: the ticket as the second sub-protocol.
         fn connect_with_ticket(port: u16, ticket: &str) -> Option<StandIn> {
             StandIn::open(
@@ -3605,7 +3641,9 @@ mod tests {
         assert_eq!(who.reads(), 2);
         assert_eq!(locked(store).links(Instant::now()).foreign, tool);
 
-        // A peer that can't be checked is refused, and its ticket is left alone.
+        // A peer that can't be checked is refused; its ticket is neither used up nor cancelled
+        // (it may be handed to its monitor once more, like after any refusal that may be the
+        // wallpaper's own).
         let t2 = mint("M2");
         who.set(Err(peer::UNREADABLE.into()));
         let mut unknown = StandIn::connect_with_ticket(port, &t2).expect("upgraded, to be refused");
@@ -3627,6 +3665,35 @@ mod tests {
             .next(Duration::from_secs(5))
             .unwrap()
             .contains(r#""t":"hello""#));
+
+        // A wallpaper that loaded without a ticket asks for one: it is told what a wrong token
+        // is told, its monitor's waiting ticket is kept and is due to be handed over again.
+        // The same from another program asks for nothing.
+        let _ = locked(store).take_due();
+        let _t3 = mint("M3");
+        who.set(peer::Fake::program("C:/Tools/tool.exe"));
+        let mut tool = StandIn::knock(port).expect("upgraded, to be refused");
+        refused(&mut tool);
+        assert!(tool.closed_within(Duration::from_secs(5)));
+        assert!(locked(store).take_due().is_empty(), "a program's knock");
+        who.set(peer::Fake::program("C:/Host/host64.exe"));
+        let mut knock = StandIn::knock(port).expect("upgraded, to be refused");
+        refused(&mut knock);
+        let mut due = Vec::new();
+        for _ in 0..50 {
+            due = locked(store).take_due();
+            if !due.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(
+            due,
+            ["M3"],
+            "only the monitor without a wallpaper connected"
+        );
+        assert_eq!(open(), 1, "M3's ticket is the same one, still good");
+        assert!(KNOCKS.load(Ordering::Relaxed) >= 1, "counted, for the log");
         stop();
         // Leave the shared test settings as found.
         *SETTINGS.lock().unwrap() = None;

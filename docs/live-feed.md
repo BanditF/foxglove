@@ -83,10 +83,23 @@ on, the wallpaper is allowed, its monitor has no live socket and no ticket outst
   with what to do next. A connection that is already gone when Foxglove looks is closed and
   only counted.
 - **Refusal:** a refused connection from the wallpaper host, or from a program Foxglove can't
-  check, re-pushes a fresh ticket only to monitors Foxglove pushed to that have no socket and no
-  ticket outstanding, at most 3 times per monitor per 10 minutes (counted server-side). When the
-  budget is spent, Keyboard health warns "a wallpaper couldn't reconnect" until Reconnect. No
-  timer is involved.
+  check, re-pushes a ticket only to monitors Foxglove pushed to that have no socket, at most 3
+  times per monitor per 10 minutes (counted server-side). A ticket still waiting is never
+  cancelled by a refusal: that same ticket goes to its monitor once more, with its old deadline
+  (the wallpaper reloaded and lost it). When the budget is spent and no ticket waits, Keyboard
+  health warns "a wallpaper couldn't reconnect" until Reconnect.
+- **A wallpaper without a ticket (the knock):** a ticket is pushed to the running page and kept
+  nowhere, so a page that loads after the push (Wallpaper Engine stopped it under a game, or
+  reloaded it) has none. Such a page opens one socket with the protocol name and no credential,
+  once per load and once per un-pause. From the wallpaper host that is a request for a ticket:
+  it is answered `refused` like any other, is not logged or counted as a failed try, and goes
+  through the same budget as a refusal. From any other program it is that program's refusal
+  (above) and asks for nothing.
+- **A ticket nobody used:** when a ticket runs out unused on a monitor still without a socket, a
+  new one goes out, at most twice in a row per monitor (one wait of the ticket's lifetime per
+  ticket, started by the push; no repeating timer). A connection, another wallpaper or
+  Reconnect starts the count again. A ticket belongs to the wallpaper it was pushed to: another
+  wallpaper on that monitor gets its own.
 - **Reconnect / Disconnect all:** Reconnect resets the budget and hands every monitor without a
   socket a fresh ticket; it closes nothing. Disconnect all clears the tickets, closes every
   socket and hands out no ticket until Reconnect. The pasted token no longer reconnects
