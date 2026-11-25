@@ -364,6 +364,11 @@ python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --s
 # One group only: --only flyout, --only pages, --only supervisor or --only states.
 ```
 
+Scripts that start a hub through `QuietHub.start()` must not ask the lab pipe anything (`--lab-do`,
+`state`) until `start()` returns. Each such call is a short-lived process with the hub's own file
+name, and `quiet-launch.ps1` refuses to launch while one is alive ("already running").
+`start()` itself waits for the launcher's `QUIET-LAUNCH` line before its first poll.
+
 **Automated now** (step numbers from the PRs' lab steps):
 - #997 1: a tray click opens the flyout with the default tiles (Focus timer, Mic mute), against
   the taskbar and inside the work area, with a capture.
