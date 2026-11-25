@@ -1276,7 +1276,8 @@ impl Supervisor {
     /// "Remove from Hideout…" (product slice 6): the module is stopped first if it runs, then
     /// the registry forgets it (its permissions, keyboard grant and binding go with the
     /// inventory entry; a hub-installed module's own `modules\<id>` folder goes, an adopted
-    /// one's install and settings are never touched) and the supervisor drops its records. A
+    /// one's install and settings are never touched), the secrets stored for it in Hideout
+    /// are deleted, and the supervisor drops its records. A
     /// running module is removed when its instance ends (no waiting, no polling); `Ok` then
     /// means "stopping, then removed". The page's row goes with the inventory watch's next list.
     pub fn remove(&self, id: &str) -> Result<(), String> {
@@ -1314,7 +1315,17 @@ impl Supervisor {
             return Err(format!("{id} is still running"));
         }
         let mut reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
-        reg.remove(id).map_err(|e| format!("{e:?}"))?;
+        let done = reg.remove(id).map_err(|e| format!("{e:?}"));
+        // What the user stored for it goes with its record, so a later app with this id gets
+        // none. The saved inventory decides, not `done`: the registry takes the record out
+        // first and can still fail after that (a file of its copy in use), and a second Remove
+        // then finds no record.
+        let gone = Registry::open_from_env(&self.0.home)
+            .is_ok_and(|r| !r.inventory.modules.contains_key(id));
+        if gone {
+            self.0.hub.act(|r| r.forget_secrets(id));
+        }
+        done?;
         self.forget(id);
         log::info!("supervisor: {id} removed from Hideout");
         Ok(())

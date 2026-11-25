@@ -671,8 +671,9 @@ plug-ins** (no dylibs, no scripts in the hub).
   that registers none, such as a Syncthing-style mirror, is not detected, and no rule that names
   no vendor could detect it; the user's choice of folder is the control there. Plug-in, network
   and virtual drives are refused by drive kind whatever the tool.
-- **Remove from Hideout (#1293).** Stops the app and forgets its grants; an adopted app keeps its
-  own install and settings.
+- **Remove from Hideout (#1293).** Stops the app, forgets its grants and deletes the secrets
+  stored for it in Hideout (every name saved under its id, so a later app with the same id starts
+  with none); an adopted app keeps its own install and settings.
 - **Sign-in fact (#1307).** `module.<id>.starts_at_sign_in` (read-only) says whether the hub starts
   at sign-in.
 - A `runtime`'s processes belong to the service that launched them, inside that service's Job

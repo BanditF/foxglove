@@ -2241,7 +2241,9 @@ impl Router {
     /// started without it. Its entry, launch token, fault count, declared actions, settings,
     /// secrets and channels go, and every `module.<id>.*` fact is removed (watchers are told).
     /// The registry refuses to remove a running module; a module still connected anyway is
-    /// left alone (logged), and the next start forgets it. Saved secrets stay in the store.
+    /// left alone (logged), and the next start forgets it. Saved secrets stay in the store
+    /// here (this also runs when the inventory only looks changed); the user's Remove deletes
+    /// them with [`Router::forget_secrets`].
     pub fn forget_module(&mut self, id: &str) -> Vec<Out> {
         let mut out = Vec::new();
         if self.module_conn(id).is_some() {
@@ -2279,6 +2281,18 @@ impl Router {
             self.set_fact(&k, Value::Null, &mut out);
         }
         out
+    }
+
+    /// The user removed `id` from Hideout: every secret saved for it is deleted, so a later
+    /// app with the same id starts with none. Its declared names go too, so nothing is stored
+    /// under the id again before the inventory watch forgets it. A failure is logged; the
+    /// removal stands.
+    pub fn forget_secrets(&mut self, id: &str) -> Vec<Out> {
+        self.secrets_decl.remove(id);
+        if let Err(e) = self.secret_store.remove_all(id) {
+            log::warn!("router: {id}: its saved secrets were not all deleted: {e}");
+        }
+        Vec::new()
     }
 
     /// Whether the router knows module `id` (from the registry or [`Router::add_module`]).

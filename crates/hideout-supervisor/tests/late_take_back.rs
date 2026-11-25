@@ -26,6 +26,8 @@ const READ: &str = "facts.read:sensor.*";
 /// supervisor starts.
 fn hub_on(home: &Path) -> (Hub, common::Reaped) {
     let mut router = Router::new(Settings::default(), Box::new(|_, asked| asked.to_vec()));
+    // Remove deletes stored secrets: never the user's own credential store in a test.
+    router.set_secret_store(Box::new(hideout_router::secrets::MemorySecrets::default()));
     router.load_registry(&Registry::open_from_env(home).unwrap());
     let (events, _rx) = mpsc::channel();
     let hub = Hub::new(router, events);
