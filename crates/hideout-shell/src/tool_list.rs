@@ -69,8 +69,22 @@ pub fn file_name(path: &str) -> String {
     format!("{head}\u{2026}{tail}")
 }
 
+/// The days in a month of a year (February by the leap rule); 0 for no such month.
+pub fn days_in(year: u32, month: usize) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
+            29
+        }
+        2 => 28,
+        _ => 0,
+    }
+}
+
 /// "Allowed in Hideout on 17 Nov 2026" for `2026-11-17T09:00:00Z`. A missing time, or one that
-/// is no real date, says the date is not known: never a zero date, never "today".
+/// is no real date (30 Feb, 31 Apr), says the date is not known: never a zero date, never
+/// "today". The day is the one written: the caller gives the PC's local day.
 pub fn date_line(allowed_at: Option<&str>) -> String {
     let words = |at: &str| -> Option<String> {
         let d = at.get(..10)?;
@@ -83,7 +97,7 @@ pub fn date_line(allowed_at: Option<&str>) -> String {
             return None;
         }
         let (y, m, day): (u32, usize, u32) = (y.parse().ok()?, m.parse().ok()?, day.parse().ok()?);
-        (y >= 2000 && (1..=12).contains(&m) && (1..=31).contains(&day))
+        (y >= 2000 && (1..=days_in(y, m)).contains(&day))
             .then(|| format!("{day} {} {y}", MONTHS[m - 1]))
     };
     match allowed_at.and_then(words) {
@@ -663,6 +677,10 @@ mod tests {
             "1970-01-01T00:00:00Z",
             "2026-13-01T00:00:00Z",
             "2026-11-00T00:00:00Z",
+            "2026-11-31T00:00:00Z",
+            "2026-02-30T00:00:00Z",
+            "2027-02-29T00:00:00Z",
+            "2100-02-29",
             "today",
             "2026-11-17 and more words",
             "\u{202e}2026-11-17",
@@ -672,6 +690,10 @@ mod tests {
         assert_eq!(
             date_line(Some("2026-11-07T23:59:59Z")),
             "Allowed in Hideout on 7 Nov 2026"
+        );
+        assert_eq!(
+            date_line(Some("2028-02-29")),
+            "Allowed in Hideout on 29 Feb 2028"
         );
         let r = ToolRow::new(
             r"C:\Tools\old.exe",
