@@ -130,7 +130,7 @@ fn the_menu_and_the_button_pop_out_and_closing_docks_back_quietly() {
 impl Hub {
     /// Clicks Pop out at the header's right end (1100 px wide window); whether Chat popped.
     fn strip_button_click(&mut self, ctx: &egui::Context) -> bool {
-        let at = egui::pos2(1100.0 - 24.0 - 30.0, crate::kit::HEADER / 2.0);
+        let at = egui::pos2(1100.0 - 24.0 - 68.0, crate::kit::HEADER / 2.0);
         let ev = vec![
             Event::PointerMoved(at),
             Event::PointerButton {
@@ -792,7 +792,12 @@ fn form_hub(dir: &std::path::Path) -> Hub {
         Box::new(FormPage),
         Box::new(FakePage("settings", "Settings")),
     ];
-    Hub::new(shared, pages, None, None)
+    let first = TabId::page(pages[0].id());
+    let mut hub = Hub::new(shared, pages, None, None);
+    // From its first page, not Home (a first start).
+    hub.tabs = Tabs::default();
+    hub.tabs.open(first);
+    hub
 }
 
 /// Tab presses on `ctx` until the focus is on `label`.

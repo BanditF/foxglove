@@ -49,7 +49,26 @@ fn hub_in(dir: &std::path::Path, feed: Option<Box<dyn PanelFeed>>) -> Hub {
     )
 }
 
+/// A hub on its first page. A first start opens Home ([`hub_raw`]); these tests were written
+/// from the first hub page and count tabs from it, so a first start is put there.
 fn hub_with_pages(
+    dir: &std::path::Path,
+    feed: Option<Box<dyn PanelFeed>>,
+    pages: Vec<Box<dyn Page>>,
+) -> Hub {
+    let first = pages.first().map(|p| TabId::page(p.id()));
+    let mut hub = hub_raw(dir, feed, pages);
+    if hub.tabs.len() == 1 && hub.tabs.active_id() == Some(&TabId::page(HOME)) {
+        if let Some(first) = first {
+            hub.tabs = Tabs::default();
+            hub.tabs.open(first);
+        }
+    }
+    hub
+}
+
+/// The hub as it starts.
+fn hub_raw(
     dir: &std::path::Path,
     feed: Option<Box<dyn PanelFeed>>,
     pages: Vec<Box<dyn Page>>,
@@ -174,6 +193,15 @@ fn visibility_follows_switch_close_and_the_tray() {
         hub.tabs.active_id(),
         Some(&TabId::panel("mod.chat", "chat"))
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_first_start_opens_home() {
+    let dir = temp_dir("first-start");
+    let hub = hub_raw(&dir, None, vec![Box::new(FakePage("modules", "Modules"))]);
+    assert_eq!(hub.tabs.active_id(), Some(&TabId::page(HOME)));
+    assert_eq!(hub.tabs.len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

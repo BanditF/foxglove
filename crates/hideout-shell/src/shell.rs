@@ -56,6 +56,10 @@ const HOME_TITLE: &str = "Home";
 const HOME_NEEDS: &str = "Needs you";
 const HOME_NEEDS_NONE: &str = "Nothing needs you.";
 const HOME_NOW: &str = "Now";
+const HEADER_MORE: &str = "More";
+const HEADER_CLOSE: &str = "Close page";
+const HEADER_CLOSE_OTHERS: &str = "Close other pages";
+const HEADER_REOPEN: &str = "Reopen closed page";
 const HOME_GLYPH: &str = "\u{2302}";
 const SEARCH_GLYPH: &str = "\u{1F50D}";
 const SEARCH_NAME: &str = "Search, Ctrl+K";
@@ -1034,11 +1038,9 @@ impl Hub {
         let tabs = match Tabs::load(&file, exists) {
             Ok(Some(t)) => t,
             Ok(None) => {
-                // First start: the first page is open.
+                // First start: Home is open.
                 let mut t = Tabs::default();
-                if let Some(first) = ids.first() {
-                    t.open(TabId::page(first));
-                }
+                t.open(TabId::page(HOME));
                 t
             }
             Err(e) => {
@@ -2287,12 +2289,16 @@ impl Hub {
                 }
                 ui.add_space(kit::SECTION);
                 heading(ui, HOME_NOW);
-                report = hideout_panels::tiles_grid_ui(
-                    &mut self.panels,
-                    ui,
-                    &mut self.tray_layout,
-                    std::time::Instant::now(),
-                );
+                // The flyout draws the same tiles (same widgets). Where it cannot have its own
+                // window it is drawn in this one, so the tiles are there while it is open.
+                if self.flyout.is_none() || !ui.ctx().embed_viewports() {
+                    report = hideout_panels::tiles_grid_ui(
+                        &mut self.panels,
+                        ui,
+                        &mut self.tray_layout,
+                        std::time::Instant::now(),
+                    );
+                }
             });
         if let Some(d) = report.repaint_in {
             ui.ctx().request_repaint_after(d);
@@ -2474,6 +2480,10 @@ impl Hub {
         let look = active.map(|i| self.look(i));
         let items = self.status_items();
         let mut pop = false;
+        let mut picked: Option<Action> = None;
+        let is_home = active.is_some_and(|i| self.tabs.tabs()[i].id == TabId::page(HOME));
+        let others = self.tabs.len() > 1;
+        let reopen = self.tabs.can_reopen();
         egui::TopBottomPanel::top("hideout.header")
             .exact_height(crate::kit::HEADER)
             .show_separator_line(false)
@@ -2499,6 +2509,26 @@ impl Hub {
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // More: what the tab's own menu held (the rail has no menu).
+                        if let Some(i) = active {
+                            let more = ui.menu_button("\u{22EF}", |ui| {
+                                if !is_home && ui.button(HEADER_CLOSE).clicked() {
+                                    picked = Some(Action::Close(i));
+                                }
+                                let b = egui::Button::new(HEADER_CLOSE_OTHERS);
+                                if ui.add_enabled(others, b).clicked() {
+                                    picked = Some(Action::CloseOthers(i));
+                                }
+                                let b =
+                                    egui::Button::new(HEADER_REOPEN).shortcut_text("Ctrl+Shift+T");
+                                if ui.add_enabled(reopen, b).clicked() {
+                                    picked = Some(Action::Reopen);
+                                }
+                            });
+                            let r = more.response.on_hover_text(HEADER_MORE);
+                            ui.ctx()
+                                .accesskit_node_builder(r.id, |n| n.set_label(HEADER_MORE));
+                        }
                         if look.as_ref().is_some_and(|l| !l.popped) {
                             pop = ui
                                 .button("\u{2197}  Pop out")
@@ -2514,6 +2544,9 @@ impl Hub {
             });
         if let (true, Some(i)) = (pop, active) {
             self.apply(Action::PopOut(i));
+        }
+        if let Some(a) = picked {
+            self.apply(a);
         }
     }
 
