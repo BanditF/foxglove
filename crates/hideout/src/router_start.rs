@@ -152,6 +152,23 @@ fn notifier(sup: Supervisor, home: &Path) -> hideout_supervisor::driver::Notifie
     })
 }
 
+/// A lab switch's value: the variable in a build with `lab-switches`, never one in the
+/// installed build (which logs a set one, `hideout_registry::lab::log_ignored_switches`).
+fn lab_switch(name: &str) -> Option<String> {
+    if cfg!(feature = "lab-switches") {
+        std::env::var(name).ok()
+    } else {
+        None
+    }
+}
+
+/// Whether `HIDEOUT_DISABLE`'s comma list names the microphone service.
+fn mic_disabled(list: Option<&str>) -> bool {
+    list.unwrap_or_default()
+        .split(',')
+        .any(|s| s.trim().eq_ignore_ascii_case("mic"))
+}
+
 /// Starts the router and the supervisor; the panel feed is for the shell (§5): every module's
 /// manifest is loaded into the router (`ui.register` checked against its panels and actions)
 /// and handed to the panel host (tiles, `when`, Keys and Settings). `suffix` is the folder's
@@ -234,11 +251,9 @@ pub fn start(
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(suffix);
     // The host services (§8.10, §8.11, #1102): the network broker, and the microphone unless
-    // HIDEOUT_DISABLE lists `mic`. Its first facts are in before any module starts.
-    let mic = !std::env::var("HIDEOUT_DISABLE")
-        .unwrap_or_default()
-        .split(',')
-        .any(|s| s.trim().eq_ignore_ascii_case("mic"));
+    // HIDEOUT_DISABLE lists `mic` (a lab switch: the installed build doesn't read it). Its
+    // first facts are in before any module starts.
+    let mic = !mic_disabled(lab_switch("HIDEOUT_DISABLE").as_deref());
     hideout_services::start(&hub, mic);
     log::info!(
         "router: host services: net{}",
