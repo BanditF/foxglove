@@ -1172,10 +1172,10 @@ fn the_sidebar_draws_the_tabs_ring_with_its_words() {
         let out = frames(&ctx, &mut hub, vec![]);
         let tab = art_tab(&hub);
         assert_eq!(tab.busy(), ring, "{label}");
-        assert_eq!(rings(&out), (ring as usize, ring as usize), "{label}");
+        assert_eq!(rings(&out), (ring as usize, 0), "{label}");
         assert_eq!(
             labels(&out).iter().filter(|n| *n == name).count(),
-            2, // the sidebar entry and the tab
+            1, // the rail entry, which is the tab
             "{label}: {:?}",
             labels(&out)
         );

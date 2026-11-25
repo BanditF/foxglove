@@ -59,6 +59,7 @@ fn ids(hub: &Hub) -> Vec<TabId> {
 }
 
 #[test]
+#[ignore = "the tab strip is gone (UI overhaul); the tab drags go with the pop-out rework"]
 fn a_tab_dragged_along_the_strip_reorders_as_before() {
     let dir = temp_dir("drag-reorder");
     let (mut hub, _router, ctx) = chat_hub(&dir);
@@ -76,6 +77,7 @@ fn a_tab_dragged_along_the_strip_reorders_as_before() {
 }
 
 #[test]
+#[ignore = "the tab strip is gone (UI overhaul); the tab drags go with the pop-out rework"]
 fn a_tab_dragged_out_of_the_window_pops_out_where_it_is_let_go() {
     let dir = temp_dir("drag-tear");
     let (mut hub, _router, ctx) = chat_hub(&dir);
@@ -147,6 +149,7 @@ fn a_torn_off_window_opens_at_the_pointer() {
 }
 
 #[test]
+#[ignore = "the tab strip is gone (UI overhaul); the tab drags go with the pop-out rework"]
 fn letting_go_on_the_page_area_or_esc_cancels() {
     let dir = temp_dir("drag-cancel");
     let (mut hub, _router, ctx) = chat_hub(&dir);
@@ -171,6 +174,7 @@ fn letting_go_on_the_page_area_or_esc_cancels() {
 }
 
 #[test]
+#[ignore = "the tab strip is gone (UI overhaul); the tab drags go with the pop-out rework"]
 fn a_placeholder_dragged_out_gets_no_ghost_and_stays_one_window() {
     let dir = temp_dir("drag-placeholder");
     let (mut hub, _router, ctx) = chat_hub(&dir);
@@ -201,6 +205,7 @@ fn probe_frame(ctx: &egui::Context, hub: &mut Hub, probe: Option<(WindowDrag, Op
 }
 
 #[test]
+#[ignore = "the tab strip is gone (UI overhaul); the tab drags go with the pop-out rework"]
 fn a_pop_out_dragged_onto_the_strip_shows_the_bar_and_docks_there() {
     let dir = temp_dir("drag-dock");
     let (mut hub, _router, ctx) = chat_hub(&dir);
@@ -245,6 +250,7 @@ fn a_pop_out_dragged_onto_the_strip_shows_the_bar_and_docks_there() {
 }
 
 #[test]
+#[ignore = "the tab strip is gone (UI overhaul); the tab drags go with the pop-out rework"]
 fn a_pop_out_dropped_on_the_strip_after_esc_stays_out() {
     let dir = temp_dir("drag-dock-esc");
     let (mut hub, _router, ctx) = chat_hub(&dir);
@@ -273,6 +279,7 @@ fn a_pop_out_dropped_on_the_strip_after_esc_stays_out() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 #[test]
+#[ignore = "the tab strip is gone (UI overhaul); the tab drags go with the pop-out rework"]
 fn a_pop_out_let_go_off_the_strip_stays_out() {
     let dir = temp_dir("drag-dock-off");
     let (mut hub, _router, ctx) = chat_hub(&dir);
@@ -321,6 +328,7 @@ fn drag_events(a: Pos2, to: Pos2) -> Vec<Vec<Event>> {
 }
 
 #[test]
+#[ignore = "the tab strip is gone (UI overhaul); the tab drags go with the pop-out rework"]
 fn renders_the_drags_for_review() {
     // 1. Tear-off: Chat dragged out of Hideout, the ghost card beside the window.
     let dir = temp_dir("png-drag-tear");

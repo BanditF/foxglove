@@ -1034,7 +1034,7 @@ impl Hub {
         let ids: Vec<String> = pages.iter().map(|p| p.id().to_string()).collect();
         // Hub pages that are gone are dropped; module tabs wait for their module ("Starting").
         let exists = |id: &TabId| match id {
-            TabId::Page { page } => ids.contains(page),
+            TabId::Page { page } => page == HOME || ids.contains(page),
             TabId::Panel { .. } => true,
         };
         let file = shared.paths.tabs_file();
@@ -2256,12 +2256,8 @@ impl Hub {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(HOME_TITLE)
-                        .size(kit::TITLE)
-                        .color(c(t.text)),
-                );
-                ui.add_space(kit::SECTION - kit::GAP);
+                // The header names the page.
+                ui.add_space(kit::GAP);
                 heading(ui, HOME_NEEDS);
                 if needs.is_empty() {
                     ui.label(egui::RichText::new(HOME_NEEDS_NONE).color(c(t.text_muted)));
@@ -2437,8 +2433,11 @@ impl Hub {
             (None, None) => (e.title.clone(), e.title.clone()),
         };
         let resp = resp.on_hover_text(tip);
-        ui.ctx()
-            .accesskit_node_builder(resp.id, |n| n.set_label(said));
+        ui.ctx().accesskit_node_builder(resp.id, |n| {
+            n.set_role(egui::accesskit::Role::Tab);
+            n.set_selected(selected);
+            n.set_label(said);
+        });
         let r = resp.rect;
         if selected {
             // The orange bar on the rail's edge: which page the working area shows.
@@ -2468,60 +2467,66 @@ impl Hub {
             );
         }
         if resp.clicked() {
-            if out {
-                self.focus_popout(&e.target);
-            } else {
-                self.open(e.target);
+            match self.tabs.position(&e.target) {
+                Some(_) if out => self.focus_popout(&e.target),
+                Some(i) => self.apply(Action::Activate(i)),
+                None => self.open(e.target),
             }
         }
     }
 
-    fn strip_bar(&mut self, ctx: &egui::Context, t: &Tokens) {
+    /// The working area's header: the open page's icon, name and state line, then the hub's own
+    /// notes (Paused, a removal) and Pop out. Hub-drawn, so a module cannot dress it.
+    fn header(&mut self, ctx: &egui::Context, t: &Tokens) {
         for i in 0..self.tabs.len() {
             let title = self.look(i).title;
             self.tabs.set_title(i, &title);
         }
-        let looks: Vec<Look> = (0..self.tabs.len()).map(|i| self.look(i)).collect();
-        let mut actions = Vec::new();
-        egui::TopBottomPanel::top("hideout.strip")
-            .exact_height(strip::STRIP_H)
-            .show_separator_line(false)
-            .frame(egui::Frame::new().fill(c(t.chrome)))
-            .show(ctx, |ui| {
-                actions = strip::strip_ui(ui, &self.tabs, &looks, t, &mut self.strip);
-            });
-        for a in actions {
-            self.apply(a);
-        }
-    }
-
-    fn status_strip(&self, ctx: &egui::Context, t: &Tokens) {
+        let active = self.tabs.active();
+        let look = active.map(|i| self.look(i));
         let items = self.status_items();
-        egui::TopBottomPanel::bottom("hideout.status")
-            .exact_height(28.0)
+        let mut pop = false;
+        egui::TopBottomPanel::top("hideout.header")
+            .exact_height(crate::kit::HEADER)
+            .show_separator_line(false)
             .frame(
                 egui::Frame::new()
-                    .fill(c(t.chrome))
-                    .inner_margin(egui::Margin::symmetric(12, 4)),
+                    .fill(c(t.bg))
+                    .inner_margin(egui::Margin::symmetric(24, 0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    let shown = status::visible(&items, &[]);
-                    if shown.is_empty() {
-                        ui.label(egui::RichText::new("Ready").color(c(t.text_muted)));
-                    }
-                    for (i, item) in shown.iter().enumerate() {
-                        if i > 0 {
-                            ui.label(egui::RichText::new("\u{b7}").color(c(t.text_muted)));
+                    if let Some(look) = &look {
+                        ui.label(egui::RichText::new(look.icon).size(16.0).color(c(t.text)));
+                        ui.label(
+                            egui::RichText::new(&look.title)
+                                .size(16.0)
+                                .strong()
+                                .color(c(t.text)),
+                        );
+                        if let Some(line) = look.state_line() {
+                            let stopped = matches!(look.state, TabState::Stopped(_));
+                            let col = if stopped { t.danger } else { t.text_muted };
+                            ui.label(egui::RichText::new(line).color(c(col)));
                         }
-                        let col = if item.problem { c(t.danger) } else { c(t.text) };
-                        ui.label(egui::RichText::new(&item.text).color(col));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Ctrl+K  Commands").color(c(t.text_muted)));
+                        if look.as_ref().is_some_and(|l| !l.popped) {
+                            pop = ui
+                                .button("\u{2197}  Pop out")
+                                .on_hover_text(strip::POPOUT_TIP)
+                                .clicked();
+                        }
+                        for item in status::visible(&items, &[]).iter().rev() {
+                            let col = if item.problem { t.danger } else { t.text_muted };
+                            ui.label(egui::RichText::new(&item.text).color(c(col)));
+                        }
                     });
                 });
             });
+        if let (true, Some(i)) = (pop, active) {
+            self.apply(Action::PopOut(i));
+        }
     }
 
     /// The page area: the active tab's page, its placeholder when popped out, the stopped card,
@@ -3160,8 +3165,11 @@ impl Hub {
         // The search's bar first: above the pages and first in tab order (#1033).
         self.search_bar(ctx, &t);
         self.rail(ctx, &t);
-        self.status_strip(ctx, &t);
-        self.strip_bar(ctx, &t);
+        // Nothing open (the last page was closed): Home.
+        if self.tabs.active().is_none() {
+            self.open(TabId::page(HOME));
+        }
+        self.header(ctx, &t);
         self.ghost_ui(ctx, &t);
         self.dock_bar_ui(ctx, &t);
         egui::CentralPanel::default()

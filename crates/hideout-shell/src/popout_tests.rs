@@ -128,9 +128,9 @@ fn the_menu_and_the_button_pop_out_and_closing_docks_back_quietly() {
 }
 
 impl Hub {
-    /// Clicks the ↗ button at the strip's right end (1100 px wide window); whether Chat popped.
+    /// Clicks Pop out at the header's right end (1100 px wide window); whether Chat popped.
     fn strip_button_click(&mut self, ctx: &egui::Context) -> bool {
-        let at = egui::pos2(1100.0 - strip::POPOUT_W / 2.0, strip::STRIP_H / 2.0);
+        let at = egui::pos2(1100.0 - 24.0 - 30.0, crate::kit::HEADER / 2.0);
         let ev = vec![
             Event::PointerMoved(at),
             Event::PointerButton {
@@ -1017,15 +1017,9 @@ fn text_at(out: &egui::FullOutput, text: &str) -> Vec<egui::Pos2> {
     v
 }
 
-/// The strip draws `glyph` just before `title`, on the same line (in the tab strip).
-fn icon_before(out: &egui::FullOutput, glyph: &str, title: &str) -> bool {
-    let strip = strip::STRIP_H;
-    text_at(out, glyph).iter().any(|g| {
-        g.y < strip
-            && text_at(out, title)
-                .iter()
-                .any(|t| t.y < strip && (t.y - g.y).abs() < 4.0 && t.x > g.x && t.x - g.x < 60.0)
-    })
+/// The launcher rail draws `glyph` (the left 56 px).
+fn icon_in_rail(out: &egui::FullOutput, glyph: &str) -> bool {
+    text_at(out, glyph).iter().any(|g| g.x < crate::kit::RAIL)
 }
 
 #[test]
@@ -1058,17 +1052,11 @@ fn each_tab_shows_its_page_icon_before_the_title() {
         ("gear", "Settings"),
         ("module", "Modules"),
     ] {
-        assert!(
-            icon_before(&out, glyph(g), title),
-            "{title}: {:?}",
-            drawn(&out)
-        );
+        assert!(icon_in_rail(&out, glyph(g)), "{title}: {:?}", drawn(&out));
     }
-    // A stopped page: the red mark replaces its icon.
-    assert!(icon_before(&out, "\u{26a0}", "Art"));
-    assert!(!icon_before(&out, glyph("brush"), "Art"));
-    // A busy page keeps its icon (the ring goes round it).
-    assert!(icon_before(&out, glyph("screen"), "Screens"));
+    // A stopped page carries the red mark on its icon; a busy page keeps its icon.
+    assert!(icon_in_rail(&out, "\u{26a0}"));
+    assert!(icon_in_rail(&out, glyph("screen")));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1105,58 +1093,6 @@ fn tab_to_strip(ctx: &egui::Context, hub: &mut Hub) -> usize {
         }
     }
     panic!("Tab never reached the strip");
-}
-
-#[test]
-fn shift_f10_on_a_focused_tab_opens_its_menu() {
-    let dir = temp_dir("tab-menu-key");
-    let (mut hub, _router, ctx) = chat_hub(&dir);
-    ctx.enable_accesskit();
-    let _ = tab_to_strip(&ctx, &mut hub);
-    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
-    assert_eq!(
-        focus_node(&out),
-        Some((egui::accesskit::Role::Tab, "Chat".into()))
-    );
-    assert!(!labels(&out).iter().any(|l| l == "Close others"));
-    // Shift+F10: the right-click menu, its first item focused.
-    let f10 = vec![key(Key::F10, Modifiers::SHIFT)];
-    let _ = ctx.run(input(1100.0, 640.0, f10), |c| hub.frame(c));
-    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
-    let words = labels(&out);
-    for item in [
-        "Close others",
-        "Close to the right",
-        "Pop out",
-        "Reopen closed tab",
-    ] {
-        assert!(words.iter().any(|l| l == item), "{item}: {words:?}");
-    }
-    assert_eq!(focus_node(&out).map(|(_, l)| l).as_deref(), Some("Close"));
-    // Esc closes it and gives the focus back to the tab.
-    let esc = vec![key(Key::Escape, Modifiers::NONE)];
-    let _ = ctx.run(input(1100.0, 640.0, esc), |c| hub.frame(c));
-    let out = frames(&ctx, &mut hub, vec![]);
-    assert!(!labels(&out).iter().any(|l| l == "Close others"));
-    assert_eq!(
-        focus_node(&out),
-        Some((egui::accesskit::Role::Tab, "Chat".into()))
-    );
-    // The Menu key reaches the strip as Shift+F10 (`MenuCommand::MenuKey`); Enter picks Close.
-    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| {
-        hideout_panels::tray::menu_key(c);
-        hub.frame(c)
-    });
-    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
-    assert_eq!(focus_node(&out).map(|(_, l)| l).as_deref(), Some("Close"));
-    let enter = vec![key(Key::Enter, Modifiers::NONE)];
-    let _ = ctx.run(input(1100.0, 640.0, enter), |c| hub.frame(c));
-    let _ = frames(&ctx, &mut hub, vec![]);
-    assert!(
-        !hub.tabs.is_open(&chat()),
-        "Close from the menu closed Chat"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Scenes (unsaved) in Hideout, Chat (unsaved) in its own window, Art saved.
