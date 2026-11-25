@@ -982,6 +982,25 @@ struct FlyoutFrame {
     report: hideout_panels::tray::TrayReport,
     /// The panel's height in points (the grid plus its margins).
     height: f32,
+    /// **Review** on the needs-you line.
+    review: bool,
+}
+
+/// The flyout's needs-you line: the first app that needs the person, and how many more do.
+pub(crate) struct FlyoutNeeds {
+    pub(crate) first: String,
+    pub(crate) more: usize,
+}
+
+const FLYOUT_REVIEW: &str = "Review\u{2026}";
+const FLYOUT_REVIEW_NAME: &str = "Review what needs you";
+
+fn flyout_needs_line(n: &FlyoutNeeds) -> String {
+    format!("{} needs you", n.first)
+}
+
+fn flyout_more_line(more: usize) -> String {
+    format!("and {more} more")
 }
 
 /// The flyout's margin, in points.
@@ -995,23 +1014,66 @@ fn flyout_frame(t: &Tokens) -> egui::Frame {
         .inner_margin(egui::Margin::same(FLYOUT_MARGIN))
 }
 
-/// The flyout's contents (the tray panel) inside its frame. Returns the report and the height
-/// the flyout needs, frame included. Window-free (the review renders it).
+/// The flyout's contents inside its frame, a small Home: its name, one needs-you line when
+/// an app needs the person, then the tray panel. Returns the report, the height the flyout
+/// needs (frame included) and whether Review was pressed. Window-free (the review renders it).
 fn flyout_panel(
     ui: &mut egui::Ui,
     panels: &mut PanelHost,
     layout: &mut TrayLayout,
     editing: &mut bool,
     t: &Tokens,
-) -> (hideout_panels::tray::TrayReport, f32) {
+    needs: Option<&FlyoutNeeds>,
+) -> (hideout_panels::tray::TrayReport, f32, bool) {
     // Tracks (a meter's bar) are `extreme_bg_color`, the hub's surface: on the flyout's own
     // surface they vanish, so here they take the page colour (the same contrast, reversed).
     ui.visuals_mut().extreme_bg_color = c(t.bg);
     let now = std::time::Instant::now();
     // Measured on a child: a panel's own rect is the whole window.
-    let r = ui.vertical(|ui| hideout_panels::tray_panel_ui(panels, ui, layout, editing, now));
+    let mut review = false;
+    let r = ui.vertical(|ui| {
+        if !*editing {
+            ui.label(egui::RichText::new(PRODUCT).strong().color(c(t.text)));
+            ui.add_space(crate::kit::GAP);
+            if let Some(n) = needs {
+                crate::kit::plate(t)
+                    .stroke(egui::Stroke::new(1.0_f32, c(t.attention)))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(flyout_needs_line(n))
+                                        .strong()
+                                        .color(c(t.text)),
+                                );
+                                if n.more > 0 {
+                                    ui.label(
+                                        egui::RichText::new(flyout_more_line(n.more))
+                                            .size(crate::kit::SMALL)
+                                            .color(c(t.text_muted)),
+                                    );
+                                }
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let b = ui.button(FLYOUT_REVIEW);
+                                    ui.ctx().accesskit_node_builder(b.id, |n| {
+                                        n.set_label(FLYOUT_REVIEW_NAME)
+                                    });
+                                    review = b.clicked();
+                                },
+                            );
+                        });
+                    });
+                ui.add_space(crate::kit::GAP);
+            }
+        }
+        hideout_panels::tray_panel_ui(panels, ui, layout, editing, now)
+    });
     let frame = 2.0 * (FLYOUT_MARGIN as f32 + 1.0);
-    (r.inner, r.response.rect.height() + frame)
+    (r.inner, r.response.rect.height() + frame, review)
 }
 
 fn key_of(id: &TabId) -> Option<PanelKey> {
@@ -1341,6 +1403,13 @@ impl Hub {
                 flyout::Click::Nothing => {}
             }
         }
+        let needs = self.flyout.as_ref().and_then(|_| {
+            let all = self.home_needs();
+            all.first().map(|(_, look)| FlyoutNeeds {
+                first: look.title.clone(),
+                more: all.len() - 1,
+            })
+        });
         let Some(fly) = self.flyout.as_mut() else {
             flyout::set_live(false);
             platform::forget_flyout();
@@ -1382,8 +1451,9 @@ impl Hub {
             if let Some(tx) = capture.take() {
                 crate::capture::queue_readback(ctx, crate::capture::Window::Flyout, tx);
             }
-            let draw = |ui: &mut egui::Ui| flyout_panel(ui, panels, layout, editing, t);
-            let (report, height) = if class == egui::ViewportClass::Embedded {
+            let draw =
+                |ui: &mut egui::Ui| flyout_panel(ui, panels, layout, editing, t, needs.as_ref());
+            let (report, height, review) = if class == egui::ViewportClass::Embedded {
                 // No second window (tests, or a backend without viewports): an area on top.
                 egui::Area::new(egui::Id::new("hideout.tray.flyout"))
                     .order(egui::Order::Foreground)
@@ -1414,6 +1484,7 @@ impl Hub {
                 close,
                 report,
                 height,
+                review,
             }
         });
         if frame.focused == Some(true) {
@@ -1463,6 +1534,11 @@ impl Hub {
             }
         };
         let mut leave = frame.close || lost || unfocused;
+        if frame.review {
+            self.open(TabId::page(HOME));
+            self.show_main();
+            leave = true;
+        }
         for a in frame.report.actions {
             match a {
                 TrayAction::Open { module, target } => {

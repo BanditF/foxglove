@@ -1324,7 +1324,12 @@ fn renders_the_flyout_for_review() {
     }
     let t = theme::tokens(true);
     let w = flyout::WIDTH as u32;
+    let needs = std::cell::Cell::new(false);
     let draw = |host: &mut hideout_panels::PanelHost, name: &str, editing: bool, focus: bool| {
+        let n = needs.get().then(|| FlyoutNeeds {
+            first: "Mic mute".into(),
+            more: 1,
+        });
         let mut layout = TrayLayout::default();
         // Measure first, then draw at the height the flyout would take.
         let mut height = flyout::FIRST_HEIGHT;
@@ -1333,7 +1338,7 @@ fn renders_the_flyout_for_review() {
             egui::CentralPanel::default()
                 .frame(flyout_frame(&t))
                 .show(c, |ui| {
-                    height = flyout_panel(ui, host, &mut layout, &mut ed, &t).1
+                    height = flyout_panel(ui, host, &mut layout, &mut ed, &t, n.as_ref()).1
                 });
         })?;
         let h = height.ceil() as u32;
@@ -1344,7 +1349,9 @@ fn renders_the_flyout_for_review() {
             }
             egui::CentralPanel::default()
                 .frame(flyout_frame(&t))
-                .show(c, |ui| flyout_panel(ui, host, &mut layout, &mut ed, &t));
+                .show(c, |ui| {
+                    flyout_panel(ui, host, &mut layout, &mut ed, &t, n.as_ref())
+                });
         })?;
         save_png(name, w, h, rgba);
         Some(())
@@ -1366,6 +1373,19 @@ fn renders_the_flyout_for_review() {
     }
     draw(&mut host, "built-flyout-all.png", false, false);
     draw(&mut host, "built-flyout-edit.png", true, false);
+    needs.set(true);
+    draw(&mut host, "built-flyout-needs.png", false, false);
+}
+
+/// The flyout's needs-you line names the first app and counts the rest.
+#[test]
+fn the_flyout_needs_line_reads_right() {
+    let n = FlyoutNeeds {
+        first: "Mic mute".into(),
+        more: 2,
+    };
+    assert_eq!(flyout_needs_line(&n), "Mic mute needs you");
+    assert_eq!(flyout_more_line(n.more), "and 2 more");
 }
 
 // ---- The supervisor's surfaces (#983): crash bar, stopped card, Couldn't start ----
