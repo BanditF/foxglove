@@ -22,6 +22,9 @@ pub const RADIUS: u8 = 6;
 /// Corner radius of a card or a dialog.
 pub const CARD_RADIUS: u8 = 8;
 
+/// The space inside a dialog's edge.
+pub const DIALOG_PAD: i8 = 24;
+
 /// Type sizes, in points.
 pub const BODY: f32 = 14.0;
 pub const SMALL: f32 = 12.0;
@@ -88,6 +91,55 @@ pub fn controls(v: &mut egui::Visuals, t: &Tokens) {
     w.noninteractive.corner_radius = r;
     v.window_corner_radius = egui::CornerRadius::same(CARD_RADIUS + 4);
     v.menu_corner_radius = egui::CornerRadius::same(CARD_RADIUS);
+}
+
+/// The frame of every dialog the hub draws: the popup's fill, border and shadow, with room
+/// inside.
+pub fn dialog_frame(style: &egui::Style) -> egui::Frame {
+    egui::Frame::popup(style)
+        .inner_margin(egui::Margin::same(DIALOG_PAD))
+        .corner_radius(egui::CornerRadius::same(CARD_RADIUS + 4))
+}
+
+/// The plate that says who is asking (the app's file): the same in every dialog.
+pub fn plate(t: &Tokens) -> egui::Frame {
+    egui::Frame::new()
+        .fill(c(t.bg))
+        .stroke(egui::Stroke::new(1.0_f32, c(t.border)))
+        .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+}
+
+/// A dialog's last row: `left` at the left edge (small print), the buttons of `right` against
+/// the right edge, in the order they are added (so Tab order is reading order). The buttons'
+/// width comes from the frame before; the very first frame draws them at the left.
+pub fn dialog_footer<R>(
+    ui: &mut egui::Ui,
+    left: impl FnOnce(&mut egui::Ui),
+    right: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let id = ui.id().with("hideout.dialog.footer");
+    let w: Option<f32> = ui.data(|d| d.get_temp(id));
+    ui.horizontal(|ui| {
+        left(ui);
+        if let Some(w) = w {
+            ui.add_space((ui.available_width() - w).max(0.0));
+        }
+        let x0 = ui.cursor().left();
+        let r = right(ui);
+        let used = ui.min_rect().right() - x0;
+        if w.is_none_or(|w| (w - used).abs() > 0.5) {
+            ui.data_mut(|d| d.insert_temp(id, used));
+            ui.ctx().request_repaint();
+        }
+        r
+    })
+    .inner
+}
+
+/// [`dialog_footer`] with the buttons only.
+pub fn dialog_buttons<R>(ui: &mut egui::Ui, right: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    dialog_footer(ui, |_| {}, right)
 }
 
 #[cfg(test)]
