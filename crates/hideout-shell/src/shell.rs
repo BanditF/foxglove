@@ -50,6 +50,40 @@ pub trait Page {
     }
 }
 
+/// One icon on the launcher rail: where it goes, its name, its glyph and, for a module's page,
+/// the tab's look (state, mark and words).
+struct RailEntry {
+    target: TabId,
+    title: String,
+    icon: &'static str,
+    look: Option<Look>,
+}
+
+/// The state mark on a rail icon's top right corner, as on its tab: the red warning mark when
+/// stopped (it wins), else the orange ring while busy and the attention dot. The words are in
+/// the entry's accessible name, so colour is never the only signal.
+fn rail_mark(ui: &egui::Ui, t: &Tokens, r: egui::Rect, look: &Look) {
+    let at = egui::pos2(r.right() - 7.0, r.top() + 7.0);
+    if matches!(look.state, TabState::Stopped(_)) {
+        ui.painter().text(
+            at,
+            egui::Align2::CENTER_CENTER,
+            "\u{26A0}",
+            egui::FontId::proportional(12.0),
+            c(t.danger),
+        );
+        return;
+    }
+    if look.busy() {
+        let ring = egui::Stroke::new(1.5_f32, c(t.accent));
+        ui.painter()
+            .add(egui::Shape::line(strip::ring_points(at, 6.0), ring));
+    }
+    if look.mark == Mark::Attention {
+        ui.painter().circle_filled(at, 3.5, c(t.accent));
+    }
+}
+
 pub struct ShellOptions {
     pub paths: HubPaths,
     pub pages: Vec<Box<dyn Page>>,
@@ -2151,138 +2185,127 @@ impl Hub {
         }
     }
 
-    fn sidebar(&mut self, ctx: &egui::Context, t: &Tokens) {
+    /// The launcher's entries, top to bottom: the hub's pages, the modules' pages, then the pages
+    /// kept at the bottom (Settings).
+    fn rail_entries(&self) -> (Vec<RailEntry>, Vec<RailEntry>) {
+        let page = |p: &dyn Page| RailEntry {
+            target: TabId::page(p.id()),
+            title: p.title().to_string(),
+            icon: hideout_panels::tray::icon_glyph(p.icon()),
+            look: None,
+        };
+        let mut top: Vec<RailEntry> = self
+            .pages
+            .iter()
+            .filter(|p| !p.at_bottom())
+            .map(|p| page(p.as_ref()))
+            .collect();
+        top.extend(self.panels.in_slot(Slot::Page).map(|p| {
+            let look = self.panel_look(p, false);
+            RailEntry {
+                target: TabId::panel(&p.key.module, &p.key.panel),
+                title: p.title.clone(),
+                icon: look.icon,
+                look: Some(look),
+            }
+        }));
+        let bottom = self.pages.iter().filter(|p| p.at_bottom());
+        let bottom = bottom.map(|p| page(p.as_ref()));
+        (top, bottom.collect())
+    }
+
+    /// The launcher: a thin rail of icons on the left, one per page. An entry's name and its
+    /// state are its tooltip and its accessible name, as on its tab.
+    fn rail(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let (top, bottom) = self.rail_entries();
         egui::SidePanel::left("hideout.sidebar")
             .resizable(false)
-            .exact_width(200.0)
+            .exact_width(crate::kit::RAIL)
             .frame(
                 egui::Frame::new()
                     .fill(c(t.chrome))
-                    .inner_margin(egui::Margin::symmetric(10, 14)),
+                    .inner_margin(egui::Margin::symmetric(8, 8)),
             )
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(crate::product_name())
-                        .size(20.0)
-                        .strong()
-                        .color(c(t.text)),
-                );
-                ui.add_space(14.0);
-                // (target, title, attention dot, a module's look: the tab's state, words and ring)
-                let mut entries: Vec<(TabId, String, bool, Option<Look>)> = self
-                    .pages
-                    .iter()
-                    .filter(|p| !p.at_bottom())
-                    .map(|p| (TabId::page(p.id()), p.title().to_string(), false, None))
-                    .collect();
-                entries.extend(self.panels.in_slot(Slot::Page).map(|p| {
-                    (
-                        TabId::panel(&p.key.module, &p.key.panel),
-                        p.title.clone(),
-                        p.badge == hideout_panels::Badge::Attention,
-                        Some(self.panel_look(p, false)),
-                    )
-                }));
-                entries.extend(
-                    self.pages
-                        .iter()
-                        .filter(|p| p.at_bottom())
-                        .map(|p| (TabId::page(p.id()), p.title().to_string(), false, None)),
-                );
-                let active = self.tabs.active_id().cloned();
-                for (target, title, attention, look) in entries {
-                    let selected = active.as_ref() == Some(&target);
-                    // Off for this round of a search (#1033): muted, and its name says so.
-                    let off = match &target {
-                        TabId::Panel { module, .. } => self.search_off.get(module).cloned(),
-                        TabId::Page { .. } => None,
-                    };
-                    let col = if off.is_some() && !selected {
-                        t.text_muted
-                    } else {
-                        theme::nav_label(t, selected)
-                    };
-                    let text = egui::RichText::new(title).size(15.0).color(c(col));
-                    let mut resp = ui.add_sized(
-                        [ui.available_width(), 32.0],
-                        egui::Button::selectable(selected, text),
-                    );
-                    if let Some(name) = off {
-                        let said = hideout_supervisor::bisect::words::off_for_round(&name);
-                        resp = resp.on_hover_text(said.clone());
-                        ui.ctx()
-                            .accesskit_node_builder(resp.id, |n| n.set_label(said));
-                    } else if let Some(look) = look
-                        .as_ref()
-                        .filter(|l| matches!(l.state, TabState::Stopped(_)))
-                    {
-                        // The red warning mark, as on its tab (docs/hideout-supervisor-ux.md, S
-                        // and T); its words are in the entry's accessible name.
-                        let said = look.accessible_name();
-                        let at = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
-                        ui.painter().text(
-                            at,
-                            egui::Align2::CENTER_CENTER,
-                            "\u{26A0}",
-                            egui::FontId::proportional(14.0),
-                            c(theme::nav_mark(t, selected)),
-                        );
-                        resp = resp.on_hover_text(look.tooltip());
-                        ui.ctx()
-                            .accesskit_node_builder(resp.id, |n| n.set_label(said));
-                    } else {
-                        let at = egui::pos2(resp.rect.right() - 12.0, resp.rect.center().y);
-                        let fill = if selected { t.on_accent } else { t.accent };
-                        if let Some(look) = look.as_ref().filter(|l| l.busy()) {
-                            // The orange ring of its tab (starting, restarting, updating,
-                            // waiting), with the tab's tooltip and accessible name.
-                            let ring = egui::Stroke::new(1.5_f32, c(fill));
-                            ui.painter()
-                                .add(egui::Shape::line(strip::ring_points(at, 8.5), ring));
-                            let said = look.accessible_name();
-                            resp = resp.on_hover_text(look.tooltip());
-                            ui.ctx()
-                                .accesskit_node_builder(resp.id, |n| n.set_label(said));
-                        } else if let Some(look) = look
-                            .as_ref()
-                            .filter(|l| matches!(l.state, TabState::Note(_)))
-                        {
-                            // An update that waits: no ring, the tab's tooltip and name.
-                            let said = look.accessible_name();
-                            resp = resp.on_hover_text(look.tooltip());
-                            ui.ctx()
-                                .accesskit_node_builder(resp.id, |n| n.set_label(said));
-                        }
-                        if attention {
-                            // The attention dot on the sidebar entry too; the tab's accessible
-                            // name says "something new", so colour is not the only signal.
-                            ui.painter().circle_filled(at, 4.0, c(fill));
-                        }
-                    }
-                    let out = self
-                        .tabs
-                        .position(&target)
-                        .is_some_and(|i| self.tabs.tabs()[i].popped);
-                    if out {
-                        // In its own window: a muted ↗ at the entry's right.
-                        let at = egui::pos2(resp.rect.right() - 30.0, resp.rect.center().y);
-                        ui.painter().text(
-                            at,
-                            egui::Align2::CENTER_CENTER,
-                            "\u{2197}",
-                            egui::FontId::proportional(12.0),
-                            c(t.text_muted),
-                        );
-                    }
-                    if resp.clicked() {
-                        if out {
-                            self.focus_popout(&target);
-                        } else {
-                            self.open(target);
-                        }
-                    }
+                ui.spacing_mut().item_spacing.y = 4.0;
+                // An icon has no fill until hovered; the selected one is raised, not orange.
+                let v = ui.visuals_mut();
+                v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                v.selection.bg_fill = c(crate::kit::raised(t));
+                for e in top {
+                    self.rail_item(ui, t, e);
+                }
+                // The bottom pages keep their place at the foot of the rail, in reading order.
+                let foot = bottom.len() as f32 * (crate::kit::RAIL_ITEM + 4.0);
+                ui.add_space((ui.available_height() - foot).max(0.0));
+                for e in bottom {
+                    self.rail_item(ui, t, e);
                 }
             });
+    }
+
+    fn rail_item(&mut self, ui: &mut egui::Ui, t: &Tokens, e: RailEntry) {
+        let selected = self.tabs.active_id() == Some(&e.target);
+        // Off for this round of a search (#1033): muted, and its name says so.
+        let off = match &e.target {
+            TabId::Panel { module, .. } => self.search_off.get(module).cloned(),
+            TabId::Page { .. } => None,
+        };
+        let col = if off.is_some() && !selected {
+            t.text_muted
+        } else {
+            t.text
+        };
+        let glyph = egui::RichText::new(e.icon).size(18.0).color(c(col));
+        let size = [crate::kit::RAIL_ITEM, crate::kit::RAIL_ITEM];
+        let resp = ui.add_sized(size, egui::Button::selectable(selected, glyph));
+        let (said, tip) = match (&off, &e.look) {
+            (Some(name), _) => {
+                let said = hideout_supervisor::bisect::words::off_for_round(name);
+                (said.clone(), said)
+            }
+            (None, Some(look)) => (look.accessible_name(), look.tooltip()),
+            (None, None) => (e.title.clone(), e.title.clone()),
+        };
+        let resp = resp.on_hover_text(tip);
+        ui.ctx()
+            .accesskit_node_builder(resp.id, |n| n.set_label(said));
+        let r = resp.rect;
+        if selected {
+            // The orange bar on the rail's edge: which page the working area shows.
+            let bar = egui::Rect::from_min_max(
+                egui::pos2(r.left() - 8.0, r.top() + 8.0),
+                egui::pos2(r.left() - 5.0, r.bottom() - 8.0),
+            );
+            ui.painter().rect_filled(bar, 1.5, c(t.accent));
+        }
+        if off.is_none() {
+            if let Some(look) = &e.look {
+                rail_mark(ui, t, r, look);
+            }
+        }
+        let out = self
+            .tabs
+            .position(&e.target)
+            .is_some_and(|i| self.tabs.tabs()[i].popped);
+        if out {
+            // In its own window: a muted arrow on the icon's bottom right corner.
+            ui.painter().text(
+                egui::pos2(r.right() - 7.0, r.bottom() - 7.0),
+                egui::Align2::CENTER_CENTER,
+                "\u{2197}",
+                egui::FontId::proportional(11.0),
+                c(t.text_muted),
+            );
+        }
+        if resp.clicked() {
+            if out {
+                self.focus_popout(&e.target);
+            } else {
+                self.open(e.target);
+            }
+        }
     }
 
     fn strip_bar(&mut self, ctx: &egui::Context, t: &Tokens) {
@@ -2961,7 +2984,7 @@ impl Hub {
         }
         // The search's bar first: above the pages and first in tab order (#1033).
         self.search_bar(ctx, &t);
-        self.sidebar(ctx, &t);
+        self.rail(ctx, &t);
         self.status_strip(ctx, &t);
         self.strip_bar(ctx, &t);
         self.ghost_ui(ctx, &t);
