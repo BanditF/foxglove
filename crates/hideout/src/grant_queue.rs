@@ -13,7 +13,7 @@ pub struct Queued {
     /// The hub folder the request is for (tests run many hubs in one process).
     pub home: std::path::PathBuf,
     pub id: String,
-    /// The list code the CLI caller named: the dialog preselects these items only while the
+    /// The list code the CLI caller named: the dialog marks these items only while the
     /// module's list still has this code.
     pub code: String,
     pub items: Vec<String>,

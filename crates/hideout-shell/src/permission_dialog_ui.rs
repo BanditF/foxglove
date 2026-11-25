@@ -309,7 +309,7 @@ fn everyday_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<
     ui.add_space(6.0);
     let state = d.all_state();
     let mut all_on = state == All::All;
-    let forced = d.items.iter().any(|i| i.new || i.before);
+    let forced = d.items.iter().any(|i| i.new || i.before || i.asked);
     let label = d.everyday_label();
     let shown = d.everyday_shown();
     ui.horizontal(|ui| {
@@ -412,6 +412,12 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                         if item.before {
                             ui.label(
                                 fine(ui, crate::permission_dialog::BEFORE_MARK)
+                                    .color(c(t.text_muted)),
+                            );
+                        }
+                        if item.asked {
+                            ui.label(
+                                fine(ui, crate::permission_dialog::ASKED_MARK)
                                     .color(c(t.text_muted)),
                             );
                         }

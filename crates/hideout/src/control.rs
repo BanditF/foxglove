@@ -291,7 +291,7 @@ fn queue_grant(
     (
         NEEDS_OK,
         format!(
-            "Queued: {n} item(s) for {}. Nothing is allowed yet: confirm in Hideout, on the Apps page.",
+            "Queued: {n} item(s) for {}. Nothing is allowed yet. In Hideout, open the Apps page and press Review. You choose there what to allow.",
             list.name
         ),
     )
@@ -814,7 +814,7 @@ mod tests {
         assert!(
             t.contains("Queued")
                 && t.contains("Nothing is allowed yet")
-                && t.contains("on the Apps page")
+                && t.contains("open the Apps page and press Review")
                 && !t.to_lowercase().contains("module"),
             "{t}"
         );

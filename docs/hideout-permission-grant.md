@@ -45,9 +45,12 @@ and answers exit 3 with "Queued ... Nothing is allowed yet". A stale code, an it
 the list and `--keyboard` (which has its own window) are not queued. A newer request for the same
 module replaces the older one; restarting the hub drops them all.
 
-The Apps page shows a header line "A command asked to allow N permissions for X" with Review
-and Not now. Review opens the normal dialog (`PermUi::open_queued`) with exactly the named items
-ticked and everything else unticked; only the user's Allow writes the grant, for the list code
+The Apps page shows a header line "A command asked for permissions for X" (no count: the
+dialog's own count is the true one) with Review
+and Not now. Review opens the normal dialog (`PermUi::open_queued`) as it normally would,
+whatever the command named; anything the command asked for that isn't ticked is marked "Asked by
+a command", listed even when it is an everyday item, and explained in two lines under the reason.
+Only the user's Allow writes the grant, for the list code
 the dialog shows (the same `grant_listed_in` as any Allow, recorded as `by = "dialog"`). If the
 list changed since the command, the request is dropped and the dialog opens on the new list with
 the reason on top. Not now on the header line drops the request; any Allow in the dialog for
@@ -60,7 +63,7 @@ Test seam: a lab hub (`lab_control::enabled`: its own folder and lab mode allowe
 user's default folder) is served with `auto_confirm`, and there `grant` applies directly as it did
 before, so lab runs stay headless. The user's hub always queues. Tests use the same parameter
 (`serve(..., auto_confirm)`): `control::tests::cli_grant_leaves_permission_unchanged_until_confirmed`
-and `permission_actions::tests::confirming_a_queued_cli_grant_applies_exactly_the_listed_items`.
+and `permission_actions::tests::a_queued_cli_grant_opens_with_the_normal_ticks_and_confirming_applies_what_is_ticked`.
 
 Residual limit: the queue is only a request; a module outside an AppContainer can still synthesise
 the click in the hub window (see Design limit below).

@@ -3363,6 +3363,7 @@ fn renders_the_permission_dialog_for_review() {
                 confirmed: false,
                 new: false,
                 before: false,
+                asked: false,
             })
             .collect();
         if extra {
@@ -3377,6 +3378,7 @@ fn renders_the_permission_dialog_for_review() {
                 confirmed: false,
                 new: false,
                 before: false,
+                asked: false,
             });
             items.push(ListItem {
                 raw: "modules.manage".into(),
@@ -3389,6 +3391,7 @@ fn renders_the_permission_dialog_for_review() {
                 confirmed: false,
                 new: false,
                 before: false,
+                asked: false,
             });
         }
         items.sort_by_key(|i| (i.group, i.raw.clone()));
@@ -3495,6 +3498,7 @@ fn renders_the_permission_dialog_for_review() {
                         confirmed: false,
                         new: false,
                         before: false,
+                        asked: false,
                     });
                     d.items.sort_by_key(|i| (i.group, i.raw.clone()));
                     d.code = "c41e07ab92d3f6a8".into();
@@ -3755,6 +3759,7 @@ fn renders_the_grants_more_header_for_review() {
                 confirmed: false,
                 new: true,
                 before: false,
+                asked: false,
             })
             .collect();
         items.sort_by_key(|i| (i.group, i.raw.clone()));
@@ -3814,6 +3819,7 @@ fn renders_the_reask_with_allowed_before_for_review() {
         confirmed: false,
         new: false,
         before,
+        asked: false,
     };
     for (dark, tag) in [(true, "dark"), (false, "light")] {
         let t = crate::theme::tokens(dark);
@@ -3913,6 +3919,7 @@ fn renders_the_gpu_manager_dialog_for_review() {
             confirmed,
             new: false,
             before: false,
+            asked: false,
         };
         let mut d = PermDialog {
             id: "example.gpu-helper".into(),
@@ -3973,6 +3980,7 @@ fn keep_test_dialog(
             confirmed: false,
             new: false,
             before: false,
+            asked: false,
         })
         .collect();
     PermDialog {
@@ -4302,6 +4310,7 @@ fn first_run_test_dialog() -> crate::permission_dialog::FirstRun {
         confirmed: false,
         new: false,
         before: false,
+        asked: false,
     };
     let sec = |id: &str, name: &str, code: &str, items| PermDialog {
         id: id.into(),
@@ -4373,6 +4382,7 @@ fn first_run_realistic_dialog() -> crate::permission_dialog::FirstRun {
         confirmed: false,
         new: false,
         before: false,
+        asked: false,
     };
     let fox = &mut d.sections[0];
     fox.items = vec![
@@ -4563,6 +4573,7 @@ fn fr2_test_dialog() -> crate::permission_dialog::PermDialog {
         confirmed: false,
         new: false,
         before: false,
+        asked: false,
     };
     let mut items = vec![
         mk(
@@ -4832,6 +4843,7 @@ fn the_group_form_keeps_the_risk_sentence_of_items_the_note_does_not_say() {
         confirmed: false,
         new: false,
         before: false,
+        asked: false,
     };
     for raw in SENSITIVE_RAWS {
         assert_eq!(mk(raw).group_risk_line("Gizmo Keys"), None, "{raw}");
@@ -4949,6 +4961,7 @@ fn renders_the_consent_copy_for_review() {
         confirmed: false,
         new: false,
         before: false,
+        asked: false,
     };
     let dialog = || {
         let mut items: Vec<ListItem> = [

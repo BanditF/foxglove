@@ -326,8 +326,18 @@ impl KeepRow {
     }
 }
 
+/// Under the Apps page line for a command's request.
+pub const QUEUED_BODY: &str =
+    "Nothing is allowed yet. Review shows its whole list, checked as usual. You choose what to allow.";
 /// The mark on an item checked from the user's earlier answer.
 pub const BEFORE_MARK: &str = "Allowed before";
+/// The mark on an unchecked item a command asked to allow.
+pub const ASKED_MARK: &str = "Asked by a command";
+/// Under the reason lines when a command asked for something that is not checked.
+pub const ASKED_LINES: [&str; 2] = [
+    "A command asked for the items marked \"Asked by a command\". Hideout did not check them.",
+    "Check one only if you want it. Nothing is allowed until you press Allow.",
+];
 /// Under the reason lines when something is checked from before.
 pub const BEFORE_LINES: [&str; 2] = [
     "Items marked \"Allowed before\" are checked from your last answer.",
@@ -383,6 +393,10 @@ pub struct ListItem {
     /// Checked from the user's earlier answer for this same app file (display only; nothing is
     /// allowed until Allow). Never set for a sensitive item.
     pub before: bool,
+    /// A command asked to allow this item and the dialog opened with it unchecked (display
+    /// only: the command never checks anything). Set when the dialog opens and kept while the
+    /// user checks or unchecks it; never set for an item that can't be allowed.
+    pub asked: bool,
 }
 
 impl ListItem {
@@ -445,6 +459,10 @@ impl ListItem {
         }
         if self.before {
             s.push_str(", allowed before");
+        }
+        if self.asked {
+            s.push_str(", ");
+            s.push_str(&ASKED_MARK.to_lowercase());
         }
         s.push_str(if self.checked {
             ", checked"
@@ -587,13 +605,18 @@ impl PermDialog {
         s
     }
 
-    /// The lines that say what is pre-checked from before; none when nothing is.
+    /// The lines that explain the marks: what is pre-checked from before, and what a command
+    /// asked for that is not checked. None when no item has either mark.
     pub fn before_lines(&self) -> Vec<String> {
-        if self.items.iter().any(|i| i.before) {
-            BEFORE_LINES.iter().map(|l| (*l).into()).collect()
-        } else {
-            Vec::new()
-        }
+        let before = self.items.iter().any(|i| i.before);
+        let asked = self.items.iter().any(|i| i.asked);
+        let lines: &[&str] = match (before, asked) {
+            (true, true) => &[BEFORE_LINES[0], ASKED_LINES[0], ASKED_LINES[1]],
+            (true, false) => &BEFORE_LINES,
+            (false, true) => &ASKED_LINES,
+            (false, false) => &[],
+        };
+        lines.iter().map(|l| (*l).into()).collect()
     }
 
     pub fn void_line(&self) -> String {
@@ -761,9 +784,9 @@ impl PermDialog {
     }
 
     /// Whether the everyday items are listed: the user opened them, or something in them needs
-    /// to be seen (a new item, or one checked from an earlier answer).
+    /// to be seen (a new item, one checked from an earlier answer, or one a command asked for).
     pub fn everyday_shown(&self) -> bool {
-        self.view.everyday_open || self.items.iter().any(|i| i.new || i.before)
+        self.view.everyday_open || self.items.iter().any(|i| i.new || i.before || i.asked)
     }
 
     /// "17 everyday items".
@@ -1167,17 +1190,13 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
             KEPT_CHANGED_BODY.into(),
             NOT_NOW,
         ),
-        HeaderKind::Queued => {
-            let (n, _) = cli.unwrap_or((0, ""));
-            (
-                format!(
-                    "A command asked to allow {n} permission{} for {name}",
-                    if n == 1 { "" } else { "s" }
-                ),
-                "Nothing is allowed until you review it here.".into(),
-                NOT_NOW,
-            )
-        }
+        // No count: Review opens the whole list checked as usual, so what Allow covers is
+        // the dialog's own count, not how many items the command named.
+        HeaderKind::Queued => (
+            format!("A command asked for permissions for {name}"),
+            QUEUED_BODY.into(),
+            NOT_NOW,
+        ),
         HeaderKind::More => {
             let (n, first) = cli.unwrap_or((0, ""));
             let body = if n == 1 {
@@ -1257,6 +1276,7 @@ mod tests {
             confirmed: false,
             new: false,
             before: false,
+            asked: false,
         }
     }
 
@@ -1479,6 +1499,52 @@ mod tests {
         assert_eq!(d.all_state(), All::All);
         d.toggle_all();
         assert_eq!(d.all_state(), All::None);
+    }
+
+    /// An item a command asked for says so, after any other mark, in the words drawn on it.
+    #[test]
+    fn an_asked_item_says_asked_by_the_command() {
+        let mut i = item("key.events", Group::Sensitive, true, false);
+        assert!(!i.said().contains("asked by a command"));
+        i.asked = true;
+        assert_eq!(
+            i.said(),
+            "Sensitive: line of key.events, sensitive, asked by a command, not checked"
+        );
+        assert!(i.said().contains(&ASKED_MARK.to_lowercase()));
+        i.new = true;
+        assert!(i.said().contains(", new, asked by a command"));
+    }
+
+    /// An everyday item a command asked for is never left behind "Show", and the lines under
+    /// the reason say what the mark means.
+    #[test]
+    fn an_asked_everyday_item_is_listed_and_explained() {
+        let mut d = dialog();
+        d.items = vec![
+            item("hub.notify", Group::ShareStatus, false, true),
+            item("ui.window", Group::ShareStatus, false, false),
+        ];
+        assert!(!d.everyday_shown() && d.before_lines().is_empty());
+        d.items[1].asked = true;
+        assert!(d.everyday_shown());
+        assert_eq!(d.before_lines(), ASKED_LINES.map(String::from).to_vec());
+        assert!(ASKED_LINES[0].contains(ASKED_MARK));
+        d.items[0].before = true;
+        assert_eq!(
+            d.before_lines(),
+            vec![BEFORE_LINES[0], ASKED_LINES[0], ASKED_LINES[1]]
+        );
+    }
+
+    /// The Apps page line for a command's request gives no count: the dialog's own count is
+    /// the true one.
+    #[test]
+    fn a_commands_request_line_gives_no_count() {
+        let h = header(HeaderKind::Queued, "m", "Sample", Some((3, "")));
+        assert_eq!(h.title, "A command asked for permissions for Sample");
+        assert_eq!(h.body, QUEUED_BODY);
+        assert!(!h.title.contains('3') && !h.body.contains('3'));
     }
 
     #[test]
