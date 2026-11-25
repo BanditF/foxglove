@@ -4,13 +4,17 @@
 //! lies inside the folder of the wallpaper program Foxglove drives (`wallpaper_engine::host_dir`,
 //! the same record every push uses). No program or vendor name decides anything here.
 //!
+//! The connection is found by all four of its ends' numbers (both addresses are 127.0.0.1, both
+//! ports match), and its owner must have been running before the connection's socket was made
+//! and before the connection came in.
+//!
 //! One lookup per accepted connection, on that connection's own thread: one read of the
 //! system's connection table (a second at once when the row is missing), one process opened.
 //! No timer, no retry loop. A peer that cannot be identified is refused, never trusted.
 //!
 //! A program's name is its image's file name only, cleaned and cut: never a path or a pid.
 
-use std::net::TcpStream;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -40,6 +44,8 @@ pub enum Unknown {
     HostNotLocal,
     /// The system's connection table couldn't be read.
     Table,
+    /// The peer's address isn't 127.0.0.1, the only one a wallpaper connects from.
+    Elsewhere,
 }
 
 impl Unknown {
@@ -52,6 +58,7 @@ impl Unknown {
             Unknown::NoHostFolder => "no host folder",
             Unknown::HostNotLocal => "host folder not local",
             Unknown::Table => "table",
+            Unknown::Elsewhere => "peer address",
         }
     }
 }
@@ -61,6 +68,8 @@ impl Unknown {
 pub struct Owner {
     pub image: PathBuf,
     pub born: SystemTime,
+    /// When the connection's socket was made, when the system dates it.
+    pub made: Option<SystemTime>,
 }
 
 /// [`PeerLookup::owner`]'s error when the connection has an owner that couldn't be read.
@@ -110,8 +119,9 @@ pub fn judge(
     if !host_local {
         return Peer::Unknown(Unknown::HostNotLocal);
     }
-    // A process created after the connection came in was given a finished process's number.
-    if owner.born > accepted {
+    // A process created after the connection came in, or after the connection's socket was
+    // made, was given a finished process's number.
+    if owner.born > accepted || owner.made.is_some_and(|made| owner.born > made) {
         return Peer::Unknown(Unknown::BornLater);
     }
     if inside(&owner.image, dir) {
@@ -133,6 +143,20 @@ pub fn peer_of(
     let Ok(addr) = stream.peer_addr() else {
         return Peer::Unknown(Unknown::Gone);
     };
+    peer_at(addr, feed_port, accepted, lookup)
+}
+
+/// [`peer_of`] for a peer at `addr`.
+fn peer_at(
+    addr: SocketAddr,
+    feed_port: u16,
+    accepted: SystemTime,
+    lookup: &dyn PeerLookup,
+) -> Peer {
+    // Another address can share a wallpaper's port number: only 127.0.0.1 is looked up.
+    if addr.ip() != IpAddr::V4(Ipv4Addr::LOCALHOST) {
+        return Peer::Unknown(Unknown::Elsewhere);
+    }
     let mut owner = lookup.owner(addr.port(), feed_port);
     if matches!(owner, Ok(None)) {
         // The row may not be listed yet: one more read, at once.
@@ -146,11 +170,9 @@ pub fn peer_of(
     };
     let dir = lookup.host_dir();
     let first = judged(dir.as_deref());
-    let stale = matches!(
-        first,
-        Peer::Other { .. } | Peer::Unknown(Unknown::NoHostFolder | Unknown::HostNotLocal)
-    );
-    if stale {
+    // Only when the known host program is no longer where it was: a connection never makes
+    // Foxglove look for a new host while the known one is in place.
+    if first == Peer::Unknown(Unknown::NoHostFolder) {
         // The host may have moved since it was last found.
         if let Some(again) = lookup.host_dir_again().filter(|a| Some(a) != dir.as_ref()) {
             return judged(Some(again.as_path()));
@@ -159,36 +181,66 @@ pub fn peer_of(
     first
 }
 
-/// The owning process id of the connection whose peer end is 127.0.0.1:`peer_port`, talking to
-/// `feed_port`, in a table read as `GetExtendedTcpTable` fills it for IPv4 with owner pids: a
-/// row count, then six numbers a row (state, local address, local port, remote address, remote
-/// port, pid), addresses and ports in network byte order.
+/// 8-byte words in one row of the table [`owner_in`] reads (160 bytes).
+const ROW: usize = 20;
+
+/// The two 4-byte numbers in one 8-byte word of the table, in memory order.
+fn halves(word: u64) -> (u32, u32) {
+    let b = word.to_ne_bytes();
+    (
+        u32::from_ne_bytes([b[0], b[1], b[2], b[3]]),
+        u32::from_ne_bytes([b[4], b[5], b[6], b[7]]),
+    )
+}
+
+/// The owning process id, and when the socket was made (100 ns ticks since 1601; 0 when the
+/// system doesn't say), of the connection from 127.0.0.1:`peer_port` to 127.0.0.1:`feed_port`,
+/// in a table read as `GetExtendedTcpTable` fills it for IPv4 with owner modules: a row count
+/// in the first 8 bytes, then 160 bytes a row (4-byte state, local address, local port, remote
+/// address, remote port, pid; the 8-byte time; 128 bytes not read here), addresses and ports
+/// in network byte order.
 #[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
-fn owner_in(table: &[u32], peer_port: u16, feed_port: u16) -> Option<u32> {
+fn owner_in(table: &[u64], peer_port: u16, feed_port: u16) -> Option<(u32, u64)> {
     let port = |v: u32| {
         let b = v.to_ne_bytes();
         u16::from_be_bytes([b[0], b[1]])
     };
     let loopback = u32::from_ne_bytes([127, 0, 0, 1]);
     let (count, rows) = table.split_first()?;
-    rows.as_chunks::<6>()
-        .0
-        .iter()
-        .take(*count as usize)
-        .find(|r| r[1] == loopback && port(r[2]) == peer_port && port(r[4]) == feed_port)
-        .map(|r| r[5])
+    let count = halves(*count).0 as usize;
+    rows.as_chunks::<ROW>().0.iter().take(count).find_map(|r| {
+        let (_state, local) = halves(r[0]);
+        let (local_port, remote) = halves(r[1]);
+        let (remote_port, pid) = halves(r[2]);
+        let ours = local == loopback
+            && remote == loopback
+            && port(local_port) == peer_port
+            && port(remote_port) == feed_port;
+        ours.then_some((pid, r[3]))
+    })
+}
+
+/// The time `ticks` (100 ns since 1601) names; `None` for 0 and for what can't be a time.
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+fn made_at(ticks: u64) -> Option<SystemTime> {
+    // The Unix epoch is 11 644 473 600 s after 1601.
+    const EPOCH: u64 = 116_444_736_000_000_000;
+    let since = ticks.checked_sub(EPOCH)?;
+    SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::new(
+        since / 10_000_000,
+        (since % 10_000_000) as u32 * 100,
+    ))
 }
 
 /// One bounded read of the system's IPv4 connection table.
 #[cfg(target_os = "windows")]
-#[cfg_attr(test, allow(dead_code))]
-fn owner_pid(peer_port: u16, feed_port: u16) -> Result<Option<u32>, String> {
+fn owner_row(peer_port: u16, feed_port: u16) -> Result<Option<(u32, u64)>, String> {
     use windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
     use windows::Win32::NetworkManagement::IpHelper::{
-        GetExtendedTcpTable, TCP_TABLE_OWNER_PID_CONNECTIONS,
+        GetExtendedTcpTable, TCP_TABLE_OWNER_MODULE_CONNECTIONS,
     };
     const AF_INET: u32 = 2;
-    let mut table: Vec<u32> = Vec::new();
+    let mut table: Vec<u64> = Vec::new();
     let mut size = 0u32;
     // The size is asked first; the table can grow between the two calls, so three tries.
     for _ in 0..3 {
@@ -200,7 +252,7 @@ fn owner_pid(peer_port: u16, feed_port: u16) -> Result<Option<u32>, String> {
                 &mut size,
                 false,
                 AF_INET,
-                TCP_TABLE_OWNER_PID_CONNECTIONS,
+                TCP_TABLE_OWNER_MODULE_CONNECTIONS,
                 0,
             )
         };
@@ -211,8 +263,8 @@ fn owner_pid(peer_port: u16, feed_port: u16) -> Result<Option<u32>, String> {
             return Err(format!("connection table: error {code}"));
         }
         // Room for the rows named, and for a few that appear meanwhile.
-        table = vec![0u32; (size as usize).div_ceil(4) + 96];
-        size = (table.len() * 4) as u32;
+        table = vec![0u64; (size as usize).div_ceil(8) + 16 * ROW];
+        size = (table.len() * 8) as u32;
     }
     Err("connection table: kept growing".into())
 }
@@ -225,11 +277,12 @@ impl PeerLookup for System {
     fn owner(&self, peer_port: u16, feed_port: u16) -> Result<Option<Owner>, String> {
         #[cfg(target_os = "windows")]
         {
-            let Some(pid) = owner_pid(peer_port, feed_port)? else {
+            let Some((pid, made)) = owner_row(peer_port, feed_port)? else {
                 return Ok(None);
             };
+            let made = made_at(made);
             match foxglove_plugin::owner::image_and_birth(pid) {
-                Some((image, born)) => Ok(Some(Owner { image, born })),
+                Some((image, born)) => Ok(Some(Owner { image, born, made })),
                 None => Err(UNREADABLE.into()),
             }
         }
@@ -300,6 +353,7 @@ impl Fake {
         Ok(Some(Owner {
             image: PathBuf::from(image),
             born: SystemTime::UNIX_EPOCH,
+            made: None,
         }))
     }
 
@@ -436,10 +490,11 @@ mod tests {
     fn a_process_born_after_the_accept_is_unknown() {
         let accepted = SystemTime::now();
         let inside = |_: &Path, _: &Path| true;
-        let born = |at: SystemTime| {
+        let made_and_born = |made: Option<SystemTime>, at: SystemTime| {
             let owner = Owner {
                 image: PathBuf::from("C:/Host/host64.exe"),
                 born: at,
+                made,
             };
             judge(
                 Ok(Some(owner)),
@@ -449,12 +504,55 @@ mod tests {
                 &inside,
             )
         };
+        let born = |at: SystemTime| made_and_born(None, at);
         assert_eq!(born(accepted), Peer::Host);
         assert_eq!(born(accepted - Duration::from_secs(60)), Peer::Host);
         assert_eq!(
             born(accepted + Duration::from_millis(1)),
             Peer::Unknown(Unknown::BornLater)
         );
+        // The owner must have been running when the connection's socket was made, too.
+        let before = accepted - Duration::from_secs(60);
+        let made = Some(accepted - Duration::from_secs(30));
+        assert_eq!(made_and_born(made, before), Peer::Host);
+        assert_eq!(made_and_born(Some(before), before), Peer::Host);
+        assert_eq!(
+            made_and_born(made, accepted - Duration::from_secs(10)),
+            Peer::Unknown(Unknown::BornLater)
+        );
+    }
+
+    /// What must hold (#1445): a peer is looked up only at 127.0.0.1.
+    #[test]
+    fn a_peer_at_another_address_is_never_looked_up() {
+        let host = Fake::host();
+        let now = SystemTime::now();
+        for ip in ["127.0.0.2", "127.1.2.3", "192.168.0.9", "::1"] {
+            let addr = SocketAddr::new(ip.parse().unwrap(), 51_000);
+            assert_eq!(
+                peer_at(addr, 47_000, now, &host),
+                Peer::Unknown(Unknown::Elsewhere),
+                "{ip}"
+            );
+        }
+        assert_eq!(host.reads(), 0);
+        let addr = SocketAddr::new("127.0.0.1".parse().unwrap(), 51_000);
+        assert_eq!(peer_at(addr, 47_000, now, &host), Peer::Host);
+    }
+
+    /// The system's own table, asked about a connection this test made to itself.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn this_process_owns_its_own_loopback_connection() {
+        let (served, _client, port) = pair();
+        let peer = served.peer_addr().unwrap().port();
+        let (pid, made) = owner_row(peer, port).unwrap().expect("the row");
+        assert_eq!(pid, std::process::id());
+        let (_, born) = foxglove_plugin::owner::image_and_birth(pid).unwrap();
+        let made = made_at(made).expect("the system dates the connection");
+        assert!(born <= made, "{born:?} {made:?}");
+        assert!(made <= SystemTime::now() + Duration::from_secs(1));
+        assert_eq!(owner_row(peer, port.wrapping_add(1)).unwrap(), None);
     }
 
     #[test]
@@ -468,38 +566,84 @@ mod tests {
 
     #[test]
     fn a_moved_host_is_found_by_one_fresh_look() {
-        let moved =
-            Fake::new(Fake::program("D:/Games/Host/host64.exe")).with_again("D:/Games/Host");
+        // The known host program is gone from where it was: one fresh look finds it.
+        let moved = Fake::new(Fake::program("D:/Games/Host/host64.exe"))
+            .with_dir(None)
+            .with_again("D:/Games/Host");
         assert_eq!(of(&moved), Peer::Host);
-        // The fresh look names the same folder: the verdict stands.
-        let same = Fake::new(Fake::program("C:/Tools/tool.exe")).with_again(Fake::HOST_DIR);
-        assert!(matches!(of(&same), Peer::Other { .. }));
-        // No host folder known until the fresh look.
         let found = Fake::host().with_dir(None).with_again(Fake::HOST_DIR);
         assert_eq!(of(&found), Peer::Host);
+        let other = Fake::new(Fake::program("C:/Tools/tool.exe"))
+            .with_dir(None)
+            .with_again("D:/Games/Host");
+        assert!(matches!(of(&other), Peer::Other { .. }));
+    }
+
+    /// What must hold (#1445): while the known host program is in place, no connection makes
+    /// Foxglove look for another one.
+    #[test]
+    fn a_connection_never_moves_a_host_that_is_still_in_place() {
+        let elsewhere =
+            Fake::new(Fake::program("D:/Games/Host/host64.exe")).with_again("D:/Games/Host");
+        assert!(matches!(of(&elsewhere), Peer::Other { .. }));
+        let far = Fake::new(Fake::program("D:/Games/Host/host64.exe"))
+            .with_dir(Some("//server/share/Host"))
+            .with_again("D:/Games/Host");
+        assert_eq!(of(&far), Peer::Unknown(Unknown::HostNotLocal));
     }
 
     #[test]
-    fn the_table_row_is_matched_on_loopback_and_both_ports() {
+    fn the_table_row_is_matched_on_both_addresses_and_both_ports() {
         let port = |p: u16| {
             let b = p.to_be_bytes();
             u32::from_ne_bytes([b[0], b[1], 0, 0])
         };
+        let word = |a: u32, b: u32| {
+            let (a, b) = (a.to_ne_bytes(), b.to_ne_bytes());
+            u64::from_ne_bytes([a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]])
+        };
         let lo = u32::from_ne_bytes([127, 0, 0, 1]);
+        let lo2 = u32::from_ne_bytes([127, 0, 0, 2]);
         let lan = u32::from_ne_bytes([192, 168, 0, 9]);
-        #[rustfmt::skip]
-        let table = [
-            4,
-            5, lo, port(47_000), lo, port(51_000), 11, // the feed's own end
-            5, lan, port(51_000), lo, port(47_000), 12, // not loopback
-            5, lo, port(51_000), lo, port(47_001), 13, // another server
-            5, lo, port(51_000), lo, port(47_000), 14,
-        ];
-        assert_eq!(owner_in(&table, 51_000, 47_000), Some(14));
-        assert_eq!(owner_in(&table, 51_001, 47_000), None);
-        // A count beyond the rows read is not followed.
-        assert_eq!(owner_in(&[9, 5, lo], 51_000, 47_000), None);
+        let row = |from: u32, from_port: u16, to: u32, to_port: u16, pid: u32, made: u64| {
+            let mut r = [0u64; ROW];
+            r[0] = word(5, from);
+            r[1] = word(port(from_port), to);
+            r[2] = word(port(to_port), pid);
+            r[3] = made;
+            r
+        };
+        let table = |rows: &[[u64; ROW]]| {
+            let mut t = vec![word(rows.len() as u32, 0)];
+            t.extend(rows.iter().flatten());
+            t
+        };
+        let all = table(&[
+            row(lo, 47_000, lo, 51_000, 11, 1),  // the feed's own end
+            row(lan, 51_000, lo, 47_000, 12, 2), // not from loopback
+            row(lo, 51_000, lo, 47_001, 13, 3),  // another server
+            row(lo2, 51_000, lo, 47_000, 15, 4), // another loopback address, same port
+            row(lo, 51_000, lan, 47_000, 16, 5), // not to loopback
+            row(lo, 51_000, lo, 47_000, 14, 6),
+        ]);
+        assert_eq!(owner_in(&all, 51_000, 47_000), Some((14, 6)));
+        assert_eq!(owner_in(&all, 51_001, 47_000), None);
+        // Another address with a wallpaper's port number never answers for it.
+        let borrowed = table(&[row(lo2, 51_000, lo, 47_000, 15, 4)]);
+        assert_eq!(owner_in(&borrowed, 51_000, 47_000), None);
+        // A count beyond the rows read is not followed; part of a row is not a row.
+        let mut short = table(&[row(lo, 51_000, lo, 47_000, 14, 6)]);
+        short[0] = word(9, 0);
+        assert_eq!(owner_in(&short, 51_000, 47_000), Some((14, 6)));
+        short.pop();
+        assert_eq!(owner_in(&short, 51_000, 47_000), None);
         assert_eq!(owner_in(&[], 51_000, 47_000), None);
+        // The time: none for 0, and 1970 is 1970.
+        assert_eq!(made_at(0), None);
+        assert_eq!(
+            made_at(116_444_736_000_000_000),
+            Some(SystemTime::UNIX_EPOCH)
+        );
     }
 
     #[test]
@@ -511,6 +655,7 @@ mod tests {
             Unknown::NoHostFolder,
             Unknown::HostNotLocal,
             Unknown::Table,
+            Unknown::Elsewhere,
         ];
         let words: std::collections::BTreeSet<_> = all.iter().map(|u| u.word()).collect();
         assert_eq!(words.len(), all.len());

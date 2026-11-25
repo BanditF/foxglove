@@ -24,7 +24,8 @@ Yes.
 So the feed is a WebSocket on `127.0.0.1` only. Origin `null`, `file://`, or none (a local
 program) is admitted; any web origin is refused. On top of that, the wallpaper must present the
 install's pairing token. A sandboxed iframe on any website also sends `null`, so the token is
-the real check. A one-time ticket (below) is also tied to the program that presents it.
+the real check. A one-time ticket (below) also works only from the wallpaper host, the
+program that shows the wallpaper.
 
 ## Pairing and discovery
 
@@ -73,10 +74,12 @@ on, the wallpaper is allowed, its monitor has no live socket and no ticket outst
   host: <file name>` (then a count at most every 10 minutes), and the wallpaper list says which
   program it was (its file name only, or "a program Foxglove couldn't identify") and what to
   do. Connected wallpapers are left alone. The line goes away on Reconnect, Disconnect all,
-  when the feed stops, or 10 minutes after the last such refusal.
-- **A program Foxglove can't check** (Windows gave no answer, or the wallpaper host's folder is
-  unknown or not on a local drive): refused the same way, the ticket untouched. Keyboard health
-  warns "Foxglove couldn't check which program connected to the live feed, so it refused it."
+  when the feed stops, or 10 minutes after the last such refusal. A wallpaper page opened in a
+  browser for testing is another program too: a ticket does not work there.
+- **A program Foxglove can't check** (Windows gave no answer, the connection doesn't come from
+  `127.0.0.1` itself, or the wallpaper host's folder is unknown or not on a local drive): refused the same way, the ticket untouched. Keyboard health
+  warns "Foxglove couldn't check which program connected to the live keyboard feed, so the
+  connection was refused."
   with what to do next. A connection that is already gone when Foxglove looks is closed and
   only counted.
 - **Refusal:** a refused connection from the wallpaper host, or from a program Foxglove can't

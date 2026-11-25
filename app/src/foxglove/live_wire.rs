@@ -684,7 +684,7 @@ impl Summed {
 
     /// The run is over (a wallpaper paired, Reconnect, or the feed stopped).
     pub fn clear(&mut self) {
-        self.last = None;
+        *self = Summed::new();
     }
 
     /// One came less than [`REFUSAL_QUIET`] before `now`, and the run wasn't cleared since.

@@ -121,14 +121,15 @@ pub const RECONNECT_LABEL: &str = "Reconnect";
 pub const RECONNECT_ALL_LABEL: &str = "Reconnect all wallpapers";
 pub const DISCONNECT_ALL: &str = "Disconnect all wallpapers";
 /// The section line's words when the refused program could not be named.
-const UNNAMED_PROGRAM_LINE: &str = "A program Foxglove couldn't identify tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If it keeps happening, close programs you don't know.";
+const UNNAMED_PROGRAM_LINE: &str = "A program Foxglove couldn't identify tried to connect to the live keyboard feed and was refused. It got none of your typing. Your wallpapers are not affected. You don't need to do anything now. If this keeps coming back, close programs you don't know, one at a time, until it stops.";
 
 /// The section line when a program that isn't the wallpaper host tried to connect (#1445).
-/// `name` is the program's cleaned file name. Nothing was closed, so it offers no Reconnect.
+/// `name` is the program's cleaned file name, never the line's first word: the line always
+/// opens in Foxglove's own words. Nothing was closed, so it offers no Reconnect.
 pub fn foreign_line(name: Option<&str>) -> String {
     match name {
         Some(name) => format!(
-            "{name} tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If you don't know {name}, close it."
+            "A program called {name} tried to connect to the live keyboard feed and was refused. It got none of your typing. Your wallpapers are not affected. If you don't know this program, close it."
         ),
         None => UNNAMED_PROGRAM_LINE.to_string(),
     }
@@ -673,7 +674,7 @@ mod tests {
         let l = v.line.clone().unwrap();
         assert_eq!(
             l.text,
-            "tool.exe tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If you don't know tool.exe, close it."
+            "A program called tool.exe tried to connect to the live keyboard feed and was refused. It got none of your typing. Your wallpapers are not affected. If you don't know this program, close it."
         );
         assert!(!l.reconnect, "nothing was closed, so nothing to reconnect");
         let mut calm = i.clone();
@@ -736,7 +737,7 @@ mod tests {
         let l = view(&i).line.unwrap();
         assert_eq!(
             l.text,
-            "A program Foxglove couldn't identify tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If it keeps happening, close programs you don't know."
+            "A program Foxglove couldn't identify tried to connect to the live keyboard feed and was refused. It got none of your typing. Your wallpapers are not affected. You don't need to do anything now. If this keeps coming back, close programs you don't know, one at a time, until it stops."
         );
         assert!(!l.reconnect);
         assert_eq!(l.text, foreign_line(None));
@@ -745,6 +746,8 @@ mod tests {
     #[test]
     fn the_line_about_another_program_uses_no_forbidden_words() {
         for line in [foreign_line(Some("tool.exe")), foreign_line(None)] {
+            // The line opens in Foxglove's own words, never with the program's name.
+            assert!(line.starts_with("A program "), "{line}");
             let words = line.to_lowercase();
             for bad in [
                 "token", "ticket", "pair", "paste", "shared", "using", " app ",

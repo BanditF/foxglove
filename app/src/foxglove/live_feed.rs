@@ -40,7 +40,7 @@
 
 use std::io::Write;
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -515,8 +515,38 @@ static REFUSALS: Mutex<wire::Refusals> = Mutex::new(wire::Refusals::new());
 static INTRUDERS: Mutex<wire::Summed> = Mutex::new(wire::Summed::new());
 /// Refused peers that couldn't be checked: the log's lines and the health warning.
 static UNCHECKED: Mutex<wire::Summed> = Mutex::new(wire::Summed::new());
-/// The last peer that couldn't be checked was because the host's folder isn't on a local drive.
-static HOST_NOT_LOCAL: AtomicBool = AtomicBool::new(false);
+/// Why the last peer couldn't be checked, as far as the health row's advice differs
+/// (`Unchecked as u8`).
+static UNCHECKED_WHY: AtomicU8 = AtomicU8::new(Unchecked::Other as u8);
+
+/// What the health row about an unchecked peer has to tell apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+enum Unchecked {
+    /// Windows gave no answer; it usually mends itself.
+    Other = 0,
+    /// The wallpaper host's folder isn't on a local drive, which Reconnect can't mend.
+    NotLocal = 1,
+    /// The wallpaper host's folder isn't known.
+    NoHost = 2,
+}
+
+impl Unchecked {
+    fn of(why: peer::Unknown) -> Self {
+        match why {
+            peer::Unknown::HostNotLocal => Unchecked::NotLocal,
+            peer::Unknown::NoHostFolder => Unchecked::NoHost,
+            _ => Unchecked::Other,
+        }
+    }
+    fn last() -> Self {
+        match UNCHECKED_WHY.load(Ordering::Relaxed) {
+            1 => Unchecked::NotLocal,
+            2 => Unchecked::NoHost,
+            _ => Unchecked::Other,
+        }
+    }
+}
 /// Connections whose peer was gone before it could be checked; said once, when the feed stops.
 static GONE: AtomicU64 = AtomicU64::new(0);
 /// How a summed line about refused programs ends.
@@ -525,7 +555,7 @@ const NOT_HOST: &str = "not the wallpaper host";
 const NOT_CHECKED: &str = "the program couldn't be checked";
 /// How the health row about an unchecked peer starts (`health_notice` knows it by this).
 const UNCHECKED_SAYS: &str =
-    "Foxglove couldn't check which program connected to the live feed, so it refused it.";
+    "Foxglove couldn't check which program connected to the live keyboard feed, so the connection was refused.";
 
 fn summed(log: &'static Mutex<wire::Summed>) -> std::sync::MutexGuard<'static, wire::Summed> {
     log.lock().unwrap_or_else(|e| e.into_inner())
@@ -558,7 +588,7 @@ pub fn health_rows() -> Vec<super::health::HealthRow> {
     let hub = super::hub_link::module_mode();
     let mut rows = refusal_rows(warns, hub);
     if summed(&UNCHECKED).warns(now) {
-        rows.push(unchecked_row(HOST_NOT_LOCAL.load(Ordering::Relaxed), hub));
+        rows.push(unchecked_row(Unchecked::last(), hub));
     }
     if pairing::stuck(pairing::store()) {
         rows.push(stuck_row(hub));
@@ -574,6 +604,15 @@ fn reconnect_fix(hub: bool) -> &'static str {
         "Press Reconnect in Hideout's Wallpaper Engine section."
     } else {
         "Press Reconnect in Settings \u{203a} Live wallpaper."
+    }
+}
+
+/// Where that Reconnect is, for a sentence that only advises it.
+fn reconnect_place(hub: bool) -> &'static str {
+    if hub {
+        "Hideout's Wallpaper Engine section"
+    } else {
+        "Settings \u{203a} Live wallpaper"
     }
 }
 
@@ -597,19 +636,26 @@ fn refusal_rows(warns: bool, hub: bool) -> Vec<super::health::HealthRow> {
     if !warns {
         return Vec::new();
     }
-    let fix = reconnect_fix(hub);
-    vec![warn_row(format!("a wallpaper couldn't connect. {fix}"))]
+    let place = reconnect_place(hub);
+    vec![warn_row(format!(
+        "a wallpaper couldn't connect. If it stops showing your typing, press Reconnect in {place}."
+    ))]
 }
 
-/// The row for a peer that couldn't be checked and so was refused (#1445). `not_local`: the
-/// wallpaper host's folder isn't on a local drive, which Reconnect can't mend.
-fn unchecked_row(not_local: bool, hub: bool) -> super::health::HealthRow {
+/// The row for a peer that couldn't be checked and so was refused (#1445).
+fn unchecked_row(why: Unchecked, hub: bool) -> super::health::HealthRow {
     let host = super::wallpaper_engine::NAME;
-    let next = if not_local {
-        format!("The live feed needs {host} installed on a local drive.")
-    } else {
-        let fix = reconnect_fix(hub);
-        format!("{fix} If it keeps happening, restart {host}.")
+    let place = reconnect_place(hub);
+    let next = match why {
+        Unchecked::NotLocal => format!(
+            "{host} isn't installed on a drive in this PC. Install it on one to use the live keyboard feed."
+        ),
+        Unchecked::NoHost => format!(
+            "Foxglove can't find {host} on this PC. Start {host}, then press Reconnect in {place}."
+        ),
+        Unchecked::Other => format!(
+            "If a wallpaper stops showing your typing, press Reconnect in {place}. If it keeps happening, restart {host}."
+        ),
     };
     warn_row(format!("{UNCHECKED_SAYS} {next}"))
 }
@@ -983,7 +1029,15 @@ fn accept_loop(
 ) {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let pending = Arc::new(AtomicUsize::new(0));
-    let feed_port = listener.local_addr().map_or(0, |a| a.port());
+    // Without its own port no peer can be found in the system's table.
+    let feed_port = match listener.local_addr() {
+        Ok(a) => a.port(),
+        Err(e) => {
+            eprintln!("Foxglove: live feed stops accepting: {e}");
+            set_status(format!("Stopped: {e}"));
+            return;
+        }
+    };
     let mut errors = 0;
     for conn in listener.incoming() {
         // Taken before anything else: the peer's process must have been running by now.
@@ -1016,7 +1070,13 @@ fn accept_loop(
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         super::services::spawn_named("live-client", move || {
             // One lookup for this connection, on its own thread: accepting never waits for it.
-            let peer = peer::peer_of(&stream, feed_port, accepted, &*lookup);
+            // A lookup that fails in any way is a peer that couldn't be checked; `serve` still
+            // runs and gives the pending slot back.
+            let looked = std::panic::AssertUnwindSafe(|| {
+                peer::peer_of(&stream, feed_port, accepted, &*lookup)
+            });
+            let peer =
+                std::panic::catch_unwind(looked).unwrap_or(Peer::Unknown(peer::Unknown::Table));
             serve(stream, id, &tx, &token, &pending, store, &peer)
         });
     }
@@ -1109,7 +1169,7 @@ fn serve(
         }
         // It couldn't be checked, so it may be a wallpaper: the wallpapers' own rule applies.
         Err(NotAdmitted::Peer(Peer::Unknown(why))) => {
-            HOST_NOT_LOCAL.store(why == peer::Unknown::HostNotLocal, Ordering::Relaxed);
+            UNCHECKED_WHY.store(Unchecked::of(why) as u8, Ordering::Relaxed);
             let line = unchecked_line(why);
             let lines = summed(&UNCHECKED).refused(Instant::now(), line, NOT_CHECKED);
             for line in lines {
@@ -2320,7 +2380,7 @@ mod tests {
         assert_eq!(rows[0].level, super::super::health::Level::Warn);
         assert_eq!(
             rows[0].detail,
-            "a wallpaper couldn't connect. Press Reconnect in Settings \u{203a} Live wallpaper."
+            "a wallpaper couldn't connect. If it stops showing your typing, press Reconnect in Settings \u{203a} Live wallpaper."
         );
         // Health card only: no Windows notification for a refused wallpaper connection.
         assert!(rows[0].notice.is_none());
@@ -3636,21 +3696,38 @@ mod tests {
         use super::super::health::Level;
         for hub in [false, true] {
             let fix = reconnect_fix(hub);
+            let place = reconnect_place(hub);
+            let press = format!("press Reconnect in {place}.");
             let refusal = refusal_rows(true, hub).remove(0);
-            assert!(refusal.detail.ends_with(fix), "{}", refusal.detail);
-            let unchecked = unchecked_row(false, hub);
+            assert!(refusal.detail.ends_with(&press), "{}", refusal.detail);
+            let unchecked = unchecked_row(Unchecked::Other, hub);
             assert_eq!(
                 unchecked.detail,
-                format!("{UNCHECKED_SAYS} {fix} If it keeps happening, restart Wallpaper Engine.")
+                format!("{UNCHECKED_SAYS} If a wallpaper stops showing your typing, {press} If it keeps happening, restart Wallpaper Engine.")
             );
-            let far = unchecked_row(true, hub);
+            let far = unchecked_row(Unchecked::NotLocal, hub);
             assert_eq!(
                 far.detail,
-                format!("{UNCHECKED_SAYS} The live feed needs Wallpaper Engine installed on a local drive.")
+                format!("{UNCHECKED_SAYS} Wallpaper Engine isn't installed on a drive in this PC. Install it on one to use the live keyboard feed.")
             );
+            // A host Foxglove can't find is never the one it says to restart.
+            let lost = unchecked_row(Unchecked::NoHost, hub);
+            assert_eq!(
+                lost.detail,
+                format!("{UNCHECKED_SAYS} Foxglove can't find Wallpaper Engine on this PC. Start Wallpaper Engine, then {press}")
+            );
+            assert_eq!(
+                Unchecked::of(peer::Unknown::NoHostFolder),
+                Unchecked::NoHost
+            );
+            assert_eq!(
+                Unchecked::of(peer::Unknown::HostNotLocal),
+                Unchecked::NotLocal
+            );
+            assert_eq!(Unchecked::of(peer::Unknown::Unreadable), Unchecked::Other);
             assert!(UNCHECKED_SAYS.starts_with("Foxglove couldn't check which program connected"));
             assert!(stuck_row(hub).detail.ends_with(fix));
-            for row in [&refusal, &unchecked, &far] {
+            for row in [&refusal, &unchecked, &far, &lost] {
                 assert_eq!(row.level, Level::Warn);
                 // Health card only: these mend themselves or end in the row that offers Reconnect.
                 assert!(row.notice.is_none());

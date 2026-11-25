@@ -9685,7 +9685,7 @@
                   {
                     "id": "we-line",
                     "props": {
-                      "text": "tool.exe tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If you don't know tool.exe, close it."
+                      "text": "A program called tool.exe tried to connect to the live keyboard feed and was refused. It got none of your typing. Your wallpapers are not affected. If you don't know this program, close it."
                     },
                     "type": "label"
                   },
@@ -10108,7 +10108,7 @@
                   {
                     "id": "we-line",
                     "props": {
-                      "text": "A program Foxglove couldn't identify tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If it keeps happening, close programs you don't know."
+                      "text": "A program Foxglove couldn't identify tried to connect to the live keyboard feed and was refused. It got none of your typing. Your wallpapers are not affected. You don't need to do anything now. If this keeps coming back, close programs you don't know, one at a time, until it stops."
                     },
                     "type": "label"
                   },

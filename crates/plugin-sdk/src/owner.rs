@@ -117,6 +117,10 @@ pub fn inside(image: &std::path::Path, dir: &std::path::Path, paths: &dyn PeerPa
         return false;
     };
     let dir = dir.trim_end_matches('\\');
+    // A whole drive is not a program's folder.
+    if dir.len() < 4 {
+        return false;
+    }
     image.len() > dir.len() + 1 && image.starts_with(dir) && image.as_bytes()[dir.len()] == b'\\'
 }
 
@@ -1020,6 +1024,10 @@ mod tests {
         assert!(!yes(r"C:\Apps\Host2\host.exe", dir));
         assert!(!yes(r"C:\Apps\Hostile.exe", dir));
         assert!(!yes(r"C:\Other\host.exe", dir));
+        assert!(
+            !yes(r"C:\Apps\Host\host.exe", Path::new(r"C:\")),
+            "a whole drive"
+        );
         // What cannot be resolved, and a network path on either side, never qualify.
         assert!(!yes(r"C:\Apps\Host\gone.exe", dir));
         let unc = Path::new(r"\\server\share\Host");
