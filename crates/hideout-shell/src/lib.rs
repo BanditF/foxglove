@@ -19,6 +19,7 @@ pub mod icon;
 pub mod keyboard_grant;
 #[cfg(windows)]
 pub mod keyboard_grant_ui;
+pub mod kit;
 pub mod logfile;
 pub mod marks;
 pub mod palette;

@@ -549,6 +549,7 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
 fn set_theme(ctx: &egui::Context, choice: ThemeChoice) {
     ctx.set_visuals_of(egui::Theme::Light, visuals(&theme::LIGHT));
     ctx.set_visuals_of(egui::Theme::Dark, visuals(&theme::DARK));
+    ctx.all_styles_mut(crate::kit::metrics);
     ctx.set_theme(match choice {
         ThemeChoice::System => egui::ThemePreference::System,
         ThemeChoice::Light => egui::ThemePreference::Light,
@@ -580,6 +581,7 @@ fn visuals(t: &Tokens) -> egui::Visuals {
     v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, c(t.text));
     v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, c(t.text));
     v.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, c(t.text));
+    crate::kit::controls(&mut v, t);
     v
 }
 
