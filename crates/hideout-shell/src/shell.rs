@@ -50,6 +50,16 @@ pub trait Page {
     }
 }
 
+/// Home's page id, its words and the launcher's two hub glyphs (Segoe UI Symbol).
+const HOME: &str = "hub.home";
+const HOME_TITLE: &str = "Home";
+const HOME_NEEDS: &str = "Needs you";
+const HOME_NEEDS_NONE: &str = "Nothing needs you.";
+const HOME_NOW: &str = "Now";
+const HOME_GLYPH: &str = "\u{2302}";
+const SEARCH_GLYPH: &str = "\u{1F50D}";
+const SEARCH_NAME: &str = "Search, Ctrl+K";
+
 /// One icon on the launcher rail: where it goes, its name, its glyph and, for a module's page,
 /// the tab's look (state, mark and words).
 struct RailEntry {
@@ -79,7 +89,7 @@ fn rail_mark(ui: &egui::Ui, t: &Tokens, r: egui::Rect, look: &Look) {
         ui.painter()
             .add(egui::Shape::line(strip::ring_points(at, 6.0), ring));
     }
-    if look.mark == Mark::Attention {
+    if matches!(look.mark, Mark::Attention | Mark::Count(_)) {
         ui.painter().circle_filled(at, 3.5, c(t.accent));
     }
 }
@@ -716,6 +726,8 @@ pub(crate) const BOLD_FAMILY: &str = "hideout-bold";
 
 /// What a tab shows in the page area.
 enum Target {
+    /// Home: drawn by the hub from what it knows of every app.
+    Home,
     Page(usize),
     Panel(PanelKey),
 }
@@ -792,6 +804,8 @@ struct Hub {
     /// This frame's modules in the search that are off now (id, name): their sidebar entries
     /// are muted and their pages say "Off for this round".
     search_off: HashMap<String, String>,
+    /// Home is on screen, so the tiles are live (as while the flyout is open).
+    home_live: bool,
     /// A card's primary button had the focus at the end of the last frame: Esc keeps it there.
     search_focused: bool,
     /// "<Module> was removed; its window was closed." in the status strip (#1012.4).
@@ -1096,6 +1110,7 @@ impl Hub {
             search: None,
             search_seq: 0,
             search_off: HashMap::new(),
+            home_live: false,
             search_focused: false,
             removed_notice: None,
             hotkeys: None,
@@ -1250,6 +1265,7 @@ impl Hub {
     /// The page's icon glyph (its panel's `icon`, a hub page's own).
     fn page_icon(&self, id: &TabId) -> &'static str {
         let name = match self.target(id) {
+            Some(Target::Home) => return HOME_GLYPH,
             Some(Target::Page(p)) => self.pages[p].icon().to_string(),
             Some(Target::Panel(key)) => self
                 .panels
@@ -1263,7 +1279,8 @@ impl Hub {
 
     fn close_flyout(&mut self, ctx: &egui::Context, by_focus: bool) {
         if self.flyout.take().is_some() {
-            self.panels.set_tray_open(false);
+            // Home's tiles stay live while Home is on screen.
+            self.panels.set_tray_open(self.home_live);
             // A tile's announcement goes with the flyout (it would be said again on reopening).
             if self
                 .announce
@@ -1483,6 +1500,7 @@ impl Hub {
 
     fn target(&self, id: &TabId) -> Option<Target> {
         match id {
+            TabId::Page { page } if page == HOME => Some(Target::Home),
             TabId::Page { page } => self
                 .pages
                 .iter()
@@ -1529,6 +1547,7 @@ impl Hub {
     fn look(&self, i: usize) -> Look {
         let tab = &self.tabs.tabs()[i];
         match self.target(&tab.id) {
+            Some(Target::Home) => self.home_look(tab.popped),
             Some(Target::Page(p)) => Look {
                 title: self.pages[p].title().to_string(),
                 icon: hideout_panels::tray::icon_glyph(self.pages[p].icon()),
@@ -2185,6 +2204,135 @@ impl Hub {
         }
     }
 
+    /// The apps that need the person: stopped, or asking for attention. Home's first section
+    /// and the count on Home's rail icon.
+    fn home_needs(&self) -> Vec<(TabId, Look)> {
+        self.panels
+            .in_slot(Slot::Page)
+            .filter(|p| !self.search_off.contains_key(&p.key.module))
+            .filter_map(|p| {
+                let look = self.panel_look(p, false);
+                let needs =
+                    matches!(look.state, TabState::Stopped(_)) || look.mark == Mark::Attention;
+                needs.then(|| (TabId::panel(&p.key.module, &p.key.panel), look))
+            })
+            .collect()
+    }
+
+    fn home_look(&self, popped: bool) -> Look {
+        let n = self.home_needs().len() as u32;
+        Look {
+            title: HOME_TITLE.into(),
+            icon: HOME_GLYPH,
+            state: TabState::Live,
+            mark: if n > 0 { Mark::Count(n) } else { Mark::None },
+            popped,
+        }
+    }
+
+    fn home_on_screen(&self, ctx: &egui::Context) -> bool {
+        let minimised = ctx.input(|i| i.viewport().minimized == Some(true));
+        let shown = !minimised && !self.shared.hidden.load(Ordering::Acquire);
+        let home = TabId::page(HOME);
+        self.tabs.on_screen(shown).into_iter().any(|id| *id == home)
+    }
+
+    /// Home: what needs the person first, then what is happening now (the tiles, as in the tray
+    /// flyout). Hub-drawn from the same looks as the rail and the tabs.
+    fn home_ui(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        use crate::kit;
+        let needs = self.home_needs();
+        let mut open: Option<TabId> = None;
+        let mut report = hideout_panels::tray::TrayReport::default();
+        let heading = |ui: &mut egui::Ui, text: &str| {
+            ui.add(egui::Label::new(
+                egui::RichText::new(text)
+                    .size(16.0)
+                    .strong()
+                    .color(c(t.text)),
+            ));
+            ui.add_space(kit::GAP);
+        };
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(HOME_TITLE)
+                        .size(kit::TITLE)
+                        .color(c(t.text)),
+                );
+                ui.add_space(kit::SECTION - kit::GAP);
+                heading(ui, HOME_NEEDS);
+                if needs.is_empty() {
+                    ui.label(egui::RichText::new(HOME_NEEDS_NONE).color(c(t.text_muted)));
+                }
+                for (id, look) in &needs {
+                    card(ui, t, |ui| {
+                        ui.horizontal(|ui| {
+                            let stopped = matches!(look.state, TabState::Stopped(_));
+                            let (mark, col) = if stopped {
+                                ("\u{26A0}", t.danger)
+                            } else {
+                                (look.icon, t.accent)
+                            };
+                            ui.label(egui::RichText::new(mark).size(18.0).color(c(col)));
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&look.title).strong().color(c(t.text)),
+                                );
+                                ui.label(
+                                    egui::RichText::new(look.tooltip())
+                                        .size(kit::SMALL)
+                                        .color(c(t.text_muted)),
+                                );
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let b = ui.button("Open");
+                                    let name = format!("Open {}", look.title);
+                                    ui.ctx().accesskit_node_builder(b.id, |n| n.set_label(name));
+                                    if b.clicked() {
+                                        open = Some(id.clone());
+                                    }
+                                },
+                            );
+                        });
+                    });
+                    ui.add_space(kit::GAP);
+                }
+                ui.add_space(kit::SECTION);
+                heading(ui, HOME_NOW);
+                report = hideout_panels::tiles_grid_ui(
+                    &mut self.panels,
+                    ui,
+                    &mut self.tray_layout,
+                    std::time::Instant::now(),
+                );
+            });
+        if let Some(d) = report.repaint_in {
+            ui.ctx().request_repaint_after(d);
+        }
+        for a in report.actions {
+            match a {
+                TrayAction::Open { module, target } => {
+                    if let Some(page) = self.panels.navigate(&module, &target) {
+                        open = Some(TabId::panel(&page.module, &page.panel));
+                    }
+                }
+                TrayAction::UpdateHub => {
+                    log::info!("update hideout: opening {RELEASES_URL}");
+                    platform::open_url(RELEASES_URL);
+                }
+                TrayAction::LayoutChanged => self.save_tray_layout(),
+                TrayAction::OpenHub => {}
+            }
+        }
+        if let Some(id) = open {
+            self.open(id);
+        }
+    }
+
     /// The launcher's entries, top to bottom: the hub's pages, the modules' pages, then the pages
     /// kept at the bottom (Settings).
     fn rail_entries(&self) -> (Vec<RailEntry>, Vec<RailEntry>) {
@@ -2194,12 +2342,19 @@ impl Hub {
             icon: hideout_panels::tray::icon_glyph(p.icon()),
             look: None,
         };
-        let mut top: Vec<RailEntry> = self
-            .pages
-            .iter()
-            .filter(|p| !p.at_bottom())
-            .map(|p| page(p.as_ref()))
-            .collect();
+        let home = self.home_look(false);
+        let mut top = vec![RailEntry {
+            target: TabId::page(HOME),
+            title: home.title.clone(),
+            icon: home.icon,
+            look: Some(home),
+        }];
+        top.extend(
+            self.pages
+                .iter()
+                .filter(|p| !p.at_bottom())
+                .map(|p| page(p.as_ref())),
+        );
         top.extend(self.panels.in_slot(Slot::Page).map(|p| {
             let look = self.panel_look(p, false);
             RailEntry {
@@ -2237,8 +2392,21 @@ impl Hub {
                     self.rail_item(ui, t, e);
                 }
                 // The bottom pages keep their place at the foot of the rail, in reading order.
-                let foot = bottom.len() as f32 * (crate::kit::RAIL_ITEM + 4.0);
+                let foot = (bottom.len() + 1) as f32 * (crate::kit::RAIL_ITEM + 4.0);
                 ui.add_space((ui.available_height() - foot).max(0.0));
+                // Search: the command palette (Ctrl+K), by pointer.
+                let size = [crate::kit::RAIL_ITEM, crate::kit::RAIL_ITEM];
+                let glyph = egui::RichText::new(SEARCH_GLYPH)
+                    .size(18.0)
+                    .color(c(t.text));
+                let search = ui
+                    .add_sized(size, egui::Button::new(glyph))
+                    .on_hover_text(SEARCH_NAME);
+                ui.ctx()
+                    .accesskit_node_builder(search.id, |n| n.set_label(SEARCH_NAME));
+                if search.clicked() && !self.palette.open {
+                    self.palette.toggle();
+                }
                 for e in bottom {
                     self.rail_item(ui, t, e);
                 }
@@ -2463,6 +2631,7 @@ impl Hub {
         popout: bool,
     ) {
         match self.target(id) {
+            Some(Target::Home) => self.home_ui(ui, t),
             Some(Target::Page(p)) => {
                 self.pages[p].ui(ui, t);
                 let place = if popout {
@@ -2981,6 +3150,12 @@ impl Hub {
             for s in strip::shortcuts(ctx) {
                 self.shortcut(s);
             }
+        }
+        // Home shows the tiles, so they are live while it is on screen, as in the open flyout.
+        let home = self.home_on_screen(ctx);
+        if home != self.home_live {
+            self.home_live = home;
+            self.panels.set_tray_open(home || self.flyout.is_some());
         }
         // The search's bar first: above the pages and first in tab order (#1033).
         self.search_bar(ctx, &t);
