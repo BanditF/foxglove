@@ -3227,19 +3227,9 @@ impl Router {
             .filter_map(Value::as_str)
             .filter_map(|s| Capability::parse(s).ok())
             .filter(|c| check_grantable(c, holder).is_ok())
-            // Keys-class and unknown-class channels are never a tool's, whatever approves.
-            .filter(|c| match c {
-                Capability::ChannelOpen { module, channel } => {
-                    let risk = self
-                        .modules
-                        .get(module)
-                        .and_then(|m| m.channel_risk.get(channel))
-                        .map(String::as_str);
-                    hideout_contract::capability::tool_class(c, risk)
-                        != hideout_contract::capability::ToolClass::Never
-                }
-                _ => true,
-            })
+            // What is never a tool's (keys-class and unknown-class channels among it) is
+            // dropped here, whatever approves.
+            .filter(|c| !self.never_a_tools(c))
             .collect();
         // Remembered by the program, not the name: an unknown program, a contained program or
         // a script runner is asked each time it connects and nothing is kept.
@@ -3339,6 +3329,13 @@ impl Router {
     }
 
     /// The catalog's class of the channel a `channel.open` permission names.
+    /// Whether no outside program may hold `c`, by the contract's classes: the router's own
+    /// rule, not the approver's.
+    fn never_a_tools(&self, c: &Capability) -> bool {
+        hideout_contract::capability::tool_class(c, self.channel_risk(c))
+            == hideout_contract::capability::ToolClass::Never
+    }
+
     fn channel_risk(&self, c: &Capability) -> Option<&str> {
         match c {
             Capability::ChannelOpen { module, channel } => self
