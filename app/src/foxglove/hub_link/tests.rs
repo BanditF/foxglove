@@ -2808,18 +2808,24 @@ fn local_holders_reach_the_hubs_fact_with_the_routed_ones() {
         .sync_local_holders(&["Render queue".to_string()], false)
         .unwrap();
     assert!(rig.link.writer_mut().is_empty());
-    // With a routed holder: one sorted list, each name once.
+    // With a routed holder: one sorted list, each name once. A program outside Hideout is
+    // named inside quote marks: the name is only its own word.
     let t = rig.tool_named(&["wallpaper.control"], "Arete");
     pause(&mut rig, &t, "model");
     let fact = rig.fact(key).unwrap();
     let names = fact["wallpaper-engine"].as_array().unwrap().clone();
     assert_eq!(names.len(), 2, "{fact}");
-    assert!(names.contains(&json!("Render queue")) && names.contains(&json!("Arete")));
+    assert!(
+        names.contains(&json!("Render queue")) && names.contains(&json!("\u{201c}Arete\u{201d}"))
+    );
     // None left: the local name goes, the routed one stays.
     rig.now += std::time::Duration::from_millis(200);
     rig.link.sync_local_holders(&[], false).unwrap();
     rig.pump();
-    assert_eq!(rig.fact(key), Some(json!({"wallpaper-engine": ["Arete"]})));
+    assert_eq!(
+        rig.fact(key),
+        Some(json!({"wallpaper-engine": ["\u{201c}Arete\u{201d}"]}))
+    );
 }
 
 /// #1420: Foxglove sends `owed` (its play is owed) with `lease.holders`: true once when a play

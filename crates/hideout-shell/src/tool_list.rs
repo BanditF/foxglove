@@ -106,18 +106,32 @@ pub fn date_line(allowed_at: Option<&str>) -> String {
     }
 }
 
+/// A program's file name inside a note's sentence: in curly quotes, as plain text, since it is
+/// the file's own word (already cleaned and cut by [`file_name`]). A blank name, or
+/// [`NO_NAME`], is "a program" (`NO_NAME` when `first` in the sentence), with no quotes.
+fn note_name(name: &str, first: bool) -> String {
+    let name = name.trim();
+    if name.is_empty() || name == NO_NAME {
+        return if first { NO_NAME } else { "a program" }.to_string();
+    }
+    format!("\u{201c}{name}\u{201d}")
+}
+
 /// The note after Forget.
 pub fn forgot(name: &str) -> String {
+    let name = note_name(name, false);
     format!("Hideout forgot {name}. It can't do those things now, and it asks again the next time it starts.")
 }
 
 /// The note when Forget took the answer away but the record could not be saved.
 pub fn not_saved(name: &str) -> String {
+    let name = note_name(name, false);
     format!("Hideout forgot {name} for now but couldn't save that. Press Forget again.")
 }
 
 /// The note when a listed program connected with a changed file.
 pub fn file_changed(name: &str) -> String {
+    let name = note_name(name, true);
     format!("{name} changed, so Hideout forgot what you allowed it. If it asks again, press Review\u{2026} at the top of this page.")
 }
 
@@ -778,7 +792,7 @@ mod tests {
         let labels: Vec<&str> = said.iter().map(|(label, _)| label.as_str()).collect();
         assert!(labels.contains(&"Programs outside Hideout, 0 programs"));
         assert!(labels.contains(
-            &"Hideout forgot only.exe. It can't do those things now, and it asks again the next time it starts."
+            &"Hideout forgot \u{201c}only.exe\u{201d}. It can't do those things now, and it asks again the next time it starts."
         ));
         // The user leaves the page: after that nothing is drawn.
         l.left();
@@ -803,7 +817,7 @@ mod tests {
         l.seen(40);
         assert_eq!(
             l.notes(),
-            ["lights.exe changed, so Hideout forgot what you allowed it. If it asks again, press Review\u{2026} at the top of this page."]
+            ["\u{201c}lights.exe\u{201d} changed, so Hideout forgot what you allowed it. If it asks again, press Review\u{2026} at the top of this page."]
         );
         let ctx = egui::Context::default();
         draw(&ctx, &mut l);
@@ -813,7 +827,7 @@ mod tests {
         l.file_changed(r"C:\one.exe");
         l.file_changed(r"C:\two.exe");
         assert_eq!(l.notes().len(), 1);
-        assert!(l.notes()[0].starts_with("two.exe changed"));
+        assert!(l.notes()[0].starts_with("\u{201c}two.exe\u{201d} changed"));
     }
 
     #[test]
@@ -823,7 +837,7 @@ mod tests {
         assert_eq!(l.rows().len(), 2, "the row stays");
         assert_eq!(
             l.notes(),
-            ["Hideout forgot b.exe for now but couldn't save that. Press Forget again."]
+            ["Hideout forgot \u{201c}b.exe\u{201d} for now but couldn't save that. Press Forget again."]
         );
         assert_eq!(
             l.focus(),
@@ -861,12 +875,12 @@ mod tests {
         assert_eq!(l.rows().len(), 1);
         assert_eq!(
             l.notes(),
-            ["Hideout forgot b.exe. It can't do those things now, and it asks again the next time it starts."]
+            ["Hideout forgot \u{201c}b.exe\u{201d}. It can't do those things now, and it asks again the next time it starts."]
         );
         assert!(l.note.as_ref().is_some_and(|(_, act)| !*act));
         // A later failure on that row starts with the first words again.
         l.after_forget(r"C:\a.exe", false, vec![]);
-        assert!(l.notes()[0].starts_with("Hideout forgot a.exe for now"));
+        assert!(l.notes()[0].starts_with("Hideout forgot \u{201c}a.exe\u{201d} for now"));
     }
 
     /// The "file changed" line is read only once it was on screen.
@@ -978,5 +992,56 @@ mod tests {
         )));
         assert!(has("Forget gone.exe"));
         assert_eq!(section_said(1), "Programs outside Hideout, 1 program");
+    }
+
+    /// The notes quote a file's name as its own word, and never say "forgot A program."
+    /// (#1466): a blank name is "a program", or "A program" at the start, with no quotes.
+    #[test]
+    fn notes_quote_the_name_and_fall_back_when_blank() {
+        let blank_forgot = "Hideout forgot a program. It can't do those things now, and it asks again the next time it starts.";
+        for name in ["", "  ", NO_NAME] {
+            let n = forgot(name);
+            assert_eq!(n, blank_forgot, "{name:?}");
+            assert!(
+                !n.contains('\u{201c}') && !n.contains("A program.") && !n.contains("  "),
+                "{n}"
+            );
+            assert_eq!(
+                not_saved(name),
+                "Hideout forgot a program for now but couldn't save that. Press Forget again."
+            );
+            assert_eq!(
+                file_changed(name),
+                "A program changed, so Hideout forgot what you allowed it. If it asks again, press Review\u{2026} at the top of this page."
+            );
+        }
+        assert_eq!(
+            forgot("a.exe"),
+            "Hideout forgot \u{201c}a.exe\u{201d}. It can't do those things now, and it asks again the next time it starts."
+        );
+        assert_eq!(
+            not_saved("a.exe"),
+            "Hideout forgot \u{201c}a.exe\u{201d} for now but couldn't save that. Press Forget again."
+        );
+        assert_eq!(
+            file_changed("a.exe"),
+            "\u{201c}a.exe\u{201d} changed, so Hideout forgot what you allowed it. If it asks again, press Review\u{2026} at the top of this page."
+        );
+        // A name that looks like markup stays as it is, character for character.
+        for name in ["<b>x</b>.exe", "**x**.exe"] {
+            let quoted = format!("\u{201c}{name}\u{201d}");
+            for n in [forgot(name), not_saved(name), file_changed(name)] {
+                assert!(n.contains(&quoted), "{n}");
+            }
+        }
+        // One pair of quotes when named, none when blank.
+        let count = |s: &str, c: char| s.chars().filter(|x| *x == c).count();
+        for f in [forgot, not_saved, file_changed] {
+            let (named, blank) = (f("a.exe"), f(""));
+            assert_eq!(count(&named, '\u{201c}'), 1, "{named}");
+            assert_eq!(count(&named, '\u{201d}'), 1, "{named}");
+            assert_eq!(count(&blank, '\u{201c}'), 0, "{blank}");
+            assert_eq!(count(&blank, '\u{201d}'), 0, "{blank}");
+        }
     }
 }

@@ -1297,3 +1297,241 @@ fn the_apps_page_lists_only_what_a_program_can_be_allowed() {
     );
     assert!(!items[0].red && items[1].red);
 }
+
+// #1466 L2: a refused fact call and an ask-class `channel.open` say the tool refusal words.
+
+const R3_TAIL: &str = " yet. Open Hideout, go to Apps and press Review\u{2026} on its line. If there is no line, close this program and start it again, then try again.";
+const R4: &str = "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.";
+/// A fact no program outside Hideout reads for free.
+const NOTE: &str = "notes.secret";
+
+#[test]
+fn a_refused_fact_read_says_which_status_and_where_to_review() {
+    assert!(!hideout_contract::permission::tool_free_fact(NOTE));
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\obs.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "obs-helper", Some(id), &["facts.read:notes.*"]);
+    let (code, why) = reason(&call(&mut r, c, 1, "facts.get", json!({"key": NOTE})), c);
+    assert_eq!(code, 5);
+    assert!(
+        why.starts_with(
+            "Hideout hasn't let \u{201c}obs-helper\u{201d} see the status called \u{201c}notes.secret\u{201d} yet."
+        ),
+        "{why}"
+    );
+    assert!(why.ends_with("then try again."), "{why}");
+    for (i, method) in ["facts.list", "facts.subscribe"].iter().enumerate() {
+        let out = call(
+            &mut r,
+            c,
+            2 + i as i64,
+            method,
+            json!({"pattern": "notes.*"}),
+        );
+        let (code, why) = reason(&out, c);
+        assert_eq!(code, 5, "{method}");
+        assert!(
+            why.starts_with("Hideout hasn't let \u{201c}obs-helper\u{201d} see every status whose name starts with \u{201c}notes.\u{201d} yet."),
+            "{method}: {why}"
+        );
+        assert!(why.ends_with(R3_TAIL), "{method}: {why}");
+    }
+    // A status the hub has words for is said in them (here one this program never asked for).
+    let out = call(&mut r, c, 9, "facts.get", json!({"key": "mic.state"}));
+    let (_, why) = reason(&out, c);
+    assert!(
+        why.starts_with("Hideout hasn't let \u{201c}obs-helper\u{201d} see whether your microphone is muted yet."),
+        "{why}"
+    );
+}
+
+#[test]
+fn a_refused_fact_write_gets_the_words_its_class_gives() {
+    use hideout_contract::permission::Permission;
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\obs.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "obs-helper", Some(id), &["facts.write:notes.*"]);
+    let out = call(&mut r, c, 1, "facts.set", json!({"key": NOTE, "value": 1}));
+    let (code, why) = reason(&out, c);
+    assert_eq!(code, 5);
+    let class = tool_class(
+        &hideout_contract::capability::Capability::Kept(Permission::FactsWrite(NOTE.into())),
+        None,
+    );
+    let start = match class {
+        ToolClass::Never => "Hideout never lets a program outside Hideout share the status called \u{201c}notes.secret\u{201d}.".to_string(),
+        _ => "Hideout hasn't let \u{201c}obs-helper\u{201d} share the status called \u{201c}notes.secret\u{201d} yet.".to_string(),
+    };
+    assert!(why.starts_with(&start), "{class:?}: {why}");
+    // Every refusal says what to do next.
+    assert!(
+        why.ends_with("then try again.")
+            || why.ends_with("Only an app you allowed in Hideout can."),
+        "{why}"
+    );
+    assert!(r.fact(NOTE).is_none());
+}
+
+#[test]
+fn a_write_to_a_status_hideout_sets_itself_is_never_sent_to_review() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\obs.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "obs-helper", Some(id), &["facts.write:notes.*"]);
+    for key in ["hub.version", "module.x.state", "apps.focused", "mic.state"] {
+        let out = call(&mut r, c, 1, "facts.set", json!({"key": key, "value": 1}));
+        let (code, why) = reason(&out, c);
+        assert_eq!(code, 5, "{key}");
+        assert!(
+            why.starts_with("Hideout never lets a program outside Hideout "),
+            "{key}: {why}"
+        );
+        assert!(
+            why.ends_with("Hideout sets this itself, so there is nothing to allow."),
+            "{key}: {why}"
+        );
+        assert!(!why.contains("Review"), "{key}: {why}");
+        assert!(!why.contains("obs-helper"), "{key}: {why}");
+    }
+}
+
+#[test]
+fn a_refused_fact_read_from_an_unknown_program_gets_r4() {
+    let mut r = free_only();
+    let (c, _, _) = connect_asking(&mut r, "x", None, &["facts.read:notes.*"]);
+    for (i, (method, params)) in [
+        ("facts.get", json!({"key": NOTE})),
+        ("facts.list", json!({"pattern": "notes.*"})),
+        ("facts.subscribe", json!({"pattern": "notes.*"})),
+        ("facts.set", json!({"key": NOTE, "value": 1})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (code, why) = reason(&call(&mut r, c, 1 + i as i64, method, params), c);
+        assert_eq!((code, why.as_str()), (5, R4), "{method}");
+    }
+}
+
+#[test]
+fn a_refused_fact_read_after_forget_gets_r5() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\notes.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "Notes", Some(id.clone()), &["facts.read:notes.*"]);
+    r.set_tool_grants(&id, &[cap("facts.read:notes.*")]);
+    let out = call(&mut r, c, 1, "facts.get", json!({"key": NOTE}));
+    assert!(sends(&out, c)[0].get("result").is_some(), "{out:?}");
+    r.forget_tool(&id.image_path);
+    let (code, why) = reason(&call(&mut r, c, 2, "facts.get", json!({"key": NOTE})), c);
+    assert_eq!(code, 5);
+    assert!(
+        why.starts_with("Hideout no longer lets \u{201c}Notes\u{201d} see the status called \u{201c}notes.secret\u{201d}"),
+        "{why}"
+    );
+    assert!(why.ends_with(R5_TAIL), "{why}");
+}
+
+#[test]
+fn an_ask_class_channel_gets_the_tool_words_and_names_nothing_internal() {
+    let mut r = free_only();
+    let p = provider(&mut r, FEED, &[], &["status"]);
+    let perm = format!("channel.open:{FEED}/status");
+    let id = tool(r"C:\Tools\obs.exe", "aa");
+    let (c, _, res) = connect_asking(&mut r, "obs-helper", Some(id), &[&perm]);
+    assert_eq!(res["granted"], json!([]));
+    let open = json!({"module": FEED, "channel": "status"});
+    let out = call(&mut r, c, 1, "channel.open", open.clone());
+    assert!(sends(&out, p).is_empty(), "{out:?}");
+    let (code, why) = reason(&out, c);
+    assert_eq!(code, 5);
+    assert!(
+        why.starts_with(
+            "Hideout hasn't let \u{201c}obs-helper\u{201d} get a live feed from one of your apps yet."
+        ),
+        "{why}"
+    );
+    assert!(why.ends_with(R3_TAIL), "{why}");
+    for no in ["Needs permission", "channel.open", "module", "status", FEED] {
+        assert!(!why.contains(no), "{no}: {why}");
+    }
+    // A program the hub can't tell: the may-only-read words.
+    let (c, _, _) = connect_asking(&mut r, "x", None, &[&perm]);
+    let (code, why) = reason(&call(&mut r, c, 1, "channel.open", open), c);
+    assert_eq!((code, why.as_str()), (5, R4));
+}
+
+/// Additive only: what a Hideout app is told has not changed.
+#[test]
+fn a_hideout_app_refused_a_fact_or_a_channel_hears_what_it_did_before() {
+    let mut r = free_only();
+    let p = provider(&mut r, FEED, &[], &["status"]);
+    for (i, (method, params)) in [
+        ("facts.get", json!({"key": NOTE})),
+        ("facts.list", json!({"pattern": "notes.*"})),
+        ("facts.subscribe", json!({"pattern": "notes.*"})),
+        ("facts.set", json!({"key": NOTE, "value": 1})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let out = call(&mut r, p, 10 + i as i64, method, params);
+        let e = sends(&out, p).remove(0)["error"].clone();
+        assert_eq!(e["code"], 5, "{method}: {e}");
+        assert!(e.get("data").is_none(), "{method}: no words: {e}");
+    }
+    let out = call(
+        &mut r,
+        p,
+        20,
+        "channel.open",
+        json!({"module": KEYS, "channel": "status"}),
+    );
+    assert_eq!(
+        reason(&out, p),
+        (
+            5,
+            "Needs permission to open keyboard.keys's status".to_string()
+        )
+    );
+}
+
+// #1466 L3: a tool's own name in a log line.
+
+#[test]
+fn a_log_name_is_one_short_clean_line() {
+    let raw = format!("ab\ncd\u{7}ef\u{202e}{}", "x".repeat(74));
+    assert_eq!(raw.chars().count(), 83);
+    let name = Router::log_name(&raw);
+    assert!(
+        !name.chars().any(char::is_control) && !name.contains('\u{202e}'),
+        "{name:?}"
+    );
+    let inner = name
+        .strip_prefix('\u{201c}')
+        .and_then(|n| n.strip_suffix('\u{201d}'))
+        .expect("in quotes");
+    assert!(inner.chars().count() <= Router::LOG_NAME_MAX, "{inner}");
+    assert!(inner.ends_with('\u{2026}'), "{inner}");
+    assert!(inner.starts_with("ab cdef"), "{inner}");
+    for blank in ["", " \n ", "\u{202e}\u{200b}"] {
+        assert_eq!(Router::log_name(blank), "(no name)", "{blank:?}");
+    }
+    assert_eq!(Router::log_name("My Tool"), "\u{201c}My Tool\u{201d}");
+}
+
+/// No log line in the router prints `caller_key`: it carries a tool's raw, uncut name.
+#[test]
+fn no_router_log_line_prints_the_identity_key() {
+    let src = include_str!("../src/router.rs");
+    let mut logs = 0;
+    for (at, _) in src.match_indices("log::") {
+        let rest = &src[at..];
+        let line = &rest[..rest.find(';').unwrap_or(rest.len())];
+        if !line.contains('!') {
+            continue;
+        }
+        logs += 1;
+        assert!(!line.contains("caller_key("), "{line}");
+    }
+    assert!(logs > 5, "the guard reads the router's log lines: {logs}");
+    assert!(src.contains("self.caller_for_log(conn)"));
+}

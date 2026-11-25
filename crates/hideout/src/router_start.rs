@@ -23,7 +23,10 @@ pub(crate) fn approve(tool: &str, asked: &[Capability], lab: bool) -> Vec<Capabi
     if lab {
         let (yes, no): (Vec<_>, Vec<_>) = asked.iter().cloned().partition(|c| !c.sensitive());
         if !no.is_empty() {
-            log::warn!("router: {tool:?} asked for sensitive {no:?}; left out");
+            log::warn!(
+                "router: {} asked for sensitive {no:?}; left out",
+                Router::log_name(tool)
+            );
         }
         return yes;
     }
@@ -33,7 +36,10 @@ pub(crate) fn approve(tool: &str, asked: &[Capability], lab: bool) -> Vec<Capabi
         .partition(|c| tool_class(c, None) == ToolClass::Free);
     if !no.is_empty() {
         let no: Vec<String> = no.iter().map(|c| c.to_string()).collect();
-        log::info!("router: outside tool {tool:?} not granted {no:?}");
+        log::info!(
+            "router: outside tool {} not granted {no:?}",
+            Router::log_name(tool)
+        );
     }
     yes
 }

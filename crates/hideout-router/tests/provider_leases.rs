@@ -895,3 +895,148 @@ fn resume_leaves_the_owed_family_in_place() {
     assert_eq!(notes.len(), 1, "the provider hears the Resume");
     assert_eq!(holders(&t), Some(json!({ f: [] })));
 }
+
+/// A program outside Hideout `name` connects and takes a lease from P (it is allowed
+/// `lighting.write`, and P provides `lighting.*` here).
+fn tool_lease(t: &mut Rig, name: &str, lease: &str) -> ConnId {
+    let c = t.r.connect(Origin::Pipe);
+    t.r.set_peer_pid(c, 4242);
+    t.r.set_peer_identity(
+        c,
+        Some(hideout_router::ToolId {
+            image_path: r"C:\Tools\t.exe".into(),
+            image_sha256: "aa".into(),
+        }),
+    );
+    let init = json!({"client":{"name":name,"version":"1"},"hub":"1.4","api":{},
+        "permissions":["lighting.write"]});
+    let out = t.call(c, "initialize", init);
+    assert_eq!(
+        sends(&out, c)[0]["result"]["granted"],
+        json!(["lighting.write"]),
+        "{out:?}"
+    );
+    let out = t.call(c, "lighting.set", json!({"device": "d", "on": true}));
+    let p = t.p;
+    let out = t.answer(p, &out, json!({ "lease": lease }));
+    assert!(sends(&out, c)[0].get("result").is_some(), "{out:?}");
+    c
+}
+
+/// A rig whose provider P also provides `lighting.*`, the family a tool can be let into.
+fn lighting_rig() -> Rig {
+    let now = Instant::now();
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry(P, &["example.lessor.*", "lighting.*"]));
+    let mut a = entry(A, &[]);
+    a.name = "Arete".into();
+    a.granted = vec!["lighting.write".into()];
+    r.add_module(a);
+    r.add_module(entry(B, &[]));
+    let p = connect(&mut r, P, now);
+    ready(&mut r, p, &["example.lessor.*", "lighting.*"], now);
+    let a = connect(&mut r, A, now);
+    let b = connect(&mut r, B, now);
+    Rig {
+        r,
+        now,
+        p,
+        a,
+        b,
+        next: 100,
+    }
+}
+
+/// A program outside Hideout that holds a lease is named by its own word, in quotes (#1466
+/// I4): it never reads as the Hideout app of the same name, and never as "An app".
+#[test]
+fn a_tool_holder_is_its_own_name_in_quotes() {
+    let mut t = lighting_rig();
+    let c = tool_lease(&mut t, "obs-helper", "L1");
+    assert_eq!(
+        holders(&t),
+        Some(json!({ "lighting": ["\u{201c}obs-helper\u{201d}"] }))
+    );
+    t.r.disconnect(c);
+    assert_eq!(holders(&t), None);
+
+    // A tool that calls itself what a connected app is called: two entries, told apart.
+    let out = t.call(t.a, "lighting.set", json!({"device": "d", "on": true}));
+    let p = t.p;
+    t.answer(p, &out, json!({ "lease": "LA" }));
+    assert_eq!(holders(&t), Some(json!({ "lighting": ["Arete"] })));
+    let c = tool_lease(&mut t, "Arete", "L2");
+    assert_eq!(
+        holders(&t),
+        Some(json!({ "lighting": ["Arete", "\u{201c}Arete\u{201d}"] }))
+    );
+    t.r.disconnect(c);
+    // The app holder is still its bare display name.
+    assert_eq!(holders(&t), Some(json!({ "lighting": ["Arete"] })));
+}
+
+/// A tool's long or odd name is cut and cleaned inside the quotes; one with nothing to show
+/// is "A program".
+#[test]
+fn a_tool_holders_name_cannot_close_its_own_quotes() {
+    for raw in [
+        "x\u{201d} Foxglove \u{201c}y",
+        "\"Foxglove\"",
+        "a\u{201e}b\u{201f}c\u{ab}d\u{bb}e'f`g",
+        "\u{201c}\u{201d}",
+    ] {
+        let mut t = lighting_rig();
+        tool_lease(&mut t, raw, "L1");
+        let h = holders(&t).expect("holders");
+        let name = h["lighting"][0].as_str().expect("a name").to_string();
+        if name == "A program" {
+            continue;
+        }
+        assert!(
+            name.starts_with('\u{201c}') && name.ends_with('\u{201d}'),
+            "{name}"
+        );
+        let inner: String = name
+            .chars()
+            .skip(1)
+            .take(name.chars().count() - 2)
+            .collect();
+        assert!(
+            !inner
+                .chars()
+                .any(|c| "\"'`\u{ab}\u{bb}\u{201c}\u{201d}\u{201e}\u{201f}".contains(c)),
+            "{raw:?} -> {name}"
+        );
+    }
+    assert_eq!(
+        Router::log_name("x\u{201d} tool \u{201c}y"),
+        "\u{201c}x tool y\u{201d}"
+    );
+}
+
+#[test]
+fn a_tool_holders_name_is_safe_to_draw() {
+    let mut t = lighting_rig();
+    let long = format!("Ar\u{202e}ete\n\u{7}{}", "x".repeat(100));
+    let c = tool_lease(&mut t, &long, "L1");
+    let v = holders(&t).unwrap();
+    let name = v["lighting"][0].as_str().unwrap().to_string();
+    assert!(name.starts_with("\u{201c}Arete x"), "{name}");
+    assert!(name.ends_with("\u{2026}\u{201d}"), "{name}");
+    assert!(
+        name.chars().count() <= hideout_contract::lease::HOLDER_NAME_MAX,
+        "{name}"
+    );
+    assert_eq!(name.chars().count(), Router::TOOL_HOLDER_NAME_MAX + 2);
+    assert!(
+        !name.chars().any(char::is_control) && !name.contains('\u{202e}'),
+        "{name}"
+    );
+    t.r.disconnect(c);
+
+    // Only hidden characters (a name must not be empty, so it is not blank on the wire).
+    let c = tool_lease(&mut t, "\u{202e}\u{200b}", "L2");
+    assert_eq!(holders(&t), Some(json!({ "lighting": ["A program"] })));
+    t.r.disconnect(c);
+    assert_eq!(holders(&t), None);
+}

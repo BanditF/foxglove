@@ -2441,20 +2441,31 @@ impl Router {
         out
     }
 
-    /// The name people know a lease's holder by (§8.5, v1.17): a module's display name, a
-    /// tool's `initialize` name, hidden characters dropped and cut at
-    /// [`hideout_contract::lease::HOLDER_NAME_MAX`] characters.
+    /// The name people know a lease's holder by (§8.5, v1.17): a module's display name, hidden
+    /// characters dropped and cut at [`hideout_contract::lease::HOLDER_NAME_MAX`] characters.
+    /// A program outside Hideout is the name it gives itself in `initialize`, which is only its
+    /// own word: cleaned, cut at [`Self::TOOL_HOLDER_NAME_MAX`] characters and put inside
+    /// “ ” quotes, so it never reads as a Hideout app of the same name; "A program" when
+    /// nothing is left.
     fn holder_name(&self, conn: ConnId) -> String {
         let raw = match self.conns.get(&conn).map(|c| &c.who) {
             Some(Who::Module { id, .. }) => self
                 .modules
                 .get(id)
                 .map_or_else(|| id.clone(), |m| m.name.clone()),
-            Some(Who::Tool { name, .. }) => name.clone(),
+            Some(Who::Tool { name, .. }) => {
+                return Self::quoted_name(name, Self::TOOL_HOLDER_NAME_MAX)
+                    .unwrap_or_else(|| "A program".to_string());
+            }
             _ => String::new(),
         };
         Self::clean_holder_name(&raw)
     }
+
+    /// The most characters of a tool's own name a lease holder entry keeps: with its two quote
+    /// marks it stays within [`hideout_contract::lease::HOLDER_NAME_MAX`] characters, and
+    /// within the 32 bytes a reader may cut at when the name is plain letters.
+    pub const TOOL_HOLDER_NAME_MAX: usize = 24;
 
     /// A holder name as the fact lists it: hidden characters dropped, "An app" when nothing is
     /// left, cut at [`hideout_contract::lease::HOLDER_NAME_MAX`] characters.
@@ -2484,6 +2495,30 @@ impl Router {
         }
         let cut: String = name.chars().take(max - 1).collect();
         Some(format!("{}\u{2026}", cut.trim_end()))
+    }
+
+    /// A program's own name inside “ ” quotes: quote marks in the name itself are dropped
+    /// first, so the entry holds one opening and one closing mark and nothing after the
+    /// closing mark is the program's word. `None` when nothing is left.
+    pub fn quoted_name(raw: &str, max: usize) -> Option<String> {
+        const MARKS: &[char] = &[
+            '"', '\'', '`', '\u{ab}', '\u{bb}', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}',
+            '\u{201c}', '\u{201d}', '\u{201e}', '\u{201f}', '\u{2032}', '\u{2033}', '\u{2035}',
+            '\u{2036}', '\u{2039}', '\u{203a}', '\u{275b}', '\u{275c}', '\u{275d}', '\u{275e}',
+            '\u{301d}', '\u{301e}', '\u{301f}', '\u{ff02}', '\u{ff07}',
+        ];
+        let raw: String = raw.chars().filter(|c| !MARKS.contains(c)).collect();
+        Self::clean_name_opt(&raw, max).map(|n| format!("\u{201c}{n}\u{201d}"))
+    }
+
+    /// The most characters of a tool's own name a log line keeps: the length the refusal words
+    /// and the Review dialog show, so the log names it as the user saw it.
+    pub const LOG_NAME_MAX: usize = 40;
+
+    /// A tool's self-given name for a log line: cleaned, one line, at most
+    /// [`Self::LOG_NAME_MAX`] characters, inside “ ” quotes; "(no name)" when nothing is left.
+    pub fn log_name(raw: &str) -> String {
+        Self::quoted_name(raw, Self::LOG_NAME_MAX).unwrap_or_else(|| "(no name)".into())
     }
 
     /// `lease.holders` (v1.21): keeps `names` as the callers `module` holds `family` for outside
@@ -3012,17 +3047,16 @@ impl Router {
     }
 
     /// What a caller is told when it may not open `module`'s `channel`. A program outside
-    /// Hideout that was forgotten while connected is told that (R5).
+    /// Hideout gets the tool refusal words (R3, R4, R5), which name neither the app nor the
+    /// channel.
     fn channel_refusal(&self, conn: ConnId, module: &str, channel: &str) -> String {
-        if let Some(c) = self.conns.get(&conn) {
-            if let (Who::Tool { name, .. }, true) = (&c.who, c.forgotten) {
-                let cap = Capability::ChannelOpen {
-                    module: module.into(),
-                    channel: channel.into(),
-                };
-                let does = hideout_contract::capability::tool_phrase(&cap);
-                return self.tool_refusal_words(conn, name, false, &does);
-            }
+        if let Some(Who::Tool { name, .. }) = self.conns.get(&conn).map(|c| &c.who) {
+            let cap = Capability::ChannelOpen {
+                module: module.into(),
+                channel: channel.into(),
+            };
+            let does = hideout_contract::capability::tool_phrase(&cap);
+            return self.tool_refusal_words(conn, name, false, &does);
         }
         let name = self.modules.get(module).map_or(module, |m| m.name.as_str());
         format!("Needs permission to open {name}'s {channel}")
@@ -3057,18 +3091,12 @@ impl Router {
         } else if self.tool_identity(conn).is_none() {
             "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.".to_string()
         } else if self.conns.get(&conn).is_some_and(|c| c.forgotten) {
-            let who = match Self::clean_name_opt(name, 40) {
-                Some(n) => format!("\u{201c}{n}\u{201d}"),
-                None => "this program".to_string(),
-            };
+            let who = Self::quoted_name(name, 40).unwrap_or_else(|| "this program".to_string());
             format!(
                 "Hideout no longer lets {who} {does}. This program was forgotten on Hideout's Apps page. Close this program and start it again, then allow it in Hideout."
             )
         } else {
-            let who = match Self::clean_name_opt(name, 40) {
-                Some(n) => format!("\u{201c}{n}\u{201d}"),
-                None => "this program".to_string(),
-            };
+            let who = Self::quoted_name(name, 40).unwrap_or_else(|| "this program".to_string());
             format!(
                 "Hideout hasn't let {who} {does} yet. Open Hideout, go to Apps and press Review\u{2026} on its line. If there is no line, close this program and start it again, then try again."
             )
@@ -3430,11 +3458,21 @@ impl Router {
     }
 
     /// Who a connection is for the queue cap: its module id or tool name, else the connection.
+    /// An identity key, never for a log line: see [`Self::caller_for_log`].
     fn caller_key(&self, conn: ConnId) -> String {
         match self.conns.get(&conn).map(|c| &c.who) {
             Some(Who::Module { id, .. }) => format!("module:{id}"),
             Some(Who::Tool { name, .. }) => format!("tool:{name}"),
             _ => format!("conn:{conn}"),
+        }
+    }
+
+    /// [`Self::caller_key`] for a log line: a tool's own name goes through [`Self::log_name`],
+    /// so a long or many-line name can't fill or fake the log.
+    fn caller_for_log(&self, conn: ConnId) -> String {
+        match self.conns.get(&conn).map(|c| &c.who) {
+            Some(Who::Tool { name, .. }) => format!("tool {}", Self::log_name(name)),
+            _ => self.caller_key(conn),
         }
     }
 
@@ -4312,7 +4350,7 @@ impl Router {
                 {
                     log::info!(
                         "permissions: {m}: {method} asked by {}, not allowed in Hideout",
-                        self.caller_key(conn)
+                        self.caller_for_log(conn)
                     );
                 }
                 return out.push(Out::Send(conn, denied(&id, Some(NOT_ALLOWED_YET))));
@@ -4361,6 +4399,41 @@ impl Router {
         ));
     }
 
+    /// The answer to a fact call the caller may not make. A program outside Hideout gets the
+    /// tool refusal words (R2 to R5) for the key or pattern it asked for; a Hideout app gets
+    /// the bare refusal, as before. `hub_owned`: a write to a fact Hideout sets itself, which
+    /// no permission covers, so the words don't send the user to allow it.
+    fn fact_denied(
+        &self,
+        conn: ConnId,
+        id: &Value,
+        read: bool,
+        pattern: &str,
+        hub_owned: bool,
+    ) -> Value {
+        use hideout_contract::capability::{tool_class, ToolClass};
+        use hideout_contract::permission::Permission;
+        let Some(Who::Tool { name, .. }) = self.conns.get(&conn).map(|c| &c.who) else {
+            return denied(id, None);
+        };
+        let cap = Capability::Kept(if read {
+            Permission::FactsRead(pattern.into())
+        } else {
+            Permission::FactsWrite(pattern.into())
+        });
+        let never = tool_class(&cap, None) == ToolClass::Never;
+        let does = hideout_contract::permission::fact_words(read, pattern);
+        if hub_owned {
+            return denied(
+                id,
+                Some(&format!(
+                    "Hideout never lets a program outside Hideout {does}. Hideout sets this itself, so there is nothing to allow."
+                )),
+            );
+        }
+        denied(id, Some(&self.tool_refusal_words(conn, name, never, &does)))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn facts_call(
         &mut self,
@@ -4384,7 +4457,7 @@ impl Router {
             "facts.get" => {
                 let key = s("key");
                 if !grant.can_read_fact(&key) && !watches_app(&grant, &key) {
-                    return denied(id, None);
+                    return self.fact_denied(conn, id, true, &key, false);
                 }
                 ok(
                     id,
@@ -4394,7 +4467,7 @@ impl Router {
             "facts.list" => {
                 let pattern = s("pattern");
                 if !grant.can_subscribe(&pattern) && !watches_app(&grant, &pattern) {
-                    return denied(id, None);
+                    return self.fact_denied(conn, id, true, &pattern, false);
                 }
                 let facts: Vec<Value> = self
                     .facts
@@ -4407,7 +4480,7 @@ impl Router {
             "facts.subscribe" => {
                 let pattern = s("pattern");
                 if !grant.can_subscribe(&pattern) && !watches_app(&grant, &pattern) {
-                    return denied(id, None);
+                    return self.fact_denied(conn, id, true, &pattern, false);
                 }
                 let n = self.next_sub;
                 self.next_sub += 1;
@@ -4450,7 +4523,7 @@ impl Router {
                 // `facts.write` never covers device.* (§6.6); a registered owner may.
                 let ok_write = !hub_fact && (owned || grant.can_write_fact(&key));
                 if !ok_write {
-                    return denied(id, None);
+                    return self.fact_denied(conn, id, false, &key, hub_fact);
                 }
                 let value = params.get("value").cloned().unwrap_or(Value::Null);
                 self.set_fact(&key, value, out);

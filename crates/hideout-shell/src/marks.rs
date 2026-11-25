@@ -873,4 +873,25 @@ mod tests {
             assert!(!s.contains("x.y") && !s.contains("crash-stopped"), "{s}");
         }
     }
+
+    /// A program outside Hideout comes in the fact inside quotes (#1466 I4): the item shows it
+    /// as it is, so it never reads as the Hideout app of the same name.
+    #[test]
+    fn a_quoted_holder_is_shown_as_it_comes() {
+        let mut m = Marks::default();
+        let key = "module.foxglove.lease_holders";
+        m.fact(key, &json!({"wallpaper-engine": ["\u{201c}Zed\u{201d}"]}));
+        assert_eq!(
+            m.resume_item().unwrap(),
+            "Resume wallpapers (paused by \u{201c}Zed\u{201d})"
+        );
+        m.fact(
+            key,
+            &json!({"wallpaper-engine": ["Arete", "\u{201c}Arete\u{201d}"]}),
+        );
+        assert_eq!(
+            m.resume_item().unwrap(),
+            "Resume wallpapers (paused by Arete and \u{201c}Arete\u{201d})"
+        );
+    }
 }
