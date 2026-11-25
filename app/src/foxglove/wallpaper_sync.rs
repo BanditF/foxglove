@@ -1647,7 +1647,7 @@ impl Apply for Cli {
 
     fn ticket_out(&mut self) {
         // One wait per ticket, as long as the ticket lives; then it ends, whatever it found.
-        super::services::spawn_named("live-ticket", || {
+        super::services::spawn_named("live-lapse", || {
             std::thread::sleep(super::live_wire::TICKET_TTL + Duration::from_secs(1));
             let again = super::live_pairing::lapsed(super::live_pairing::store());
             if again > 0 {
