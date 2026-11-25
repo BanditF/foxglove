@@ -85,6 +85,26 @@ fn group(g: RGroup) -> Group {
     }
 }
 
+/// The accessible name of Manage on Home's "Programs outside Hideout" row.
+pub const TOOLS_MANAGE: &str = "Manage programs outside Hideout";
+
+/// Home's line for the programs outside Hideout: who is listed and how many wait for an
+/// answer. None when there is nothing to say.
+pub fn tools_line(names: &[String], waiting: usize) -> Option<String> {
+    let listed = hideout_shell::connected::names_line(names);
+    let asks = match waiting {
+        0 => String::new(),
+        1 => "1 waits for your answer".to_string(),
+        n => format!("{n} wait for your answer"),
+    };
+    match (listed.is_empty(), asks.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(listed),
+        (true, false) => Some(format!("{asks}.")),
+        (false, false) => Some(format!("{listed}. {asks}.")),
+    }
+}
+
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
@@ -1686,6 +1706,34 @@ impl PermUi {
             self.tools.file_changed(path);
         }
         self.reload_tools();
+    }
+
+    /// "Programs outside Hideout" in Home's Connected section: who is listed and how many
+    /// wait for an answer, with a button to the Apps page (Forget and the dialog are there).
+    /// Returns how many rows it drew.
+    pub fn connected(&mut self, ui: &mut egui::Ui, t: &Tokens) -> usize {
+        let names: Vec<String> = self
+            .tools
+            .rows()
+            .iter()
+            .map(|r| hideout_shell::tool_list::file_name(&r.path))
+            .collect();
+        let waiting = self.hub.read(|r| r.tool_asks().len());
+        let Some(line) = tools_line(&names, waiting) else {
+            return 0;
+        };
+        let row = hideout_shell::connected::Row {
+            title: hideout_shell::tool_list::HEADING,
+            state: None,
+            line: &line,
+            button: hideout_shell::connected::MANAGE,
+            button_name: TOOLS_MANAGE,
+            main: false,
+        };
+        if hideout_shell::connected::row_ui(ui, t, &row).is_some() {
+            hideout_shell::open_module(crate::modules_page::ID);
+        }
+        1
     }
 
     /// "Programs outside Hideout", under the app rows; nothing when none is kept.
@@ -3490,6 +3538,22 @@ on = [\"open\", \"call\"]
                 r"C:\Tools\t.exe".to_string(),
                 vec!["lighting.write".to_string()]
             )]
+        );
+    }
+
+    /// Home's line for the programs outside Hideout.
+    #[test]
+    fn the_home_line_names_the_programs_and_counts_the_asks() {
+        let n = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(tools_line(&[], 0), None);
+        assert_eq!(tools_line(&n(&["t.exe"]), 0).as_deref(), Some("t.exe"));
+        assert_eq!(
+            tools_line(&[], 1).as_deref(),
+            Some("1 waits for your answer.")
+        );
+        assert_eq!(
+            tools_line(&n(&["t.exe", "u.exe", "v.exe"]), 2).as_deref(),
+            Some("t.exe and 2 more. 2 wait for your answer.")
         );
     }
 

@@ -5910,3 +5910,126 @@ fn the_empty_lines_say_app_never_module() {
         "No commands yet. Apps add their actions and pages here."
     );
 }
+
+/// A page with rows in Home's Connected section (the keyboard's and the outside programs', as
+/// the Apps page hands them over; the two the shell draws from its facts stand beside them).
+struct ConnPage(bool);
+
+impl Page for ConnPage {
+    fn id(&self) -> &str {
+        "modules"
+    }
+    fn title(&self) -> &str {
+        "Apps"
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, _t: &Tokens) {
+        ui.label("A hub page.");
+    }
+    fn connected(&mut self, ui: &mut egui::Ui, t: &Tokens) -> usize {
+        use crate::connected::{row_ui, Row};
+        if !self.0 {
+            return 0;
+        }
+        let rows = [
+            Row {
+                title: crate::connected::WALLPAPERS,
+                state: None,
+                line: "Paused by Arete.",
+                button: crate::connected::RESUME,
+                button_name: crate::connected::RESUME_NAME,
+                main: false,
+            },
+            Row {
+                title: "Keyboard",
+                state: Some(("On", t.ok)),
+                line: "Allowed on 3 May.",
+                button: "Turn off",
+                button_name: "Turn off",
+                main: false,
+            },
+            Row {
+                title: "Programs outside Hideout",
+                state: None,
+                line: "obs-cli.exe and 2 more. 1 waits for your answer.",
+                button: crate::connected::MANAGE,
+                button_name: "Manage programs outside Hideout",
+                main: false,
+            },
+            Row {
+                title: crate::connected::SEEN,
+                state: None,
+                line: "obs64.exe and 2 more",
+                button: crate::connected::MANAGE,
+                button_name: crate::connected::SEEN_NAME,
+                main: false,
+            },
+        ];
+        for r in &rows {
+            let _ = row_ui(ui, t, r);
+        }
+        rows.len()
+    }
+}
+
+fn node_labels(out: &egui::FullOutput) -> Vec<String> {
+    out.platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|u| u.nodes.iter())
+        .flat_map(|(_, n)| [n.label(), n.value()])
+        .flatten()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Home's Connected section draws the rows its pages hand over, each a named group with a
+/// named button; with none it says so.
+#[test]
+fn home_lists_what_its_pages_say_is_connected() {
+    for (rows, tag) in [(true, "conn-rows"), (false, "conn-none")] {
+        let ctx = ctx();
+        ctx.enable_accesskit();
+        let dir = temp_dir(tag);
+        let mut hub = hub_raw(&dir, None, vec![Box::new(ConnPage(rows))]);
+        assert_eq!(hub.tabs.active_id(), Some(&TabId::page(HOME)));
+        let out = frames(&ctx, &mut hub, vec![]);
+        let said = node_labels(&out);
+        let has = |s: &str| said.iter().any(|l| l == s);
+        assert!(has(crate::connected::HEADING), "{said:?}");
+        assert_eq!(has("Keyboard, On. Allowed on 3 May."), rows, "{said:?}");
+        assert_eq!(has("Turn off"), rows);
+        assert_eq!(has("Manage programs outside Hideout"), rows);
+        assert_eq!(has(crate::connected::NONE), !rows, "{said:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Review images of Home with its Connected section: rows in both themes, and nothing
+/// connected (`HIDEOUT_REVIEW_DIR`, files `built-home-connected*.png`).
+#[test]
+fn renders_home_connected_for_review() {
+    for (rows, theme, h, file) in [
+        (true, ThemeChoice::Dark, 900u32, "built-home-connected.png"),
+        (
+            true,
+            ThemeChoice::Light,
+            900,
+            "built-home-connected-light.png",
+        ),
+        (
+            false,
+            ThemeChoice::Dark,
+            640,
+            "built-home-connected-none.png",
+        ),
+    ] {
+        let dir = temp_dir("conn-png");
+        let mut hub = hub_raw(&dir, None, vec![Box::new(ConnPage(rows))]);
+        let Some(rgba) = rasterise_in(theme, 944, h, Vec::new(), |c| hub.frame(c)) else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        save_png(file, 944, h, rgba);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -280,6 +280,41 @@ impl GrantUi {
         }
     }
 
+    /// The grant's row in Home's Connected section: the same words and the same two acts as
+    /// the row on the Apps page. Turn off acts at once; Turn on… and Review… open the dialog
+    /// on the Apps page, where Allow is the user's click. Returns how many rows it drew.
+    pub fn connected(&mut self, ui: &mut hideout_shell::egui::Ui, t: &Tokens) -> usize {
+        use hideout_shell::keyboard_grant::RowState;
+        let Some(r) = hideout_shell::keyboard_grant::row(&self.situation) else {
+            return 0;
+        };
+        let colour = match r.state {
+            RowState::On => t.ok,
+            RowState::Off => t.text_muted,
+            RowState::AsksAgain => t.attention,
+        };
+        let row = hideout_shell::connected::Row {
+            title: r.title,
+            state: Some((r.state.word(), colour)),
+            line: &r.line,
+            button: r.button,
+            button_name: r.button,
+            main: r.main,
+        };
+        if hideout_shell::connected::row_ui(ui, t, &row).is_some() {
+            match r.ask {
+                Ask::TurnOff => self.turn_off(),
+                Ask::OpenDialog => {
+                    // The dialog is drawn over the Apps page: no button here to go back to.
+                    self.opener = None;
+                    self.open_dialog();
+                    hideout_shell::open_module(crate::modules_page::ID);
+                }
+            }
+        }
+        1
+    }
+
     /// Draws the dialog while it is open. The answer is applied and the focus goes back to the
     /// button that opened it.
     pub fn dialog(&mut self, ctx: &hideout_shell::egui::Context, t: &Tokens) {

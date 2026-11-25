@@ -6,7 +6,7 @@
 //! thread; the UI thread applies a change once (`take_change`), so a restart never wakes it.
 
 use crate::icon::State;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 /// The menu's status line while there are no modules at all (and only then).
@@ -103,6 +103,8 @@ pub struct Marks {
     holders: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     /// What the menu's Resume item shows now (the last `take_resume_change`).
     shown_resume: Option<Option<String>>,
+    /// The apps the watch has seen (`apps.seen.<name>` is true), for Home's Connected.
+    seen: BTreeSet<String>,
     /// Each module's state fact (`module.<id>.state`), as the hub published it.
     states: BTreeMap<String, String>,
     /// Why an install-failed module failed (`module.<id>.failed`: "ok" or "launch").
@@ -213,6 +215,14 @@ impl Marks {
             self.safe_mode = value.as_bool() == Some(true);
             return;
         }
+        if let Some(name) = key.strip_prefix("apps.seen.") {
+            if value.as_bool() == Some(true) {
+                self.seen.insert(name.into());
+            } else {
+                self.seen.remove(name);
+            }
+            return;
+        }
         let holders_suffix = format!(".{}", hideout_contract::lease::HOLDERS_FACT);
         if let Some(id) = key
             .strip_prefix("module.")
@@ -276,6 +286,24 @@ impl Marks {
 
     /// The menu's Resume item (#1142): its words while a family it has words for is held.
     pub fn resume_item(&self) -> Option<String> {
+        self.held().map(|(words, why)| format!("{words} ({why})"))
+    }
+
+    /// Home's Connected line while the wallpapers are held: "Paused by Arete."
+    pub fn paused_line(&self) -> Option<String> {
+        let (_, why) = self.held()?;
+        let mut c = why.chars();
+        let first = c.next()?.to_uppercase();
+        Some(format!("{first}{}.", c.as_str()))
+    }
+
+    /// The apps the watch has seen, by name.
+    pub fn seen_apps(&self) -> Vec<String> {
+        self.seen.iter().cloned().collect()
+    }
+
+    /// The held family the Resume item stands for: its words and why ("paused by Arete").
+    fn held(&self) -> Option<(&'static str, String)> {
         RESUMES.iter().find_map(|(family, words, by, owed)| {
             let mut names: Vec<String> = self
                 .holders
@@ -287,11 +315,11 @@ impl Marks {
             names.sort();
             names.dedup();
             if !names.is_empty() {
-                return Some(format!("{words} ({by} {})", holder_words(&names)));
+                return Some((*words, format!("{by} {}", holder_words(&names))));
             }
             // Nobody holds it, but a provider still owes the resume: the family is there, empty.
             let owed_here = self.holders.values().any(|f| f.contains_key(*family));
-            owed_here.then(|| format!("{words} ({owed})"))
+            owed_here.then(|| (*words, owed.to_string()))
         })
     }
 
@@ -487,6 +515,16 @@ pub(crate) fn resume() {
     }
 }
 
+/// Home's Connected line while the wallpapers are held.
+pub(crate) fn paused_line() -> Option<String> {
+    with(|m| m.paused_line())
+}
+
+/// The apps the watch has seen, for Home's Connected.
+pub(crate) fn seen_apps() -> Vec<String> {
+    with(|m| m.seen_apps())
+}
+
 /// The Resume item, when it changed.
 pub(crate) fn take_resume_change() -> Option<Option<String>> {
     with(|m| m.take_resume_change())
@@ -649,6 +687,24 @@ mod tests {
         assert_eq!(m.take_change().unwrap().1, "Safe mode");
         assert_eq!(m.take_search_change(), Some(None));
         assert_eq!(m.take_search_change(), None);
+    }
+
+    /// Home's Connected: the pause in a sentence, and the seen apps as their facts say.
+    #[test]
+    fn connected_reads_the_pause_and_the_seen_apps() {
+        let mut m = Marks::default();
+        assert_eq!(m.paused_line(), None);
+        assert!(m.seen_apps().is_empty());
+        let key = &format!("module.foxglove.{}", hideout_contract::lease::HOLDERS_FACT);
+        m.fact(key, &json!({"wallpaper-engine": ["Arete"]}));
+        assert_eq!(m.paused_line().as_deref(), Some("Paused by Arete."));
+        m.fact(key, &json!({"wallpaper-engine": []}));
+        assert_eq!(m.paused_line().as_deref(), Some("Didn't resume last time."));
+        m.fact("apps.seen.obs64.exe", &json!(true));
+        m.fact("apps.seen.zed.exe", &json!(true));
+        assert_eq!(m.seen_apps(), ["obs64.exe", "zed.exe"]);
+        m.fact("apps.seen.obs64.exe", &json!(false));
+        assert_eq!(m.seen_apps(), ["zed.exe"]);
     }
 
     /// Resume (#1142): one item while somebody holds a wallpaper pause, naming who; the status
