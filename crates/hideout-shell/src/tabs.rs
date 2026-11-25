@@ -241,6 +241,11 @@ impl Tabs {
         }
     }
 
+    /// A closed tab is remembered (it may be gone by now: [`Self::reopen_closed`] checks).
+    pub fn can_reopen(&self) -> bool {
+        !self.closed.is_empty()
+    }
+
     /// Ctrl+Shift+T: the last closed tab at its old place. `exists` drops tabs whose page or
     /// module is gone.
     pub fn reopen_closed(&mut self, exists: impl Fn(&TabId) -> bool) -> Option<TabId> {
