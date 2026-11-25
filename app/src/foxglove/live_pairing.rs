@@ -16,12 +16,18 @@
 //!   (`live_peer`, #1445). From any other peer it is not compared, not used up and not
 //!   cancelled; only the old token can admit that peer.
 //! - **Refusal:** a refused connection from the wallpaper host (or from a peer that couldn't
-//!   be checked) may ask for a re-push, but only for monitors Foxglove itself pushed to, whose
-//!   wallpaper has no socket and whose ticket is spent or expired (so a refusal never cancels a
-//!   ticket still waiting to be used), and at most [`REPUSH_MAX`] times per monitor per
-//!   [`REPUSH_WINDOW`]. The count lives here, so a client cannot reset it; only the user's
-//!   Reconnect does. No timer: a refusal, a wallpaper change or Reconnect are the only
-//!   triggers. A refused program that isn't the wallpaper host never causes a re-push.
+//!   be checked) may ask for a re-push, but only for monitors Foxglove itself pushed to whose
+//!   wallpaper has no socket, and at most [`REPUSH_MAX`] times per monitor per
+//!   [`REPUSH_WINDOW`]. A refusal never cancels a ticket still waiting to be used: while one
+//!   waits, that same ticket is handed to its monitor once more (a wallpaper that reloaded
+//!   lost it; nothing new is minted and its deadline stays). The count lives here, so a client
+//!   cannot reset it; only the user's Reconnect does. A refused program that isn't the
+//!   wallpaper host never causes a re-push.
+//! - **Unused:** a ticket that runs out unused, on a monitor still without a socket, is
+//!   replaced at most [`LAPSE_MAX`] times in a row ([`Pairing::lapsed`]; the push may have
+//!   reached a wallpaper that wasn't loaded yet). One bounded wait per ticket, started by the
+//!   pusher; a connection, another wallpaper or Reconnect starts the count again. After that
+//!   only a refusal, a wallpaper change or Reconnect hand out a ticket.
 //! - **Another program:** a refused program that isn't the wallpaper host is recorded by
 //!   [`Pairing::intruder`]: a fact from the peer check on that connection, whatever the
 //!   wallpapers' connections are. It is one section-level fact ([`Links::foreign`]), never a
@@ -40,6 +46,8 @@ use super::live_wire::{self as wire, Denied, Tickets};
 /// Re-pushes after refusals, per monitor, within [`REPUSH_WINDOW`].
 pub const REPUSH_MAX: usize = 3;
 pub const REPUSH_WINDOW: Duration = Duration::from_secs(600);
+/// Tickets replaced in a row because they ran out unused, per monitor.
+pub const LAPSE_MAX: usize = 2;
 
 /// What Foxglove knows about one monitor it pushed a ticket to.
 #[derive(Default)]
@@ -54,6 +62,23 @@ struct Slot {
     due: bool,
     /// A refusal found the budget spent: the user's Reconnect is next.
     capped: bool,
+    /// The re-push hands over the ticket that is still waiting, not a new one.
+    again: bool,
+    /// The waiting ticket has been handed over a second time already.
+    handed_again: bool,
+    /// When the ticket last minted for it runs out, while nothing has used it.
+    out: Option<Instant>,
+    /// Tickets replaced in a row because they ran out unused.
+    lapses: usize,
+}
+
+impl Slot {
+    /// Nothing is waiting any more: no ticket to hand again, none to run out.
+    fn settled(&mut self) {
+        self.again = false;
+        self.handed_again = false;
+        self.out = None;
+    }
 }
 
 /// How one wallpaper's connection stands (the worst-to-best order is the variant order, so
@@ -194,6 +219,8 @@ impl Pairing {
                 s.due = false;
                 s.capped = false;
                 s.repushes.clear();
+                s.lapses = 0;
+                s.settled();
             }
         }
         close
@@ -205,24 +232,66 @@ impl Pairing {
 
     /// A ticket for the monitor `monitor` showing `file`, being pushed to now. `None` (the push
     /// goes without one) when held, not allowed, the wallpaper has a socket, a ticket is still
-    /// outstanding for it, or the store is full or has no random source.
+    /// outstanding for it, or the store is full or has no random source. After a refusal while
+    /// a ticket waits ([`Pairing::refused`]) it is that same ticket, once.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn mint(&mut self, monitor: &str, file: &str, now: Instant) -> Option<String> {
+        self.hand(monitor, file, now).map(|(ticket, _)| ticket)
+    }
+
+    /// [`Pairing::mint`], saying whether the ticket is a new one (`true`) or the waiting one
+    /// handed over once more (`false`: its wait is already running, and a push that fails
+    /// leaves it as it was). A ticket belongs to the wallpaper it was minted for: another
+    /// wallpaper on the monitor never gets it.
+    pub fn hand(&mut self, monitor: &str, file: &str, now: Instant) -> Option<(String, bool)> {
         let (held, allowed) = (self.held, self.allowed(file));
-        let busy = self.tickets.has_open(monitor, now);
         // The monitor is known even when nothing is minted, so allowing its wallpaper later has
         // a slot to mark for a push.
         let slot = self.slots.entry(monitor.to_string()).or_default();
+        if slot.file != file {
+            // Another wallpaper: the one before it loses its waiting ticket, and this one
+            // starts its own count.
+            self.tickets.cancel(monitor);
+            slot.settled();
+            slot.lapses = 0;
+        }
+        let busy = self.tickets.has_open(monitor, now);
         slot.file = file.to_string();
         slot.due = false;
-        if held || !allowed || busy || slot.conn.is_some() {
+        let again = std::mem::take(&mut slot.again);
+        if held || !allowed || slot.conn.is_some() {
             return None;
         }
-        self.tickets.mint(monitor, now)
+        if busy {
+            if !again {
+                return None;
+            }
+            slot.handed_again = true;
+            return self.tickets.open_for(monitor, now).map(|t| (t, false));
+        }
+        let ticket = self.tickets.mint(monitor, now);
+        slot.handed_again = false;
+        slot.out = ticket.as_ref().map(|_| now + wire::TICKET_TTL);
+        ticket.map(|t| (t, true))
     }
 
-    /// The push carrying `monitor`'s ticket failed: cancel it.
+    /// `monitor` shows `file` and gets no ticket for it (the wallpaper doesn't ask for the feed,
+    /// or the feed is off): what Foxglove knew about another wallpaper there is forgotten, and
+    /// a ticket that waited for that one is cancelled.
+    pub fn showing(&mut self, monitor: &str, file: &str) {
+        if self.slots.get(monitor).is_some_and(|s| s.file != file) {
+            self.slots.remove(monitor);
+            self.tickets.cancel(monitor);
+        }
+    }
+
+    /// The push carrying a new ticket for `monitor` failed: cancel it. (A waiting ticket handed
+    /// over again is left as it was: see [`Pairing::hand`].)
     pub fn cancel(&mut self, monitor: &str) {
         self.tickets.cancel(monitor);
+        if let Some(s) = self.slots.get_mut(monitor) {
+            s.settled();
+        }
     }
 
     /// The handshake's decision, at the moment of the handshake (`now`): the origin first, then
@@ -261,9 +330,16 @@ impl Pairing {
             }
             self.old_clients.insert(conn);
         }
+        if let Some(m) = monitor {
+            // Connected: nothing may wait for this monitor (a ticket minted between the redeem
+            // and now).
+            self.tickets.cancel(m);
+        }
         if let Some(s) = monitor.and_then(|m| self.slots.get_mut(m)) {
             s.conn = Some(conn);
             s.capped = false;
+            s.lapses = 0;
+            s.settled();
         }
         true
     }
@@ -284,8 +360,9 @@ impl Pairing {
     }
 
     /// A connection from the wallpaper host (or from a peer that couldn't be checked) was
-    /// refused at `now`: marks the monitors that get a fresh ticket at the next sync and returns
-    /// how many. See the module docs for who qualifies.
+    /// refused at `now`: marks the monitors that get a ticket at the next sync (a new one, or
+    /// the one still waiting once more) and returns how many. See the module docs for who
+    /// qualifies.
     pub fn refused(&mut self, now: Instant) -> usize {
         if self.held {
             return 0;
@@ -293,20 +370,55 @@ impl Pairing {
         let mut n = 0;
         for (monitor, s) in &mut self.slots {
             // A wallpaper the user hasn't allowed is never re-pushed, and never counts as stuck.
-            if !allowed_in(self.allow.as_ref(), &s.file)
-                || s.conn.is_some()
-                || s.due
-                || self.tickets.has_open(monitor, now)
-            {
+            if !allowed_in(self.allow.as_ref(), &s.file) || s.conn.is_some() || s.due {
+                continue;
+            }
+            // A ticket still waiting is not cancelled: it goes to its monitor once more (the
+            // wallpaper may have reloaded since the push), and no further time while it waits.
+            let waiting = self.tickets.has_open(monitor, now);
+            if waiting && s.handed_again {
                 continue;
             }
             s.repushes
                 .retain(|t| now.saturating_duration_since(*t) < REPUSH_WINDOW);
             if s.repushes.len() >= REPUSH_MAX {
-                s.capped = true;
+                // With a ticket still waiting the wallpaper isn't stuck yet. Only ever set
+                // here: a connection or Reconnect clears it.
+                if !waiting {
+                    s.capped = true;
+                }
                 continue;
             }
             s.repushes.push(now);
+            s.due = true;
+            s.again = waiting;
+            n += 1;
+        }
+        n
+    }
+
+    /// Tickets that ran out unused by `now`, on monitors still without a socket: each is
+    /// replaced at the next sync, at most [`LAPSE_MAX`] times in a row per monitor. Returns how
+    /// many monitors were marked. Not a refusal: no budget is spent and nothing counts as stuck.
+    pub fn lapsed(&mut self, now: Instant) -> usize {
+        if self.held {
+            return 0;
+        }
+        let mut n = 0;
+        for (monitor, s) in &mut self.slots {
+            if s.out.is_none_or(|out| out > now) {
+                continue;
+            }
+            s.out = None;
+            if !allowed_in(self.allow.as_ref(), &s.file)
+                || s.conn.is_some()
+                || s.due
+                || self.tickets.has_open(monitor, now)
+                || s.lapses >= LAPSE_MAX
+            {
+                continue;
+            }
+            s.lapses += 1;
             s.due = true;
             n += 1;
         }
@@ -344,8 +456,10 @@ impl Pairing {
         for (m, s) in &mut self.slots {
             s.repushes.clear();
             s.capped = false;
+            s.lapses = 0;
             if s.conn.is_none() {
                 self.tickets.cancel(m);
+                s.settled();
                 s.due = true;
             }
         }
@@ -361,6 +475,7 @@ impl Pairing {
         for s in self.slots.values_mut() {
             s.conn = None;
             s.due = false;
+            s.settled();
         }
         self.retire_old_token()
     }
@@ -372,6 +487,8 @@ impl Pairing {
         for s in self.slots.values_mut() {
             s.conn = None;
             s.due = false;
+            s.lapses = 0;
+            s.settled();
         }
     }
 
@@ -419,6 +536,16 @@ impl Pairing {
         }
     }
 
+    /// The ticket for `monitor` is gone unused, as if it ran out at `at` (for the pusher's tests,
+    /// whose pushes mint at the real time).
+    #[cfg(test)]
+    pub fn cancel_for_test(&mut self, monitor: &str, at: Instant) {
+        self.tickets.cancel(monitor);
+        if let Some(s) = self.slots.get_mut(monitor) {
+            s.out = Some(at);
+        }
+    }
+
     /// Tickets outstanding at `now` (for the tests).
     #[cfg(test)]
     pub fn open(&self, now: Instant) -> usize {
@@ -445,6 +572,13 @@ pub fn disconnect_all(store: Store) -> Vec<u64> {
 #[cfg_attr(test, allow(dead_code))]
 pub fn links(store: Store) -> Links {
     locked(store).links(Instant::now())
+}
+
+/// Tickets that ran out unused are replaced: see [`Pairing::lapsed`]. The caller wakes the
+/// pusher when this isn't 0.
+#[cfg_attr(test, allow(dead_code))]
+pub fn lapsed(store: Store) -> usize {
+    locked(store).lapsed(Instant::now())
 }
 
 /// Whether a wallpaper couldn't reconnect (for the health row).
@@ -568,12 +702,22 @@ mod tests {
         assert_eq!(p.refused(now), 0);
         let ta = ticket(&mut p, A, now);
         let _tb = ticket(&mut p, B, now);
-        // Both have tickets waiting: a refusal cancels neither.
-        assert_eq!(p.refused(now), 0);
+        // Both have tickets waiting: a refusal cancels neither; each goes out once more, the
+        // same ticket.
+        assert_eq!(p.refused(now), 2);
         assert_eq!(p.open(now), 2);
+        assert_eq!(p.take_due(), [A.to_string(), B.to_string()]);
+        assert_eq!(p.mint(A, "hud/index.html", now), Some(ta.clone()));
+        assert_eq!(p.mint(B, "hud/index.html", now), Some(_tb.clone()));
+        assert_eq!(p.open(now), 2);
+        // Once per ticket: more refusals while they wait get nothing.
+        for _ in 0..20 {
+            assert_eq!(p.refused(now), 0);
+        }
+        assert!(p.mint(A, "hud/index.html", now).is_none(), "one waits");
         p.admit(None, Some(&ta), "", true, now).unwrap();
         assert!(p.joined(1, Some(A)));
-        // A has a socket, B a ticket: still nobody.
+        // A has a socket, B a ticket handed twice: nobody.
         assert_eq!(p.refused(now), 0);
         // B's expires: only B.
         let later = now + wire::TICKET_TTL + Duration::from_secs(1);
@@ -606,6 +750,197 @@ mod tests {
         assert!(!p.stuck());
         assert_eq!(p.take_due(), [A.to_string()]);
         assert!(p.mint(A, "hud/index.html", now).is_some());
+    }
+
+    /// A wallpaper that reloaded inside its ticket's two minutes lost it: the host's refused
+    /// knock gets that ticket again, with its old deadline, and it still works once.
+    #[test]
+    fn a_refusal_while_a_ticket_waits_hands_the_same_one_again_with_its_deadline() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        let t = ticket(&mut p, A, now);
+        let soon = now + Duration::from_secs(60);
+        assert_eq!(p.refused(soon), 1);
+        assert_eq!(p.take_due(), [A.to_string()]);
+        assert_eq!(p.mint(A, "hud/index.html", soon), Some(t.clone()));
+        // The deadline is the first push's.
+        let late = now + wire::TICKET_TTL;
+        assert!(p.admit(None, Some(&t), "", true, late).is_err());
+        // In time it admits, once.
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        let t = ticket(&mut p, A, now);
+        assert_eq!(p.refused(now), 1);
+        p.take_due();
+        assert_eq!(p.mint(A, "hud/index.html", now), Some(t.clone()));
+        assert_eq!(p.admit(None, Some(&t), "", true, now), Ok(Some(A.into())));
+        assert!(
+            p.admit(None, Some(&t), "", true, now).is_err(),
+            "single use"
+        );
+    }
+
+    #[test]
+    fn handing_a_waiting_ticket_again_counts_in_the_budget_and_never_for_another_wallpaper() {
+        let (mut p, start) = (Pairing::new(), Instant::now());
+        p.set_allowed(Some(BTreeSet::from(["hud".to_string()])));
+        assert!(p.mint(B, "other/index.html", start).is_none());
+        let mut now = start;
+        for _ in 0..REPUSH_MAX {
+            ticket(&mut p, A, now);
+            assert_eq!(p.refused(now), 1, "only the allowed monitor");
+            assert_eq!(p.take_due(), [A.to_string()]);
+            assert!(p.mint(A, "hud/index.html", now).is_some());
+            now += wire::TICKET_TTL + Duration::from_secs(1);
+        }
+        ticket(&mut p, A, now);
+        assert_eq!(p.refused(now), 0, "the budget is spent");
+        assert!(!p.stuck(), "its ticket still waits");
+        assert_eq!(p.refused(now + wire::TICKET_TTL), 0);
+        assert!(p.stuck());
+    }
+
+    #[test]
+    fn a_ticket_that_runs_out_unused_is_replaced_twice_then_no_more() {
+        let (mut p, start) = (Pairing::new(), Instant::now());
+        let mut now = start;
+        ticket(&mut p, A, now);
+        assert_eq!(p.lapsed(now + Duration::from_secs(60)), 0, "it still waits");
+        for round in 0..LAPSE_MAX {
+            now += wire::TICKET_TTL;
+            assert_eq!(p.lapsed(now), 1, "replacement {round}");
+            assert_eq!(p.lapsed(now), 0, "marked once");
+            assert_eq!(p.take_due(), [A.to_string()]);
+            ticket(&mut p, A, now);
+        }
+        now += wire::TICKET_TTL;
+        assert_eq!(p.lapsed(now), 0, "no loop");
+        assert!(!p.stuck(), "not a refusal");
+        assert_eq!(p.links(now).by_dir.get("hud"), Some(&Link::Idle));
+        // A connection starts the count again.
+        assert_eq!(p.refused(now), 1);
+        p.take_due();
+        let t = ticket(&mut p, A, now);
+        p.admit(None, Some(&t), "", true, now).unwrap();
+        assert!(p.joined(3, Some(A)));
+        assert_eq!(p.lapsed(now + wire::TICKET_TTL), 0, "it was used");
+        p.left(3);
+        ticket(&mut p, A, now);
+        assert_eq!(p.lapsed(now + wire::TICKET_TTL), 1);
+    }
+
+    #[test]
+    fn nothing_is_replaced_while_held_not_allowed_connected_or_after_the_feed_stops() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        let later = now + wire::TICKET_TTL;
+        ticket(&mut p, A, now);
+        p.disconnect_all();
+        // Held is checked by itself: even a ticket that would count as run out is not replaced.
+        p.cancel_for_test(A, later);
+        assert_eq!(p.lapsed(later), 0, "held");
+        assert!(p.take_due().is_empty());
+        p.reconnect();
+        p.take_due();
+        ticket(&mut p, A, now);
+        p.set_allowed(Some(BTreeSet::new()));
+        assert_eq!(p.lapsed(later), 0, "no longer allowed");
+        p.set_allowed(None);
+        p.take_due();
+        ticket(&mut p, A, now);
+        p.stopped();
+        assert_eq!(p.lapsed(later), 0, "the feed stopped");
+        ticket(&mut p, A, now);
+        p.cancel(A);
+        assert_eq!(p.lapsed(later), 0, "its push failed");
+        ticket(&mut p, B, now);
+        p.keep(&[A]);
+        assert_eq!(p.lapsed(later), 0, "off screen");
+    }
+
+    /// A ticket belongs to the wallpaper it was minted for: another wallpaper put on the
+    /// monitor gets its own, and the old one is worth nothing.
+    #[test]
+    fn another_wallpaper_on_the_monitor_never_gets_the_waiting_ticket() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        let old = ticket(&mut p, A, now);
+        assert_eq!(p.refused(now), 1);
+        p.take_due();
+        let (new, fresh) = p.hand(A, "reef/index.html", now).expect("its own ticket");
+        assert!(fresh);
+        assert_ne!(new, old);
+        assert_eq!(p.open(now), 1);
+        assert!(p.admit(None, Some(&old), "", true, now).is_err());
+        // Without a refusal too.
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        let old = ticket(&mut p, A, now);
+        let new = p.mint(A, "reef/index.html", now).expect("its own ticket");
+        assert_ne!(new, old);
+        assert!(p.admit(None, Some(&old), "", true, now).is_err());
+        assert_eq!(p.admit(None, Some(&new), "", true, now), Ok(Some(A.into())));
+    }
+
+    #[test]
+    fn a_wallpaper_that_takes_no_ticket_ends_the_one_waiting_for_the_wallpaper_before_it() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        let old = ticket(&mut p, A, now);
+        let kept = ticket(&mut p, B, now);
+        p.showing(A, "plain/index.html");
+        p.showing(B, "hud/index.html");
+        p.showing("M9", "plain/index.html");
+        assert_eq!(p.open(now), 1, "only B's, whose wallpaper is the same");
+        assert!(p.admit(None, Some(&old), "", true, now).is_err());
+        assert_eq!(
+            p.admit(None, Some(&kept), "", true, now),
+            Ok(Some(B.into()))
+        );
+        assert!(p.joined(1, Some(B)));
+        // And A is no longer a monitor a refusal could mark.
+        assert_eq!(p.refused(now + wire::TICKET_TTL), 0);
+    }
+
+    #[test]
+    fn a_connection_leaves_no_ticket_waiting_and_the_budget_cap_stays_until_then() {
+        let (mut p, start) = (Pairing::new(), Instant::now());
+        let mut now = start;
+        ticket(&mut p, A, now);
+        for _ in 0..REPUSH_MAX {
+            now += wire::TICKET_TTL + Duration::from_secs(1);
+            assert_eq!(p.refused(now), 1);
+            p.take_due();
+            ticket(&mut p, A, now);
+        }
+        now += wire::TICKET_TTL + Duration::from_secs(1);
+        assert_eq!(p.refused(now), 0);
+        assert!(p.stuck());
+        // A replacement for a ticket that ran out waits: a refusal doesn't hide the notice.
+        assert_eq!(p.lapsed(now), 1);
+        p.take_due();
+        let t = ticket(&mut p, A, now);
+        assert_eq!(p.refused(now), 0);
+        assert!(p.stuck(), "still capped");
+        // Redeemed; a ticket minted before the join is gone once it joins.
+        p.admit(None, Some(&t), "", true, now).unwrap();
+        let stray = ticket(&mut p, A, now);
+        assert!(p.joined(7, Some(A)));
+        assert_eq!(p.open(now), 0);
+        assert!(p.admit(None, Some(&stray), "", true, now).is_err());
+        assert!(!p.stuck());
+    }
+
+    #[test]
+    fn switching_a_wallpaper_off_and_on_starts_its_count_of_unused_tickets_again() {
+        let (mut p, start) = (Pairing::new(), Instant::now());
+        let mut now = start;
+        ticket(&mut p, A, now);
+        for _ in 0..LAPSE_MAX {
+            now += wire::TICKET_TTL;
+            assert_eq!(p.lapsed(now), 1);
+            p.take_due();
+            ticket(&mut p, A, now);
+        }
+        p.set_allowed(Some(BTreeSet::new()));
+        p.set_allowed(None);
+        p.take_due();
+        ticket(&mut p, A, now);
+        assert_eq!(p.lapsed(now + wire::TICKET_TTL), 1);
     }
 
     #[test]
@@ -799,7 +1134,7 @@ mod tests {
         let (mut p, now) = (Pairing::new(), Instant::now());
         let t = ticket(&mut p, A, now);
         assert!(!format!("{:?}", p.tickets).contains(&t));
-        assert_eq!(p.refused(now), 0);
+        assert_eq!(p.refused(now), 1);
         assert!(!format!("{:?}", p.tickets).contains(&t));
     }
 

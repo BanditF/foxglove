@@ -267,6 +267,9 @@ pub trait Apply: Send {
     fn tickets(&mut self) -> Option<super::live_pairing::Store> {
         None
     }
+    /// A push just carried a ticket: the one bounded wait for it to run out unused starts
+    /// (`live_pairing`'s **Unused**). Nothing by default.
+    fn ticket_out(&mut self) {}
 }
 
 /// One monitor showing a wallpaper that reads Foxglove's properties.
@@ -304,6 +307,8 @@ pub struct Synced {
     pub failed: Option<String>,
     /// Pushes that failed (#1399).
     pub failed_count: usize,
+    /// Pushes that carried a live feed ticket.
+    pub tickets: usize,
 }
 
 /// What has been sent, per monitor, and the pushes that keep it current.
@@ -401,21 +406,26 @@ impl<A: Apply> Pusher<A> {
             }
             // A ticket goes only with a port, to a monitor that has none outstanding and no
             // socket (`Pairing::mint`); `props` (what is kept and compared) never holds it.
-            let ticket = store
-                .filter(|_| supports.live && state.live.is_some())
-                .and_then(|st| {
-                    st.lock().unwrap_or_else(|e| e.into_inner()).mint(
-                        location,
-                        file,
-                        Instant::now(),
-                    )
-                });
+            let ticket = store.and_then(|st| {
+                let mut p = st.lock().unwrap_or_else(|e| e.into_inner());
+                if supports.live && state.live.is_some() {
+                    p.hand(location, file, Instant::now())
+                } else {
+                    // No ticket for this one: one waiting for the wallpaper before it ends.
+                    p.showing(location, file);
+                    None
+                }
+            });
+            // A waiting ticket handed over once more (`fresh` false) is not a new one: a failed
+            // push leaves it waiting, and its wait is already running.
+            let fresh = ticket.as_ref().is_some_and(|(_, fresh)| *fresh);
+            let ticket = ticket.map(|(t, _)| t);
             let wire = match &ticket {
                 Some(t) => properties_with(state, monitor, *supports, Some(t)),
                 None => props.clone(),
             };
             let pushed = self.apply.apply(location, &wire);
-            if pushed.is_err() && ticket.is_some() {
+            if pushed.is_err() && fresh {
                 if let Some(st) = store {
                     st.lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -424,6 +434,12 @@ impl<A: Apply> Pusher<A> {
             }
             match pushed {
                 Ok(()) => {
+                    if ticket.is_some() {
+                        out.tickets += 1;
+                    }
+                    if fresh {
+                        self.apply.ticket_out();
+                    }
                     self.sent.insert(
                         location.clone(),
                         Sent {
@@ -1155,6 +1171,13 @@ fn run(
         }
         let synced = pusher.sync_counted(&state, &targets);
         let pushed = synced.pushed;
+        if synced.tickets > 0 {
+            // A count only: which wallpaper connects with it shows in the live feed's own line.
+            eprintln!(
+                "Foxglove: wallpaper sync: {} wallpaper(s) handed a live feed ticket",
+                synced.tickets
+            );
+        }
         let (minute, suppressed) = {
             let mut h = (0, 0);
             health::note(|s| {
@@ -1621,6 +1644,20 @@ impl Apply for Cli {
     fn tickets(&mut self) -> Option<super::live_pairing::Store> {
         Some(super::live_pairing::store())
     }
+
+    fn ticket_out(&mut self) {
+        // One wait per ticket, as long as the ticket lives; then it ends, whatever it found.
+        super::services::spawn_named("live-lapse", || {
+            std::thread::sleep(super::live_wire::TICKET_TTL + Duration::from_secs(1));
+            let again = super::live_pairing::lapsed(super::live_pairing::store());
+            if again > 0 {
+                eprintln!(
+                    "Foxglove: live feed: {again} ticket(s) ran out unused; a new one goes out"
+                );
+                repush();
+            }
+        });
+    }
 }
 
 /// Whether an exit code other than 0 counts as a failed command (#1399). On since the lab
@@ -1837,9 +1874,14 @@ mod tests {
         controls: Vec<String>,
         /// The pairing store the pushes take tickets from (none: no tickets).
         store: Option<crate::foxglove::live_pairing::Store>,
+        /// Pushes that carried a ticket (each starts the wait for it to run out).
+        ticket_outs: usize,
     }
 
     impl Apply for &mut Fake {
+        fn ticket_out(&mut self) {
+            self.ticket_outs += 1;
+        }
         fn tickets(&mut self) -> Option<crate::foxglove::live_pairing::Store> {
             self.store
         }
@@ -2200,7 +2242,10 @@ mod tests {
         let state = live_state();
         let mut p = Pusher::new(&mut fake);
         assert_eq!(p.sync(&state, &targets), 1);
-        // A refusal while the first ticket still waits changes nothing.
+        // A refusal while the first ticket still waits hands that same ticket over once more
+        // (the wallpaper reloaded and lost it); a second refusal changes nothing.
+        assert_eq!(store.lock().unwrap().refused(Instant::now()), 1);
+        assert_eq!(p.sync_counted(&state, &targets).tickets, 1);
         assert_eq!(store.lock().unwrap().refused(Instant::now()), 0);
         assert_eq!(p.sync(&state, &targets), 0);
         // Reconnect cancels the waiting ticket and pushes a fresh one. (A refusal after expiry
@@ -2219,7 +2264,80 @@ mod tests {
             .iter()
             .map(|(_, p)| p.contains(TICKET))
             .collect();
-        assert_eq!(tickets, [true, true, false, true]);
+        assert_eq!(tickets, [true, true, true, false, true]);
+        assert_eq!(
+            ticket_in(&fake.pushes[0].1),
+            ticket_in(&fake.pushes[1].1),
+            "the waiting ticket, not a new one"
+        );
+        assert_ne!(ticket_in(&fake.pushes[1].1), ticket_in(&fake.pushes[2].1));
+        assert_eq!(fake.ticket_outs, 3, "one wait per ticket, not per push");
+    }
+
+    /// Handing a waiting ticket over again can fail like any push: the ticket stays as it was,
+    /// good until its own deadline, and nothing new is minted for it.
+    #[test]
+    fn a_failed_push_of_a_waiting_ticket_leaves_it_waiting() {
+        let store = own_store();
+        let mut fake = Fake {
+            running: true,
+            store: Some(store),
+            ..Fake::default()
+        };
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let targets = vec![target(WE_LEFT, reef)];
+        let state = live_state();
+        let mut p = Pusher::new(&mut fake);
+        assert_eq!(p.sync_counted(&state, &targets).tickets, 1);
+        assert_eq!(store.lock().unwrap().refused(Instant::now()), 1);
+        p.apply.fail = true;
+        let synced = p.sync_counted(&state, &targets);
+        assert_eq!((synced.failed_count, synced.tickets), (1, 0));
+        assert_eq!(store.lock().unwrap().open(Instant::now()), 1, "it waits");
+        drop(p);
+        let first = ticket_in(&fake.pushes[0].1).expect("the first push's ticket");
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .admit(None, Some(&first), "", true, Instant::now()),
+            Ok(Some(WE_LEFT.into()))
+        );
+        assert_eq!(fake.ticket_outs, 1);
+    }
+
+    /// The push at Foxglove's start can reach a wallpaper that isn't loaded yet: the ticket runs
+    /// out unused, and a new one goes out, twice at most, with nothing else changed.
+    #[test]
+    fn a_ticket_that_ran_out_unused_is_pushed_again_twice_and_then_no_more() {
+        use crate::foxglove::live_wire::TICKET_TTL;
+        let store = own_store();
+        let mut fake = Fake {
+            running: true,
+            store: Some(store),
+            ..Fake::default()
+        };
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let targets = vec![target(WE_LEFT, reef)];
+        let state = live_state();
+        let mut p = Pusher::new(&mut fake);
+        assert_eq!(p.sync_counted(&state, &targets).tickets, 1);
+        // Each push mints at the real time: end its ticket unused, as its two minutes would.
+        let mut later = Instant::now();
+        for _ in 0..crate::foxglove::live_pairing::LAPSE_MAX {
+            later += TICKET_TTL + Duration::from_secs(1);
+            store.lock().unwrap().cancel_for_test(WE_LEFT, later);
+            assert_eq!(store.lock().unwrap().lapsed(later), 1);
+            let synced = p.sync_counted(&state, &targets);
+            assert_eq!((synced.pushed, synced.tickets), (1, 1));
+        }
+        later += TICKET_TTL + Duration::from_secs(1);
+        store.lock().unwrap().cancel_for_test(WE_LEFT, later);
+        assert_eq!(store.lock().unwrap().lapsed(later), 0, "no loop");
+        assert_eq!(p.sync(&state, &targets), 0);
+        drop(p);
+        assert_eq!(fake.pushes.len(), 3);
+        assert_eq!(fake.ticket_outs, 3);
     }
 
     /// S2-4's sweep: the ticket appears only on the command line of the push itself. Not in what

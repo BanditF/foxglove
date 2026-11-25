@@ -501,6 +501,16 @@ impl Tickets {
         hit.map(|i| self.open[i].monitor.clone())
     }
 
+    /// The live ticket outstanding for `monitor` at `now`, to hand to that same monitor once
+    /// more (its wallpaper reloaded and lost it). No new ticket and no new deadline. Never
+    /// logged.
+    pub fn open_for(&self, monitor: &str, now: std::time::Instant) -> Option<String> {
+        self.open
+            .iter()
+            .find(|t| t.expires > now && t.monitor == monitor)
+            .map(|t| t.value.clone())
+    }
+
     /// Whether a live ticket is outstanding for `monitor` at `now`.
     pub fn has_open(&self, monitor: &str, now: std::time::Instant) -> bool {
         self.open
@@ -1085,6 +1095,8 @@ mod tests {
             Some("abc")
         );
         assert_eq!(token_from("/live", Some("foxglove-live.v1")), None);
+        // An empty token is still a token offered (a wrong one), not the lack of one.
+        assert_eq!(token_from("/live?token=", None), Some(""));
     }
 
     /// A wallpaper with an old token retries every few seconds: the log says the first in full,
