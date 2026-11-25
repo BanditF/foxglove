@@ -146,21 +146,55 @@ class QuietStartTests(unittest.TestCase):
         self.assertIn('--seconds', r.stderr)
 
     def test_a_failed_start_keeps_the_launcher_text(self):
+        h, polls = self._start(['refused: bad -DesktopName\n'])
+        with self.assertRaises(RuntimeError) as c:
+            h.start()
+        self.assertIn('bad -DesktopName', str(c.exception))
+        self.assertEqual(polls, [1], 'only the look for a hub that already answers')
+
+    def _start(self, lines, answers=True):
+        """A QuietHub whose launcher is a fake that prints `lines`; `polls` gets, per `state` poll,
+        how many launcher lines had been read by then."""
+        import io
+
         class Proc:
+            stdout = io.StringIO(''.join(lines))
             def poll(self): return 1
-            stdout = type('S', (), {'read': lambda self: 'bad -DesktopName'})()
             def wait(self, t=None): return 1
         h = hl.QuietHub('x.exe', str(LAB), 'shots', 'ql-hlcabc123', {})
-        h.do = lambda *a, **k: {'ok': False}
-        h.wait = lambda *a, **k: (False, None)
+        polls = []
+
+        def do(*a, **k):
+            polls.append(len(h.said) if polls else 1)
+            return {'ok': answers and len(polls) > 1}
+        h.do = do
+        h.log = lambda: f'folder {h.lab}'
         orig = hl.hidden_ps
         hl.hidden_ps = lambda script: Proc()
-        try:
-            with self.assertRaises(RuntimeError) as c:
-                h.start()
-        finally:
-            hl.hidden_ps = orig
-        self.assertIn('bad -DesktopName', str(c.exception))
+        self.addCleanup(setattr, hl, 'hidden_ps', orig)
+        return h, polls
+
+    def test_start_polls_the_pipe_only_after_the_launcher_started_the_hub(self):
+        # A `state` poll is a process with the hub's image name: one alive while quiet-launch looks
+        # for a running hub gets the launch refused ("already running").
+        h, polls = self._start(['QUIET-LAUNCH desktop=ql-hlcabc123 pid=1 image=x.exe timeout=240\n'])
+        h.start()
+        self.assertEqual(len(polls), 2)
+        self.assertGreaterEqual(polls[1], 1, 'the second poll came after the QUIET-LAUNCH line')
+
+    def test_a_launcher_that_says_nothing_fails_without_polling(self):
+        h, polls = self._start([])
+        with self.assertRaises(RuntimeError) as c:
+            h.start()
+        self.assertIn('it said nothing', str(c.exception))
+        self.assertEqual(len(polls), 1)
+
+    def test_an_already_running_refusal_is_reported_in_the_launchers_words(self):
+        h, polls = self._start(['refused: x.exe is already running (pid 7)\n'])
+        with self.assertRaises(RuntimeError) as c:
+            h.start()
+        self.assertIn('already running', str(c.exception))
+        self.assertEqual(len(polls), 1)
 
 
 class HarnessFixesTests(unittest.TestCase):

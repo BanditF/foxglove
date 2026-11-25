@@ -20,7 +20,7 @@ Waits: every lab control action answers after the frame that shows its result. T
 the hub's own timing (a module restarting, a crash landing) read `state` every 0.25 s for a
 bounded time, started by the action they wait for.
 """
-import argparse, base64, json, os, subprocess, sys, time
+import argparse, base64, json, os, subprocess, sys, threading, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -328,8 +328,35 @@ def hidden_ps(script):
         creationflags=0x08000000)  # CREATE_NO_WINDOW
 
 
+def launcher_verdict(proc, said, limit):
+    """Waits, bounded, for quiet-launch's own verdict: True once it printed `QUIET-LAUNCH` (the hub
+    is started), False if it refused, ended or said nothing within `limit` seconds. Its output is
+    gathered in `said`, and goes on being gathered after this returns, so the pipe never fills."""
+    started, over = threading.Event(), threading.Event()
+
+    def pump():
+        try:
+            for line in proc.stdout:
+                said.append(line)
+                if line.startswith('QUIET-LAUNCH '):
+                    started.set()
+                    over.set()
+                elif line.startswith('refused:'):
+                    over.set()
+        except (OSError, ValueError):
+            pass  # the pipe closed under us: the launcher is gone
+        finally:
+            over.set()
+
+    threading.Thread(target=pump, daemon=True).start()
+    over.wait(limit)
+    return started.is_set()
+
+
 class QuietHub(Hub):
     """A lab hub that lives on its own hidden desktop; `do`/`state` are the parent class's."""
+
+    LAUNCH_WAIT = 60  # seconds for quiet-launch to pass its checks and start the hub
 
     def __init__(self, exe, lab, shots, desktop, extra_env, seconds=240, allow_running=False):
         super().__init__(exe, lab, shots)
@@ -337,7 +364,7 @@ class QuietHub(Hub):
             del self.env[k]  # an ambient HIDEOUT_DEV_* must not decide what a run shows
         self.extra_env = dict(extra_env)
         self.desktop, self.seconds, self.allow_running = desktop, seconds, allow_running
-        self.launcher = None
+        self.launcher, self.said = None, []
 
     def start(self):
         env = {k: self.env[k] for k in ('HIDEOUT_CONFIG_DIR', 'HIDEOUT_LAB', 'HIDEOUT_LAB_CAPTURE')}
@@ -346,11 +373,19 @@ class QuietHub(Hub):
             raise RuntimeError('a lab hub already answers on the lab pipe; refusing to drive it')
         self.launcher = hidden_ps(launch_script(self.exe, self.lab, self.desktop, env, self.seconds,
                                                 self.allow_running))
+        # No `state` poll before the launcher's verdict: each poll is a short-lived process with the
+        # hub's own image name, and one alive at quiet-launch's "already running" check gets the
+        # launch refused. Callers must not poll the pipe themselves while start() runs.
+        self.said = []
+        if not launcher_verdict(self.launcher, self.said, self.LAUNCH_WAIT):
+            out = ''.join(self.said).strip()[:300]
+            self.stop(quit_first=False)
+            raise RuntimeError(f'quiet-launch did not start the lab hub: {out or "it said nothing"}')
         ok, _ = self.wait(lambda s: s.get('ok'), 30, read=lambda: self.do('state', check=False))
         if not ok:
-            out = self.launcher.stdout.read() if self.launcher.poll() is not None else ''
+            out = ''.join(self.said).strip()[:300]
             self.stop(quit_first=False)
-            raise RuntimeError(f'the lab hub did not answer on its pipe within 30 s: {out.strip()[:300]}')
+            raise RuntimeError(f'the lab hub did not answer on its pipe within 30 s: {out}')
         if f'folder {self.lab}' not in self.log():
             self.stop(quit_first=False)  # not ours: never ask it to quit
             raise RuntimeError("the hub that answered is not this run's (no start line for this folder in its log)")
