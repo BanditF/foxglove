@@ -15,8 +15,13 @@ isn't needed. **Lab mode** loads them as they ship, only in a lab hub.
 - The installed Hideout ignores all of this: it is built with `--no-default-features`, without the
   `lab-switches` cargo feature (on by default), so `HIDEOUT_LAB`, `--lab`, `HIDEOUT_CONFIG_DIR`,
   `HIDEOUT_HOME`, `HIDEOUT_DEV_MODE` and `HIDEOUT_DEV_UNSIGNED` change nothing there, and
-  `hideout.log` gets one line naming any that is set. Lab builds (`cargo build -p hideout`, debug
-  or `--release`) keep the feature.
+  `hideout.log` gets one line naming any that is set (`this build ignores lab, developer and
+  home-folder switches; set but ignored: <names>`; names only, never values). Lab builds
+  (`cargo build -p hideout`, debug or `--release`) keep the feature. The feature is forwarded
+  through `hideout-registry`, `-router`, `-services`, `-supervisor` and `-shell`; the installer
+  build (`scripts/build-hideout-installer.ps1`) leaves it out and `scripts/check.ps1` fails if
+  any of them has it on in that build. `HIDEOUT_LAB_TOOL_ASK` (below) is read only when lab mode
+  is on, so the installed build never reads it either.
 - When it's on, `hideout.log` says `lab: lab mode on; loading lab modules from <config>\lab-modules`,
   then one `lab:` line per folder: `<id>: loaded from …` or `…: not loaded: <why>`.
 - Each `<config>\lab-modules\<id>\` whose manifest (`module.toml`, else `plugin.toml`) has that
@@ -176,6 +181,65 @@ Checks: Found card "Add PC sensors", the dialog in plain words (no raw permissio
 value reads "Not reported"), and, after the placed file's version changes, **Add an app…** offers
 "Update in Hideout" (the list looks at the folders again only when that box opens or the held apps change). Then it clicks Update in Hideout: the running app is stopped, the Allow dialog opens, and after Allow
 the app runs again as a new process with no second Update offered (#1455).
+
+### The flows (`--only`)
+
+| `--only` | Needs | Fixture | Config dir |
+|---|---|---|---|
+| `first-run` (default) | `--probe <hideout-ac-probe.exe>` | `hello_fixture` (above) | `<lab>` |
+| `s1` | `--sensors <sensors.exe>` | hub copy in `<lab>\hub`, PC sensors in `<lab>\hub\apps\sensors` | `<lab>\cfg` |
+| `keep` | `--sensors` | as `s1` | `<lab>\cfg` |
+| `keep-sens` | `--sensors` | as `s1`, with `net` added to the placed `module.toml` | `<lab>\cfg` |
+| `tools` | `--cli <foxglove-cli.exe>` | hub copy in `<lab>\hub`, the tool in `<lab>\tools\a` | `<lab>\cfg` |
+
+Every flow needs `--app <hideout.exe>` (a lab build, with `lab-switches`) and `--lab <folder>`: an
+existing, **empty** scratch folder (a folder with anything in it is BLOCKED). `--seconds` is the
+hidden hub's hard time limit (default 300). Captures go to `shots` next to the lab folder.
+
+### An outside tool asks (`--only tools --cli`, #1471, #1470)
+
+A lab hub normally keeps the lab approver for outside tools: everything not sensitive is granted
+without asking (`hideout.log`: `lab: outside tools keep the lab approver: …`), so the dialog an
+installed hub shows never opens. **`HIDEOUT_LAB_TOOL_ASK=1`** switches a lab hub to the installed
+hub's rule: an outside tool gets the free set and the rest waits for Allow (`hideout.log`:
+`lab: HIDEOUT_LAB_TOOL_ASK=1; outside tools get the free set and ask for the rest`). It is read
+only when lab mode is on; the run sets it itself for this flow and for no other.
+
+The run starts `foxglove-cli.exe profile` windowless with `FOXGLOVE_PIPE` set to the lab alias
+(`\\.\pipe\foxglove-<user><suffix>`, worked out from the log's `router: serving` line), so the
+tool can reach only the lab hub. Checks:
+
+- T0: the log names the pipe. T1: a first run puts "A program outside Hideout asks for…" on the
+  Apps page. T2: Review… opens "Allow a program outside Hideout?" naming the program file.
+- T3: the window's close button dismisses it and allows nothing. T4: Not now is not remembered,
+  the same file asks again (BLOCKED, not FAIL, when the dialog didn't open again: the harness).
+- T5: Allow (armed after 1 s) closes the dialog and the ask. T6: a second run of the same file
+  does not ask.
+- T7: a copy of the file in another folder (`<lab>\tools\b`) asks: the Allow is per program file.
+- F1 to F5: the Apps page lists "Programs outside Hideout, 2 programs"; Forget asks nothing,
+  leaves the other program, and the forgotten file asks again at its next run.
+- T8: the allowed file with other bytes (16 bytes appended in place) asks again.
+
+### Keep my OK after updates (`--only keep`, `--only keep-sens`, #1465)
+
+Both add PC sensors, tick "Keep my OK after updates in this folder, except Sensitive and
+keyboard" in the dialog, Allow, then change only the app file: the app's process is stopped and
+a copy with 16 bytes appended is moved over the exe in one step (a changed `module.toml` is
+another path: it voids the answer). Then **Add an app…** is opened so the page looks again.
+
+| Check | `keep` | `keep-sens` |
+|---|---|---|
+| K0 | Found card offers Add PC sensors, Add opens the dialog (reported only when it fails) | same |
+| K1 | ticking Keep asks for its own "I understand: any app…" | same |
+| K2 | Allow with Keep starts the app ("1 app is running") | same |
+| K3 | the Permissions line says "Your OK stayed, except Sensitive and keyboard" and the new build runs | not run |
+| K4 | Keep is still on for the folder (Turn off keep my OK after updates), and no Review… is offered: nothing sensitive waits in this fixture | not run |
+| K5 | no grant line for a sensor or the keyboard in `hideout.log` after the change | same |
+| K6 | not run | before Allow the Sensitive item (`net`) is understood and ticked; after the change the row says "Sensitive items and the keyboard need your OK again. It runs without them until then.", the app runs without them, and Review… appears |
+
+So K3 and K4 are what a plain kept update looks like, and K6 is the same update when the Allow
+included a Sensitive item: the kept OK never carries it over. Captures: `K3-changed`,
+`K6-kept-changed`. `keep-sens` skipping K3 and K4 is expected, not a gap in the run.
 
 ## On-call steps
 
