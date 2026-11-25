@@ -276,6 +276,8 @@ pub fn tool_phrase(cap: &Capability) -> String {
         Capability::ImageGenerate => "make pictures".into(),
         Capability::AiAsk(_) => "ask an AI agent".into(),
         Capability::ModulesManage => "manage your apps".into(),
+        // One phrase: the app's id and the channel's name are internal, or another program's.
+        Capability::ChannelOpen { .. } => "get a live feed from one of your apps".into(),
         other => format!("use {other}"),
     }
 }
@@ -498,6 +500,19 @@ mod tests {
         );
         for holder in [Holder::OutsideTool, Holder::FirstParty, Holder::HideoutCli] {
             assert!(check_grantable(&cap, holder).is_ok());
+        }
+    }
+
+    /// A channel is one fixed phrase: never the app's id or the channel's name (#1466 L2).
+    #[test]
+    fn a_channel_phrase_names_no_app_and_no_channel() {
+        for s in [
+            "channel.open:foxglove.example-link/art",
+            "channel.open:keyboard.keys/status",
+        ] {
+            let words = tool_phrase(&cap(s));
+            assert_eq!(words, "get a live feed from one of your apps");
+            assert!(!words.contains(':') && !words.contains('/'), "{words}");
         }
     }
 }
