@@ -146,10 +146,7 @@ fn local_day_by(
             .then(|| s.parse().ok())?
     };
     let seps = [(4, '-'), (7, '-'), (13, ':'), (16, ':')];
-    if seps
-        .iter()
-        .any(|(i, c)| at[*i..].chars().next() != Some(*c))
-    {
+    if seps.iter().any(|(i, c)| !at[*i..].starts_with(*c)) {
         return None;
     }
     let (y, m, d, h, min, s) = (
