@@ -68,9 +68,9 @@ pub fn controls(v: &mut egui::Visuals, t: &Tokens) {
     let w = &mut v.widgets;
     for (state, by) in [
         (&mut w.inactive, 0.0),
-        (&mut w.hovered, 0.07),
-        (&mut w.active, 0.14),
-        (&mut w.open, 0.07),
+        (&mut w.hovered, 0.05),
+        (&mut w.active, 0.10),
+        (&mut w.open, 0.05),
     ] {
         let f = c(mix(fill, t.text, by));
         state.weak_bg_fill = f;
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn text_reads_on_a_default_button_in_every_state() {
         for t in [LIGHT, DARK] {
-            for by in [0.0, 0.07, 0.14] {
+            for by in [0.0, 0.05, 0.10] {
                 let fill = mix(raised(&t), t.text, by);
                 assert!(contrast(t.text, fill) >= 7.0, "{t:?} {by}");
             }
