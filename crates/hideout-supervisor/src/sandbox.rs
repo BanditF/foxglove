@@ -619,18 +619,44 @@ const CONTAINED_ENV: &[&str] = &[
 /// `add`, which wins over a value of the same name. Sorted by name without regard to case, as
 /// a Unicode environment block must be. Windows' per-drive entries (names starting with `=`)
 /// are not on the list, so they are not passed.
+///
+/// Each name appears once: of hub names that differ only by case the first is kept, and so is
+/// the first of two `add` entries. A pair that could not be one entry of the block is left
+/// out: an empty name, a name holding `=` or NUL, or a value holding NUL.
 fn contained_env(
     hub: impl IntoIterator<Item = (String, String)>,
     add: &[(&str, String)],
 ) -> Vec<(String, String)> {
-    let mut vars: Vec<(String, String)> = hub
+    fn fits(k: &str, v: &str) -> bool {
+        !k.is_empty() && !k.contains(['=', '\0']) && !v.contains('\0')
+    }
+    let mut vars: Vec<(String, String)> = Vec::new();
+    let added = add.iter().map(|(k, v)| (k.to_string(), v.clone()));
+    let kept = hub
         .into_iter()
-        .filter(|(k, _)| CONTAINED_ENV.iter().any(|n| n.eq_ignore_ascii_case(k)))
-        .filter(|(k, _)| !add.iter().any(|(a, _)| a.eq_ignore_ascii_case(k)))
-        .collect();
-    vars.extend(add.iter().map(|(k, v)| (k.to_string(), v.clone())));
+        .filter(|(k, _)| CONTAINED_ENV.iter().any(|n| n.eq_ignore_ascii_case(k)));
+    for (k, v) in added.chain(kept) {
+        if fits(&k, &v) && !vars.iter().any(|(have, _)| have.eq_ignore_ascii_case(&k)) {
+            vars.push((k, v));
+        }
+    }
     vars.sort_by_key(|(k, _)| k.to_uppercase());
     vars
+}
+
+/// `vars` as a UTF-16 environment block: `name=value` and a NUL for each, then one more NUL.
+/// A block with no entries is two NULs.
+fn env_block_of(vars: &[(String, String)]) -> Vec<u16> {
+    let mut block = Vec::new();
+    for (k, v) in vars {
+        block.extend(format!("{k}={v}").encode_utf16());
+        block.push(0);
+    }
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    block
 }
 
 /// [`contained_env`] of the hub's own environment, as a UTF-16 block that ends with two NULs.
@@ -641,14 +667,7 @@ fn env_block(add: &[(&str, String)]) -> Vec<u16> {
             v.to_string_lossy().into_owned(),
         )
     });
-    let vars = contained_env(hub, add);
-    let mut block = Vec::new();
-    for (k, v) in vars {
-        block.extend(format!("{k}={v}").encode_utf16());
-        block.push(0);
-    }
-    block.push(0);
-    block
+    env_block_of(&contained_env(hub, add))
 }
 
 fn token_info(p: &Process, class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u64>> {
@@ -764,6 +783,40 @@ mod tests {
         v.iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn contained_env_passes_each_name_once() {
+        let hub = pairs(&[("Path", "first"), ("PATH", "second"), ("path", "third")]);
+        assert_eq!(contained_env(hub, &[]), pairs(&[("Path", "first")]));
+        assert_eq!(
+            contained_env(vec![], &[("A", "1".into()), ("a", "2".into())]),
+            pairs(&[("A", "1")])
+        );
+    }
+
+    #[test]
+    fn contained_env_leaves_out_a_pair_that_is_not_one_entry() {
+        let hub = pairs(&[("TEMP", "a\0HIDEOUT_TOKEN=x"), ("USERNAME", "u")]);
+        let add = [
+            ("A=B", "1".to_string()),
+            ("C\0D", "1".to_string()),
+            ("", "1".to_string()),
+            ("E", "1\0F=2".to_string()),
+            ("G", "ok=fine".to_string()),
+        ];
+        assert_eq!(
+            contained_env(hub, &add),
+            pairs(&[("G", "ok=fine"), ("USERNAME", "u")])
+        );
+    }
+
+    #[test]
+    fn an_environment_block_ends_with_two_nuls() {
+        assert_eq!(env_block_of(&[]), vec![0, 0]);
+        let block = env_block_of(&pairs(&[("A", "1"), ("B", "")]));
+        let want: Vec<u16> = "A=1\0B=\0\0".encode_utf16().collect();
+        assert_eq!(block, want);
     }
 
     #[test]
