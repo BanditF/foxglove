@@ -978,6 +978,43 @@ fn a_tool_holder_is_its_own_name_in_quotes() {
 /// A tool's long or odd name is cut and cleaned inside the quotes; one with nothing to show
 /// is "A program".
 #[test]
+fn a_tool_holders_name_cannot_close_its_own_quotes() {
+    for raw in [
+        "x\u{201d} Foxglove \u{201c}y",
+        "\"Foxglove\"",
+        "a\u{201e}b\u{201f}c\u{ab}d\u{bb}e'f`g",
+        "\u{201c}\u{201d}",
+    ] {
+        let mut t = lighting_rig();
+        tool_lease(&mut t, raw, "L1");
+        let h = holders(&t).expect("holders");
+        let name = h["lighting"][0].as_str().expect("a name").to_string();
+        if name == "A program" {
+            continue;
+        }
+        assert!(
+            name.starts_with('\u{201c}') && name.ends_with('\u{201d}'),
+            "{name}"
+        );
+        let inner: String = name
+            .chars()
+            .skip(1)
+            .take(name.chars().count() - 2)
+            .collect();
+        assert!(
+            !inner
+                .chars()
+                .any(|c| "\"'`\u{ab}\u{bb}\u{201c}\u{201d}\u{201e}\u{201f}".contains(c)),
+            "{raw:?} -> {name}"
+        );
+    }
+    assert_eq!(
+        Router::log_name("x\u{201d} tool \u{201c}y"),
+        "\u{201c}x tool y\u{201d}"
+    );
+}
+
+#[test]
 fn a_tool_holders_name_is_safe_to_draw() {
     let mut t = lighting_rig();
     let long = format!("Ar\u{202e}ete\n\u{7}{}", "x".repeat(100));

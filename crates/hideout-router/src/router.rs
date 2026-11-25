@@ -2454,10 +2454,8 @@ impl Router {
                 .get(id)
                 .map_or_else(|| id.clone(), |m| m.name.clone()),
             Some(Who::Tool { name, .. }) => {
-                return match Self::clean_name_opt(name, Self::TOOL_HOLDER_NAME_MAX) {
-                    Some(n) => format!("\u{201c}{n}\u{201d}"),
-                    None => "A program".to_string(),
-                };
+                return Self::quoted_name(name, Self::TOOL_HOLDER_NAME_MAX)
+                    .unwrap_or_else(|| "A program".to_string());
             }
             _ => String::new(),
         };
@@ -2499,6 +2497,20 @@ impl Router {
         Some(format!("{}\u{2026}", cut.trim_end()))
     }
 
+    /// A program's own name inside “ ” quotes: quote marks in the name itself are dropped
+    /// first, so the entry holds one opening and one closing mark and nothing after the
+    /// closing mark is the program's word. `None` when nothing is left.
+    pub fn quoted_name(raw: &str, max: usize) -> Option<String> {
+        const MARKS: &[char] = &[
+            '"', '\'', '`', '\u{ab}', '\u{bb}', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}',
+            '\u{201c}', '\u{201d}', '\u{201e}', '\u{201f}', '\u{2032}', '\u{2033}', '\u{2035}',
+            '\u{2036}', '\u{2039}', '\u{203a}', '\u{275b}', '\u{275c}', '\u{275d}', '\u{275e}',
+            '\u{301d}', '\u{301e}', '\u{301f}', '\u{ff02}', '\u{ff07}',
+        ];
+        let raw: String = raw.chars().filter(|c| !MARKS.contains(c)).collect();
+        Self::clean_name_opt(&raw, max).map(|n| format!("\u{201c}{n}\u{201d}"))
+    }
+
     /// The most characters of a tool's own name a log line keeps: the length the refusal words
     /// and the Review dialog show, so the log names it as the user saw it.
     pub const LOG_NAME_MAX: usize = 40;
@@ -2506,10 +2518,7 @@ impl Router {
     /// A tool's self-given name for a log line: cleaned, one line, at most
     /// [`Self::LOG_NAME_MAX`] characters, inside “ ” quotes; "(no name)" when nothing is left.
     pub fn log_name(raw: &str) -> String {
-        match Self::clean_name_opt(raw, Self::LOG_NAME_MAX) {
-            Some(n) => format!("\u{201c}{n}\u{201d}"),
-            None => "(no name)".into(),
-        }
+        Self::quoted_name(raw, Self::LOG_NAME_MAX).unwrap_or_else(|| "(no name)".into())
     }
 
     /// `lease.holders` (v1.21): keeps `names` as the callers `module` holds `family` for outside
@@ -3082,18 +3091,12 @@ impl Router {
         } else if self.tool_identity(conn).is_none() {
             "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.".to_string()
         } else if self.conns.get(&conn).is_some_and(|c| c.forgotten) {
-            let who = match Self::clean_name_opt(name, 40) {
-                Some(n) => format!("\u{201c}{n}\u{201d}"),
-                None => "this program".to_string(),
-            };
+            let who = Self::quoted_name(name, 40).unwrap_or_else(|| "this program".to_string());
             format!(
                 "Hideout no longer lets {who} {does}. This program was forgotten on Hideout's Apps page. Close this program and start it again, then allow it in Hideout."
             )
         } else {
-            let who = match Self::clean_name_opt(name, 40) {
-                Some(n) => format!("\u{201c}{n}\u{201d}"),
-                None => "this program".to_string(),
-            };
+            let who = Self::quoted_name(name, 40).unwrap_or_else(|| "this program".to_string());
             format!(
                 "Hideout hasn't let {who} {does} yet. Open Hideout, go to Apps and press Review\u{2026} on its line. If there is no line, close this program and start it again, then try again."
             )
