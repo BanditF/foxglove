@@ -13,6 +13,8 @@ pub const SECTION: f32 = 24.0;
 /// The launcher rail on the left of the window, and one icon on it.
 pub const RAIL: f32 = 56.0;
 pub const RAIL_ITEM: f32 = 40.0;
+/// The working area's header: the open page's name and Pop out.
+pub const HEADER: f32 = 44.0;
 /// The height of a button, a text box and a menu row.
 pub const CONTROL: f32 = 32.0;
 /// Corner radius of a control.
