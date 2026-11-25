@@ -34,9 +34,32 @@ fn c(x: Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(x.0, x.1, x.2)
 }
 
+/// A section's label: small and muted, over its card.
 fn heading(ui: &mut egui::Ui, t: &Tokens, text: &str) {
-    ui.label(RichText::new(text).size(17.0).strong().color(c(t.text)));
-    ui.add_space(4.0);
+    ui.label(
+        RichText::new(text)
+            .size(crate::kit::SMALL)
+            .strong()
+            .color(c(t.text_muted)),
+    );
+}
+
+/// One section of the page: its label, then its rows in a card.
+fn section<R>(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    title: &str,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    heading(ui, t, title);
+    let r = crate::kit::card(t)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner;
+    ui.add_space(crate::kit::SECTION);
+    r
 }
 
 /// Draws the page without a Start with Windows section.
@@ -67,8 +90,13 @@ pub struct Actions {
 }
 
 fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
+    section(ui, t, startup_switch::HEADING, |ui| {
+        startup_rows(ui, t, row)
+    })
+}
+
+fn startup_rows(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
     let mut click = None;
-    heading(ui, t, startup_switch::HEADING);
     ui.add(egui::Label::new(RichText::new(&row.status).color(c(t.text))).wrap());
     ui.add_space(8.0);
     if let Some(replaces) = row.dialog {
@@ -133,7 +161,6 @@ fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
             ui.label(RichText::new(m).color(c(t.text_muted)));
         }
     });
-    ui.add_space(20.0);
     click
 }
 
@@ -303,12 +330,15 @@ fn app_line(ui: &mut egui::Ui, t: &Tokens, app: &DevApp) -> Option<DevClick> {
 
 /// The Developer section (R5). Dev mode off: one line and nothing to click.
 fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
-    let mut click = None;
     if !v.on && v.folders.is_empty() {
         // Developer mode is off and nothing is listed: the page stays as it ships.
         return None;
     }
-    heading(ui, t, dev_settings::HEADING);
+    section(ui, t, dev_settings::HEADING, |ui| dev_rows(ui, t, v))
+}
+
+fn dev_rows(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
+    let mut click = None;
     if !v.on {
         ui.add(egui::Label::new(RichText::new(dev_settings::MODE_OFF).color(c(t.text))).wrap());
         ui.add(
@@ -319,7 +349,6 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
         for row in &v.folders {
             ui.add(egui::Label::new(RichText::new(&row.path).color(c(t.text_muted))).wrap());
         }
-        ui.add_space(20.0);
         return None;
     }
     let sid = egui::Id::new("hub.dev.ui");
@@ -346,8 +375,9 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
         ui.label(RichText::new(dev_settings::EMPTY).color(c(t.text_muted)));
     }
     for row in &v.folders {
+        // On the page's colour, so a folder stands apart inside the section's card.
         egui::Frame::new()
-            .fill(c(t.surface))
+            .fill(c(t.bg))
             .stroke(egui::Stroke::new(1.0_f32, c(t.border)))
             .corner_radius(egui::CornerRadius::same(6))
             .inner_margin(egui::Margin::symmetric(12, 8))
@@ -429,7 +459,6 @@ fn dev_section(ui: &mut egui::Ui, t: &Tokens, v: &DevView) -> Option<DevClick> {
     ui.label(RichText::new(dev_settings::RESTART_SUB).color(c(t.text_muted)));
     ui.add_space(8.0);
     ui.add(egui::Label::new(RichText::new(dev_settings::FOOTNOTE).color(c(t.text_muted))).wrap());
-    ui.add_space(20.0);
     if let Some(path) = st.ask.clone() {
         let apps = v
             .folders
@@ -490,25 +519,26 @@ pub fn settings_ui_full(
     startup: Option<&Row>,
     dev: Option<&DevView>,
 ) -> Actions {
-    heading(ui, t, PRIVACY);
-    ui.add(egui::Label::new(RichText::new(PRIVACY_LINE).color(c(t.text))).wrap());
-    ui.add_space(8.0);
-    let pressed = ui
-        .horizontal_wrapped(|ui| {
+    ui.set_max_width(crate::kit::COLUMN);
+    let pressed = section(ui, t, PRIVACY, |ui| {
+        ui.add(egui::Label::new(RichText::new(PRIVACY_LINE).color(c(t.text))).wrap());
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
             let pressed = ui.button(FORGET).clicked();
             if forgotten || pressed {
                 ui.label(RichText::new(FORGOTTEN).color(c(t.text_muted)));
             }
             pressed
         })
-        .inner;
-    ui.add_space(20.0);
+        .inner
+    });
     let startup = startup.and_then(|row| startup_section(ui, t, row));
     let dev = dev.and_then(|v| dev_section(ui, t, v));
-    heading(ui, t, ABOUT);
-    ui.label(RichText::new(version_line(version)).color(c(t.text)));
-    ui.add_space(8.0);
-    let logs = ui.button(OPEN_LOGS).clicked();
+    let logs = section(ui, t, ABOUT, |ui| {
+        ui.label(RichText::new(version_line(version)).color(c(t.text)));
+        ui.add_space(4.0);
+        ui.button(OPEN_LOGS).clicked()
+    });
     Actions {
         forget: pressed,
         logs,
