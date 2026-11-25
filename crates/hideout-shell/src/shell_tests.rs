@@ -5329,14 +5329,16 @@ fn the_developer_section_reads_well_to_a_screen_reader() {
         .iter()
         .any(|(_, l, _)| l.as_deref() == Some(r"D:\dev\foxglove")));
     let no_controls = |nodes: &Seen| {
-        !nodes.iter().any(|(_, l, _)| {
-            l.as_deref().is_some_and(|l| {
-                (l.contains("dev folder")
-                    && l != crate::dev_settings::MODE_OFF
-                    && l != crate::dev_settings::mode_off_more())
-                    || l == crate::dev_settings::ADD
-                    || l == crate::dev_settings::RESTART_SWITCH
-            })
+        // A wrapped label's lines are text runs under it: parts of a line, never a control.
+        !nodes.iter().any(|(role, l, _)| {
+            *role != egui::accesskit::Role::TextRun
+                && l.as_deref().is_some_and(|l| {
+                    (l.contains("dev folder")
+                        && l != crate::dev_settings::MODE_OFF
+                        && l != crate::dev_settings::mode_off_more())
+                        || l == crate::dev_settings::ADD
+                        || l == crate::dev_settings::RESTART_SWITCH
+                })
         })
     };
     assert!(no_controls(&off), "{off:?}");
