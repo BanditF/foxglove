@@ -22,6 +22,8 @@ pub const RADIUS: u8 = 6;
 /// Corner radius of a card or a dialog.
 pub const CARD_RADIUS: u8 = 8;
 
+/// The widest a page's own content runs, so a control is never far from its label.
+pub const COLUMN: f32 = 720.0;
 /// The space inside a dialog's edge.
 pub const DIALOG_PAD: i8 = 24;
 
@@ -99,6 +101,15 @@ pub fn dialog_frame(style: &egui::Style) -> egui::Frame {
     egui::Frame::popup(style)
         .inner_margin(egui::Margin::same(DIALOG_PAD))
         .corner_radius(egui::CornerRadius::same(CARD_RADIUS + 4))
+}
+
+/// A card: a section's rows on the raised surface.
+pub fn card(t: &Tokens) -> egui::Frame {
+    egui::Frame::new()
+        .fill(c(t.surface))
+        .stroke(egui::Stroke::new(1.0_f32, c(t.border)))
+        .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
+        .inner_margin(egui::Margin::same(16))
 }
 
 /// The plate that says who is asking (the app's file): the same in every dialog.
