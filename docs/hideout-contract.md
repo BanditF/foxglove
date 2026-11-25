@@ -1946,6 +1946,9 @@ Design §3.1.
     hub brokers (facts, lights, `net.connect`, `net.listen`, GPU, `secrets.ref`, app watches)
     needs nothing inside. A permission the module carries out itself through a device gets the
     matching capability in `SECURITY_CAPABILITIES`: `device.hid:` gives `humaninterfacedevice`.
+    (#1466) Its environment is not the hub's: it gets a short fixed list of Windows' own
+    variables (where the system and the user's folders are, `PATH`, `TEMP`) plus the ones
+    Hideout gives it (§7.5), and nothing else the hub was started with.
   - **Outside**, logged: a granted `net` or `files`, whose permission lines already told the
     user it runs without the sandbox or with their files.
   - **Refused** (`install-failed`, "It can't run in a sandbox, and Hideout is set to sandbox

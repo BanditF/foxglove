@@ -43,7 +43,7 @@ OPEN = {
     ('crates/hideout-shell/src/shell.rs', 'start_capture'):
         'capture::enabled needs an overridden folder, which the installed build never has',
     ('crates/hideout-supervisor/src/sandbox.rs', 'env_block'):
-        "copies the hub's environment to a module it starts; reads no switch",
+        "hands a contained module a short fixed list of the hub's variables; reads no switch",
     ('crates/hideout/src/find_installed.rs', 'env'):
         'system folder variables for finding installed programs; no switch',
 }
