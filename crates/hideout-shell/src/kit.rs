@@ -51,7 +51,10 @@ pub fn metrics(s: &mut egui::Style) {
         (TextStyle::Body, FontId::new(BODY, p.clone())),
         (TextStyle::Button, FontId::new(BODY, p.clone())),
         (TextStyle::Heading, FontId::new(TITLE, p)),
-        (TextStyle::Monospace, FontId::new(SMALL, FontFamily::Monospace)),
+        (
+            TextStyle::Monospace,
+            FontId::new(SMALL, FontFamily::Monospace),
+        ),
     ]
     .into();
 }

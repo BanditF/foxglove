@@ -17,9 +17,9 @@ pub mod drag;
 pub mod flyout;
 pub mod icon;
 pub mod keyboard_grant;
-pub mod kit;
 #[cfg(windows)]
 pub mod keyboard_grant_ui;
+pub mod kit;
 pub mod logfile;
 pub mod marks;
 pub mod palette;
