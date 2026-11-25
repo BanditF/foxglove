@@ -129,6 +129,20 @@ pub fn lab_mode_from_env(_home: &Path) -> LabMode {
     LabMode::Off
 }
 
+/// What this build is, as a line in the program file itself and in the log: the installer build
+/// (`scripts/build-hideout-installer.ps1`) refuses a `hideout.exe` that doesn't carry the `off`
+/// line or carries the `on` one (`scripts/hideout_build_mark.py`).
+#[cfg(feature = "lab-switches")]
+pub const BUILD_MARK: &str = "hideout-build: lab-switches=on";
+
+/// See the `lab-switches` variant: the installed build's line.
+#[cfg(not(feature = "lab-switches"))]
+pub const BUILD_MARK: &str = "hideout-build: lab-switches=off";
+
+/// [`BUILD_MARK`] kept in the program file whatever the optimiser does with the log line.
+#[used]
+static BUILD_MARK_KEPT: &str = BUILD_MARK;
+
 /// Logs one line when the hub's command line or environment asks for a lab, developer or
 /// sideload switch the build ignores; none in a build with `lab-switches`. Names only, never values.
 #[cfg(feature = "lab-switches")]

@@ -131,7 +131,9 @@ this repo runs it. It is a WiX 3.14 MSI (the same toolchain as Foxglove's) from
 `crates/hideout/wix/hideout.wxs`, built with `candle` and `light` directly. The script builds
 `hideout.exe` with `cargo build --release --locked -p hideout --no-default-features`, without the
 `lab-switches` feature: the installed hub ignores `HIDEOUT_LAB`, `--lab`, `HIDEOUT_CONFIG_DIR`,
-`HIDEOUT_HOME`, `HIDEOUT_DEV_MODE` and `HIDEOUT_DEV_UNSIGNED` (it logs one line when one is set).
+`HIDEOUT_HOME`, `HIDEOUT_DEV_MODE` and `HIDEOUT_DEV_UNSIGNED` (it logs one line when one is set). The exe
+carries a line saying which build it is (`hideout-build: lab-switches=off`, also its first log line);
+the script checks it with `scripts/hideout_build_mark.py` and packs nothing else.
 
 ```powershell
 # Lists what the MSI would write (runs python scripts/hideout_installer_plan.py). Builds and installs nothing; needs no WiX or cargo.

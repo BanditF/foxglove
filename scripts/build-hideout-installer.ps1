@@ -32,6 +32,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
     $exe = Join-Path $targetDir 'release/hideout.exe'
     if (-not (Test-Path $exe)) { throw "No hideout.exe at $exe" }
+    # The exe says in itself which build it is; anything but the build without lab switches stops here.
+    python (Join-Path $repo 'scripts/hideout_build_mark.py') $exe
+    if ($LASTEXITCODE -ne 0) { throw 'hideout.exe is not the build without lab switches (scripts/hideout_build_mark.py)' }
     $wix = Join-Path $repo 'crates/hideout/wix'
     $obj = Join-Path $OutDir 'obj'
     New-Item -ItemType Directory -Force $obj | Out-Null

@@ -248,6 +248,7 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
     }
     // A build without `lab-switches` ignores the lab, developer and home variables and `--lab`:
     // one log line says which were set, no window.
+    log::info!("{}", hideout_registry::lab::BUILD_MARK);
     hideout_registry::lab::log_ignored_switches(std::env::args_os().skip(1));
     let lock_name = format!(
         r"Local\BanditF.Hideout.Supervisor{}",
