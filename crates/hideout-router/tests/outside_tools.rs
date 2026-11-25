@@ -251,6 +251,40 @@ fn a_keys_or_unknown_channel_is_never_a_tools() {
     }
 }
 
+#[test]
+fn what_is_never_a_tools_is_dropped_whatever_approves() {
+    // An approver that says yes to everything: the router's own rule still holds (#1466 L1).
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry(M, &[]));
+    for name in ["some-tool", "mcp:some-agent"] {
+        let (_, result) = connect(
+            &mut r,
+            name,
+            false,
+            &[
+                "key.events",
+                "hid.raw",
+                "net",
+                "files",
+                "secrets",
+                "ai.ask:*",
+                "modules.manage",
+                "devices.read",
+                "lighting.write",
+            ],
+        );
+        assert_eq!(
+            result["granted"],
+            json!(["devices.read", "lighting.write"]),
+            "{name}"
+        );
+    }
+    // And none of it was kept for the program: only what the user can allow.
+    let kept = r.approved_tools();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].1, ["lighting.write"]);
+}
+
 // ---- S1 slice 2: what is remembered is the program, not the name ----
 
 use hideout_router::ToolId;
