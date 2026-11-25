@@ -704,7 +704,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("plugin.toml"), b"id").unwrap();
-        std::fs::write(dir.join("bin/run.exe"), b"MZ").unwrap();
+        std::fs::write(dir.join("bin/run.exe"), b"not a program").unwrap();
         std::fs::write(dir.join("plugin.log"), b"log").unwrap();
         let files = hash_dir(&dir, &["plugin.log"]).unwrap();
         assert_eq!(
@@ -716,11 +716,11 @@ mod tests {
             ..entry("x", "1", "")
         };
         check_files(&dir, &entry, &["plugin.log"]).unwrap();
-        std::fs::write(dir.join("bin/run.exe"), b"MZ evil").unwrap();
+        std::fs::write(dir.join("bin/run.exe"), b"not a program evil").unwrap();
         assert!(check_files(&dir, &entry, &["plugin.log"])
             .unwrap_err()
             .contains("changed"));
-        std::fs::write(dir.join("bin/run.exe"), b"MZ").unwrap();
+        std::fs::write(dir.join("bin/run.exe"), b"not a program").unwrap();
         std::fs::write(dir.join("extra.dll"), b"x").unwrap();
         assert!(check_files(&dir, &entry, &["plugin.log"])
             .unwrap_err()

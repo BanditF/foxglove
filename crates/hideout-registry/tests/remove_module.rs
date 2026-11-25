@@ -154,7 +154,7 @@ fn a_hub_installed_module_loses_only_its_own_folder_under_modules() {
     let mk = |id: &str| {
         let dir = src.join(id);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("a.exe"), id).unwrap();
+        std::fs::write(dir.join("a.exe"), format!("{id}: not a program")).unwrap();
         std::fs::write(
             dir.join("module.toml"),
             format!(
@@ -225,7 +225,7 @@ fn hub_copy(home: &Path, src: &Path, id: &str) -> Registry {
     std::env::set_var("HIDEOUT_DEV_UNSIGNED", "1");
     let dir = src.join(id);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("a.exe"), id).unwrap();
+    std::fs::write(dir.join("a.exe"), format!("{id}: not a program")).unwrap();
     std::fs::write(
         dir.join("module.toml"),
         format!(
