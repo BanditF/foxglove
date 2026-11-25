@@ -9,6 +9,9 @@
 //! The colours the user picks are saved in the store's `[pc_lighting]` and put back when the
 //! board arrives (at startup too), unless an app its catalog entry names as a conflict (a
 //! vendor's lighting tool) is running.
+//! They are put back once more when the PC wakes (the display coming back on, `away`'s event:
+//! a board that kept its interface through sleep can still have lost its colours), and one
+//! more time a few seconds later for a controller that is ready late ([`WAKE_SETTLE`]).
 //!
 //! Each device carries what it can do (`LightCaps`): from the catalog, or from a LampArray's own
 //! attributes, read through Windows when one arrives. Boards the catalog doesn't know can be
@@ -339,6 +342,20 @@ pub enum Msg {
     },
     /// The last lease on a board ended (or Foxglove paused): its colours from before it go back.
     LeaseEnd(String),
+    /// The PC woke (the display came back on): every board's saved colours again, as on its
+    /// arrival. `settled`: the one later pass ([`WAKE_SETTLE`]), which asks for no further one.
+    Woke {
+        settled: bool,
+    },
+}
+
+/// How long after a wake the saved colours go on a second (last) time: a controller can come
+/// back after the display does and take its own default look then.
+pub const WAKE_SETTLE: Duration = Duration::from_secs(5);
+
+/// What an `away` edge asks of the worker: the display coming back on is the wake.
+pub fn wake_msg(change: super::away::Change) -> Option<Msg> {
+    (change == super::away::Change::DisplayOn).then_some(Msg::Woke { settled: false })
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -1097,6 +1114,58 @@ impl Worker {
         self.effect_start(&f.key, Some(f));
     }
 
+    /// The PC woke: every board Foxglove drives is written again, and how many took it. The
+    /// board may have lost its look in sleep while the driver still holds what it last sent,
+    /// so this writes whatever the driver says: the device's own effect if it is set to play
+    /// one (started once, not drawn over first), else the colours Foxglove knows it shows (a
+    /// preview or a followed colour included), else the saved ones. None while paused, during
+    /// a scene (its frames draw the boards), on a board a lease draws on, or on one a vendor's
+    /// app that is running sets (as of the last scan).
+    pub fn woke(&mut self, paused: bool) -> usize {
+        if paused || self.scene.is_some() {
+            return 0;
+        }
+        let due: Vec<Found> = self
+            .found
+            .iter()
+            .filter(|f| {
+                f.control != Control::NotYet
+                    && self.drivers.contains_key(&f.key)
+                    && !self.leased.contains_key(&f.key)
+                    && !self.conflicts.iter().any(|c| c.key == f.key)
+            })
+            .cloned()
+            .collect();
+        let mut written = 0;
+        for f in &due {
+            let effect = self.effect_wanted(&f.key, Some(f), true);
+            let saved = self.saved_colors(f);
+            let Some(d) = self.drivers.get_mut(&f.key) else {
+                continue;
+            };
+            let result = if let Some((name, colors)) = effect {
+                d.set_effect(&name, &colors)
+            } else {
+                let known = d.colors();
+                let colors: Vec<(usize, Rgb)> = (0..f.zones.len())
+                    .filter_map(|i| {
+                        let c = known.get(i).copied().flatten();
+                        Some((i, c.or(saved.get(i).copied().flatten())?))
+                    })
+                    .collect();
+                if colors.is_empty() {
+                    continue;
+                }
+                d.set_zones(&colors)
+            };
+            match result {
+                Ok(()) => written += 1,
+                Err(e) => eprintln!("Foxglove: {}: {e}", f.name),
+            }
+        }
+        written
+    }
+
     /// The effect of its own a device is set to play, if its driver offers it.
     fn saved_effect(&self, key: &str) -> Option<pcl::OnboardEffect> {
         let name = self.settings.devices.get(key)?.effect.as_ref()?;
@@ -1109,12 +1178,18 @@ impl Worker {
     /// spectrum. `None` while a scene or a lease holds the lights: their end asks again.
     /// `arriving`: the device, while a scan is still listing it.
     fn effect_due(&self, key: &str, arriving: Option<&Found>) -> Option<DueEffect> {
+        self.effect_wanted(key, arriving, false)
+    }
+
+    /// [`Self::effect_due`]; `again`: also when the driver says it plays already (a wake: the
+    /// board may not).
+    fn effect_wanted(&self, key: &str, arriving: Option<&Found>, again: bool) -> Option<DueEffect> {
         let effect = self.saved_effect(key)?;
         if self.scene.is_some() || self.leased.contains_key(key) {
             return None;
         }
         let d = self.drivers.get(key)?;
-        if d.effect().as_deref() == Some(effect.name.as_str()) {
+        if !again && d.effect().as_deref() == Some(effect.name.as_str()) {
             return None;
         }
         let colors = if effect.own_colours {
@@ -1294,6 +1369,7 @@ impl Worker {
                 | Msg::OpenRgbEvent(..)
                 | Msg::KeyboardLampRelease
                 | Msg::LeaseEnd(_)
+                | Msg::Woke { .. }
         );
         if paused && writes {
             let place = place_of(&msg);
@@ -1306,6 +1382,14 @@ impl Worker {
         }
         match msg {
             Msg::Scan => {}
+            Msg::Woke { .. } => {
+                let boards = self.woke(paused);
+                if boards > 0 {
+                    eprintln!(
+                        "Foxglove: the PC woke: saved colours again on {boards} light device(s)"
+                    );
+                }
+            }
             Msg::OpenRgbSettings(settings) => {
                 if settings != self.openrgb.settings {
                     self.openrgb.settings = settings;
@@ -2143,6 +2227,17 @@ pub fn start() {
     if QUEUE.set(Mutex::new(tx.clone())).is_err() {
         return;
     }
+    // The PC waking (the display back on), on `away`'s event: one message to this queue. Kept
+    // for the app's life.
+    {
+        let tx = Mutex::new(tx.clone());
+        std::mem::forget(super::away::subscribe_changes(move |c| {
+            if let Some(msg) = wake_msg(c) {
+                let tx = tx.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = ticketed(&tx, msg);
+            }
+        }));
+    }
     // Supervised (#587): the queue outlives a panicking attempt, so `QUEUE` stays good and
     // nothing queued is lost; a restart reloads the settings and scans again.
     let rx = Mutex::new(rx);
@@ -2213,6 +2308,8 @@ pub fn start() {
             let own_may_change = batch.iter().any(|m| !matches!(m, Msg::SceneFrame { .. }));
             let boards = worker.scene_boards();
             let mut scanned = false;
+            let mut woke = false;
+            let mut settle = false;
             for msg in batch {
                 if msg == Msg::Scan {
                     if !scanned {
@@ -2221,10 +2318,37 @@ pub fn start() {
                     }
                     continue;
                 }
+                if let Msg::Woke { settled } = msg {
+                    settle |= !settled;
+                    // Several edges in one round are one wake.
+                    if std::mem::replace(&mut woke, true) {
+                        continue;
+                    }
+                    // What is there now, and which vendor apps run, first. It stands in for
+                    // any scan in this round, so it restores arrivals as that would.
+                    if !scanned {
+                        scanned = true;
+                        scan(&mut worker, true);
+                    }
+                }
                 worker.handle(msg, write_hold(), &mut std::thread::sleep);
             }
             if own_may_change || worker.scene_boards() != boards {
                 worker.publish_scene_own();
+            }
+            // One later pass per wake, on a bounded wait; a wake during the wait shares it.
+            if settle && !WAKE_SETTLING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let tx = tx.clone();
+                let waiter = std::thread::Builder::new().name("pc-lights-wake".into());
+                let started = waiter.spawn(move || {
+                    std::thread::sleep(WAKE_SETTLE);
+                    WAKE_SETTLING.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = ticketed(&tx, Msg::Woke { settled: true });
+                });
+                // No thread, no later pass this time; the next wake asks again.
+                if started.is_err() {
+                    WAKE_SETTLING.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
             }
             if std::mem::take(&mut worker.rescan) {
                 scan(&mut worker, false);
@@ -2276,6 +2400,9 @@ pub fn start() {
         }
     });
 }
+
+/// A wake's later pass is waiting ([`WAKE_SETTLE`]).
+static WAKE_SETTLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The store's section for the OpenRGB settings (#471).
 pub const OPENRGB_SECTION: &str = "openrgb";
@@ -2837,6 +2964,79 @@ mod tests {
         w.scan(&[], &mut nothing(), false, true);
         w.scan(&case_hid(), &mut nothing(), false, true);
         assert_eq!(sent.lock().unwrap().len(), 2, "replugged: put back again");
+    }
+
+    /// The display coming back on (the wake) puts the saved colours on again though the board
+    /// never left; not while paused, during a scene, or while its vendor's app runs.
+    #[test]
+    fn a_wake_puts_the_saved_colours_back_on_a_board_that_stayed() {
+        use super::super::away::Change;
+        assert_eq!(
+            wake_msg(Change::DisplayOn),
+            Some(Msg::Woke { settled: false })
+        );
+        for c in [Change::DisplayOff, Change::Locked, Change::Unlocked] {
+            assert_eq!(wake_msg(c), None);
+        }
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            "103c:84fd".into(),
+            Saved {
+                colors: [("2".to_string(), "#112233".to_string())].into(),
+                match_keyboard: false,
+                effect: None,
+            },
+        );
+        let wake = || wake_msg(Change::DisplayOn).unwrap();
+        let (mut w, sent) = worker(settings.clone());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert_eq!(sent.lock().unwrap().len(), 1, "on arrival");
+        w.handle(wake(), false, &mut |_| {});
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![report(2, [0x11, 0x22, 0x33]); 2],
+            "again at the wake"
+        );
+        w.handle(Msg::Woke { settled: true }, false, &mut |_| {});
+        assert_eq!(sent.lock().unwrap().len(), 3, "and once after the wait");
+        // Paused: nothing written, and nothing said about it.
+        w.handle(wake(), true, &mut |_| {});
+        assert_eq!(sent.lock().unwrap().len(), 3);
+        assert!(w.snapshot().results.is_empty());
+        // A scene has the boards: its frames draw them.
+        w.handle(Msg::SceneStart, false, &mut |_| {});
+        w.handle(wake(), false, &mut |_| {});
+        assert_eq!(sent.lock().unwrap().len(), 3);
+        // The vendor's app runs: it sets the board, as on arrival.
+        let (mut w, sent) = worker(settings);
+        w.scan(&case_hid(), &mut studio(), false, true);
+        w.handle(wake(), false, &mut |_| {});
+        assert!(sent.lock().unwrap().is_empty(), "Light Studio is running");
+        // A board set to play its own effect, no colours saved: the effect is started again,
+        // though the driver says it plays already, and with nothing steady written first.
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            "103c:84fd".into(),
+            Saved {
+                effect: Some("breathing".into()),
+                ..Default::default()
+            },
+        );
+        let (mut w, sent) = worker(settings);
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let arrival = take(&sent);
+        assert!(!arrival.is_empty());
+        w.handle(wake(), false, &mut |_| {});
+        assert_eq!(take(&sent), arrival, "the same effect reports again");
+        // A colour shown but not saved (a preview) is what goes back, not an older saved one.
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert_eq!(
+            w.woke(false),
+            0,
+            "nothing known, nothing saved: nothing written"
+        );
+        assert!(take(&sent).is_empty());
     }
 
     /// The keyboard reports a solid colour at full saturation and brightness.
