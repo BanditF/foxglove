@@ -324,6 +324,7 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
                 confirmed: false,
                 new: false,
                 before,
+                asked: false,
             }
         })
         .collect();
@@ -865,16 +866,17 @@ impl PermUi {
         self
     }
 
-    /// Opens the dialog for a queued CLI grant (only from the user's click). The items the
-    /// command named start checked and every other item unchecked, for the list code the
-    /// command named; Allow then records exactly what the dialog shows. A list that changed
-    /// since the command drops the request and opens the normal dialog with the reason.
+    /// Opens the dialog for a queued CLI grant (only from the user's click). It opens checked
+    /// as the normal dialog would be, whatever the command named; an item the command named
+    /// that is left unchecked (turned off before, or sensitive) is marked "Asked by a
+    /// command". Allow then records exactly what the dialog shows. A list that changed since
+    /// the command drops the request and opens the normal dialog with the reason.
     pub fn open_queued(&mut self, id: &str) {
         let Some(q) = self.queue.get(&self.home, id) else {
             return self.open(id, Opener::Change);
         };
         self.open_with(id, Opener::Change, None, None);
-        let Some(d) = self.dialog.as_mut() else {
+        let Some(d) = self.dialog.as_mut().filter(|d| d.id == id) else {
             return;
         };
         if d.code != q.code {
@@ -883,7 +885,7 @@ impl PermUi {
             return;
         }
         for i in d.items.iter_mut() {
-            i.checked = i.allowable && q.items.contains(&i.raw);
+            i.asked = i.allowable && !i.checked && q.items.contains(&i.raw);
         }
     }
 
@@ -2018,23 +2020,27 @@ mod tests {
     }
 
     #[test]
-    fn confirming_a_queued_cli_grant_applies_exactly_the_listed_items() {
+    fn a_queued_cli_grant_opens_with_the_normal_ticks_and_confirming_applies_what_is_ticked() {
         let mut f = fx("queued", &["hub.notify", "ui.window", "provide:a.read"]);
         let q = queue_for(&mut f, &["hub.notify", "ui.window"]);
         assert_eq!(f.ui.queued(), [ID]);
         // Queued is not allowed.
         assert!(view(&f).granted.is_empty());
+        let normal = build_dialog(&f.home, ID, None).unwrap();
         f.ui.open_queued(ID);
-        let d = f.ui.dialog.clone().unwrap();
-        let checked: Vec<&str> = d
-            .items
-            .iter()
-            .filter(|i| i.checked)
-            .map(|i| i.raw.as_str())
-            .collect();
-        assert_eq!(checked.len(), 2);
-        assert!(!checked.contains(&"provide:a.read"));
-        // Allow records exactly those two, for the list code the command named.
+        let mut d = f.ui.dialog.clone().unwrap();
+        // The command does not decide the ticks: the dialog opens as it normally would, so the
+        // item the command did not name is checked like the others.
+        assert_eq!(d.items.len(), normal.items.len());
+        for (i, n) in d.items.iter().zip(&normal.items) {
+            assert_eq!((&i.raw, i.checked), (&n.raw, n.checked));
+        }
+        assert!(d.items.iter().all(|i| i.checked));
+        // A named item that is checked anyway and an item the command did not name: no mark.
+        assert!(d.items.iter().all(|i| !i.asked));
+        // The user unticks one; Allow records exactly what is ticked, for the list code the
+        // command named.
+        d.set_checked("provide:a.read", false);
         let a = d.allowed();
         assert_eq!(a.code, q.get(&f.home, ID).unwrap().code);
         let done = f.ui.answer(PermAnswer::Allow(a)).expect("allowed");
@@ -2050,6 +2056,57 @@ mod tests {
             q.for_home(&f.home).is_empty(),
             "the answered request stays queued"
         );
+    }
+
+    /// A command cannot turn back on what the user turned off: the item opens unchecked and
+    /// marked, and Allow without touching it leaves it off.
+    #[test]
+    fn a_queued_item_the_user_declined_before_opens_unticked_and_marked_asked() {
+        let mut f = fx("queueddeclined", &["hub.notify", "ui.window"]);
+        f.ui.open(ID, Opener::Header);
+        f.ui.dialog
+            .as_mut()
+            .unwrap()
+            .set_checked("ui.window", false);
+        let a = f.ui.dialog.as_ref().unwrap().allowed();
+        f.ui.answer(PermAnswer::Allow(a)).expect("allowed");
+        assert!(view(&f).declined.contains(&"ui.window".to_string()));
+        queue_for(&mut f, &["ui.window"]);
+        f.ui.open_queued(ID);
+        let d = f.ui.dialog.clone().unwrap();
+        let w = item(&d, "ui.window");
+        assert!(!w.checked && w.asked);
+        f.ui.answer(PermAnswer::Allow(d.allowed()))
+            .expect("allowed");
+        let v = view(&f);
+        assert!(v.granted.iter().all(|g| g.raw != "ui.window"));
+    }
+
+    /// A sensitive item a command named opens as in the normal dialog: unchecked, unconfirmed,
+    /// and marked so the user sees who asked.
+    #[test]
+    fn a_queued_sensitive_item_opens_unticked_and_marked_asked() {
+        let mut f = fx("queuedsensitive", &["hub.notify", "net"]);
+        queue_for(&mut f, &["hub.notify", "net"]);
+        f.ui.open_queued(ID);
+        let d = f.ui.dialog.clone().unwrap();
+        let net = item(&d, "net");
+        assert!(net.sensitive && !net.checked && !net.confirmed && net.asked);
+        // The named item that is checked anyway is not marked.
+        let n = item(&d, "hub.notify");
+        assert!(n.checked && !n.asked);
+    }
+
+    /// The mark is only for what the command named: an unchecked item it did not name has none.
+    #[test]
+    fn an_item_the_command_did_not_name_is_never_marked_asked() {
+        let mut f = fx("queuedunnamed", &["hub.notify", "ui.window", "net"]);
+        queue_for(&mut f, &["hub.notify"]);
+        f.ui.open_queued(ID);
+        let d = f.ui.dialog.clone().unwrap();
+        assert!(item(&d, "hub.notify").checked && !item(&d, "hub.notify").asked);
+        assert!(item(&d, "ui.window").checked && !item(&d, "ui.window").asked);
+        assert!(!item(&d, "net").checked && !item(&d, "net").asked);
     }
 
     #[test]
@@ -2068,6 +2125,10 @@ mod tests {
         f.ui.open_queued(ID);
         let d = f.ui.dialog.clone().unwrap();
         assert_eq!(d.reason, Some(Reason::ListChanged));
+        assert!(
+            d.items.iter().all(|i| !i.asked),
+            "a dropped request marks nothing"
+        );
         assert!(q.for_home(&f.home).is_empty());
         assert!(view(&f).granted.is_empty());
     }
@@ -2936,6 +2997,7 @@ on = [\"open\", \"call\"]
             confirmed: false,
             new: false,
             before: false,
+            asked: false,
         };
         assert!(item.sensitive);
         let said = item.said();
