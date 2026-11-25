@@ -307,8 +307,9 @@ impl Container {
         Ok(())
     }
 
-    /// Starts `exe args` from `cwd` in this container and in `job`, suspended. `env` is added
-    /// to (and overrides) the hub's environment. `stderr` is the module's log (NUL without).
+    /// Starts `exe args` from `cwd` in this container and in `job`, suspended. Its environment
+    /// is the hub's values for the names in [`CONTAINED_ENV`], with `env` added on top (and
+    /// overriding them). `stderr` is the module's log (NUL without).
     /// stdin and stdout are NUL: the module talks over the router pipe.
     pub fn spawn(
         &self,
@@ -575,26 +576,98 @@ fn command_line(exe: &Path, args: &[String]) -> String {
     s
 }
 
-/// The hub's environment with `add` on top, as a sorted UTF-16 block.
-fn env_block(add: &[(&str, String)]) -> Vec<u16> {
-    let mut vars: Vec<(String, String)> = std::env::vars_os()
-        .map(|(k, v)| {
-            (
-                k.to_string_lossy().into_owned(),
-                v.to_string_lossy().into_owned(),
-            )
-        })
-        .filter(|(k, _)| !add.iter().any(|(a, _)| a.eq_ignore_ascii_case(k)))
-        .collect();
-    vars.extend(add.iter().map(|(k, v)| (k.to_string(), v.clone())));
+/// The names a contained module gets from the hub's environment (#1466), matched without regard
+/// to case. Everything else the hub has stays with the hub: a module's environment is this list
+/// plus what the supervisor hands it (`HIDEOUT_PIPE` and the rest, §7.5).
+const CONTAINED_ENV: &[&str] = &[
+    // Where Windows is, and how a program is found and started.
+    "SystemRoot",
+    "windir",
+    "SystemDrive",
+    "ComSpec",
+    "PATHEXT",
+    "PATH",
+    // Where temporary files go.
+    "TEMP",
+    "TMP",
+    // The machine, for a runtime that sizes itself by it.
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+    // The system's program and data folders.
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "PUBLIC",
+    "ALLUSERSPROFILE",
+    // Who is signed in and where their folders are, for the system's folder lookups.
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "USERNAME",
+    "USERDOMAIN",
+    "COMPUTERNAME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+];
+
+/// A contained module's environment: `hub`'s values for the names in [`CONTAINED_ENV`], then
+/// `add`, which wins over a value of the same name. Sorted by name without regard to case, as
+/// a Unicode environment block must be. Windows' per-drive entries (names starting with `=`)
+/// are not on the list, so they are not passed.
+///
+/// Each name appears once: of hub names that differ only by case the first is kept, and so is
+/// the first of two `add` entries. A pair that could not be one entry of the block is left
+/// out: an empty name, a name holding `=` or NUL, or a value holding NUL.
+fn contained_env(
+    hub: impl IntoIterator<Item = (String, String)>,
+    add: &[(&str, String)],
+) -> Vec<(String, String)> {
+    fn fits(k: &str, v: &str) -> bool {
+        !k.is_empty() && !k.contains(['=', '\0']) && !v.contains('\0')
+    }
+    let mut vars: Vec<(String, String)> = Vec::new();
+    let added = add.iter().map(|(k, v)| (k.to_string(), v.clone()));
+    let kept = hub
+        .into_iter()
+        .filter(|(k, _)| CONTAINED_ENV.iter().any(|n| n.eq_ignore_ascii_case(k)));
+    for (k, v) in added.chain(kept) {
+        if fits(&k, &v) && !vars.iter().any(|(have, _)| have.eq_ignore_ascii_case(&k)) {
+            vars.push((k, v));
+        }
+    }
     vars.sort_by_key(|(k, _)| k.to_uppercase());
+    vars
+}
+
+/// `vars` as a UTF-16 environment block: `name=value` and a NUL for each, then one more NUL.
+/// A block with no entries is two NULs.
+fn env_block_of(vars: &[(String, String)]) -> Vec<u16> {
     let mut block = Vec::new();
     for (k, v) in vars {
         block.extend(format!("{k}={v}").encode_utf16());
         block.push(0);
     }
+    if block.is_empty() {
+        block.push(0);
+    }
     block.push(0);
     block
+}
+
+/// [`contained_env`] of the hub's own environment, as a UTF-16 block that ends with two NULs.
+fn env_block(add: &[(&str, String)]) -> Vec<u16> {
+    let hub = std::env::vars_os().map(|(k, v)| {
+        (
+            k.to_string_lossy().into_owned(),
+            v.to_string_lossy().into_owned(),
+        )
+    });
+    env_block_of(&contained_env(hub, add))
 }
 
 fn token_info(p: &Process, class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u64>> {
@@ -704,5 +777,120 @@ mod tests {
         let s = String::from_utf16_lossy(&b);
         assert!(s.ends_with("\0\0"));
         assert_eq!(s.matches("HIDEOUT_PIPE=").count(), 1);
+    }
+
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn contained_env_passes_each_name_once() {
+        let hub = pairs(&[("Path", "first"), ("PATH", "second"), ("path", "third")]);
+        assert_eq!(contained_env(hub, &[]), pairs(&[("Path", "first")]));
+        assert_eq!(
+            contained_env(vec![], &[("A", "1".into()), ("a", "2".into())]),
+            pairs(&[("A", "1")])
+        );
+    }
+
+    #[test]
+    fn contained_env_leaves_out_a_pair_that_is_not_one_entry() {
+        let hub = pairs(&[("TEMP", "a\0HIDEOUT_TOKEN=x"), ("USERNAME", "u")]);
+        let add = [
+            ("A=B", "1".to_string()),
+            ("C\0D", "1".to_string()),
+            ("", "1".to_string()),
+            ("E", "1\0F=2".to_string()),
+            ("G", "ok=fine".to_string()),
+        ];
+        assert_eq!(
+            contained_env(hub, &add),
+            pairs(&[("G", "ok=fine"), ("USERNAME", "u")])
+        );
+    }
+
+    #[test]
+    fn an_environment_block_ends_with_two_nuls() {
+        assert_eq!(env_block_of(&[]), vec![0, 0]);
+        let block = env_block_of(&pairs(&[("A", "1"), ("B", "")]));
+        let want: Vec<u16> = "A=1\0B=\0\0".encode_utf16().collect();
+        assert_eq!(block, want);
+    }
+
+    #[test]
+    fn contained_env_keeps_only_listed_names() {
+        let hub = pairs(&[
+            ("SystemRoot", "w"),
+            ("MY_API_KEY", "x"),
+            ("CARGO_HOME", "x"),
+            ("FOXGLOVE_APP_OK", "1"),
+            ("=C:", "d"),
+            ("=ExitCode", "00000000"),
+        ]);
+        assert_eq!(contained_env(hub, &[]), pairs(&[("SystemRoot", "w")]));
+    }
+
+    #[test]
+    fn contained_env_matches_listed_names_in_any_case() {
+        let hub = pairs(&[
+            ("systemroot", "a"),
+            ("Path", "b"),
+            ("programfiles(X86)", "c"),
+        ]);
+        assert_eq!(
+            contained_env(hub, &[]),
+            pairs(&[
+                ("Path", "b"),
+                ("programfiles(X86)", "c"),
+                ("systemroot", "a")
+            ])
+        );
+    }
+
+    #[test]
+    fn contained_env_add_wins_over_the_hub() {
+        let hub = pairs(&[("Temp", "hub"), ("USERNAME", "u")]);
+        assert_eq!(
+            contained_env(hub, &[("TEMP", "mine".into())]),
+            pairs(&[("TEMP", "mine"), ("USERNAME", "u")])
+        );
+    }
+
+    #[test]
+    fn contained_env_takes_hideout_names_from_add_only() {
+        let hub = pairs(&[("HIDEOUT_TOKEN", "hub"), ("HIDEOUT_HOME", "hub")]);
+        assert!(contained_env(hub.clone(), &[]).is_empty());
+        assert_eq!(
+            contained_env(hub, &[("HIDEOUT_TOKEN", "new".into())]),
+            pairs(&[("HIDEOUT_TOKEN", "new")])
+        );
+    }
+
+    #[test]
+    fn contained_env_of_an_empty_hub_is_add_sorted() {
+        let add = [
+            ("HIDEOUT_PIPE", "p".to_string()),
+            ("hideout_instance", "1".to_string()),
+        ];
+        assert_eq!(
+            contained_env(Vec::new(), &add),
+            pairs(&[("hideout_instance", "1"), ("HIDEOUT_PIPE", "p")])
+        );
+    }
+
+    #[test]
+    fn the_environment_block_has_no_unlisted_hub_name() {
+        let b = env_block(&[("HIDEOUT_INSTANCE", "1".into())]);
+        let s = String::from_utf16_lossy(&b);
+        for entry in s.trim_end_matches('\0').split('\0') {
+            let name = entry.split('=').next().unwrap();
+            assert!(
+                name == "HIDEOUT_INSTANCE"
+                    || CONTAINED_ENV.iter().any(|n| n.eq_ignore_ascii_case(name)),
+                "{name}"
+            );
+        }
     }
 }
