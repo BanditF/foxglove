@@ -711,7 +711,7 @@ pub mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("plugin.toml"), "x").unwrap();
-        std::fs::write(dir.join("p.exe"), "MZ").unwrap();
+        std::fs::write(dir.join("p.exe"), "not a program").unwrap();
         let entry = entry_for("org.example.p", "1.0.0", b"zip", &dir);
         let signed = catalog_with(vec![entry.clone()], vec![]);
         let off = DevMode::default();
@@ -744,7 +744,7 @@ pub mod tests {
         );
 
         // A signed plugin whose files changed is unsigned, with a new hash the user hasn't allowed.
-        std::fs::write(dir.join("p.exe"), "MZ changed").unwrap();
+        std::fs::write(dir.join("p.exe"), "not a program changed").unwrap();
         let t = trust_in(Some(&signed), "org.example.p", "1.0.0", &dir);
         assert!(matches!(&t, Trust::Unsigned(h) if *h != hash));
         assert_eq!(verdict(&t, &allowed), Err(OFF_NOT_ALLOWED.into()));

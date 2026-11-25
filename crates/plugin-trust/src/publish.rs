@@ -198,7 +198,7 @@ mod tests {
             "id = \"org.foxglove.x\"\nname = \"X\"\nversion = \"1.2.3\"\n",
         )
         .unwrap();
-        std::fs::write(dir.join("x.exe"), "MZ").unwrap();
+        std::fs::write(dir.join("x.exe"), "not a program").unwrap();
         let zip = dir.with_extension("zip");
         std::fs::write(&zip, "PK").unwrap();
         let e = entry_from(

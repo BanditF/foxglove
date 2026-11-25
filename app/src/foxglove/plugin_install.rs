@@ -606,7 +606,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("foxglove-zipdir-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("plugin.toml"), "id").unwrap();
-        std::fs::write(dir.join("bin/run.exe"), "MZ").unwrap();
+        std::fs::write(dir.join("bin/run.exe"), "not a program").unwrap();
         let archive = zip_dir(&dir).unwrap();
         let out = dir.with_extension("out");
         unpack(&archive, &out).unwrap();
@@ -674,7 +674,10 @@ api = \"1.0\"
 run = [\"weather.exe\"]
 permissions = [\"facts.write:weather.*\", \"key.events\"]
 ";
-        let archive = zip_with(&[("plugin.toml", manifest.as_bytes()), ("weather.exe", b"MZ")]);
+        let archive = zip_with(&[
+            ("plugin.toml", manifest.as_bytes()),
+            ("weather.exe", b"not a program"),
+        ]);
         // Unsigned: refused, then allowed in developer mode for the rest of the flow.
         assert!(stage(&archive).unwrap_err().contains("signed"));
         super::super::plugin_trust::set_dev_mode(true).unwrap();
@@ -725,7 +728,10 @@ permissions = [\"facts.write:mine.*\"]
         use super::super::plugin_trust::{self as trust, Trust};
         use super::super::plugins_ui::{cards, Tag};
         let _lock = sideload_lock();
-        let archive = zip_with(&[("plugin.toml", MIC_BUILD.as_bytes()), ("mic.exe", b"MZ")]);
+        let archive = zip_with(&[
+            ("plugin.toml", MIC_BUILD.as_bytes()),
+            ("mic.exe", b"not a program"),
+        ]);
 
         // Developer mode is off by default: refused, nothing unpacked.
         let e = stage(&archive).unwrap_err();
@@ -784,13 +790,13 @@ permissions = [\"facts.write:mine.*\"]
         // A changed build is a new hash, not allowed yet.
         trust::set_dev_mode(true).unwrap();
         let dir = plugins_dir().unwrap().join("org.foxglove.mic-mute");
-        std::fs::write(dir.join("mic.exe"), b"MZ patched").unwrap();
+        std::fs::write(dir.join("mic.exe"), b"not a program patched").unwrap();
         let changed = trust_all(&installed());
         assert_eq!(
             trust::verdict(&changed["org.foxglove.mic-mute"], &trust::dev_mode()),
             Err(trust::OFF_NOT_ALLOWED.into())
         );
-        std::fs::write(dir.join("mic.exe"), b"MZ").unwrap();
+        std::fs::write(dir.join("mic.exe"), b"not a program").unwrap();
 
         // Its permissions are enforced: it gets what it was approved for and nothing else.
         let approved = installed()[0].record.approved.clone();
@@ -842,7 +848,10 @@ permissions = [\"facts.write:mine.*\"]
         let _lock = sideload_lock();
         // The unsigned copy, in developer mode.
         trust::set_dev_mode(true).unwrap();
-        let mine = zip_with(&[("plugin.toml", MIC_BUILD.as_bytes()), ("mic.exe", b"MZ")]);
+        let mine = zip_with(&[
+            ("plugin.toml", MIC_BUILD.as_bytes()),
+            ("mic.exe", b"not a program"),
+        ]);
         commit(stage(&mine).unwrap(), true).unwrap();
         trust::set_dev_mode(false).unwrap();
 
@@ -854,7 +863,7 @@ permissions = [\"facts.write:mine.*\"]
         let _ = std::fs::remove_dir_all(&files);
         std::fs::create_dir_all(&files).unwrap();
         std::fs::write(files.join("plugin.toml"), &release).unwrap();
-        std::fs::write(files.join("mic.exe"), b"MZ signed").unwrap();
+        std::fs::write(files.join("mic.exe"), b"not a program signed").unwrap();
         let archive = zip_dir(&files).unwrap();
         let bytes = std::fs::read(&archive).unwrap();
         let entry = entry_for("org.foxglove.mic-mute", "1.0.0", &bytes, &files);
@@ -892,7 +901,10 @@ permissions = [\"facts.write:mine.*\"]
         use super::super::plugins_ui::{cards, Tag};
         let _lock = sideload_lock();
         trust::set_dev_mode(true).unwrap();
-        let mine = zip_with(&[("plugin.toml", MIC_BUILD.as_bytes()), ("mic.exe", b"MZ")]);
+        let mine = zip_with(&[
+            ("plugin.toml", MIC_BUILD.as_bytes()),
+            ("mic.exe", b"not a program"),
+        ]);
         commit(stage(&mine).unwrap(), true).unwrap();
         let dir = plugins_dir().unwrap().join("org.foxglove.mic-mute");
         let before = trust::package_hash(&dir).unwrap();
@@ -949,7 +961,7 @@ permissions = [\"facts.write:mine.*\"]
             "id = \"org.example.old\"\nname = \"Old\"\nversion = \"1.0.0\"\napi = \"1.0\"\nrun = [\"old.exe\"]\n",
         )
         .unwrap();
-        std::fs::write(old.join("old.exe"), b"MZ").unwrap();
+        std::fs::write(old.join("old.exe"), b"not a program").unwrap();
         set_enabled("org.example.old", true).unwrap();
         // The first run of this policy: nothing taken yet.
         super::super::store::save("plugins.grandfather", &Grandfather::default()).unwrap();
@@ -969,7 +981,7 @@ permissions = [\"facts.write:mine.*\"]
         // A new install from a file gets the unsigned flow, placeholder or not.
         let e = stage(&zip_with(&[
             ("plugin.toml", MIC_BUILD.as_bytes()),
-            ("mic.exe", b"MZ"),
+            ("mic.exe", b"not a program"),
         ]))
         .unwrap_err();
         assert!(e.ends_with(UNSIGNED_REFUSED), "{e}");
@@ -977,7 +989,10 @@ permissions = [\"facts.write:mine.*\"]
         let again = MIC_BUILD
             .replace("org.foxglove.mic-mute", "org.example.old")
             .replace("0.0.1", "1.0.0");
-        let archive = zip_with(&[("plugin.toml", again.as_bytes()), ("mic.exe", b"MZ")]);
+        let archive = zip_with(&[
+            ("plugin.toml", again.as_bytes()),
+            ("mic.exe", b"not a program"),
+        ]);
         let staged = stage(&archive).unwrap();
         assert!(staged.unsigned.is_some() && !staged.allowed_before, "asks");
         commit(staged, true).unwrap();
