@@ -8,7 +8,7 @@ use crate::palette::{Entry, Palette};
 use crate::paths::HubPaths;
 use crate::prefs::{Prefs, ThemeChoice};
 use crate::status::{self, Item};
-use crate::strip::{self, Action, Shortcut, StripState};
+use crate::strip::{self, Action, Shortcut};
 use crate::tabs::{Look, Mark, TabId, TabState, Tabs};
 use crate::theme::{self, Rgb, Tokens};
 use crate::{flyout, placement, platform, popout, tray, window_title, AUMID, PRODUCT};
@@ -736,7 +736,6 @@ struct Hub {
     shared: Arc<Shared>,
     pages: Vec<Box<dyn Page>>,
     tabs: Tabs,
-    strip: StripState,
     /// "Close <Title>?" is open for these tabs.
     asking: Option<Vec<TabId>>,
     /// "Quit Hideout?" is open (#1012.5).
@@ -779,12 +778,6 @@ struct Hub {
     last_active: Option<TabId>,
     /// The page area's size (points): a new pop-out's size.
     page_size: egui::Vec2,
-    /// The main window's pixels per point: a dragged pop-out's pointer on its strip (#1054.4).
-    ppp: f32,
-    /// The ghost card's window while a tab is dragged off the strip (#1054.4).
-    ghost: Option<OverlayWin>,
-    /// The dock bar's window while a pop-out is dragged over the strip (#1054.4).
-    dock_bar: Option<OverlayWin>,
     /// Close page with unsaved work: "Close <page>?" shows in that pop-out.
     popout_asking: Option<TabId>,
     /// Per page, the element of it that last had the focus (in either window): popping out and
@@ -1077,7 +1070,6 @@ impl Hub {
             pages,
             tray_layout,
             tabs,
-            strip: StripState::default(),
             asking: None,
             quitting: false,
             quit_now: false,
@@ -1099,9 +1091,6 @@ impl Hub {
             popouts_held: false,
             last_active: None,
             page_size: egui::vec2(popout::FIRST_MIN.0 as f32, popout::FIRST_MIN.1 as f32),
-            ppp: 1.0,
-            ghost: None,
-            dock_bar: None,
             popout_asking: None,
             page_focus: HashMap::new(),
             focus_page: None,
@@ -2070,7 +2059,6 @@ impl Hub {
             }
             Action::Move { from, to } => self.tabs.move_tab(from, to),
             Action::PopOut(i) => self.pop_out(i),
-            Action::TearOff(i) => self.tear_off(i, platform::cursor_pos()),
             Action::DockBack(i) => self.dock(i, false),
             Action::Reopen => {
                 let ids: Vec<String> = self.pages.iter().map(|p| p.id().to_string()).collect();
@@ -3146,8 +3134,6 @@ impl Hub {
         self.notice_tick(ctx);
         self.take_open_requests();
         self.main_window_commands(ctx);
-        self.ppp = ctx.pixels_per_point();
-        self.window_drag();
         if self.shared.quit.wanted.swap(false, Ordering::AcqRel) {
             self.request_quit();
         }
@@ -3170,8 +3156,6 @@ impl Hub {
             self.open(TabId::page(HOME));
         }
         self.header(ctx, &t);
-        self.ghost_ui(ctx, &t);
-        self.dock_bar_ui(ctx, &t);
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -4136,12 +4120,6 @@ const QUIT_BODY_MANY: &str = "Your changes in these pages aren't saved:";
 const QUIT_KEEP: &str = "Keep open";
 const QUIT_ANYWAY: &str = "Quit anyway";
 const QUIT_IN_OWN_WINDOW: &str = "in its own window";
-
-// Drags between windows (#1054.4): the ghost card, a tab torn off, a pop-out dropped on the
-// strip.
-#[path = "shell_drag.rs"]
-mod drag_windows;
-use drag_windows::OverlayWin;
 
 // The supervisor's waiting, needs-hub, quarantined and update states (#983, #1049).
 #[path = "shell_states.rs"]
