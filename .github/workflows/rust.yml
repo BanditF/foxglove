@@ -18,4 +18,12 @@ jobs:
       # The installed hub's build (no lab-switches): the crates that have the feature, lint and tests.
       - run: cargo clippy -p hideout -p hideout-registry -p hideout-router -p hideout-services -p hideout-shell -p hideout-supervisor --no-default-features --all-targets -- -D warnings
       - run: cargo test -p hideout -p hideout-registry -p hideout-router -p hideout-services -p hideout-shell -p hideout-supervisor --no-default-features --lib --bins --tests
+      # No crate in the installed hub's graph has lab-switches on (the same check as scripts/check.ps1).
+      - shell: pwsh
+        run: |
+          foreach ($c in 'hideout-registry', 'hideout-router', 'hideout-shell', 'hideout-supervisor', 'hideout-services') {
+            $t = @(cargo tree --locked -p hideout --no-default-features -e features -i $c)
+            if ($LASTEXITCODE) { throw "cargo tree -i $c failed" }
+            if ($t -match 'feature "lab-switches"') { throw "$c has lab-switches on in the installed hub's build" }
+          }
       - run: cargo build -p foxglove-link --no-default-features
