@@ -48,6 +48,11 @@ pub trait Page {
     fn at_bottom(&self) -> bool {
         false
     }
+    /// The page's rows of Home's **Connected** section (`crate::connected::row_ui`), with the
+    /// switches the page already has. Returns how many it drew. Nothing is granted from a row.
+    fn connected(&mut self, _ui: &mut egui::Ui, _tokens: &Tokens) -> usize {
+        0
+    }
 }
 
 /// Home's page id, its words and the launcher's two hub glyphs (Segoe UI Symbol).
@@ -2309,6 +2314,11 @@ impl Hub {
         use crate::kit;
         let needs = self.home_needs();
         let mut open: Option<TabId> = None;
+        let mut resume = false;
+        let has_settings = self
+            .pages
+            .iter()
+            .any(|p| p.id() == crate::settings_view::ID);
         let mut report = hideout_panels::tray::TrayReport::default();
         let heading = |ui: &mut egui::Ui, text: &str| {
             ui.add(egui::Label::new(
@@ -2375,7 +2385,53 @@ impl Hub {
                         std::time::Instant::now(),
                     );
                 }
+                // Connected: what is connected to Hideout, each with the switch it already
+                // has. The rows come from the facts and from the pages that own them.
+                ui.add_space(kit::SECTION);
+                heading(ui, crate::connected::HEADING);
+                let mut rows = 0;
+                if let Some(line) = crate::marks::paused_line() {
+                    let row = crate::connected::Row {
+                        title: crate::connected::WALLPAPERS,
+                        state: None,
+                        line: &line,
+                        button: crate::connected::RESUME,
+                        button_name: crate::connected::RESUME_NAME,
+                        main: false,
+                    };
+                    resume = crate::connected::row_ui(ui, t, &row).is_some();
+                    rows += 1;
+                }
+                for p in self.pages.iter_mut() {
+                    rows += p.connected(ui, t);
+                }
+                let seen = crate::marks::seen_apps();
+                if !seen.is_empty() {
+                    let line = crate::connected::names_line(&seen);
+                    let row = crate::connected::Row {
+                        title: crate::connected::SEEN,
+                        state: None,
+                        line: &line,
+                        button: crate::connected::MANAGE,
+                        button_name: crate::connected::SEEN_NAME,
+                        main: false,
+                    };
+                    // Forget seen apps is on Settings, under Privacy.
+                    if has_settings {
+                        if crate::connected::row_ui(ui, t, &row).is_some() {
+                            open = Some(TabId::page(crate::settings_view::ID));
+                        }
+                        rows += 1;
+                    }
+                }
+                if rows == 0 {
+                    ui.label(egui::RichText::new(crate::connected::NONE).color(c(t.text_muted)));
+                }
             });
+        if resume {
+            // The tray's Resume: the same leases end.
+            crate::marks::resume();
+        }
         if let Some(d) = report.repaint_in {
             ui.ctx().request_repaint_after(d);
         }

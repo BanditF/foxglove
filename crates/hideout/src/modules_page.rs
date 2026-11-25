@@ -918,6 +918,31 @@ impl hideout_shell::Page for ModulesPage {
         self.settle_hand_over(false);
     }
 
+    /// Home's Connected: the keyboard row with its own switch, and the programs outside
+    /// Hideout. Each is read again on the same events as on this page (no timer).
+    fn connected(
+        &mut self,
+        ui: &mut hideout_shell::egui::Ui,
+        t: &hideout_shell::theme::Tokens,
+    ) -> usize {
+        let mut rows = 0;
+        let state = self
+            .facts
+            .as_ref()
+            .and_then(|f| f(&format!("module.{}.state", crate::keyboard_actions::MODULE)));
+        if let Some(g) = self.grant.as_mut() {
+            g.sync(state);
+            rows += g.connected(ui, t);
+        }
+        if let Some(p) = self.perm.as_mut() {
+            if let Some(voided) = self.fresh.as_ref().and_then(Fresh::take_tools) {
+                p.tools_changed(voided.as_deref());
+            }
+            rows += p.connected(ui, t);
+        }
+        rows
+    }
+
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
         use hideout_shell::modules_list::{page_ui_with_head, Banner, Click, Find, Top};
         let (rows, counting) = self.rows();

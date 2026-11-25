@@ -13,6 +13,8 @@
 #[cfg(windows)]
 pub mod access_view;
 pub mod autostart;
+#[cfg(windows)]
+pub mod connected;
 pub mod dev_settings;
 pub mod dismiss;
 pub mod flyout;
