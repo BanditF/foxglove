@@ -84,10 +84,10 @@ pub fn remove_question(name: &str) -> String {
 }
 /// What Remove does to a module Hideout only registered (an install made elsewhere).
 pub const REMOVE_ADOPTED: &str =
-    "Hideout forgets its permissions and stops it. Its own settings and files stay. You can add it again later.";
+    "Hideout forgets its permissions and stops it. Hideout also deletes any secrets you stored for it. Its own settings and files stay. You can add it again later.";
 /// What Remove does to a module Hideout installed itself: its copy in Hideout's own
 /// `modules` folder goes too; its settings stay.
-pub const REMOVE_OWN: &str = "Hideout forgets its permissions, stops it and deletes the copy Hideout installed. Its settings stay. You can add it again later.";
+pub const REMOVE_OWN: &str = "Hideout forgets its permissions, stops it and deletes the copy Hideout installed. Hideout also deletes any secrets you stored for it. Its settings stay. You can add it again later.";
 /// The confirm's buttons.
 pub const REMOVE: &str = "Remove";
 pub const CANCEL: &str = "Cancel";

@@ -10,9 +10,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hideout_registry::Registry;
+use hideout_router::secrets::{target, MemorySecrets, SecretStore};
 use hideout_router::server::Hub;
 use hideout_router::{Router, Settings};
 use hideout_supervisor::driver::Supervisor;
@@ -48,10 +50,40 @@ fn home_with(id: &str, enabled: bool) -> PathBuf {
     home
 }
 
-fn hub() -> Hub {
-    let router = Router::new(Settings::default(), Box::new(|_, asked| asked.to_vec()));
+/// Secrets in memory the test can look at after the router took the store. Never the user's
+/// own credential store.
+#[derive(Clone, Default)]
+struct Saved(Arc<Mutex<MemorySecrets>>);
+
+impl SecretStore for Saved {
+    fn get(&self, target: &str) -> Option<String> {
+        self.0.lock().unwrap().get(target)
+    }
+    fn set(&mut self, target: &str, value: Option<&str>) -> Result<(), String> {
+        self.0.lock().unwrap().set(target, value)
+    }
+    fn remove_all(&mut self, module: &str) -> Result<(), String> {
+        self.0.lock().unwrap().remove_all(module)
+    }
+}
+
+impl Saved {
+    fn names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.0.lock().unwrap().0.keys().cloned().collect();
+        v.sort();
+        v
+    }
+}
+
+fn hub_with(saved: &Saved) -> Hub {
+    let mut router = Router::new(Settings::default(), Box::new(|_, asked| asked.to_vec()));
+    router.set_secret_store(Box::new(saved.clone()));
     let (events, _rx) = mpsc::channel();
     Hub::new(router, events)
+}
+
+fn hub() -> Hub {
+    hub_with(&Saved::default())
 }
 
 fn installed(home: &Path, id: &str) -> bool {
@@ -87,6 +119,59 @@ fn a_running_module_is_stopped_first_and_then_removed() {
     assert!(!sup.knows(&id));
     // It never comes back: nothing restarts it.
     assert_eq!(sup.pid(&id), None);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+/// What must hold: a removed app's stored secrets never reach a later app with the same id.
+/// Remove deletes every secret stored for it, also under a name it no longer declares, and
+/// leaves another app's alone.
+#[test]
+fn removing_a_module_deletes_the_secrets_stored_for_it_and_no_others() {
+    let id = format!("example.lab.rm-secrets-{}", std::process::id());
+    let other = format!("{id}x");
+    let home = home_with(&id, false);
+    let mut saved = Saved::default();
+    for t in [
+        target(&id, "token"),
+        target(&id, "a name from an older version"),
+        target(&other, "token"),
+    ] {
+        saved.set(&t, Some("v")).unwrap();
+    }
+    let sup = Supervisor::start(&home, hub_with(&saved));
+    sup.remove(&id).unwrap();
+    assert!(!installed(&home, &id));
+    assert_eq!(saved.names(), [target(&other, "token")]);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+/// What must hold: once the app's record is gone its stored secrets are deleted, also when the
+/// rest of Remove failed (here a file of its copy is in use).
+#[test]
+fn a_remove_that_fails_after_the_record_went_still_deletes_the_secrets() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let id = format!("example.lab.rm-late-{}", std::process::id());
+    let home = home_with(&id, false);
+    let mut saved = Saved::default();
+    saved.set(&target(&id, "token"), Some("v")).unwrap();
+    let copy = home
+        .join("modules")
+        .join(&id)
+        .join("0.1.0")
+        .join("ping.exe");
+    // Held with no sharing, so the copy can't be deleted while this is open.
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&copy)
+        .expect("the installed copy");
+    let sup = Supervisor::start(&home, hub_with(&saved));
+    assert!(sup.remove(&id).is_err(), "the copy was in use");
+    assert!(!installed(&home, &id));
+    assert!(saved.names().is_empty());
+    drop(held);
     drop(sup);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }

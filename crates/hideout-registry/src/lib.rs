@@ -1290,7 +1290,8 @@ impl Registry {
             // Nothing to delete.
         } else if gone.source == ADOPTED {
             // Unregister only: the external install is never touched, and what the hub kept for
-            // the module (settings, data, secrets) stays; only the manifest record goes. The
+            // the module (settings, data) stays; only the manifest record goes (the supervisor's
+            // Remove deletes its stored secrets). The
             // version comes from a manifest, so it is checked before it is joined; nothing is
             // reached through a link.
             if plain_version(&gone.version) && !is_link(&dir) {
