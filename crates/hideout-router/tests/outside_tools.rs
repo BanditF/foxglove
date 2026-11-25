@@ -1394,6 +1394,84 @@ fn a_write_to_a_status_hideout_sets_itself_is_never_sent_to_review() {
     }
 }
 
+/// What must hold (#1466 M3): a fact a program outside Hideout reads without asking is never
+/// written by such a program, whatever it was allowed, and the words don't send the user to
+/// Review. What it was allowed outside those facts still writes.
+#[test]
+fn an_allowed_program_never_writes_a_status_read_without_asking() {
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry(M, &[]));
+    let asked = [
+        "facts.write:sensor.*",
+        "facts.write:volume.*",
+        "facts.write:keyboard.*",
+        "facts.write:notes.*",
+    ];
+    let (c, reply) = connect(&mut r, "obs-helper", false, &asked);
+    assert_eq!(reply["granted"], json!(asked), "{reply}");
+    for (key, value) in [
+        ("sensor.cpu.temp", json!(1)),
+        ("volume.level", json!(1)),
+        ("keyboard.game_mode", json!(1)),
+        // Taking a status back is a write too.
+        ("keyboard.connected", Value::Null),
+    ] {
+        let out = call(
+            &mut r,
+            c,
+            1,
+            "facts.set",
+            json!({"key": key, "value": value}),
+        );
+        let (code, why) = reason(&out, c);
+        assert_eq!(code, 5, "{key}");
+        assert!(
+            why.starts_with("Hideout never lets a program outside Hideout "),
+            "{key}: {why}"
+        );
+        assert!(
+            why.ends_with("Only Hideout and its apps set this, so there is nothing to allow."),
+            "{key}: {why}"
+        );
+        assert!(!why.contains("Review"), "{key}: {why}");
+        assert!(r.fact(key).is_none(), "{key}");
+    }
+    let out = call(&mut r, c, 2, "facts.set", json!({"key": NOTE, "value": 1}));
+    assert!(sends(&out, c)[0].get("result").is_some(), "{out:?}");
+}
+
+/// What must hold (#1466 T5): a status an app registered is written by that app only, also
+/// against a program the user allowed to write around it; the words don't send the user to
+/// Review, where nothing would help.
+#[test]
+fn an_allowed_program_never_writes_a_status_an_app_registered() {
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry(M, &[]));
+    r.set_token(M, "tok");
+    let owner = r.connect(Origin::Pipe);
+    let init = json!({"id": M, "version": "0.1.0", "instance": "i", "token": "tok",
+        "hub": "1.3", "api": {"foxglove": "1.13"}});
+    let out = call(&mut r, owner, 0, "initialize", init);
+    assert!(sends(&out, owner)[0].get("result").is_some(), "{out:?}");
+    let reg = json!({"methods": [], "facts": ["notes.shared.*"], "channels": [], "apis": {}});
+    let out = call(&mut r, owner, 1, "module.register", reg);
+    assert_eq!(sends(&out, owner)[0]["result"]["rejected"], json!([]));
+    let (c, reply) = connect(&mut r, "obs-helper", false, &["facts.write:notes.*"]);
+    assert_eq!(reply["granted"], json!(["facts.write:notes.*"]), "{reply}");
+    let key = "notes.shared.title";
+    let out = call(&mut r, c, 1, "facts.set", json!({"key": key, "value": 1}));
+    let (code, why) = reason(&out, c);
+    assert_eq!(code, 5);
+    assert!(
+        why.ends_with("One of your apps sets this, so there is nothing to allow."),
+        "{why}"
+    );
+    assert!(!why.contains("Review"), "{why}");
+    assert!(r.fact(key).is_none());
+    let out = call(&mut r, c, 2, "facts.set", json!({"key": NOTE, "value": 1}));
+    assert!(sends(&out, c)[0].get("result").is_some(), "{out:?}");
+}
+
 #[test]
 fn a_refused_fact_read_from_an_unknown_program_gets_r4() {
     let mut r = free_only();

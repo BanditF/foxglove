@@ -2299,7 +2299,11 @@ Rules:
   bare declaration without the grant counts for nothing). A registry reload drops a fact route
   no longer allowed. A `facts.write:<pattern>` grant is the user's own and still writes into an
   area whose route was refused or revoked (v1 semantics); the route only decides who is the
-  registered owner. `facts.set` needs `facts.write:<pattern>` covering the key, or a registered
+  registered owner. While a route stands, only its owner writes the keys it covers: another
+  holder's `facts.write` does not (#1466). A module with no catalog entry registers no area
+  another module was granted `facts.write` into: what the user allowed is not shut out by a
+  declaration. A program outside Hideout never writes a fact of the free read set (§6.4),
+  whatever it was allowed. `facts.set` needs `facts.write:<pattern>` covering the key, or a registered
   pattern the manifest's `facts:` provide covers (§8.8); registering alone writes nothing,
   except that a first-party module owns the patterns it registered (the link's `device.*`, which
   `facts.write` never covers, §6.6).
