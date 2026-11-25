@@ -942,6 +942,10 @@ impl hideout_shell::Page for ModulesPage {
         // A module's start voids a grant whose program changed: its state fact is the event
         // that re-reads the permissions (no timer).
         if let Some(p) = self.perm.as_mut() {
+            // Something was turned off on the Access page: the sections here say so too.
+            if crate::access_page::take_turned_off() {
+                p.refresh();
+            }
             let states: Vec<Option<serde_json::Value>> = self
                 .installed
                 .iter()

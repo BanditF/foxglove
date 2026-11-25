@@ -902,6 +902,8 @@ impl PermUi {
     /// Reads every module's permissions from the registry again (on a change of the inventory
     /// and after each action; never per frame).
     pub fn refresh(&mut self) {
+        // The Access page shows the same permissions: it re-reads too.
+        crate::access_page::perms_read();
         let Ok(reg) = Registry::open_from_env(&self.home) else {
             self.entries.clear();
             return;

@@ -3009,6 +3009,130 @@ fn renders_the_settings_page_for_review() {
     save_png("built-settings-page.png", w, h, rgba);
 }
 
+/// Review images of the Access page: a sensitive thing open, everyday things folded, both
+/// themes, and the page with nothing asked (`built-access-*.png`).
+#[test]
+fn renders_the_access_page_for_review() {
+    use crate::access_view::{access_ui, group, ThingGroup};
+    use crate::permission_dialog::{Group, ItemWord, Section, SectionItem};
+
+    let section = |id: &str, name: &str, items: &[(&str, &str, Group, ItemWord)]| Section {
+        id: id.into(),
+        name: name.into(),
+        items: items
+            .iter()
+            .map(|(raw, line, group, word)| SectionItem {
+                raw: (*raw).into(),
+                line: (*line).into(),
+                group: *group,
+                word: *word,
+            })
+            .collect(),
+        allowed_on: None,
+        history: Vec::new(),
+        kept_void: None,
+        keep: None,
+        can_change: true,
+        note: None,
+    };
+    let groups = group(&[
+        section(
+            "m.mic",
+            "Mic mute",
+            &[
+                (
+                    "audio.inputs.mute",
+                    "Mute and unmute your microphones",
+                    Group::MakeChanges,
+                    ItemWord::Allowed,
+                ),
+                (
+                    "provide:tray.panel",
+                    "What its tray tile shows",
+                    Group::AnswerQuestions,
+                    ItemWord::Allowed,
+                ),
+            ],
+        ),
+        section(
+            "m.broadcast",
+            "Broadcast status",
+            &[
+                (
+                    "net.connect:127.0.0.1:4455",
+                    "Connect to 127.0.0.1 port 4455 on this PC",
+                    Group::Sensitive,
+                    ItemWord::Allowed,
+                ),
+                (
+                    "audio.inputs.read",
+                    "See whether your microphones are muted",
+                    Group::MakeChanges,
+                    ItemWord::Waits,
+                ),
+                (
+                    "apps.watch:obs64.exe",
+                    "See whether obs64.exe is running",
+                    Group::MakeChanges,
+                    ItemWord::Off,
+                ),
+            ],
+        ),
+        section(
+            "m.keys",
+            "Keyboard",
+            &[
+                (
+                    "key.events",
+                    "See the keys you press in every app",
+                    Group::Sensitive,
+                    ItemWord::Allowed,
+                ),
+                (
+                    "lighting.write",
+                    "Set the keyboard's lights",
+                    Group::MakeChanges,
+                    ItemWord::Allowed,
+                ),
+            ],
+        ),
+    ]);
+    let none: Vec<ThingGroup> = Vec::new();
+    for (dark, groups, note, h, file) in [
+        (true, &groups, None, 760u32, "built-access-page.png"),
+        (false, &groups, None, 760, "built-access-page-light.png"),
+        (
+            true,
+            &groups,
+            Some("Turned off, but the change couldn't be saved."),
+            760,
+            "built-access-page-note.png",
+        ),
+        (true, &none, None, 240, "built-access-empty.png"),
+    ] {
+        let t = theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        let w = 760u32;
+        let rgba = rasterise_in(choice, w, h, Vec::new(), |c| {
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(t.bg.0, t.bg.1, t.bg.2))
+                        .inner_margin(egui::Margin::same(24)),
+                )
+                .show(c, |ui| {
+                    access_ui(ui, &t, groups, note);
+                });
+        })
+        .unwrap();
+        save_png(file, w, h, rgba);
+    }
+}
+
 /// The Start with Windows section with its dialog open, for the UX review (H5.2).
 #[test]
 fn renders_the_start_with_windows_dialog_for_review() {
