@@ -21,7 +21,9 @@ isn't needed. **Lab mode** loads them as they ship, only in a lab hub.
   through `hideout-registry`, `-router`, `-services`, `-supervisor` and `-shell`; the installer
   build (`scripts/build-hideout-installer.ps1`) leaves it out and `scripts/check.ps1` fails if
   any of them has it on in that build. `HIDEOUT_LAB_TOOL_ASK` (below) is read only when lab mode
-  is on, so the installed build never reads it either.
+  is on, so the installed build never reads it either. `scripts/check_hub_env.py` (run with the
+  python tests) fails when hub code reads the environment outside the feature gate at a place it
+  doesn't list, or names a `HIDEOUT_*` switch the installed build doesn't log as ignored.
 - When it's on, `hideout.log` says `lab: lab mode on; loading lab modules from <config>\lab-modules`,
   then one `lab:` line per folder: `<id>: loaded from …` or `…: not loaded: <why>`.
 - Each `<config>\lab-modules\<id>\` whose manifest (`module.toml`, else `plugin.toml`) has that

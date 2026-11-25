@@ -152,7 +152,7 @@ fn ignored_switches(
     env: impl Fn(&str) -> Option<OsString>,
     args: impl IntoIterator<Item = OsString>,
 ) -> Vec<&'static str> {
-    const VARS: [&str; 9] = [
+    const VARS: [&str; 10] = [
         LAB_ENV,
         "HIDEOUT_CONFIG_DIR",
         "HIDEOUT_HOME",
@@ -160,6 +160,7 @@ fn ignored_switches(
         "HIDEOUT_DEV_UNSIGNED",
         "FOXGLOVE_DEV_UNSIGNED_PLUGINS",
         "HIDEOUT_LAB_CAPTURE",
+        "HIDEOUT_LAB_TOOL_ASK",
         "HIDEOUT_DISABLE",
         "HIDEOUT_WAKE_REPORT_S",
     ];
@@ -271,6 +272,7 @@ mod tests {
             ("HIDEOUT_LAB", "1"),
             ("HIDEOUT_DEV_MODE", ""),
             ("HIDEOUT_HOME", "C:/x"),
+            ("HIDEOUT_LAB_TOOL_ASK", "1"),
             ("HIDEOUT_DISABLE", "mic"),
             ("HIDEOUT_WAKE_REPORT_S", "5"),
         ]);
@@ -280,6 +282,7 @@ mod tests {
             [
                 "HIDEOUT_LAB",
                 "HIDEOUT_HOME",
+                "HIDEOUT_LAB_TOOL_ASK",
                 "HIDEOUT_DISABLE",
                 "HIDEOUT_WAKE_REPORT_S",
                 "--lab"

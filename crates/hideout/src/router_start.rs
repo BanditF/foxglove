@@ -199,7 +199,7 @@ pub fn start(
     // A lab hub may opt into the installed hub's rule for outside tools (free set only, the rest waits
     // for the Allow dialog) so a lab run can see that dialog. Only read when lab mode is on, which a
     // build without `lab-switches` never is.
-    let tools_ask = lab && std::env::var_os("HIDEOUT_LAB_TOOL_ASK").is_some_and(|v| v == "1");
+    let tools_ask = lab && lab_switch("HIDEOUT_LAB_TOOL_ASK").is_some_and(|v| v == "1");
     if tools_ask {
         log::warn!(
             "lab: HIDEOUT_LAB_TOOL_ASK=1; outside tools get the free set and ask for the rest"
