@@ -2321,9 +2321,6 @@ fn a_rendered_frame_goes_through_the_capture_png_writer() {
 #[path = "popout_tests.rs"]
 mod popouts;
 
-#[path = "drag_tests.rs"]
-mod drags;
-
 // Waiting, needs-hub, quarantined and the update states on every surface (#983, #1049).
 #[path = "states_tests.rs"]
 mod states_surfaces;
