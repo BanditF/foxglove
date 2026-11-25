@@ -179,51 +179,53 @@ fn remove_confirm(
     let body = dev_settings::confirm_body(apps);
     let mut answer = None;
     let mut ids: Vec<egui::Id> = Vec::new();
-    let modal = egui::Modal::new(egui::Id::new("hideout.dev.remove-confirm")).show(ctx, |ui| {
-        // 440 wide at most, and a 16 px margin each side on a narrow window (the modal frame
-        // takes its own padding, so 64 leaves the margin).
-        ui.set_width((ctx.content_rect().width() - 64.0).clamp(200.0, 440.0));
-        ui.label(
-            RichText::new(dev_settings::CONFIRM_TITLE)
-                .heading()
-                .color(c(t.text)),
-        );
-        ui.add_space(6.0);
-        ui.add(
-            egui::Label::new(
-                RichText::new(path)
-                    .family(bold_family(ui.ctx()))
+    let modal = egui::Modal::new(egui::Id::new("hideout.dev.remove-confirm"))
+        .frame(crate::kit::dialog_frame(&ctx.style()))
+        .show(ctx, |ui| {
+            // 440 wide at most, and a 16 px margin each side on a narrow window (the dialog frame
+            // takes its own padding, so 100 leaves the margin).
+            ui.set_width((ctx.content_rect().width() - 100.0).clamp(200.0, 440.0));
+            ui.label(
+                RichText::new(dev_settings::CONFIRM_TITLE)
+                    .heading()
                     .color(c(t.text)),
-            )
-            .wrap(),
-        );
-        ui.add_space(4.0);
-        ui.add(egui::Label::new(RichText::new(&body).color(c(t.text))).wrap());
-        ui.add_space(10.0);
-        ui.horizontal_wrapped(|ui| {
-            let cancel = ui.add(
-                egui::Button::new(
-                    RichText::new(dev_settings::CONFIRM_CANCEL).color(c(t.on_accent)),
+            );
+            ui.add_space(6.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(path)
+                        .family(bold_family(ui.ctx()))
+                        .color(c(t.text)),
                 )
-                .fill(c(t.accent)),
+                .wrap(),
             );
-            if fresh {
-                cancel.request_focus();
-            }
-            if cancel.clicked() {
-                answer = Some(false);
-            }
-            let go = ui.add(
-                egui::Button::new(RichText::new(dev_settings::CONFIRM_OK).color(c(t.danger)))
-                    .stroke(egui::Stroke::new(1.0_f32, c(t.danger))),
-            );
-            if go.clicked() {
-                answer = Some(true);
-            }
-            ids.push(cancel.id);
-            ids.push(go.id);
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(&body).color(c(t.text))).wrap());
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                let cancel = ui.add(
+                    egui::Button::new(
+                        RichText::new(dev_settings::CONFIRM_CANCEL).color(c(t.on_accent)),
+                    )
+                    .fill(c(t.accent)),
+                );
+                if fresh {
+                    cancel.request_focus();
+                }
+                if cancel.clicked() {
+                    answer = Some(false);
+                }
+                let go = ui.add(
+                    egui::Button::new(RichText::new(dev_settings::CONFIRM_OK).color(c(t.danger)))
+                        .stroke(egui::Stroke::new(1.0_f32, c(t.danger))),
+                );
+                if go.clicked() {
+                    answer = Some(true);
+                }
+                ids.push(cancel.id);
+                ids.push(go.id);
+            });
         });
-    });
     // Tab stays inside the dialog.
     let (tab, shift) = ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
     if tab

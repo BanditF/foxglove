@@ -37,51 +37,53 @@ pub(crate) fn dialog_ids(
 ) -> (Option<Answer>, DialogIds) {
     let mut answer = None;
     let mut ids = [egui::Id::NULL; 2];
-    let modal = egui::Modal::new(egui::Id::new("hideout.keyboard-grant")).show(ctx, |ui| {
-        ui.set_width(460.0);
-        ui.label(egui::RichText::new(DIALOG_TITLE).heading().color(c(t.text)));
-        ui.add_space(6.0);
-        if let Some(r) = d.reason {
-            ui.label(egui::RichText::new(r).strong().color(c(t.attention)));
+    let modal = egui::Modal::new(egui::Id::new("hideout.keyboard-grant"))
+        .frame(crate::kit::dialog_frame(&ctx.style()))
+        .show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(egui::RichText::new(DIALOG_TITLE).heading().color(c(t.text)));
             ui.add_space(6.0);
-        }
-        ui.label(DIALOG_INTRO);
-        ui.add_space(4.0);
-        for i in DIALOG_ITEMS {
-            ui.label(format!("\u{2022} {i}"));
-        }
-        ui.add_space(8.0);
-        for f in DIALOG_FOOTER {
-            ui.label(egui::RichText::new(f).color(c(t.text_muted)));
-        }
-        ui.add_space(8.0);
-        ui.label(DIALOG_BINDING[0]);
-        // Wraps at the dialog's width and can be selected and copied.
-        ui.add(
-            egui::Label::new(egui::RichText::new(&d.path).monospace())
-                .wrap()
-                .selectable(true),
-        );
-        ui.label(egui::RichText::new(DIALOG_BINDING[1]).color(c(t.text_muted)));
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            let allow = ui.button(ALLOW);
-            if allow.clicked() {
-                answer = Some(Answer::Allow);
+            if let Some(r) = d.reason {
+                ui.label(egui::RichText::new(r).strong().color(c(t.attention)));
+                ui.add_space(6.0);
             }
-            let not_now = ui.add(
-                egui::Button::new(egui::RichText::new(NOT_NOW).color(c(t.on_accent)))
-                    .fill(c(t.accent)),
+            ui.label(DIALOG_INTRO);
+            ui.add_space(4.0);
+            for i in DIALOG_ITEMS {
+                ui.label(format!("\u{2022} {i}"));
+            }
+            ui.add_space(8.0);
+            for f in DIALOG_FOOTER {
+                ui.label(egui::RichText::new(f).color(c(t.text_muted)));
+            }
+            ui.add_space(8.0);
+            ui.label(DIALOG_BINDING[0]);
+            // Wraps at the dialog's width and can be selected and copied.
+            ui.add(
+                egui::Label::new(egui::RichText::new(&d.path).monospace())
+                    .wrap()
+                    .selectable(true),
             );
-            if first {
-                not_now.request_focus();
-            }
-            if not_now.clicked() {
-                answer = Some(Answer::NotNow);
-            }
-            ids = [allow.id, not_now.id];
+            ui.label(egui::RichText::new(DIALOG_BINDING[1]).color(c(t.text_muted)));
+            ui.add_space(10.0);
+            crate::kit::dialog_buttons(ui, |ui| {
+                let allow = ui.button(ALLOW);
+                if allow.clicked() {
+                    answer = Some(Answer::Allow);
+                }
+                let not_now = ui.add(
+                    egui::Button::new(egui::RichText::new(NOT_NOW).color(c(t.on_accent)))
+                        .fill(c(t.accent)),
+                );
+                if first {
+                    not_now.request_focus();
+                }
+                if not_now.clicked() {
+                    answer = Some(Answer::NotNow);
+                }
+                ids = [allow.id, not_now.id];
+            });
         });
-    });
     // Tab wraps inside: past the last button it goes to the first (Shift+Tab the other way)
     // instead of leaving the dialog for the page behind.
     let (tab, shift) = ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));

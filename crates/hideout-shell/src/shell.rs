@@ -2921,35 +2921,37 @@ impl Hub {
             return;
         }
         let mut choice = None;
-        let modal = egui::Modal::new(egui::Id::new("hideout.quit")).show(ctx, |ui| {
-            ui.set_width(380.0);
-            ui.label(egui::RichText::new(QUIT_HEAD).size(16.0).color(c(t.text)));
-            ui.add_space(6.0);
-            let body = match unsaved.as_slice() {
-                [one] => format!("Your changes in {one} aren't saved."),
-                _ => QUIT_BODY_MANY.to_string(),
-            };
-            ui.label(egui::RichText::new(body).color(c(t.text)));
-            if unsaved.len() > 1 {
-                ui.add_space(4.0);
-                for page in &unsaved {
-                    ui.label(egui::RichText::new(format!("\u{2022} {page}")).color(c(t.text)));
+        let modal = egui::Modal::new(egui::Id::new("hideout.quit"))
+            .frame(crate::kit::dialog_frame(&ctx.style()))
+            .show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.label(egui::RichText::new(QUIT_HEAD).size(16.0).color(c(t.text)));
+                ui.add_space(6.0);
+                let body = match unsaved.as_slice() {
+                    [one] => format!("Your changes in {one} aren't saved."),
+                    _ => QUIT_BODY_MANY.to_string(),
+                };
+                ui.label(egui::RichText::new(body).color(c(t.text)));
+                if unsaved.len() > 1 {
+                    ui.add_space(4.0);
+                    for page in &unsaved {
+                        ui.label(egui::RichText::new(format!("\u{2022} {page}")).color(c(t.text)));
+                    }
                 }
-            }
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let keep = ui.button(QUIT_KEEP);
-                if !ui.ctx().memory(|m| m.focused().is_some()) {
-                    keep.request_focus();
-                }
-                if keep.clicked() {
-                    choice = Some(false);
-                }
-                if ui.button(QUIT_ANYWAY).clicked() {
-                    choice = Some(true);
-                }
+                ui.add_space(12.0);
+                crate::kit::dialog_buttons(ui, |ui| {
+                    let keep = ui.button(QUIT_KEEP);
+                    if !ui.ctx().memory(|m| m.focused().is_some()) {
+                        keep.request_focus();
+                    }
+                    if keep.clicked() {
+                        choice = Some(false);
+                    }
+                    if ui.button(QUIT_ANYWAY).clicked() {
+                        choice = Some(true);
+                    }
+                });
             });
-        });
         let esc = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
         if modal.should_close() || esc {
             choice.get_or_insert(false);
@@ -2992,25 +2994,27 @@ impl Hub {
             )
         };
         let mut choice = None;
-        let modal = egui::Modal::new(egui::Id::new("hideout.ask")).show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.label(egui::RichText::new(head).size(16.0).color(c(t.text)));
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(body).color(c(t.text)));
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let keep = ui.button("Keep open");
-                if !ui.ctx().memory(|m| m.focused().is_some()) {
-                    keep.request_focus();
-                }
-                if keep.clicked() {
-                    choice = Some(false);
-                }
-                if ui.button("Close anyway").clicked() {
-                    choice = Some(true);
-                }
+        let modal = egui::Modal::new(egui::Id::new("hideout.ask"))
+            .frame(crate::kit::dialog_frame(&ctx.style()))
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(egui::RichText::new(head).size(16.0).color(c(t.text)));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(body).color(c(t.text)));
+                ui.add_space(12.0);
+                crate::kit::dialog_buttons(ui, |ui| {
+                    let keep = ui.button("Keep open");
+                    if !ui.ctx().memory(|m| m.focused().is_some()) {
+                        keep.request_focus();
+                    }
+                    if keep.clicked() {
+                        choice = Some(false);
+                    }
+                    if ui.button("Close anyway").clicked() {
+                        choice = Some(true);
+                    }
+                });
             });
-        });
         let esc = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
         if modal.should_close() || esc {
             choice.get_or_insert(false);
@@ -4022,31 +4026,34 @@ fn popout_more_menu(ui: &mut egui::Ui, t: &Tokens, top: bool, cmds: &mut Vec<Pop
 /// "Close <page>?" in the pop-out (Close page with unsaved work). Keep open is the default.
 fn close_page_ask(ctx: &egui::Context, t: &Tokens, title: &str) -> Option<PopCmd> {
     let mut choice = None;
-    let modal = egui::Modal::new(egui::Id::new("hideout.popout.ask")).show(ctx, |ui| {
-        ui.set_width(340.0);
-        ui.label(
-            egui::RichText::new(format!("Close {title}?"))
-                .size(16.0)
-                .color(c(t.text)),
-        );
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(format!("Your changes in {title} aren't saved.")).color(c(t.text)),
-        );
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            let keep = ui.button("Keep open");
-            if !ui.ctx().memory(|m| m.focused().is_some()) {
-                keep.request_focus();
-            }
-            if keep.clicked() {
-                choice = Some(PopCmd::KeepOpen);
-            }
-            if ui.button("Close anyway").clicked() {
-                choice = Some(PopCmd::CloseAnyway);
-            }
+    let modal = egui::Modal::new(egui::Id::new("hideout.popout.ask"))
+        .frame(crate::kit::dialog_frame(&ctx.style()))
+        .show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.label(
+                egui::RichText::new(format!("Close {title}?"))
+                    .size(16.0)
+                    .color(c(t.text)),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(format!("Your changes in {title} aren't saved."))
+                    .color(c(t.text)),
+            );
+            ui.add_space(12.0);
+            crate::kit::dialog_buttons(ui, |ui| {
+                let keep = ui.button("Keep open");
+                if !ui.ctx().memory(|m| m.focused().is_some()) {
+                    keep.request_focus();
+                }
+                if keep.clicked() {
+                    choice = Some(PopCmd::KeepOpen);
+                }
+                if ui.button("Close anyway").clicked() {
+                    choice = Some(PopCmd::CloseAnyway);
+                }
+            });
         });
-    });
     let esc = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
     if choice.is_none() && (modal.should_close() || esc) {
         choice = Some(PopCmd::KeepOpen);

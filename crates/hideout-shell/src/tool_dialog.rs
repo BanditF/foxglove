@@ -257,50 +257,52 @@ pub(crate) fn tool_dialog_ids(
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(d.wait_left(now) + 0.02));
     }
     let screen_h = ctx.content_rect().height();
-    let modal = egui::Modal::new(egui::Id::new("hideout.tool-dialog")).show(ctx, |ui| {
-        ui.set_width(520.0_f32.min(ctx.content_rect().width() - 56.0));
-        ui.label(egui::RichText::new(TITLE).heading().color(c(t.text)));
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new(calls_itself(&d.name)).color(c(t.text)));
-        ui.label(egui::RichText::new(file_line(&d.id.image_path)).color(c(t.text_muted)));
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(ASKS).color(c(t.text)));
-        egui::ScrollArea::vertical()
-            .max_height((screen_h * 0.8 - 260.0).max(120.0))
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                for i in &d.items {
-                    let colour = if i.red { c(t.danger) } else { c(t.text) };
-                    ui.label(egui::RichText::new(i.line()).color(colour));
+    let modal = egui::Modal::new(egui::Id::new("hideout.tool-dialog"))
+        .frame(crate::kit::dialog_frame(&ctx.style()))
+        .show(ctx, |ui| {
+            ui.set_width(520.0_f32.min(ctx.content_rect().width() - 92.0));
+            ui.label(egui::RichText::new(TITLE).heading().color(c(t.text)));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(calls_itself(&d.name)).color(c(t.text)));
+            ui.label(egui::RichText::new(file_line(&d.id.image_path)).color(c(t.text_muted)));
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(ASKS).color(c(t.text)));
+            egui::ScrollArea::vertical()
+                .max_height((screen_h * 0.8 - 260.0).max(120.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for i in &d.items {
+                        let colour = if i.red { c(t.danger) } else { c(t.text) };
+                        ui.label(egui::RichText::new(i.line()).color(colour));
+                    }
+                });
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(SAME_PROGRAM).color(c(t.text_muted)));
+            ui.label(egui::RichText::new(d.footer()).color(c(t.text_muted)));
+            ui.add_space(10.0);
+            crate::kit::dialog_buttons(ui, |ui| {
+                let allow = ui.add_enabled(
+                    armed,
+                    egui::Button::new(egui::RichText::new(ALLOW).color(c(t.accent)))
+                        .stroke(egui::Stroke::new(1.0_f32, c(t.accent))),
+                );
+                if allow.clicked() && armed {
+                    answer = Some(ToolAnswer::Allow);
                 }
+                let not_now = ui.add(
+                    egui::Button::new(egui::RichText::new(NOT_NOW).color(c(t.on_accent)))
+                        .fill(c(t.accent)),
+                );
+                if first {
+                    not_now.request_focus();
+                }
+                if not_now.clicked() {
+                    answer = Some(ToolAnswer::NotNow);
+                }
+                ids.push(allow.id);
+                ids.push(not_now.id);
             });
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(SAME_PROGRAM).color(c(t.text_muted)));
-        ui.label(egui::RichText::new(d.footer()).color(c(t.text_muted)));
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            let allow = ui.add_enabled(
-                armed,
-                egui::Button::new(egui::RichText::new(ALLOW).color(c(t.accent)))
-                    .stroke(egui::Stroke::new(1.0_f32, c(t.accent))),
-            );
-            if allow.clicked() && armed {
-                answer = Some(ToolAnswer::Allow);
-            }
-            let not_now = ui.add(
-                egui::Button::new(egui::RichText::new(NOT_NOW).color(c(t.on_accent)))
-                    .fill(c(t.accent)),
-            );
-            if first {
-                not_now.request_focus();
-            }
-            if not_now.clicked() {
-                answer = Some(ToolAnswer::NotNow);
-            }
-            ids.push(allow.id);
-            ids.push(not_now.id);
         });
-    });
     // Tab stays inside the dialog, and never on Allow before it is armed.
     let (tab, shift) = ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
     if tab {
