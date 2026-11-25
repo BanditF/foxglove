@@ -1402,10 +1402,10 @@ fn an_allowed_program_never_writes_a_status_read_without_asking() {
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
     r.add_module(entry(M, &[]));
     let asked = [
-        "facts.write:sensor.*",
-        "facts.write:volume.*",
         "facts.write:keyboard.*",
         "facts.write:notes.*",
+        "facts.write:sensor.*",
+        "facts.write:volume.*",
     ];
     let (c, reply) = connect(&mut r, "obs-helper", false, &asked);
     assert_eq!(reply["granted"], json!(asked), "{reply}");
