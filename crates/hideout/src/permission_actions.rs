@@ -125,6 +125,49 @@ fn to_local(t: (u16, u16, u16, u16, u16)) -> (u16, u16, u16, u16, u16) {
     t
 }
 
+/// A saved UTC stamp's day on this PC, "2026-11-17" (what the list of allowed programs shows:
+/// the day the user answered, by their own clock). `None` for a stamp that is no real UTC time:
+/// the caller then shows what was saved, which the list checks itself.
+pub fn local_day(at: &str) -> Option<String> {
+    local_day_by(at, to_local)
+}
+
+fn local_day_by(
+    at: &str,
+    local: impl Fn((u16, u16, u16, u16, u16)) -> (u16, u16, u16, u16, u16),
+) -> Option<String> {
+    if !at.is_ascii() || at.len() != 20 || !at.ends_with('Z') || &at[10..11] != "T" {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| -> Option<u16> {
+        let s = &at[r];
+        s.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| s.parse().ok())?
+    };
+    let seps = [(4, '-'), (7, '-'), (13, ':'), (16, ':')];
+    if seps
+        .iter()
+        .any(|(i, c)| at[*i..].chars().next() != Some(*c))
+    {
+        return None;
+    }
+    let (y, m, d, h, min, s) = (
+        n(0..4)?,
+        n(5..7)?,
+        n(8..10)?,
+        n(11..13)?,
+        n(14..16)?,
+        n(17..19)?,
+    );
+    let days = hideout_shell::tool_list::days_in(y.into(), m.into());
+    if y < 2000 || d == 0 || u32::from(d) > days || h > 23 || min > 59 || s > 59 {
+        return None;
+    }
+    let (y, m, d, _, _) = local((y, m, d, h, min));
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
 /// "2026-11-13T12:00:00Z" as local time in words, "13 Nov 2026, 20:40" (the date alone when the
 /// time doesn't parse).
 pub fn time_words(at: &str) -> String {
@@ -1548,13 +1591,16 @@ impl PermUi {
                         let at = (id.image_sha256 == rec.image_sha256)
                             .then_some(rec.allowed_at.as_deref())
                             .flatten();
-                        ToolRow::new(&id.image_path, items(granted), at)
+                        let day = at.and_then(local_day);
+                        ToolRow::new(&id.image_path, items(granted), day.as_deref().or(at))
                     }
                     None => {
+                        let at = rec.allowed_at.as_deref();
+                        let day = at.and_then(local_day);
                         let mut row = ToolRow::new(
                             &rec.image_path,
                             items(&rec.granted),
-                            rec.allowed_at.as_deref(),
+                            day.as_deref().or(at),
                         );
                         row.unsaved = true;
                         row
@@ -3166,6 +3212,44 @@ on = [\"open\", \"call\"]
         assert_eq!(w.len(), "17 Nov 2026, 12:30".len());
         assert_eq!(time_words("2026-11-17"), "17 Nov 2026");
         assert_eq!(time_words("soon"), "soon");
+    }
+
+    #[test]
+    fn the_allowed_day_is_the_local_day_and_only_of_a_real_time() {
+        // A PC eight hours behind UTC: an answer at 03:00Z was given the evening before.
+        let west = |t: (u16, u16, u16, u16, u16)| {
+            assert_eq!(t, (2026, 11, 17, 3, 0));
+            (2026, 11, 16, 19, 0)
+        };
+        assert_eq!(
+            local_day_by("2026-11-17T03:00:00Z", west).as_deref(),
+            Some("2026-11-16")
+        );
+        let same = |t| t;
+        for odd in [
+            "",
+            "2026-11-17",
+            "2026-11-17 03:00:00Z",
+            "2026-11-17T03:00:00",
+            "2026-11-31T03:00:00Z",
+            "2027-02-29T03:00:00Z",
+            "2026-11-17T24:00:00Z",
+            "2026-11-17T03:60:00Z",
+            "2026-11-17T03:00:61Z",
+            "1999-11-17T03:00:00Z",
+            "2026-11-17T+3:00:00Z",
+            "2026/11/17T03:00:00Z",
+            "2026-11-17T03:00:00Z and more",
+            "\u{202e}026-11-17T03:00:00Z",
+        ] {
+            assert_eq!(local_day_by(odd, same), None, "{odd:?}");
+        }
+        // The real clock gives a day the list reads, within a day of the UTC one.
+        let day = local_day("2028-02-29T12:00:00Z").unwrap();
+        assert!(
+            ["2028-02-28", "2028-02-29", "2028-03-01"].contains(&day.as_str()),
+            "{day}"
+        );
     }
 
     #[test]
