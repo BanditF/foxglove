@@ -33,8 +33,12 @@ pub fn health_only(r: &HealthRow) -> bool {
     let refusal = r.subsystem == "raw_hid" && r.detail.contains("refused");
     let not_tested = r.item.to_ascii_lowercase().contains("not tested")
         || r.detail.to_ascii_lowercase().contains("not tested");
-    // A refused wallpaper connection is fixed by itself; the health row says it, no toast.
-    let wallpaper = r.subsystem == "live_feed" && r.detail == "a wallpaper couldn't connect";
+    // A refused live-feed connection is fixed by itself, or ends in the row that offers
+    // Reconnect; the health row says it, no toast.
+    let wallpaper = r.subsystem == "live_feed"
+        && (r.detail.starts_with("a wallpaper couldn't connect")
+            || r.detail
+                .starts_with("Foxglove couldn't check which program connected"));
     refusal || not_tested || wallpaper
 }
 

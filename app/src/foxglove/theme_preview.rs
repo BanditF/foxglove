@@ -4268,7 +4268,7 @@ fn live_wallpaper_notify_row_renders() {
 #[test]
 fn live_wallpaper_card_allow_list_renders() {
     use crate::foxglove::live_feed::{notify_row, EXPLAINER, IN_HIDEOUT};
-    use crate::foxglove::live_pairing::{Link, Links};
+    use crate::foxglove::live_pairing::{Intruder, Link, Links};
     use crate::foxglove::theme::{Choice, DARK, LIGHT};
     use crate::foxglove::we_panel::{self, Ask, Hold, Inputs};
     let ask = |k: &str, t: &str, on_screen, allowed| Ask {
@@ -4305,14 +4305,17 @@ fn live_wallpaper_card_allow_list_renders() {
     shared_links
         .by_dir
         .insert("courier".into(), Link::Connected);
-    shared_links.foreign = true;
+    shared_links.foreign = Some(Intruder {
+        name: Some("tool.exe".into()),
+    });
     let shared = Inputs {
         links: shared_links.clone(),
         hold: None,
         ..list.clone()
     };
-    // One wallpaper is reloading: the line must not show.
+    // One wallpaper is reloading and the program has no name: the line still shows.
     let mut reloading_links = shared_links;
+    reloading_links.foreign = Some(Intruder::default());
     reloading_links
         .by_dir
         .insert("courier".into(), Link::Reconnecting);

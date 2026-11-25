@@ -522,20 +522,23 @@ impl Tickets {
 
 /// [`admit`] that also takes a one-time ticket for `monitor`: a live ticket is used up and
 /// admits; otherwise the old long-lived token decides, unchanged. The origin gate comes first
-/// either way, and a ticket is only looked at after it.
+/// either way, and a ticket is only looked at after it. With `ticket_allowed` false (the peer
+/// isn't the wallpaper host, #1445) the ticket store is not touched at all: only the old token
+/// decides.
 pub fn admit_or_ticket(
     origin: Option<&str>,
     given: Option<&str>,
     token: &str,
     tickets: &mut Tickets,
     monitor: &str,
+    ticket_allowed: bool,
     now: std::time::Instant,
 ) -> Result<(), Denied> {
     match origin {
         None | Some("null") | Some("file://") => {}
         Some(o) => return Err(Denied::Origin(o.to_string())),
     }
-    if given.is_some_and(|g| tickets.redeem(g, monitor, now)) {
+    if ticket_allowed && given.is_some_and(|g| tickets.redeem(g, monitor, now)) {
         return Ok(());
     }
     admit(origin, given, token)
@@ -622,6 +625,69 @@ impl Refusals {
 
     /// A wallpaper keeps presenting a wrong token: a refusal came less than [`REFUSAL_QUIET`]
     /// before `now`, and no pairing since.
+    pub fn warns(&self, now: std::time::Instant) -> bool {
+        self.last
+            .is_some_and(|t| now.saturating_duration_since(t) < REFUSAL_QUIET)
+    }
+}
+
+/// Refusals of one other kind (#1445: a program that isn't the wallpaper host, or a peer that
+/// couldn't be checked), by [`Refusals`]' rule with the caller's words: the first of a run in
+/// full, then at most one summary per [`REFUSAL_QUIET`], timed by the next refusal. No clock of
+/// its own.
+#[derive(Debug, Default)]
+pub struct Summed {
+    unlogged: u64,
+    last_line: Option<std::time::Instant>,
+    last: Option<std::time::Instant>,
+}
+
+impl Summed {
+    pub const fn new() -> Self {
+        Summed {
+            unlogged: 0,
+            last_line: None,
+            last: None,
+        }
+    }
+
+    /// A refusal at `now`: the log lines to write (without the `Foxglove: ` prefix). `first` is
+    /// the line in full; `what` ends a summary (`live feed refused 3 more connections: {what}`).
+    pub fn refused(&mut self, now: std::time::Instant, first: String, what: &str) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.warns(now) {
+            if self.unlogged > 0 {
+                lines.push(self.summary(what));
+            }
+            self.last_line = Some(now);
+            self.last = Some(now);
+            lines.push(first);
+            return lines;
+        }
+        self.last = Some(now);
+        self.unlogged += 1;
+        if self
+            .last_line
+            .is_none_or(|t| now.saturating_duration_since(t) >= REFUSAL_QUIET)
+        {
+            lines.push(self.summary(what));
+            self.last_line = Some(now);
+        }
+        lines
+    }
+
+    fn summary(&mut self, what: &str) -> String {
+        let n = std::mem::take(&mut self.unlogged);
+        let s = if n == 1 { "" } else { "s" };
+        format!("live feed refused {n} more connection{s}: {what}")
+    }
+
+    /// The run is over (a wallpaper paired, Reconnect, or the feed stopped).
+    pub fn clear(&mut self) {
+        self.last = None;
+    }
+
+    /// One came less than [`REFUSAL_QUIET`] before `now`, and the run wasn't cleared since.
     pub fn warns(&self, now: std::time::Instant) -> bool {
         self.last
             .is_some_and(|t| now.saturating_duration_since(t) < REFUSAL_QUIET)
@@ -1110,7 +1176,7 @@ mod tests {
         let old = "s3cretS3cretS3cretS3cret";
         let mut k = Tickets::new();
         let t = k.mint("mon", now).unwrap();
-        let go = |k: &mut Tickets, o, g| admit_or_ticket(o, g, old, k, "mon", now);
+        let go = |k: &mut Tickets, o, g| admit_or_ticket(o, g, old, k, "mon", true, now);
         assert!(go(&mut k, Some("null"), Some(&t)).is_ok());
         assert_eq!(
             go(&mut k, Some("null"), Some(&t)),
@@ -1132,7 +1198,47 @@ mod tests {
             "a refused origin didn't burn it"
         );
         assert!(go(&mut k, Some("null"), None).is_err());
-        assert!(admit_or_ticket(Some("null"), Some(""), "", &mut k, "mon", now).is_err());
+        assert!(admit_or_ticket(Some("null"), Some(""), "", &mut k, "mon", true, now).is_err());
+    }
+
+    /// #1445: when the peer isn't the wallpaper host its ticket is not compared and not used up;
+    /// the old token decides alone.
+    #[test]
+    fn a_ticket_is_left_alone_when_tickets_are_not_allowed() {
+        use std::time::Instant;
+        let now = Instant::now();
+        let old = "s3cretS3cretS3cretS3cret";
+        let mut k = Tickets::new();
+        let t = k.mint("mon", now).unwrap();
+        assert_eq!(
+            admit_or_ticket(Some("null"), Some(&t), old, &mut k, "mon", false, now),
+            Err(Denied::Token)
+        );
+        assert_eq!(k.outstanding(now), 1, "not used up");
+        assert!(admit_or_ticket(None, Some(old), old, &mut k, "mon", false, now).is_ok());
+        assert!(admit_or_ticket(Some("null"), Some(&t), old, &mut k, "mon", true, now).is_ok());
+    }
+
+    #[test]
+    fn other_refusals_are_said_once_then_summed() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut r = Summed::new();
+        assert!(!r.warns(t0));
+        assert_eq!(r.refused(t0, "first".into(), "why"), ["first"]);
+        assert!(r.warns(t0));
+        assert!(r.refused(at(8), "second".into(), "why").is_empty());
+        assert!(r.refused(at(16), "third".into(), "why").is_empty());
+        assert_eq!(
+            r.refused(at(600), "fourth".into(), "why"),
+            ["live feed refused 3 more connections: why"]
+        );
+        r.clear();
+        assert!(!r.warns(at(601)));
+        assert_eq!(r.refused(at(700), "again".into(), "why"), ["again"]);
+        // Ten minutes of quiet ends the run, without a timer.
+        assert!(!r.warns(at(1300)));
     }
 
     /// No log line, refusal text or Debug output carries a ticket or the token.

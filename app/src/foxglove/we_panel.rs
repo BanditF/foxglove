@@ -120,9 +120,19 @@ pub const HEADER: &str = "Wallpapers that want your keyboard";
 pub const RECONNECT_LABEL: &str = "Reconnect";
 pub const RECONNECT_ALL_LABEL: &str = "Reconnect all wallpapers";
 pub const DISCONNECT_ALL: &str = "Disconnect all wallpapers";
-/// The section line when some other app tried to connect while every allowed wallpaper was
-/// connected (UX review of #1334, finding 2). It claims no more than the refusal showed.
-pub const FOREIGN_LINE: &str = "An app that isn't one of your wallpapers tried to connect. If a wallpaper stops showing your typing, press Reconnect.";
+/// The section line's words when the refused program could not be named.
+const UNNAMED_PROGRAM_LINE: &str = "A program Foxglove couldn't identify tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If it keeps happening, close programs you don't know.";
+
+/// The section line when a program that isn't the wallpaper host tried to connect (#1445).
+/// `name` is the program's cleaned file name. Nothing was closed, so it offers no Reconnect.
+pub fn foreign_line(name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!(
+            "{name} tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If you don't know {name}, close it."
+        ),
+        None => UNNAMED_PROGRAM_LINE.to_string(),
+    }
+}
 /// What the hub shows when the module refuses a flip (the raw error goes to the log only).
 pub const REFUSED: &str = "Couldn't change this. Try again.";
 
@@ -255,20 +265,11 @@ fn old_way_line(n: usize) -> String {
     }
 }
 
-/// Whether the line about another app shows: the pairing store saw a refusal with every allowed
-/// wallpaper connected, and the rows agree (each allowed wallpaper on screen is connected, so
-/// the refusal cannot be one of them reloading). The pairing flag is the event; this is the
-/// second look before words go on screen.
-fn shared_app(i: &Inputs, order: &[&Ask], link: &dyn Fn(&Ask) -> Link) -> bool {
-    i.links.foreign
-        && i.feed_on
-        && i.engine_running
-        && !i.links.held
-        && order.iter().any(|a| a.on_screen)
-        && order
-            .iter()
-            .filter(|a| a.on_screen)
-            .all(|a| a.allowed && !a.needs_update && link(a) == Link::Connected)
+/// The line about another program, when it shows: the feed refused a peer that isn't the
+/// wallpaper host (#1445). That is a fact about one connection, so the rows are not asked.
+fn shared_app(i: &Inputs) -> Option<String> {
+    let seen = i.links.foreign.as_ref()?;
+    (i.feed_on && i.engine_running && !i.links.held).then(|| foreign_line(seen.name.as_deref()))
 }
 
 /// The section's view (plan §3). At most one section line shows, the first that holds from the
@@ -349,6 +350,7 @@ pub fn view(i: &Inputs) -> View {
                 Link::Connected | Link::Connecting | Link::Reconnecting
             )
     });
+    let foreign = shared_app(i);
     let line = if !i.feed_on {
         Some((
             "The live keyboard feed is off. Wallpapers you allow connect when you turn it on.",
@@ -361,8 +363,8 @@ pub fn view(i: &Inputs) -> View {
             "All wallpapers are disconnected. They stay allowed.",
             true,
         ))
-    } else if shared_app(i, &order, &link) {
-        Some((FOREIGN_LINE, true))
+    } else if let Some(text) = &foreign {
+        Some((text.as_str(), false))
     } else if i.links.old_way == 0 && i.asks.is_empty() {
         Some((
             "No wallpaper has asked for your keyboard yet. Wallpapers that can show your typing appear here.",
@@ -604,6 +606,7 @@ pub fn event(node: &str, value: Option<bool>) -> Option<Event> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::live_pairing::Intruder;
     use super::*;
     use std::collections::BTreeMap;
 
@@ -657,62 +660,58 @@ mod tests {
             ],
             links(&[("hud", Link::Connected), ("courier", Link::Connected)]),
         );
-        i.links.foreign = true;
+        i.links.foreign = Some(Intruder {
+            name: Some("tool.exe".into()),
+        });
         i
     }
 
     #[test]
-    fn another_app_gets_one_section_line_with_reconnect_and_no_row_changes() {
+    fn another_program_gets_one_section_line_without_reconnect_and_no_row_changes() {
         let i = two_connected();
         let v = view(&i);
         let l = v.line.clone().unwrap();
         assert_eq!(
             l.text,
-            "An app that isn't one of your wallpapers tried to connect. If a wallpaper stops showing your typing, press Reconnect."
+            "tool.exe tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If you don't know tool.exe, close it."
         );
-        assert!(l.reconnect);
+        assert!(!l.reconnect, "nothing was closed, so nothing to reconnect");
         let mut calm = i.clone();
-        calm.links.foreign = false;
+        calm.links.foreign = None;
         assert_eq!(v.rows, view(&calm).rows, "rows stay plain Connected");
         assert!(v
             .rows
             .iter()
             .all(|r| r.status.as_ref().unwrap().0 == "Connected"));
         assert!(v.rows.iter().all(|r| !r.reconnect && r.help.is_none()));
-        // The same Reconnect the plan's section line has, named for the screen reader.
         let tree = nodes(&v);
-        let btn = tree
-            .iter()
-            .find(|n| n["id"] == "we-reconnect:all")
-            .expect("the section's Reconnect");
-        assert_eq!(btn["props"]["name"], "Reconnect all wallpapers");
+        assert!(tree.iter().any(|n| n["id"] == "we-line"));
+        assert!(tree.iter().all(|n| n["id"] != "we-reconnect:all"));
     }
 
     #[test]
-    fn the_line_about_another_app_needs_every_allowed_wallpaper_connected() {
+    fn the_line_about_another_program_does_not_depend_on_the_wallpapers() {
+        let named = view(&two_connected()).line.unwrap().text;
+        // A wallpaper that is connecting, reloading or out of tries does not hide it.
         let mut i = two_connected();
-        // One wallpaper is reloading: the refusal may be its own.
-        i.links.by_dir.insert("courier".into(), Link::Reconnecting);
-        assert_eq!(view(&i).line, None);
-        i.links.by_dir.insert("courier".into(), Link::Capped);
-        assert_eq!(view(&i).line, None);
-        // A wallpaper that is off and on screen may be the sender: no line.
+        for link in [Link::Connecting, Link::Reconnecting, Link::Capped] {
+            i.links.by_dir.insert("courier".into(), link);
+            let l = view(&i).line.unwrap();
+            assert_eq!(l.text, named);
+            assert!(!l.reconnect);
+        }
+        // Nor does one that is off, needs an update, or is not on screen.
         let mut off = two_connected();
         off.asks.push(ask("neon", "Neon Rain", true, false));
-        assert_eq!(view(&off).line, None);
+        assert_eq!(view(&off).line.unwrap().text, named);
         let mut update = two_connected();
         update.asks[1].needs_update = true;
-        assert_eq!(view(&update).line, None);
-        // One that is not on screen does not hold the line back.
-        let mut j = two_connected();
-        j.asks.push(ask("neon", "Neon Rain", false, false));
-        j.asks.push(ask("atlas", "Atlas", false, true));
-        assert!(view(&j).line.unwrap().text.starts_with("An app that isn't"));
-        // Nothing on screen: nothing to say.
+        assert_eq!(view(&update).line.unwrap().text, named);
         let mut none = two_connected();
         none.asks.iter_mut().for_each(|a| a.on_screen = false);
-        assert_eq!(view(&none).line, None);
-        // Not while disconnected, paused-off, or without the engine: those lines say why.
+        assert_eq!(view(&none).line.unwrap().text, named);
+        // Not while disconnected or without the engine: those lines say why.
+        let mut j = two_connected();
         j.links.held = true;
         assert!(view(&j).line.unwrap().text.starts_with("All wallpapers"));
         j.links.held = false;
@@ -721,13 +720,39 @@ mod tests {
             view(&j).line.unwrap().text,
             "Wallpaper Engine isn't running."
         );
+        j.engine_running = true;
+        j.feed_on = false;
+        assert!(view(&j)
+            .line
+            .unwrap()
+            .text
+            .starts_with("The live keyboard feed is off"));
     }
 
     #[test]
-    fn the_line_about_another_app_uses_no_forbidden_words() {
-        let words = FOREIGN_LINE.to_lowercase();
-        for bad in ["token", "ticket", "pair", "paste", "shared", "using"] {
-            assert!(!words.contains(bad), "{bad}");
+    fn a_program_without_a_name_is_said_to_be_unidentified_never_left_blank() {
+        let mut i = two_connected();
+        i.links.foreign = Some(Intruder::default());
+        let l = view(&i).line.unwrap();
+        assert_eq!(
+            l.text,
+            "A program Foxglove couldn't identify tried to connect to the live keyboard feed and was refused. Nothing was sent to it. Your wallpapers stay connected. If it keeps happening, close programs you don't know."
+        );
+        assert!(!l.reconnect);
+        assert_eq!(l.text, foreign_line(None));
+    }
+
+    #[test]
+    fn the_line_about_another_program_uses_no_forbidden_words() {
+        for line in [foreign_line(Some("tool.exe")), foreign_line(None)] {
+            let words = line.to_lowercase();
+            for bad in [
+                "token", "ticket", "pair", "paste", "shared", "using", " app ",
+            ] {
+                assert!(!words.contains(bad), "{bad}");
+            }
+            // Every refusal says what to do next.
+            assert!(words.contains("close"));
         }
     }
 
