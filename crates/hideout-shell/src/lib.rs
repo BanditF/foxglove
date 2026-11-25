@@ -10,6 +10,8 @@
 //! glyph, instance names) build and test on every platform; the window, the tray and the Win32
 //! calls are Windows-only.
 
+#[cfg(windows)]
+pub mod access_view;
 pub mod autostart;
 pub mod dev_settings;
 pub mod dismiss;

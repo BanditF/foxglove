@@ -14,6 +14,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod access_page;
+#[cfg(windows)]
 mod adopt;
 #[cfg(windows)]
 mod catalog_fetch;
@@ -415,6 +417,14 @@ fn main() {
             .as_ref()
             .map(|_| discover::DiscoverUi::new(paths.root.clone())),
     );
+    // Access: the same permissions by thing, at the launcher's foot above Settings. Only the
+    // hub that holds the router (it turns items off there first).
+    if let Some(h) = started._router.clone() {
+        pages.push(Box::new(access_page::AccessPage::new(
+            paths.root.clone(),
+            h,
+        )));
+    }
     // Settings: Privacy with Forget seen apps, and About (#991), at the sidebar's bottom.
     let mut settings =
         settings_page::SettingsPage::new(paths.root.clone(), env!("CARGO_PKG_VERSION"));
