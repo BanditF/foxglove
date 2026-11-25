@@ -805,43 +805,16 @@ pub fn menu_key(ctx: &egui::Context) {
     });
 }
 
-/// Draws the tray panel: the tile grid (or Edit tiles), then Open Hideout and Edit tiles.
-/// `editing` is the panel's own view state.
-pub fn tray_panel_ui(
+/// Draws the grid of shown tiles and takes their picks (open, hide, move): the tray panel's
+/// grid, and Home's "Now". The caller keeps the host's tile visibility in step ([`sync_hidden`]).
+pub fn tiles_grid_ui(
     host: &mut PanelHost,
     ui: &mut Ui,
     layout: &mut TrayLayout,
-    editing: &mut bool,
     now: Instant,
 ) -> TrayReport {
     let mut report = TrayReport::default();
     let tiles = tray_tiles(host, layout);
-    if *editing {
-        ui.label(RichText::new("Edit tiles").strong().size(16.0));
-        ui.label(RichText::new("Choose which tiles show here.").weak());
-        ui.add_space(6.0);
-        for t in &tiles {
-            let mut on = t.shown;
-            let name = host.module_name(&t.key.module);
-            if ui.checkbox(&mut on, &name).changed() {
-                let n = tile_name(&t.key);
-                if on {
-                    layout.hidden.remove(&n);
-                    layout.shown.insert(n);
-                } else {
-                    layout.shown.remove(&n);
-                    layout.hidden.insert(n);
-                }
-                report.actions.push(TrayAction::LayoutChanged);
-            }
-        }
-        ui.add_space(8.0);
-        if ui.button("Done").clicked() {
-            *editing = false;
-        }
-        sync_hidden(host, layout);
-        return report;
-    }
     let shown: Vec<TileEntry> = tiles.iter().filter(|t| t.shown).cloned().collect();
     if shown.is_empty() {
         ui.label(RichText::new("No tiles to show").strong());
@@ -920,6 +893,59 @@ pub fn tray_panel_ui(
             _ => {}
         }
     }
+    let ticking = shown.iter().any(|t| {
+        host.module_state(&t.key.module) == Some("restarting")
+            || host.last_seen(&t.key.module, now).is_some()
+                && host.panel(&t.key).is_some_and(|p| !p.live())
+    });
+    if ticking {
+        report.repaint_in = Some(Duration::from_secs(1));
+    }
+    sync_hidden(host, layout);
+    report
+}
+
+/// Draws the tray panel: the tile grid (or Edit tiles), then Open Hideout and Edit tiles.
+/// `editing` is the panel's own view state.
+pub fn tray_panel_ui(
+    host: &mut PanelHost,
+    ui: &mut Ui,
+    layout: &mut TrayLayout,
+    editing: &mut bool,
+    now: Instant,
+) -> TrayReport {
+    let mut report = TrayReport::default();
+    let tiles = tray_tiles(host, layout);
+    if *editing {
+        ui.label(RichText::new("Edit tiles").strong().size(16.0));
+        ui.label(RichText::new("Choose which tiles show here.").weak());
+        ui.add_space(6.0);
+        for t in &tiles {
+            let mut on = t.shown;
+            let name = host.module_name(&t.key.module);
+            if ui.checkbox(&mut on, &name).changed() {
+                let n = tile_name(&t.key);
+                if on {
+                    layout.hidden.remove(&n);
+                    layout.shown.insert(n);
+                } else {
+                    layout.shown.remove(&n);
+                    layout.hidden.insert(n);
+                }
+                report.actions.push(TrayAction::LayoutChanged);
+            }
+        }
+        ui.add_space(8.0);
+        if ui.button("Done").clicked() {
+            *editing = false;
+        }
+        sync_hidden(host, layout);
+        return report;
+    }
+    let grid = tiles_grid_ui(host, ui, layout, now);
+    report.actions.extend(grid.actions);
+    report.phases = grid.phases;
+    report.repaint_in = grid.repaint_in;
     ui.add_space(6.0);
     ui.separator();
     ui.horizontal(|ui| {
@@ -933,14 +959,6 @@ pub fn tray_panel_ui(
         });
     });
     sync_hidden(host, layout);
-    let ticking = shown.iter().any(|t| {
-        host.module_state(&t.key.module) == Some("restarting")
-            || host.last_seen(&t.key.module, now).is_some()
-                && host.panel(&t.key).is_some_and(|p| !p.live())
-    });
-    if ticking {
-        report.repaint_in = Some(Duration::from_secs(1));
-    }
     report
 }
 
