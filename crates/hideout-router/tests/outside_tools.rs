@@ -1853,7 +1853,7 @@ fn a_service_refusal_names_a_tool_cleaned_and_cut() {
     let never = |does: &str| {
         format!("Hideout never lets a program outside Hideout {does}. Only an app you allowed in Hideout can.")
     };
-    let watch = never("see whether another program is running");
+    let watch = never("start watching another program");
     let out = call(&mut r, c, 9, "apps.watch", json!({"exe": "obs64.exe"}));
     assert_eq!(reason(&out, c).1, watch);
     // What a tool can be allowed is asked for on its line (R3), with its name in quotes.

@@ -32,7 +32,7 @@ fn label_of(exe: &str) -> Option<String> {
 }
 
 /// What a program outside Hideout is told when it asks to watch an app (S1, R2).
-pub const NOT_FOR_TOOLS: &str = "Hideout never lets a program outside Hideout see whether another program is running. Only an app you allowed in Hideout can.";
+pub const NOT_FOR_TOOLS: &str = "Hideout never lets a program outside Hideout start watching another program. Only an app you allowed in Hideout can.";
 
 impl Router {
     /// `apps.watch {exe}` (§8.12): checks the caller and its grant, starts the watch and

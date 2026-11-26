@@ -1601,7 +1601,7 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   never lets a program outside Hideout {does}. Only the app that runs your devices sets this,
   so there is nothing to allow." and is never put up for review.
   (#1492) Host services answer a tool with the same words and show no permission's id:
-  `apps.watch` is R2 with "see whether another program is running"; `net.open` is R2 with
+  `apps.watch` is R2 with "start watching another program"; `net.open` is R2 with
   "connect to “{host}” port {port}" ("connect to an unnamed host port {port}" when no
   host is left; "listen on port {port} on this PC" for `udp` and `tcp-listen`);
   `audio.inputs.set_mute` is R3, R4 or R5 with "mute and unmute your microphone".
