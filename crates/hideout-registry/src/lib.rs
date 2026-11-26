@@ -216,6 +216,10 @@ pub struct Registry {
     /// app whose program is inside it gets a one-run OK (#1452). A test sets another with
     /// `Registry::set_windows_folder`, behind the `test-probes` feature.
     pub(crate) windows_folder: Option<String>,
+    /// The app whose start this registry counted as the one its one-run OK is for
+    /// ([`Registry::keep_followed`]). Held in memory only, never read from a file: a start is
+    /// the counted one only for the registry that wrote the count down.
+    pub(crate) counted_start: Option<String>,
     /// The API a legacy `plugin.toml` is checked against (§4.10): the Foxglove plugin API
     /// (`foxglove_plugin_api::API_VERSION`, what `plugin-host` serves), not the hub's version.
     pub legacy_api: Version,
@@ -398,6 +402,7 @@ impl Registry {
             dev_folders: dev.folders,
             probes: dev_folder::DevProbes::default(),
             windows_folder: one_run::system_windows_folder(),
+            counted_start: None,
             legacy_api: foxglove_plugin_api::API_VERSION,
             lab: false,
             lab_report: Vec::new(),

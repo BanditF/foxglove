@@ -24,21 +24,27 @@ pub use hideout_contract::permission::OneRun;
 /// answers [`OneRun::Scripts`] when its file name is a script runner's
 /// ([`hideout_contract::permission::tool_runs_scripts`]). A renamed copy of a runner outside the
 /// Windows folder is not caught by its name: its arguments are still part of what was allowed.
+///
+/// With no Windows folder to compare with (`None` or empty) no program can be shown to be
+/// outside it, so every program gets a one-run OK ([`OneRun::Scripts`]): the rule fails closed.
 pub fn one_run_rule(path: &str, windows_folder: Option<&str>) -> Option<OneRun> {
     if path.is_empty() {
         return None;
     }
-    if windows_folder.is_some_and(|w| !w.is_empty() && crate::dev_folder::path_within(w, path)) {
+    let Some(windows) = windows_folder.filter(|w| !w.is_empty()) else {
+        return Some(OneRun::Scripts);
+    };
+    if crate::dev_folder::path_within(windows, path) {
         return Some(OneRun::Windows);
     }
     let file = path.rsplit(['\\', '/']).next().unwrap_or("");
     hideout_contract::permission::tool_runs_scripts(file).then_some(OneRun::Scripts)
 }
 
-/// The Windows folder of this PC (`C:\Windows`), canonical. Asked of the system, not read from
-/// the environment (a process's `SystemRoot` is whatever its parent set). `None` when the
-/// system gives no answer: the Windows half of the rule then matches nothing, the script-runner
-/// half still holds.
+/// The Windows folder of this PC (`C:\Windows`), canonical. Asked of the system first; the
+/// environment's `SystemRoot` (whatever the parent process set) is used only when the system
+/// gives no answer, and only when it names a folder that is there. `None` when neither does:
+/// [`one_run_rule`] then gives every program a one-run OK.
 pub fn system_windows_folder() -> Option<String> {
     static FOLDER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     FOLDER.get_or_init(read_windows_folder).clone()
@@ -50,12 +56,23 @@ fn read_windows_folder() -> Option<String> {
     let mut buf = vec![0u16; 512];
     // SAFETY: `buf` is a writable buffer of `buf.len()` UTF-16 units, and that length is passed.
     let n = unsafe { GetSystemWindowsDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
-    if n == 0 || n >= buf.len() {
-        return None;
-    }
-    let raw = String::from_utf16(&buf[..n]).ok()?;
+    let asked = if n == 0 || n >= buf.len() {
+        None
+    } else {
+        String::from_utf16(&buf[..n]).ok()
+    };
+    let raw = asked.or_else(|| folder_from(std::env::var_os("SystemRoot")))?;
     // The same form the program's path has, so the two compare component by component.
     Some(crate::keyboard::canonical_path(std::path::Path::new(&raw)).unwrap_or(raw))
+}
+
+/// `value` (the environment's `SystemRoot`) when it is an absolute path to a folder that is
+/// there; anything else is no answer.
+#[cfg(windows)]
+fn folder_from(value: Option<std::ffi::OsString>) -> Option<String> {
+    let raw = value?.into_string().ok()?;
+    let path = std::path::Path::new(&raw);
+    (path.is_absolute() && path.is_dir()).then_some(raw)
 }
 
 #[cfg(not(windows))]
@@ -100,9 +117,39 @@ mod tests {
             one_run_rule(r"E:\WinNT\system32\tool.exe", Some(r"e:\winnt")),
             Some(OneRun::Windows)
         );
-        // No answer from the system: nothing is taken for the Windows folder.
-        assert_eq!(one_run_rule(r"C:\Windows\notepad.exe", None), None);
-        assert_eq!(one_run_rule(r"C:\Windows\notepad.exe", Some("")), None);
+    }
+
+    #[test]
+    fn with_no_windows_folder_known_every_program_gets_a_one_run_ok() {
+        for path in [
+            r"C:\Windows\notepad.exe",
+            r"C:\Apps\Foxglove\foxglove.exe",
+            r"D:\Tools\tool.exe",
+        ] {
+            assert_eq!(one_run_rule(path, None), Some(OneRun::Scripts), "{path}");
+            assert_eq!(
+                one_run_rule(path, Some("")),
+                Some(OneRun::Scripts),
+                "{path}"
+            );
+        }
+        assert_eq!(one_run_rule("", None), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_fallback_takes_only_an_absolute_folder_that_is_there() {
+        let here = std::env::temp_dir();
+        assert_eq!(
+            folder_from(Some(here.clone().into_os_string())),
+            Some(here.to_string_lossy().into_owned())
+        );
+        assert_eq!(folder_from(None), None);
+        assert_eq!(folder_from(Some("Windows".into())), None);
+        assert_eq!(
+            folder_from(Some(here.join("hideout-no-such-folder").into_os_string())),
+            None
+        );
     }
 
     #[test]

@@ -6185,6 +6185,30 @@ fn the_dialog_draws_the_arguments_and_the_one_run_lines() {
         .iter()
         .any(|x| x.contains("(the file and arguments above)")));
 
+    // A long argument is cut while the list is closed, with a link that opens it whole.
+    let long: String = ('a'..='z').cycle().take(300).collect();
+    let mut c = keep_test_dialog(2, Some(Keep::offered(false)));
+    c.args = vec!["--config".into(), long.clone()];
+    let (texts, n) = draw(&mut c);
+    assert_eq!(n, n_plain + 1, "the link is in Tab order");
+    let cut = crate::permission_dialog::arg_line_cut(&long);
+    assert!(cut.contains("more characters)"), "{cut}");
+    assert!(texts.contains(&cut), "{texts:?}");
+    // Drawn cut, spoken whole.
+    let whole = format!("\u{201c}{long}\u{201d}");
+    assert!(!texts.contains(&whole), "{texts:?}");
+    assert!(texts.iter().any(|x| x.contains(&whole)), "{texts:?}");
+    assert!(texts.iter().any(|x| x == "Show all arguments"), "{texts:?}");
+    c.view.args_open = true;
+    let (texts, n) = draw(&mut c);
+    assert_eq!(n, n_plain + 1);
+    assert!(texts.contains(&whole), "{texts:?}");
+    assert!(!texts.iter().any(|x| x.contains("more characters)")));
+    assert!(
+        texts.iter().any(|x| x == "Show fewer arguments"),
+        "{texts:?}"
+    );
+
     let mut r = keep_test_dialog(2, None);
     r.path = r"C:\Python312\python.exe".into();
     r.args = vec!["-m".into(), "fox".into()];

@@ -1471,9 +1471,21 @@ pub fn quoted_line(raw: &str, max: usize) -> Option<String> {
     unquoted_line(raw, max).map(|n| format!("\u{201c}{n}\u{201d}"))
 }
 
+/// A character an argument's line never shows: everything [`hidden_in_name`] hides, the line
+/// and paragraph separators, and the characters that draw as nothing or as a blank and so
+/// could stand unseen in an argument: the Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), the
+/// blank braille pattern (U+2800) and the variation selectors (U+FE00–FE0F, U+E0100–E01EF).
+/// Kept apart from names: a name may hold a variation selector, an argument is shown exactly.
+pub fn hidden_in_argument(c: char) -> bool {
+    hidden_in_name(c)
+        || matches!(c,
+            '\u{2028}' | '\u{2029}' | '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}'
+            | '\u{2800}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
+}
+
 /// One argument of an app's command as it is drawn between “ ” marks on one line. The hidden
-/// characters of [`hidden_in_name`] (every control character, so a tab and a line break too)
-/// and the line and paragraph separators are dropped, and every double quote mark
+/// characters of [`hidden_in_argument`] (every control character, so a tab and a line break
+/// too) are dropped, and every double quote mark
 /// ([`QUOTE_MARKS`]) becomes `'`, so an argument cannot end its own quotes. Spaces stay where
 /// they are: they are part of the argument, and an empty argument stays empty. Also answers
 /// whether anything was dropped or replaced (the reader is then told).
@@ -1482,7 +1494,7 @@ pub fn shown_argument(raw: &str) -> (String, bool) {
     let text = raw
         .chars()
         .filter_map(|c| {
-            if hidden_in_name(c) || matches!(c, '\u{2028}' | '\u{2029}') {
+            if hidden_in_argument(c) {
                 changed = true;
                 None
             } else if QUOTE_MARKS.contains(&c) {
@@ -1932,6 +1944,36 @@ mod line_tests {
         assert!(changed);
         assert_eq!(text, "abcdefgh");
         assert_eq!(shown_argument("\u{202e}\n"), (String::new(), true));
+        // Characters that draw as nothing or as a blank are not left standing unseen.
+        for blank in [
+            '\u{115F}',
+            '\u{1160}',
+            '\u{3164}',
+            '\u{FFA0}',
+            '\u{2800}',
+            '\u{FE00}',
+            '\u{FE0F}',
+            '\u{E0100}',
+            '\u{E01EF}',
+        ] {
+            assert!(hidden_in_argument(blank), "{blank:?}");
+            assert_eq!(
+                shown_argument(&format!("a{blank}b")),
+                ("ab".into(), true),
+                "{blank:?}"
+            );
+            assert_eq!(
+                shown_argument(&blank.to_string()),
+                (String::new(), true),
+                "{blank:?}"
+            );
+        }
+        // A name keeps its variation selectors; an ordinary letter next to the ranges stays.
+        assert!(!hidden_in_name('\u{FE0F}'));
+        assert_eq!(
+            shown_argument("\u{1161}\u{3165}\u{2801}"),
+            ("\u{1161}\u{3165}\u{2801}".into(), false)
+        );
     }
 
     #[test]

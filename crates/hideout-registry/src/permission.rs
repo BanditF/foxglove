@@ -344,6 +344,15 @@ enum Check {
     Unreadable,
 }
 
+/// What a check made at the launch, against the pinned program, knows about that start.
+#[derive(Debug, Clone, Copy)]
+struct Launch<'a> {
+    /// The arguments the process is about to be started with; `None` reads the manifest's.
+    args: Option<&'a [String]>,
+    /// The start was counted as the one a one-run OK is for ([`Registry::start_counted`]).
+    counted: bool,
+}
+
 fn hold_back(
     m: &mut crate::inventory::Installed,
     now: &str,
@@ -685,6 +694,24 @@ impl Registry {
         by: &str,
         follow: bool,
     ) -> Result<Outcome, Failure> {
+        self.approve_or_deny(id, list_code, chosen, declined, now, by, follow, false)
+    }
+
+    /// [`Registry::approve_listed`], or with `deny` a Deny ([`Registry::deny_listed`]). The two
+    /// differ only for a one-run app: an Allow is the OK for its next start even when nothing
+    /// is chosen, a Deny is no OK at all.
+    #[allow(clippy::too_many_arguments)]
+    fn approve_or_deny(
+        &mut self,
+        id: &str,
+        list_code: &str,
+        chosen: &[String],
+        declined: &[String],
+        now: &str,
+        by: &str,
+        follow: bool,
+        deny: bool,
+    ) -> Result<Outcome, Failure> {
         self.reload_inventory()?;
         // A new build the folder grant keeps is recorded first, so the Sensitive items it
         // withholds are pending in the list this Allow is checked against (#1465).
@@ -706,7 +733,8 @@ impl Registry {
         };
         if follow && one_run.is_some() {
             return Err(io_invalid(
-                "the OK for this app is for one run only and can't be kept",
+                "the OK for this app is for one run only and can't be kept; to be asked only \
+                 once, use a version that has its own program file",
             ));
         }
         let follow = if follow {
@@ -800,7 +828,14 @@ impl Registry {
         m.declined_permissions.sort();
         m.declined_permissions.dedup();
         m.last_choice.clear();
-        if one_run.is_some() {
+        if one_run.is_some() && deny {
+            // A Deny allows nothing, so it is not an OK for a run: an OK that is still live
+            // stays as it was, one that is over is dropped, and none is written.
+            m.bound = None;
+            if !m.one_run.as_ref().is_some_and(RunOk::live) {
+                m.one_run = None;
+            }
+        } else if one_run.is_some() {
             // Nothing is remembered: this OK is for the next start, and that start uses it up.
             m.bound = None;
             m.one_run = Some(RunOk {
@@ -850,7 +885,7 @@ impl Registry {
         now: &str,
         by: &str,
     ) -> Result<Outcome, Failure> {
-        self.approve_listed(id, list_code, &[], declined, now, by, false)
+        self.approve_or_deny(id, list_code, &[], declined, now, by, false, true)
     }
 
     /// Narrows: `items` (or every grant for `None`) stop being granted and are recorded as
@@ -914,7 +949,7 @@ impl Registry {
     /// caller that reads this refuses (fails closed); [`Registry::app_file_unreadable`] tells
     /// that case apart, and it is never written as a void.
     pub fn binding_void(&self, id: &str) -> Option<VoidReason> {
-        self.binding_void_with(id, || self.program(id), false)
+        self.binding_void_with(id, || self.program(id), None)
     }
 
     /// Whether the grant of `id` is bound and not void, and its app file is there but could not
@@ -923,7 +958,7 @@ impl Registry {
     /// kept and the next check reads it again. A file that is not there is not this: that one
     /// is `Moved`. Read-only.
     pub fn app_file_unreadable(&self, id: &str) -> bool {
-        self.binding_check(id, || self.program(id), false) == Check::Unreadable
+        self.binding_check(id, || self.program(id), None) == Check::Unreadable
     }
 
     /// [`Registry::binding_void`] against a program the caller already holds open and hashed
@@ -932,15 +967,58 @@ impl Registry {
     /// here even under a follow-folder grant: only [`Registry::keep_followed`] may carry a
     /// follow across new bytes (and hold the held-back items), so bytes that arrived after it
     /// ran are not excused (#1465). A dev enrolment still excuses.
+    ///
+    /// This form knows nothing of the start it is asked about, so for a one-run app (#1452) it
+    /// always answers that the OK is needed: only [`Registry::binding_void_launch`] can pass
+    /// one.
     pub fn binding_void_pinned(&self, id: &str, path: &str, sha256: &str) -> Option<VoidReason> {
-        self.binding_void_with(id, || Ok((path.to_string(), sha256.to_string())), true)
+        let launch = Launch {
+            args: None,
+            counted: false,
+        };
+        self.binding_void_with(
+            id,
+            || Ok((path.to_string(), sha256.to_string())),
+            Some(launch),
+        )
+    }
+
+    /// [`Registry::binding_void_pinned`] for the launch itself: `args` are the arguments the
+    /// process is about to be started with (not a second read of the manifest), and `counted`
+    /// is [`Registry::start_counted`] of the registry that ran [`Registry::keep_followed`] for
+    /// this start. A one-run app passes only when `counted` is true: a start whose count could
+    /// not be read or written down is refused, so one OK never covers more than one start.
+    pub fn binding_void_launch(
+        &self,
+        id: &str,
+        path: &str,
+        sha256: &str,
+        args: &[String],
+        counted: bool,
+    ) -> Option<VoidReason> {
+        let launch = Launch {
+            args: Some(args),
+            counted,
+        };
+        self.binding_void_with(
+            id,
+            || Ok((path.to_string(), sha256.to_string())),
+            Some(launch),
+        )
+    }
+
+    /// Whether the last [`Registry::keep_followed`] of this registry counted a start of `id` as
+    /// the one its one-run OK is for, and wrote that down. False for a registry that did not run
+    /// the step itself, whatever the file says.
+    pub fn start_counted(&self, id: &str) -> bool {
+        self.counted_start.as_deref() == Some(id)
     }
 
     fn binding_void_with(
         &self,
         id: &str,
         program: impl FnOnce() -> Result<(String, String), Failure>,
-        pinned: bool,
+        pinned: Option<Launch<'_>>,
     ) -> Option<VoidReason> {
         match self.binding_check(id, program, pinned) {
             Check::Fine => None,
@@ -955,8 +1033,9 @@ impl Registry {
         &self,
         id: &str,
         program: impl FnOnce() -> Result<(String, String), Failure>,
-        pinned: bool,
+        launch: Option<Launch<'_>>,
     ) -> Check {
+        let pinned = launch.is_some();
         let Some(m) = self.inventory.modules.get(id) else {
             return Check::Fine;
         };
@@ -965,7 +1044,7 @@ impl Registry {
         if m.source == ADOPTED
             && (self.one_run(id).is_some() || (m.bound.is_none() && m.one_run.is_some()))
         {
-            return self.one_run_check(id, m, program, pinned);
+            return self.one_run_check(id, m, program, launch);
         }
         let Some(b) = m.bound.as_ref() else {
             // Old data: an adopted record with grants and no binding would carry them to any
@@ -988,7 +1067,7 @@ impl Registry {
         }
         match program() {
             Ok((path, hash)) => {
-                if self.run_args(id) != b.run_args {
+                if self.args_at(id, launch) != b.run_args {
                     Check::Void(VoidReason::Changed)
                 } else if !crate::keyboard::same_path(&path, &b.exe_path)
                     && self.dev_enrolment(id, m, b, &path).is_none()
@@ -1017,14 +1096,15 @@ impl Registry {
     /// that are there anyway (a remembered OK from before the rule) are void. A record that is
     /// over allows nothing. A live one holds the program to the path, the bytes and the
     /// arguments of the Allow; nothing excuses a difference (no follow, no dev folder). At the
-    /// launch (`pinned`) the start must also have been counted ([`Registry::keep_followed`]),
-    /// so a start that could not be written down does not run on an OK that stays unused.
+    /// launch the start must also be the counted one ([`Launch::counted`], and the record says
+    /// `started`), so a start whose count could not be read or written down does not run: the
+    /// record alone, which stays `started` while the app runs and after it ends, is not enough.
     fn one_run_check(
         &self,
         id: &str,
         m: &crate::inventory::Installed,
         program: impl FnOnce() -> Result<(String, String), Failure>,
-        pinned: bool,
+        launch: Option<Launch<'_>>,
     ) -> Check {
         let Some(r) = m.one_run.as_ref() else {
             return if m.granted.is_empty() && m.bound.as_ref().is_none_or(|b| !b.void) {
@@ -1038,12 +1118,12 @@ impl Registry {
         }
         match program() {
             Ok((path, hash)) => {
-                if self.run_args(id) != r.run_args {
+                if self.args_at(id, launch) != r.run_args {
                     Check::Void(VoidReason::Changed)
                 } else if !crate::keyboard::same_path(&path, &r.exe_path) {
                     Check::Void(VoidReason::Moved)
                 } else if !hash.eq_ignore_ascii_case(&r.exe_sha256)
-                    || (pinned && r.state != RunState::Started)
+                    || launch.is_some_and(|l| !l.counted || r.state != RunState::Started)
                 {
                     Check::Void(VoidReason::Changed)
                 } else {
@@ -1052,6 +1132,15 @@ impl Registry {
             }
             Err(Failure::Io(e)) if e.kind() != std::io::ErrorKind::NotFound => Check::Unreadable,
             Err(_) => Check::Void(VoidReason::Moved),
+        }
+    }
+
+    /// The arguments a check compares with the ones allowed: at the launch, the ones the
+    /// process is started with; otherwise the manifest's as it reads now.
+    fn args_at(&self, id: &str, launch: Option<Launch<'_>>) -> Vec<String> {
+        match launch.and_then(|l| l.args) {
+            Some(a) => a.to_vec(),
+            None => self.run_args(id),
         }
     }
 
@@ -1073,7 +1162,12 @@ impl Registry {
     /// allowed waits for the user again (the choice kept in `last_choice`) and the launch is
     /// refused until the next Allow. A remembered OK such an app still has from before the rule
     /// ends the same way. Written under the inventory's lock, against the file as it is then.
+    ///
+    /// Only a start that this call itself moved from `allowed` to `started`, with the write
+    /// done, is the counted one ([`Registry::start_counted`]); every other outcome (an error
+    /// included) leaves no start counted.
     fn one_run_step(&mut self, id: &str, now: &str) -> Result<(), Failure> {
+        self.counted_start = None;
         let Some(m) = self.inventory.modules.get(id) else {
             return Ok(());
         };
@@ -1086,6 +1180,7 @@ impl Registry {
             return Ok(());
         }
         let mut ended = false;
+        let mut counted = false;
         let inv = crate::inventory::Inventory::update(&self.home.join("inventory.json"), |inv| {
             let Some(m) = inv.modules.get_mut(id) else {
                 return;
@@ -1109,6 +1204,7 @@ impl Registry {
             };
             if r.state == RunState::Allowed {
                 r.state = RunState::Started;
+                counted = true;
                 return;
             }
             r.state = RunState::Ended;
@@ -1121,6 +1217,9 @@ impl Registry {
         }
         if ended {
             let _ = self.void_keyboard(id, VoidReason::Other, now);
+        }
+        if counted {
+            self.counted_start = Some(id.into());
         }
         Ok(())
     }
@@ -1304,7 +1403,7 @@ impl Registry {
     /// can read the file decides.
     pub fn void_if_changed(&mut self, id: &str, now: &str) -> Result<Option<VoidReason>, Failure> {
         self.keep_followed_inner(id, now)?;
-        let Check::Void(reason) = self.binding_check(id, || self.program(id), false) else {
+        let Check::Void(reason) = self.binding_check(id, || self.program(id), None) else {
             return Ok(None);
         };
         let m = &self.inventory.modules[id];

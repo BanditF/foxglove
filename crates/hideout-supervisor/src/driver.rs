@@ -306,7 +306,8 @@ const NOT_INSTALLED: &str = "not installed: ";
 type LaunchHook = Box<dyn Fn(&str) + Send + Sync>;
 static LAUNCH_HOOK: Mutex<Option<LaunchHook>> = Mutex::new(None);
 
-/// Test seam (S7), process-wide: `f("before-pin")` runs in a launch after the pre-launch check
+/// Test seam (S7), process-wide: `f("before-count")` runs in a launch before the start is
+/// counted, `f("before-pin")` after the pre-launch check
 /// and before the program is pinned, `f("pinned")` right after the pin and its checks. `None`
 /// clears it. Tests that set it must not run concurrently with other launches.
 #[doc(hidden)]
@@ -476,7 +477,9 @@ pub fn rebuild_preflight(
     if running_sha256.is_some_and(|r| r.eq_ignore_ascii_case(&pin.sha256)) {
         return Err("it is the build already running".into());
     }
-    if let Some(why) = reg.binding_void_pinned(id, &pin.path, &pin.sha256) {
+    // No start is counted here, so an app whose OK is for one run never passes: its next start
+    // asks again.
+    if let Some(why) = reg.binding_void_launch(id, &pin.path, &pin.sha256, &run[1..], false) {
         return Err(format!("the new build would need your OK ({why:?})"));
     }
     if let Some(why) = reg.pinned_files_void(id, &pin.path, &pin.sha256) {
@@ -1939,10 +1942,25 @@ impl Supervisor {
     ) -> Result<(), String> {
         // A new build a follow-folder grant keeps is recorded (history, keyboard record) before
         // the check; any other change is left to the check, which refuses it.
-        if let Ok(mut r) = Registry::open_from_env(&self.0.home) {
-            if let Ok(true) = r.keep_followed(id, &crate::now_utc()) {
-                log::info!("supervisor: {id}: new build kept by the folder grant");
+        //
+        // The same step counts this start for an app whose OK is for one run (#1452). Only a
+        // count that was read and written down makes this the start that OK is for: when the
+        // registry can't be opened or the step fails, `counted` stays false and the check below
+        // refuses such an app (it asks again), so one OK never covers a second start.
+        let mut counted = false;
+        match Registry::open_from_env(&self.0.home) {
+            Ok(mut r) => {
+                self.launch_hook("before-count");
+                match r.keep_followed(id, &crate::now_utc()) {
+                    Ok(true) => log::info!("supervisor: {id}: new build kept by the folder grant"),
+                    Ok(false) => {}
+                    Err(e) => {
+                        log::warn!("supervisor: {id}: the start could not be recorded: {e:?}")
+                    }
+                }
+                counted = r.start_counted(id);
             }
+            Err(e) => log::warn!("supervisor: {id}: the registry can't be read: {e:?}"),
         }
         let reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
         // What the router holds in memory follows the file after the keep step: items the step
@@ -2002,7 +2020,8 @@ impl Supervisor {
         let sha256 = pin.sha256.clone();
         // The binding is checked against the pinned bytes, not the earlier by-name read: a file
         // swapped between `pre_launch` and the pin no longer matches and is not started (S7, F4).
-        if let Some(why) = reg.binding_void_pinned(id, &pin.path, &sha256) {
+        // It is checked with the arguments this launch passes to the process (`run[1..]` below).
+        if let Some(why) = reg.binding_void_launch(id, &pin.path, &sha256, &run[1..], counted) {
             if may_retry
                 && why == hideout_registry::keyboard::VoidReason::Changed
                 && reg
@@ -2618,7 +2637,21 @@ pub fn grant_listed_in(
     // Neither the control pipe nor any other caller of this function can set a follow-folder
     // grant: `keep` is false here, and the registry refuses a follow from any `by` but the
     // dialog.
-    grant_listed_inner(home, hub, id, list_code, chosen, declined, by, false)
+    grant_listed_inner(home, hub, id, list_code, chosen, declined, by, false, false)
+}
+
+/// A Deny against the shown list: `declined` is recorded as declined and nothing is granted
+/// ([`Registry::deny_listed`]). Unlike an Allow with nothing chosen it is no OK for a run of an
+/// app whose OK is for one run (#1452).
+pub fn deny_listed_in(
+    home: &Path,
+    hub: &Hub,
+    id: &str,
+    list_code: &str,
+    declined: &[String],
+    by: &str,
+) -> Result<hideout_registry::permission::Outcome, String> {
+    grant_listed_inner(home, hub, id, list_code, &[], declined, by, false, true)
 }
 
 /// [`grant_listed_in`] for the hub's own dialog only (`by` is `dialog`): `keep` is the dialog's
@@ -2633,7 +2666,9 @@ pub fn grant_listed_dialog_in(
     declined: &[String],
     keep: bool,
 ) -> Result<hideout_registry::permission::Outcome, String> {
-    grant_listed_inner(home, hub, id, list_code, chosen, declined, "dialog", keep)
+    grant_listed_inner(
+        home, hub, id, list_code, chosen, declined, "dialog", keep, false,
+    )
 }
 
 /// Turn off "Keep my OK after updates in this folder": clears only the follow
@@ -2664,20 +2699,17 @@ fn grant_listed_inner(
     declined: &[String],
     by: &str,
     follow: bool,
+    deny: bool,
 ) -> Result<hideout_registry::permission::Outcome, String> {
     let mut reg = Registry::open_with(home, hideout_registry::DevFlags::from_env())
         .map_err(|e| format!("{e:?}"))?;
-    let out = reg
-        .approve_listed(
-            id,
-            list_code,
-            chosen,
-            declined,
-            &hideout_registry::catalogs::now_utc(),
-            by,
-            follow,
-        )
-        .map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))?;
+    let now = hideout_registry::catalogs::now_utc();
+    let out = if deny {
+        reg.deny_listed(id, list_code, declined, &now, by)
+    } else {
+        reg.approve_listed(id, list_code, chosen, declined, &now, by, follow)
+    };
+    let out = out.map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))?;
     for (item, e) in &out.refused {
         log::warn!("supervisor: {id}: not granted: {item}: {e}");
     }

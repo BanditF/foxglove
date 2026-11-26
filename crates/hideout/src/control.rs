@@ -222,9 +222,13 @@ pub fn handle(
             } else {
                 (Vec::new(), named)
             };
-            let r = hideout_supervisor::driver::grant_listed_in(
-                home, hub, id, &code, &chosen, &declined, "cli",
-            );
+            let r = if *step == "deny" {
+                hideout_supervisor::driver::deny_listed_in(home, hub, id, &code, &declined, "cli")
+            } else {
+                hideout_supervisor::driver::grant_listed_in(
+                    home, hub, id, &code, &chosen, &declined, "cli",
+                )
+            };
             match r {
                 Ok(o) => {
                     let mut s = String::new();
@@ -237,7 +241,9 @@ pub fn handle(
                     for (r, e) in &o.refused {
                         s.push_str(&format!("refused   {r} ({})\n", e.id()));
                     }
-                    if o.one_run.is_some() {
+                    if o.one_run.is_some() && *step == "deny" {
+                        // A Deny allows no run and binds nothing: there is nothing to add.
+                    } else if o.one_run.is_some() {
                         // Nothing was bound (#1452): say so, in the dialog's words.
                         s.push_str(&format!(
                             "{}\n",
@@ -951,6 +957,36 @@ mod tests {
             text.contains("Runs with 1 argument:\n  \u{201c}--quiet\u{201d}\n"),
             "{text}"
         );
+        // The list is never cut here: a long argument is there whole.
+        let long: String = ('a'..='z').cycle().take(300).collect();
+        let l = fx(
+            "onerun-long",
+            &[r"{base}\app.exe".to_string(), long.clone()],
+        );
+        let (_, text) = permissions(&l.paths.root, &l.id);
+        assert!(
+            text.contains(&format!(
+                "Runs with 1 argument:\n  \u{201c}{long}\u{201d}\n"
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("more characters"), "{text}");
+        // A deny allows no run: the reply does not say one was allowed, and no OK is written.
+        let d = fx("onerun-deny", &ping());
+        let good = code(&d);
+        let (c, t) = ask(
+            &d.pipe,
+            &format!("deny {} --all-listed --listed {good}", d.id),
+        );
+        assert_eq!(c, DONE, "{t}");
+        assert!(t.contains("declined  hub.notify"), "{t}");
+        assert!(
+            !t.to_lowercase().contains("this run") && !t.contains("bound to"),
+            "{t}"
+        );
+        let r = Registry::open_from_env(&d.paths.root).unwrap();
+        let m = &r.inventory.modules[&d.id];
+        assert!(m.one_run.is_none() && m.bound.is_none() && m.granted.is_empty());
     }
 
     #[test]

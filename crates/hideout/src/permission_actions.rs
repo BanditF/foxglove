@@ -348,7 +348,9 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
             }
         })
         .collect();
+    // An app whose OK is for one run can have nothing remembered for it, so it is not offered.
     let keyboard = (id == crate::keyboard_actions::MODULE
+        && v.one_run.is_none()
         && matches!(
             reg.keyboard_state(id),
             hideout_registry::keyboard::KeyboardState::NotAsked

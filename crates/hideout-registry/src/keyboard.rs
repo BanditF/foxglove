@@ -265,7 +265,8 @@ impl Registry {
         if crate::one_run::one_run_rule(&here, self.windows_folder.as_deref()).is_some() {
             return Err(Failure::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "this app's OK is for one run only, so nothing can be remembered for it",
+                "this app's OK is for one run only, so nothing can be remembered for it; to be \
+                 asked only once, use a version that has its own program file",
             )));
         }
         if !same_path(&here, path) || !is_hash(sha256) || is_unc(&here) {

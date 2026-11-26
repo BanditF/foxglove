@@ -10,11 +10,11 @@ use crate::egui;
 use crate::keyboard_grant::{DIALOG_FOOTER, DIALOG_ITEMS};
 use crate::keyboard_grant_ui::rgb as c;
 use crate::permission_dialog::{
-    earlier_label, keep_understand_said, keep_warning, keyboard_line, needs_ok_heading, show_all,
-    All, FirstRun, Group, ItemWord, Keep, KeepAnswer, KeepConfirm, PermAnswer, PermDialog,
-    PermHeader, Section, ARGS_NOTE, ARGS_OPEN_LINES, CANCEL, CHANGE, FIRST_RUN_INTRO, HIDE,
-    HISTORY_SHOWN, KEEP_CONFIRM_OK, KEEP_CONFIRM_TITLE, KEEP_LABEL, NOT_NOW, SHOW, SHOW_FEWER,
-    TURN_ALL_OFF, TURN_OFF, UNDERSTAND,
+    earlier_label, keep_understand_said, keep_warning, keyboard_line, needs_ok_heading, All,
+    FirstRun, Group, ItemWord, Keep, KeepAnswer, KeepConfirm, PermAnswer, PermDialog, PermHeader,
+    Section, ARGS_NOTE, ARGS_OPEN_LINES, CANCEL, CHANGE, FIRST_RUN_INTRO, HIDE, HISTORY_SHOWN,
+    KEEP_CONFIRM_OK, KEEP_CONFIRM_TITLE, KEEP_LABEL, NOT_NOW, SHOW, TURN_ALL_OFF, TURN_OFF,
+    UNDERSTAND,
 };
 use crate::theme::Tokens;
 
@@ -357,12 +357,7 @@ fn args_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
     if d.args_note() {
         ui.label(fine(ui, ARGS_NOTE).color(c(t.text_muted)));
     }
-    if d.args_fold() {
-        let word = if d.view.args_open {
-            SHOW_FEWER.to_string()
-        } else {
-            show_all(d.args.len())
-        };
+    if let Some(word) = d.args_link() {
         let b =
             ui.add(egui::Button::new(egui::RichText::new(&word).color(c(t.accent))).frame(false));
         let said = format!("{word} arguments");

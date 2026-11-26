@@ -69,9 +69,14 @@ pub const KEEP_NOT_SAVED: &str = "Hideout couldn't save your choice. Nothing cha
 pub const ARGS_SHOWN: usize = 4;
 /// How many lines the opened argument list shows before it scrolls.
 pub const ARGS_OPEN_LINES: usize = 8;
-/// An argument longer than this is cut in the middle: its start, an ellipsis, its end.
+/// An argument longer than this is cut in the middle while the list is closed: its start, how
+/// many characters are left out, its end. The open list shows it whole.
 pub const ARG_MAX: usize = 80;
 const ARG_HEAD: usize = 30;
+/// What stands for an argument that is nothing but characters that are not drawn.
+pub const ARG_UNSEEN: &str = "characters that can't be shown";
+/// The link that opens the list when all arguments are listed and one is cut.
+pub const SHOW_ALL: &str = "Show all";
 /// Shown when an argument holds characters that are not drawn (or quote marks, drawn as `'`).
 pub const ARGS_NOTE: &str = "Some characters can't be shown.";
 pub const SHOW_FEWER: &str = "Show fewer";
@@ -88,15 +93,33 @@ pub fn show_all(n: usize) -> String {
     format!("Show all {n}")
 }
 
-/// One argument as the dialog draws it: cleaned ([`hideout_contract::module::shown_argument`]:
-/// nothing in it can end its quotes, break its line or turn its direction), cut in the middle
-/// when long so that its end stays visible, and whether cleaning changed it.
+/// One argument as it is shown, whole: cleaned ([`hideout_contract::module::shown_argument`]:
+/// nothing in it can end its quotes, break its line or turn its direction), and whether
+/// cleaning changed it. Never cut: this is what is spoken, what the control pipe lists and what
+/// the opened list draws.
 pub fn shown_arg(raw: &str) -> (String, bool) {
-    let (clean, changed) = hideout_contract::module::shown_argument(raw);
-    (
-        hideout_contract::module::cut_middle(&clean, ARG_MAX, ARG_HEAD),
-        changed,
-    )
+    hideout_contract::module::shown_argument(raw)
+}
+
+/// A cleaned argument cut for the closed list, `None` when it fits ([`ARG_MAX`]): its start,
+/// "…(123 more characters)…" with the number that is left out, and its end, so the end
+/// stays visible and the reader sees how much is not.
+fn cut_arg(clean: &str) -> Option<String> {
+    let n = clean.chars().count();
+    if n <= ARG_MAX {
+        return None;
+    }
+    let mark = |left_out: usize| format!("\u{2026}({left_out} more characters)\u{2026}");
+    // Room for the mark with its longest number, so the line never passes `ARG_MAX`.
+    let tail = ARG_MAX.saturating_sub(ARG_HEAD + mark(n - ARG_HEAD).chars().count());
+    let start: String = clean.chars().take(ARG_HEAD).collect();
+    let end: String = clean.chars().skip(n - tail).collect();
+    Some(format!("{start}{}{end}", mark(n - ARG_HEAD - tail)))
+}
+
+/// Whether the closed list cuts this argument (the list can then be opened to see it whole).
+pub fn arg_is_cut(raw: &str) -> bool {
+    shown_arg(raw).0.chars().count() > ARG_MAX
 }
 
 /// "Runs with 2 arguments:", the heading over the arguments; `None` for none.
@@ -108,11 +131,21 @@ pub fn args_heading(n: usize) -> Option<String> {
     }
 }
 
-/// One argument as its line: in quotes, an empty one marked so that it is seen.
+/// One argument as its line, whole: in quotes, an empty one marked so that it is seen, and one
+/// that is nothing but characters that are not drawn marked as that (it is not empty).
 pub fn arg_line(raw: &str) -> String {
     match shown_arg(raw).0 {
-        s if s.is_empty() => "\u{201c}\u{201d} (empty)".to_string(),
+        s if s.is_empty() && raw.is_empty() => "\u{201c}\u{201d} (empty)".to_string(),
+        s if s.is_empty() => format!("\u{201c}\u{201d} ({ARG_UNSEEN})"),
         s => format!("\u{201c}{s}\u{201d}"),
+    }
+}
+
+/// [`arg_line`] for the closed list: a long argument cut in the middle ([`ARG_MAX`]).
+pub fn arg_line_cut(raw: &str) -> String {
+    match cut_arg(&shown_arg(raw).0) {
+        Some(cut) => format!("\u{201c}{cut}\u{201d}"),
+        None => arg_line(raw),
     }
 }
 
@@ -811,7 +844,8 @@ impl PermDialog {
         args_heading(self.args.len())
     }
 
-    /// Every argument as one line in quotes, in order. An empty one is marked, so it is seen.
+    /// Every argument, whole, as one line in quotes, in order. An empty one is marked, so it
+    /// is seen.
     pub fn arg_lines(&self) -> Vec<String> {
         self.args.iter().map(|a| arg_line(a)).collect()
     }
@@ -821,27 +855,48 @@ impl PermDialog {
         self.args.iter().any(|a| shown_arg(a).1)
     }
 
-    /// The argument list can be opened and closed (more than [`ARGS_SHOWN`] arguments).
+    /// The argument list can be opened and closed: it has more than [`ARGS_SHOWN`] arguments,
+    /// or one of them is cut while it is closed. So nothing of an argument is out of reach.
     pub fn args_fold(&self) -> bool {
-        self.args.len() > ARGS_SHOWN
+        self.args.len() > ARGS_SHOWN || self.args.iter().any(|a| arg_is_cut(a))
     }
 
-    /// The argument lines drawn now: all of them, or the first few of a long list not opened.
-    pub fn args_drawn(&self) -> Vec<String> {
-        let mut lines = self.arg_lines();
-        if self.args_fold() && !self.view.args_open {
-            lines.truncate(ARGS_SHOWN);
+    /// The link under the arguments, `None` when everything is drawn anyway: "Show all 6" for
+    /// a long list, "Show all" when only a cut argument is opened, "Show fewer" to close.
+    pub fn args_link(&self) -> Option<String> {
+        if !self.args_fold() {
+            return None;
         }
-        lines
+        Some(if self.view.args_open {
+            SHOW_FEWER.to_string()
+        } else if self.args.len() > ARGS_SHOWN {
+            show_all(self.args.len())
+        } else {
+            SHOW_ALL.to_string()
+        })
     }
 
-    /// The arguments as they are spoken: the heading and every argument in order (never only
-    /// the first few), an empty one as "empty", then the note.
+    /// The argument lines drawn now. Opened: every argument, whole. Closed: the first
+    /// [`ARGS_SHOWN`], a long one cut in the middle with the number of characters left out.
+    pub fn args_drawn(&self) -> Vec<String> {
+        if !self.args_fold() || self.view.args_open {
+            return self.arg_lines();
+        }
+        self.args
+            .iter()
+            .take(ARGS_SHOWN)
+            .map(|a| arg_line_cut(a))
+            .collect()
+    }
+
+    /// The arguments as they are spoken: the heading and every argument in order, whole (never
+    /// only the first few, never cut), an empty one as "empty", then the note.
     pub fn args_said(&self) -> Option<String> {
         let mut s = self.args_heading()?;
         for a in &self.args {
             match shown_arg(a).0 {
-                x if x.is_empty() => s.push_str(" empty"),
+                x if x.is_empty() && a.is_empty() => s.push_str(" empty"),
+                x if x.is_empty() => s.push_str(&format!(" {ARG_UNSEEN}")),
                 x => s.push_str(&format!(" \u{201c}{x}\u{201d}")),
             }
         }
@@ -2317,8 +2372,13 @@ mod tests {
         assert_eq!(d.args_drawn().len(), 6);
         assert_eq!(d.said(), said, "spoken the same, open or not");
         assert_eq!(SHOW_FEWER, "Show fewer");
+        assert_eq!(d.args_link().as_deref(), Some("Show fewer"));
+        d.view.args_open = false;
+        assert_eq!(d.args_link().as_deref(), Some("Show all 6"));
         // Four fit without a link.
-        assert!(!with_args(&["1", "2", "3", "4"]).args_fold());
+        let four = with_args(&["1", "2", "3", "4"]);
+        assert!(!four.args_fold());
+        assert_eq!(four.args_link(), None);
     }
 
     /// 3: nothing in an argument ends its quotes, breaks its line or turns its direction.
@@ -2363,27 +2423,109 @@ mod tests {
         d.binding_text()[1..].join(" ")
     }
 
-    /// 4: a long argument is cut in the middle, so its end is seen.
+    /// 4: a long argument is cut in the middle while the list is closed, so its end is seen;
+    /// the cut says how many characters it leaves out, and the list opens to all of it.
     #[test]
-    fn a_long_argument_is_cut_in_the_middle_and_shows_its_end() {
+    fn a_long_argument_is_cut_in_the_middle_and_can_be_seen_whole() {
         let long = format!(
             "{}{}",
             "a".repeat(40),
             "tail-of-41-characters-that-must-be-seen!!"
         );
         assert_eq!(long.chars().count(), 81);
-        let (shown, changed) = shown_arg(&long);
-        assert!(!changed);
-        assert_eq!(shown.chars().count(), ARG_MAX);
+        assert_eq!(shown_arg(&long), (long.clone(), false), "never cut here");
+        assert!(arg_is_cut(&long));
         let head: String = long.chars().take(30).collect();
-        let tail: String = long.chars().skip(81 - 49).collect();
-        assert_eq!(shown, format!("{head}\u{2026}{tail}"));
-        assert!(shown.ends_with("that-must-be-seen!!"));
+        let tail: String = long.chars().skip(81 - 28).collect();
+        assert_eq!(
+            arg_line_cut(&long),
+            format!("\u{201c}{head}\u{2026}(23 more characters)\u{2026}{tail}\u{201d}")
+        );
+        assert_eq!(arg_line_cut(&long).chars().count(), ARG_MAX + 2);
+        assert!(arg_line_cut(&long).ends_with("must-be-seen!!\u{201d}"));
+        // What is shown and what is left out add up to the whole argument, at any length.
+        for n in [81, 82, 100, 999, 1_000, 12_345, 400_000] {
+            let arg: String = ('a'..='z').cycle().take(n).collect();
+            let line = arg_line_cut(&arg);
+            assert!(line.chars().count() <= ARG_MAX + 2, "{n}");
+            let (start, rest) = line.split_once("\u{2026}(").expect("the cut");
+            let (count, end) = rest
+                .split_once(" more characters)\u{2026}")
+                .expect("the count");
+            let left_out: usize = count.parse().unwrap();
+            let shown = start.chars().count() - 1 + end.chars().count() - 1;
+            assert_eq!(shown + left_out, n, "{line}");
+            assert!(arg.starts_with(&start[3..]) && arg.ends_with(&end[..end.len() - 3]));
+        }
         let exact = "b".repeat(80);
-        assert_eq!(shown_arg(&exact).0, exact);
-        let d = with_args(&[&long]);
-        assert!(d.said().contains(&shown) && !d.said().contains(&long));
+        assert!(!arg_is_cut(&exact));
+        assert_eq!(arg_line_cut(&exact), arg_line(&exact));
+
+        // One cut argument is enough for the link, with fewer than five arguments.
+        let mut d = with_args(&["--config", &long]);
+        assert!(d.args_fold());
+        assert_eq!(d.args_link().as_deref(), Some("Show all"));
+        assert_eq!(
+            d.args_drawn(),
+            ["\u{201c}--config\u{201d}".to_string(), arg_line_cut(&long)]
+        );
+        // Spoken whole, open or not.
+        let said = d.said();
+        assert!(said.contains(&format!("\u{201c}{long}\u{201d}")), "{said}");
+        assert!(!said.contains("more characters"), "{said}");
+        d.view.args_open = true;
+        assert_eq!(d.args_link().as_deref(), Some("Show fewer"));
+        assert_eq!(
+            d.args_drawn(),
+            [
+                "\u{201c}--config\u{201d}".to_string(),
+                format!("\u{201c}{long}\u{201d}")
+            ]
+        );
+        assert_eq!(d.said(), said);
         assert!(!d.args_note());
+
+        // In a long list the opened view shows every argument whole.
+        let mut many = with_args(&["1", "2", &long, "4", "5", &long]);
+        assert_eq!(many.args_link().as_deref(), Some("Show all 6"));
+        assert_eq!(many.args_drawn().len(), ARGS_SHOWN);
+        assert_eq!(many.args_drawn()[2], arg_line_cut(&long));
+        many.view.args_open = true;
+        assert_eq!(many.args_drawn(), many.arg_lines());
+        assert_eq!(many.args_drawn()[5], format!("\u{201c}{long}\u{201d}"));
+    }
+
+    /// An argument that is nothing but characters that are not drawn is not "empty".
+    #[test]
+    fn an_argument_of_unseen_characters_is_not_called_empty() {
+        for unseen in [
+            "\u{3164}",
+            "\u{2800}\u{2800}",
+            "\u{200b}\u{fe0f}",
+            "\u{115f}\u{1160}\u{ffa0}",
+        ] {
+            let d = with_args(&["--name", unseen]);
+            assert_eq!(
+                d.arg_lines()[1],
+                "\u{201c}\u{201d} (characters that can't be shown)",
+                "{unseen:?}"
+            );
+            assert_eq!(d.args_drawn()[1], d.arg_lines()[1]);
+            assert!(d.args_note(), "{unseen:?}");
+            assert_eq!(
+                d.args_said().as_deref(),
+                Some(
+                    "Runs with 2 arguments: \u{201c}--name\u{201d} characters that can't be \
+                     shown Some characters can't be shown."
+                ),
+                "{unseen:?}"
+            );
+            assert!(!d.args_said().unwrap().contains("empty"));
+        }
+        // Inside other text they are dropped and the note says so.
+        let d = with_args(&["a\u{3164}b"]);
+        assert_eq!(d.arg_lines()[0], "\u{201c}ab\u{201d}");
+        assert!(d.args_note());
     }
 
     /// 5: an empty argument is seen and spoken.

@@ -138,11 +138,48 @@ fn a_script_runner_app_is_allowed_for_one_run_and_asks_again_at_the_next_start()
             Some(VoidReason::Changed)
         );
 
-        // The first start uses the OK.
+        let args = vec!["-m".to_string(), "my_app".to_string()];
+        assert!(!f.reg.start_counted(ID), "{by}");
+        assert_eq!(
+            f.reg.binding_void_launch(ID, &path, &sha, &args, false),
+            Some(VoidReason::Changed)
+        );
+
+        // The first start uses the OK: it is the counted one, for the registry that counted it.
         f.reg.keep_followed(ID, LATER).unwrap();
         assert_eq!(f.state(), Some(RunState::Started));
+        assert!(f.reg.start_counted(ID), "{by}");
         assert_eq!(f.reg.binding_void(ID), None);
-        assert_eq!(f.reg.binding_void_pinned(ID, &path, &sha), None);
+        assert_eq!(
+            f.reg.binding_void_launch(ID, &path, &sha, &args, true),
+            None
+        );
+        // The record alone (`started` in the file) passes no launch: not without the count,
+        // not through the form that knows of no start, not for a registry that only read it.
+        assert_eq!(
+            f.reg.binding_void_launch(ID, &path, &sha, &args, false),
+            Some(VoidReason::Changed)
+        );
+        assert_eq!(
+            f.reg.binding_void_pinned(ID, &path, &sha),
+            Some(VoidReason::Changed)
+        );
+        let read = Registry::open(&f.home, true).unwrap();
+        assert!(!read.start_counted(ID), "{by}");
+        assert_eq!(
+            read.binding_void_launch(ID, &path, &sha, &args, read.start_counted(ID)),
+            Some(VoidReason::Changed)
+        );
+        // The launch is held to the arguments it starts the process with.
+        let other = vec!["-m".to_string(), "other_app".to_string()];
+        assert_eq!(
+            f.reg.binding_void_launch(ID, &path, &sha, &other, true),
+            Some(VoidReason::Changed)
+        );
+        assert_eq!(
+            f.reg.binding_void_launch(ID, &path, &sha, &[], true),
+            Some(VoidReason::Changed)
+        );
         assert!(f.reg.pre_launch(ID).is_ok(), "{by}");
         assert_eq!(f.module().granted.len(), 2);
 
@@ -251,6 +288,78 @@ fn a_remembered_ok_from_before_the_rule_is_not_an_ok_for_a_one_run_app() {
     assert!(g.module().granted.is_empty());
 }
 
+/// A start whose count can't be written down is not the counted one, so the launch asks again
+/// instead of running on an OK that stays unused.
+#[test]
+fn a_start_that_cannot_be_counted_is_not_the_one_the_ok_is_for() {
+    let mut f = fx("uncounted", "python.exe", &["app.py"]);
+    allow(&mut f, "dialog", false).unwrap();
+    let (path, sha) = f.pinned();
+    let args = vec!["app.py".to_string()];
+    // The inventory can't be written: a folder is where its new copy goes.
+    let blocker = f.home.join("inventory.json.tmp");
+    std::fs::create_dir_all(&blocker).unwrap();
+    for _ in 0..3 {
+        assert!(f.reg.keep_followed(ID, LATER).is_err());
+        assert!(!f.reg.start_counted(ID));
+        assert_eq!(
+            f.reg
+                .binding_void_launch(ID, &path, &sha, &args, f.reg.start_counted(ID)),
+            Some(VoidReason::Changed)
+        );
+    }
+    // Once it can be written, the OK is still there for exactly one start.
+    std::fs::remove_dir_all(&blocker).unwrap();
+    let mut next = Registry::open(&f.home, true).unwrap();
+    assert_eq!(
+        next.inventory.modules[ID].one_run.as_ref().map(|r| r.state),
+        Some(RunState::Allowed)
+    );
+    next.keep_followed(ID, LATER).unwrap();
+    assert!(next.start_counted(ID));
+    assert_eq!(next.binding_void_launch(ID, &path, &sha, &args, true), None);
+    next.keep_followed(ID, LATER).unwrap();
+    assert!(!next.start_counted(ID), "the second start ends the OK");
+    assert_eq!(
+        next.binding_void_launch(ID, &path, &sha, &args, next.start_counted(ID)),
+        Some(VoidReason::Changed)
+    );
+}
+
+/// A Deny allows nothing, so it is not an OK for a run and writes none.
+#[test]
+fn a_deny_writes_no_ok_for_a_one_run_app() {
+    let mut f = fx("deny", "python.exe", &["app.py"]);
+    let list = f.reg.permission_list(ID).unwrap();
+    let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    for by in ["cli", "dialog"] {
+        f.reg.deny_listed(ID, list.code(), &all, NOW, by).unwrap();
+        assert!(f.module().one_run.is_none(), "{by}");
+        assert!(f.module().bound.is_none(), "{by}");
+        assert!(f.on_disk().get("one_run").is_none(), "{by}");
+        assert!(f.module().granted.is_empty(), "{by}");
+    }
+
+    // A Deny of what is asked later leaves a live OK as it was, and brings back none that is
+    // over.
+    let mut g = fx("deny-live", "python.exe", &["app.py"]);
+    allow(&mut g, "dialog", false).unwrap();
+    let code = g.reg.permission_list(ID).unwrap().code().to_string();
+    g.reg.deny_listed(ID, &code, &[], LATER, "dialog").unwrap();
+    assert_eq!(g.state(), Some(RunState::Allowed));
+    assert_eq!(g.module().one_run.as_ref().unwrap().at, NOW);
+    g.reg.keep_followed(ID, LATER).unwrap();
+    g.reg.keep_followed(ID, LATER).unwrap();
+    assert_eq!(g.state(), Some(RunState::Ended));
+    let list = g.reg.permission_list(ID).unwrap();
+    let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    g.reg
+        .deny_listed(ID, list.code(), &all, LATER, "dialog")
+        .unwrap();
+    assert!(g.module().one_run.is_none());
+    assert!(g.module().granted.is_empty());
+}
+
 #[test]
 fn other_arguments_or_other_bytes_end_a_one_run_ok() {
     let mut f = fx("args", "python.exe", &["app.py"]);
@@ -284,6 +393,11 @@ fn the_keyboard_ok_is_not_remembered_for_a_one_run_app() {
     let (path, sha) = f.pinned();
     let err = f.reg.allow_keyboard(ID, &path, &sha, NOW).unwrap_err();
     assert!(err.to_string().contains("one run only"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("use a version that has its own program file"),
+        "{err}"
+    );
     assert!(f.module().keyboard.is_none());
 }
 
