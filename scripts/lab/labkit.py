@@ -510,7 +510,10 @@ class App:
 
     def __init__(self, exe, cfg, env=None, plugins=()):
         self.exe, self.cfg, self.plugins = tool(exe, '--app'), cfg, plugins
-        self.env = {**os.environ, 'FOXGLOVE_CONFIG_DIR': str(cfg), **(env or {})}
+        # The lab's launch marker (FOXGLOVE_APP_OK=1) rides with the temp settings folder: together they
+        # are a lab run to the app, whose pipe then grants the harness what it asks for without a dialog
+        # (docs/local-api.md, #1449). __enter__ refuses to start anything unless On-call set the marker.
+        self.env = {**os.environ, 'FOXGLOVE_CONFIG_DIR': str(cfg), 'FOXGLOVE_APP_OK': '1', **(env or {})}
 
     def __enter__(self):
         require_app_ok()  # every app-level case launches Foxglove: On-call's OK only

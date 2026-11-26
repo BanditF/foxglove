@@ -31,13 +31,19 @@ pub fn start() {
     #[cfg(windows)]
     super::one_owner::check();
     restore_on_connect();
+    // Normal or lab (#1449): decided once, here, from how this process was started, and said
+    // in the log when it is a lab run. Nothing a client sends changes it.
+    #[cfg(windows)]
+    let run = super::pipe_run::at_start();
     // Supervised (#587): a restart opens the pipe again.
     #[cfg(windows)]
-    let _ = super::services::spawn_supervised("api-pipe", || {
-        let result = foxglove_plugin_host::pipe::listen(|| Context {
+    let _ = super::services::spawn_supervised("api-pipe", move || {
+        let result = foxglove_plugin_host::pipe::listen(move || Context {
             facts: super::devices::bus().facts().clone(),
             devices: Arc::new(AppDevices),
-            client: Client::Tool(Arc::new(approve)),
+            client: Client::Tool(Arc::new(
+                move |client: &ClientInfo, asked: &[Permission]| approve(run, client, asked),
+            )),
             app_version: env!("CARGO_PKG_VERSION").into(),
             limits: Limits::default(),
         });
@@ -75,14 +81,21 @@ fn restore_on_connect() {
     });
 }
 
-/// No prompt yet (#1142): a tool is granted what it asks for when it connects, except the
-/// sensitive permissions (key events, raw HID), which stay off until the per-tool permission
-/// dialog (contract §6.4) asks. What that grants is what any process of this user can already
-/// do: read the same state, or (`wallpaper.control`) pause Wallpaper Engine, which its own
-/// `-control pause` does too. The pipe admits this user only, not remote clients and not their
-/// low-integrity (sandboxed) processes (`plugin-host` pipe tests).
-fn approve(_client: &ClientInfo, asked: &[Permission]) -> Vec<Permission> {
-    asked.iter().filter(|p| !p.sensitive()).cloned().collect()
+/// What a tool is granted when it connects: `pipe_run::grant` decides, by the run (normal or
+/// lab, #1449) and never by anything the client says about itself. No prompt yet (#1142): both
+/// runs grant what is asked for except the sensitive permissions (key events, raw HID), which
+/// stay off until the per-tool permission dialog (contract §6.4) asks. What that grants is what
+/// any process of this user can already do: read the same state, or (`wallpaper.control`) pause
+/// Wallpaper Engine, which its own `-control pause` does too. The pipe admits this user only,
+/// not remote clients and not their low-integrity (sandboxed) processes (`plugin-host` pipe
+/// tests).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn approve(
+    run: super::pipe_run::PipeRun,
+    _client: &ClientInfo,
+    asked: &[Permission],
+) -> Vec<Permission> {
+    super::pipe_run::grant(run, asked)
 }
 
 fn caps(c: Caps) -> Vec<String> {
@@ -1942,7 +1955,11 @@ mod parity_tests {
             version: "1".into(),
         };
         assert_eq!(
-            approve(&client, &[Permission::WallpaperControl]),
+            approve(
+                crate::foxglove::pipe_run::PipeRun::Normal,
+                &client,
+                &[Permission::WallpaperControl]
+            ),
             vec![Permission::WallpaperControl]
         );
 
@@ -2080,7 +2097,17 @@ mod tests {
             name: "t".into(),
             version: "1".into(),
         };
-        assert_eq!(approve(&client, &asked), vec![Permission::DevicesRead]);
+        // In a normal run and in a lab run alike (#1449).
+        for run in [
+            crate::foxglove::pipe_run::PipeRun::Normal,
+            crate::foxglove::pipe_run::PipeRun::Lab,
+        ] {
+            assert_eq!(
+                approve(run, &client, &asked),
+                vec![Permission::DevicesRead],
+                "{run:?}"
+            );
+        }
         assert_eq!(
             caps(Caps::LAYERS | Caps::SCREENS),
             vec!["layers", "screens"]

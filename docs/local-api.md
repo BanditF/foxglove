@@ -14,6 +14,12 @@ Plugins tab).
 | **Outside tools** (Stream Deck, Wallpaper Engine #39, scripts) | named pipe `\\.\pipe\foxglove-<user>`, current user only | what `initialize` asks for. No prompt yet (#1142): everything not sensitive is granted when the tool connects, the sensitive ones (key events, raw HID) never; the per-tool dialog will ask once. The pipe admits this user's processes only, not remote or low-integrity (sandboxed) ones |
 | **foxglove-cli** | the same pipe | as an outside tool |
 
+What an outside tool is granted is decided in one place, by the run: a normal run or a lab run (#1449).
+A lab run is a test app started with `FOXGLOVE_APP_OK=1` and a `FOXGLOVE_CONFIG_DIR` that is not your real
+settings folder, which is how the lab harness (`scripts/lab`) starts one; Foxglove says so once in its log at start.
+Only how Foxglove was started decides it, never anything a client sends, and a lab run never grants a
+sensitive permission. Today both runs grant the same.
+
 There is no network listener. A localhost WebSocket for browser-based tools (Wallpaper Engine
 web wallpapers) can come later behind an opt-in toggle and a token file. It would speak the
 same messages.

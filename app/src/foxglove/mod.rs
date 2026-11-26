@@ -139,6 +139,7 @@ pub mod pc_lights_add;
 pub mod pc_lights_ui;
 pub mod pc_state;
 pub mod peripherals;
+pub mod pipe_run;
 pub mod plugin_actions;
 pub mod plugin_icons;
 pub mod plugin_install;

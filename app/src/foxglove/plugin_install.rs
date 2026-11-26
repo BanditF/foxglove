@@ -418,13 +418,7 @@ pub(super) fn autoinstall_allowed(
         return Err("needs FOXGLOVE_DEV_UNSIGNED_PLUGINS=1".into());
     }
     let dir = config_dir.ok_or("needs FOXGLOVE_CONFIG_DIR")?;
-    let same = |a: &Path, b: &Path| {
-        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        canon(a) == canon(b)
-            || a.to_string_lossy()
-                .eq_ignore_ascii_case(&b.to_string_lossy())
-    };
-    if real.is_some_and(|real| same(dir, real) || real.parent().is_some_and(|p| same(dir, p))) {
+    if real.is_some_and(|real| super::pipe_run::real_settings_folder(dir, real)) {
         return Err("FOXGLOVE_CONFIG_DIR is the real settings folder".into());
     }
     Ok(())
