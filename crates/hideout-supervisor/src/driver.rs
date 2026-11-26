@@ -256,9 +256,11 @@ struct Inner {
     hub: Hub,
     policy: Mutex<Policy>,
     live: Mutex<BTreeMap<String, Live>>,
-    /// Jobs of ended instances that still hold processes: a child that outlives its module is
-    /// still a module process for the caller check (#1178), until the job is empty.
-    retired: Mutex<Vec<Arc<Job>>>,
+    /// Jobs of ended instances that still hold processes, with the module's id: a child that
+    /// outlives its module is still a module process for the caller check (#1178), until the
+    /// job is empty. Only a planned exit's helper hold leaves one running (#1159); every other
+    /// end, and every stop of that module, ends the job (#1450).
+    retired: Mutex<Vec<(String, Arc<Job>)>>,
     expected: Arc<Mutex<BTreeMap<String, Expected>>>,
     /// The program hash of each app's latest start, kept after it ends: a rebuild that wrote the
     /// same bytes again is not a new build, even while the app is stopped after crashes.
@@ -1314,6 +1316,8 @@ impl Supervisor {
         if self.0.live.lock().unwrap().contains_key(id) {
             return Err(format!("{id} is still running"));
         }
+        // Nothing an ended instance left behind outlives the Remove (#1450).
+        self.end_retired(id);
         let mut reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
         let done = reg.remove(id).map_err(|e| format!("{e:?}"));
         // What the user stored for it goes with its record, so a later app with this id gets
@@ -1347,8 +1351,8 @@ impl Supervisor {
     pub fn process_in_module_job(&self, p: &Process) -> bool {
         {
             let mut retired = self.0.retired.lock().unwrap();
-            retired.retain(|j| j.active_processes().map_or(true, |n| n > 0));
-            if retired.iter().any(|j| j.holds(p).unwrap_or(true)) {
+            retired.retain(|(_, j)| j.active_processes().map_or(true, |n| n > 0));
+            if retired.iter().any(|(_, j)| j.holds(p).unwrap_or(true)) {
                 return true;
             }
         }
@@ -1361,6 +1365,24 @@ impl Supervisor {
     /// Test hook: jobs kept after their instance ended.
     pub fn retired_jobs(&self) -> usize {
         self.0.retired.lock().unwrap().len()
+    }
+
+    /// Ends everything `id` started (#1450): its live instance's job and process, and the jobs
+    /// of its ended instances that still hold processes. Nothing of it running: nothing happens.
+    fn end_all(&self, id: &str) {
+        if let Some(l) = self.0.live.lock().unwrap().get(id) {
+            l.kill(1);
+        }
+        self.end_retired(id);
+    }
+
+    /// Ends the jobs `id`'s ended instances left with processes in them. They stay listed for
+    /// the caller check until they are empty.
+    fn end_retired(&self, id: &str) {
+        let retired = self.0.retired.lock().unwrap();
+        for (_, j) in retired.iter().filter(|(of, _)| of == id) {
+            j.kill(1);
+        }
     }
 
     /// [`grant_listed_in`] on this hub's folder and router.
@@ -1707,11 +1729,7 @@ impl Supervisor {
                     );
                 }
                 Cmd::Exit { id } => self.call(&id, "module.exit", serde_json::json!({}), false),
-                Cmd::Kill { id } => {
-                    if let Some(l) = self.0.live.lock().unwrap().get(&id) {
-                        l.kill(1);
-                    }
-                }
+                Cmd::Kill { id } => self.end_all(&id),
                 // The policy has no clock: a `rebuilt` true becomes the local time of day.
                 Cmd::Publish { key, value } => {
                     let value = if key.ends_with(".rebuilt") && value == Value::Bool(true) {
@@ -2410,11 +2428,17 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
                     .filter(|j| j.active_processes().is_ok_and(|n| n > 0));
             }
             if let Some(gone) = live.remove(id) {
-                if let Some(job) = gone
-                    .job
-                    .filter(|j| j.active_processes().is_ok_and(|n| n > 0))
-                {
-                    sup.0.retired.lock().unwrap().push(job);
+                if let Some(job) = gone.job {
+                    // The instance has ended: what it left in its job ends with it (#1450),
+                    // except a planned exit's helper, which the policy may hold the restart
+                    // for (decided below, once the policy has seen the exit).
+                    if helper_job.is_none() {
+                        job.kill(1);
+                    }
+                    // Listed for the caller check for as long as anything in it still lives.
+                    if job.active_processes().is_ok_and(|n| n > 0) {
+                        sup.0.retired.lock().unwrap().push((id.to_string(), job));
+                    }
                 }
             }
             sup.0.expected.lock().unwrap().remove(id);
@@ -2439,11 +2463,23 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
             id: id.into(),
             instance,
         });
-        log::info!("supervisor: {id}: restart held for its installer helper");
+        // The helper runs on only while the policy holds this instance's restart for it. No
+        // hold (the module was stopped, the exit counted as a crash, another start is already
+        // due): the job is ended now.
+        let held = sup.0.policy.lock().unwrap().helper_held(id, instance);
+        if held {
+            log::info!("supervisor: {id}: restart held for its installer helper");
+        } else {
+            log::info!("supervisor: {id}: no restart is held for what it left running; ended");
+            job.kill(1);
+        }
+        // A stop during the hold ends the job through `Cmd::Kill`, which ends this wait too.
         let give_up = Instant::now() + crate::policy::HELPER_WAIT_CAP;
         while Instant::now() < give_up && job.active_processes().is_ok_and(|n| n > 0) {
             std::thread::sleep(Duration::from_millis(100));
         }
+        // The hold is over (the helper finished, or the wait gave up): nothing stays behind.
+        job.kill(1);
         // The installer has finished (or the wait gave up): the new program file is in place
         // before the module starts again, so the grant is carried over first (#1179).
         if planned {

@@ -274,21 +274,26 @@ fn an_allow_widens_the_router_only_by_what_it_granted() {
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
 
-#[test]
-fn a_job_with_a_leftover_process_stays_checkable_after_its_instance_ended() {
-    let (home, exe, id) = adopted_home("retired");
-    let id = id.as_str();
-    // The module's program starts a helper and exits at once; the helper outlives it.
+/// A module whose program starts a leftover process (a copy of ping, no window), writes the
+/// leftover's pid to the returned file and exits at once with `code`. Turned on and running
+/// when this returns.
+fn leftover_module(name: &str, code: i32) -> (PathBuf, String, PathBuf, common::Reaped) {
+    let (home, exe, id) = adopted_home(name);
     let folder = home.parent().unwrap().join("manifest");
+    let pid_file = home.parent().unwrap().join("leftover.pid");
     let text = std::fs::read_to_string(folder.join("module.toml")).unwrap();
     let old = text.lines().find(|l| l.starts_with("run")).unwrap();
-    // The program is powershell, which starts the leftover (a copy of ping) in a console of its
-    // own and exits at once. `cmd /c start /b` shared cmd's console, which Windows tears down when
-    // cmd exits, so the helper sometimes died before the supervisor looked (#1187).
+    // The program is powershell, which starts the leftover in a console of its own and exits at
+    // once. `cmd /c start /b` shared cmd's console, which Windows tears down when cmd exits, so
+    // the helper sometimes died before the supervisor looked (#1187).
     let ps = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     let ps = format!("{ps}/System32/WindowsPowerShell/v1.0/powershell.exe").replace('\\', "/");
     let helper = exe.display().to_string();
-    let script = format!("Start-Process -WindowStyle Hidden -FilePath '{helper}' -ArgumentList '-n','25','127.0.0.1'");
+    let script = format!(
+        "$p = Start-Process -WindowStyle Hidden -PassThru -FilePath '{helper}' -ArgumentList '-n','120','127.0.0.1'; \
+         Set-Content -Path '{}' -Value $p.Id; exit {code}",
+        pid_file.display()
+    );
     let run = format!(
         "run = [\"{ps}\", \"-NoProfile\", \"-NonInteractive\", \"-Command\", \"{}\"]",
         script.replace('\\', "\\\\")
@@ -301,36 +306,112 @@ fn a_job_with_a_leftover_process_stays_checkable_after_its_instance_ended() {
     let sup = common::start(&home, hub());
     let list = Registry::open_from_env(&home)
         .unwrap()
-        .permission_list(id)
+        .permission_list(&id)
         .unwrap();
     sup.grant_listed(
-        id,
+        &id,
         list.code(),
         &strs(&["hub.notify", "ui.window"]),
         &[],
         "dialog",
     )
     .unwrap();
-    sup.turn_on(id).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while sup.retired_jobs() == 0 && std::time::Instant::now() < deadline {
+    sup.turn_on(&id).unwrap();
+    (home, id, pid_file, sup)
+}
+
+/// The leftover's pid, once the module's program has written it.
+fn leftover_pid(pid_file: &Path) -> u32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let pid = std::fs::read_to_string(pid_file)
+            .ok()
+            .and_then(|t| t.trim().trim_start_matches('\u{feff}').parse().ok());
+        if let Some(pid) = pid {
+            return pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the module's program never wrote its leftover's pid"
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    sup.turn_off(id);
-    assert!(
-        sup.retired_jobs() >= 1,
-        "the ended instance's job, with its helper still in it, was dropped"
-    );
-    // Once the helper is gone the job is pruned on the next check.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+}
+
+/// Whether process `pid` has ended, within `secs`.
+fn ends_within(pid: u32, secs: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        if Process::open(pid).map_or(true, |p| !p.running()) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Emptied jobs of ended instances are dropped at the next caller check.
+fn no_job_is_kept(sup: &common::Reaped) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         let _ = sup.in_module_job(std::process::id());
         if sup.retired_jobs() == 0 {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
     assert_eq!(sup.retired_jobs(), 0, "an empty retired job was kept");
+}
+
+/// #1450: when a module's own process has ended, what it started ends with it. The leftover
+/// would run for two minutes by itself.
+#[test]
+fn what_an_ended_instance_left_running_is_ended_with_it() {
+    let (home, id, pid_file, sup) = leftover_module("leftover", 0);
+    let pid = leftover_pid(&pid_file);
+    assert!(
+        ends_within(pid, 20),
+        "a process the module started outlived the module's instance"
+    );
+    assert!(
+        sup.pid(&id).is_none(),
+        "the module's instance is still live"
+    );
+    no_job_is_kept(&sup);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+/// #1178, #1450: a planned exit may leave a helper running while its restart waits for it. For
+/// as long as it lives the helper is still recognised as the module's (the caller check), and
+/// turning the module off ends it.
+#[test]
+fn a_planned_exits_helper_stays_the_modules_and_a_stop_ends_it() {
+    let (home, id, pid_file, sup) = leftover_module("held", 75);
+    let pid = leftover_pid(&pid_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while sup.retired_jobs() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        sup.retired_jobs() >= 1,
+        "the ended instance's job, with its helper still in it, was dropped"
+    );
+    let helper = Process::open(pid).expect("the helper is not running during the hold");
+    assert!(helper.running(), "the helper ended during the hold");
+    assert!(
+        sup.process_in_module_job(&helper),
+        "the helper is no longer recognised as the module's"
+    );
+    sup.turn_off(&id);
+    assert!(
+        ends_within(pid, 20),
+        "turning the module off left its helper running"
+    );
+    assert!(sup.pid(&id).is_none(), "the module was started again");
+    no_job_is_kept(&sup);
     drop(sup);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }

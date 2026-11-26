@@ -347,7 +347,8 @@ pub enum Cmd {
     /// Check the files, then start the module in a new Job Object; answer with
     /// [`Ev::Started`] or [`Ev::LaunchFailed`].
     Launch { id: String },
-    /// End the module's Job Object (all its processes).
+    /// End everything the module started: its instance's Job Object (all its processes) and
+    /// what its ended instances left running. Safe to send when nothing of it runs.
     Kill { id: String },
     /// Publish a hub fact (`null` removes it).
     Publish { key: String, value: Value },
@@ -550,6 +551,62 @@ impl Policy {
     /// When a restarting module starts again.
     pub fn restart_at(&self, id: &str) -> Option<Instant> {
         self.slots.get(id).and_then(|s| s.restart_at)
+    }
+
+    /// Whether the restart after `instance`'s planned exit is held for what it left running
+    /// (#1159). Only then may those processes run on after the instance ended (#1450).
+    pub fn helper_held(&self, id: &str, instance: u64) -> bool {
+        self.slots
+            .get(id)
+            .is_some_and(|s| s.instance == instance && s.held && s.restart_at.is_some())
+    }
+
+    /// Whether `id` may have a running instance at all: on, its version not withdrawn, its
+    /// panels not quarantined, its hub need met. Safe mode is the caller's to check.
+    fn may_run(&self, id: &str) -> bool {
+        self.slots
+            .get(id)
+            .is_some_and(|s| s.enabled && s.withdrawn.is_none() && !s.quarantined && !s.needs_hub)
+    }
+
+    /// An instance arrived for a module that may not run (#1450): it is recorded as ended and
+    /// stopped, and a row still reading as starting says what holds it instead.
+    fn turn_away(&mut self, id: &str, instance: u64, now: Instant, out: &mut Vec<Cmd>) {
+        out.push(Cmd::Kill { id: id.into() });
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        s.instance = instance;
+        s.ended = true;
+        s.ready_by = None;
+        s.adopt_by = None;
+        s.exit_by = None;
+        let (enabled, withdrawn, blocked) = (
+            s.enabled,
+            s.withdrawn.is_some(),
+            s.quarantined || s.needs_hub,
+        );
+        let unsettled = matches!(
+            s.state,
+            State::Starting | State::Updating | State::Running | State::Waiting
+        );
+        self.note(
+            id,
+            now,
+            format!("instance {instance} stopped: it may not run"),
+        );
+        if !unsettled {
+            return;
+        }
+        if !enabled {
+            self.set_state(id, State::Off, None, out);
+        } else if withdrawn {
+            self.show_withdrawn(id, out);
+        } else if blocked {
+            self.show_blocked(id, out);
+        } else {
+            self.set_state(id, State::Idle, None, out);
+        }
     }
 
     /// The current instance number of `id` (0 before its first start).
@@ -766,7 +823,12 @@ impl Policy {
                 }
             }
             Ev::Started { id, instance } => {
-                if let Some(s) = self.slots.get_mut(&id) {
+                // The launch ran without the policy's lock: the module may have been turned
+                // off, withdrawn, quarantined, held back or removed meanwhile (#1450). Only a
+                // module that may still run takes the instance.
+                if !self.may_run(&id) || self.held(&id) {
+                    self.turn_away(&id, instance, now, &mut out);
+                } else if let Some(s) = self.slots.get_mut(&id) {
                     s.instance = instance;
                     s.ended = false;
                     s.ready_by = Some(now + READY_TIMEOUT);
@@ -810,7 +872,11 @@ impl Policy {
                 }
             }
             Ev::Adopted { id, instance } => {
-                if let Some(s) = self.slots.get_mut(&id) {
+                // Taken back only while it may run (#1450): on, not withdrawn, quarantined or
+                // waiting for a newer hub, and not held back by safe mode.
+                if !self.may_run(&id) || self.held(&id) {
+                    self.turn_away(&id, instance, now, &mut out);
+                } else if let Some(s) = self.slots.get_mut(&id) {
                     s.instance = instance;
                     s.ended = false;
                     s.adopt_by = Some(now + GRACE);
@@ -996,12 +1062,12 @@ impl Policy {
                     s.exit_by = None;
                     s.then_launch = false;
                     s.update = None;
-                    if !s.ended {
-                        // Its panels come with its instance: it doesn't run while they are
-                        // quarantined (not a crash).
-                        s.ended = true;
-                        out.push(Cmd::Kill { id: id.clone() });
-                    }
+                    s.held = false;
+                    // Its panels come with its instance: it doesn't run while they are
+                    // quarantined (not a crash). Sent whether or not an instance is known to
+                    // run, so what an ended one left behind stops too (#1450).
+                    s.ended = true;
+                    out.push(Cmd::Kill { id: id.clone() });
                     if s.enabled {
                         self.show_blocked(&id, &mut out);
                     }
@@ -1096,10 +1162,11 @@ impl Policy {
                     s.exit_by = None;
                     s.then_launch = false;
                     s.update = None;
-                    if !s.ended {
-                        s.ended = true;
-                        out.push(Cmd::Kill { id: id.clone() });
-                    }
+                    s.held = false;
+                    // Sent whether or not an instance is known to run: off leaves nothing of
+                    // it running, also what an ended instance left behind (#1450).
+                    s.ended = true;
+                    out.push(Cmd::Kill { id: id.clone() });
                     self.set_state(&id, State::Off, None, &mut out);
                 }
             }
@@ -1185,10 +1252,10 @@ impl Policy {
         s.then_launch = false;
         s.reset_first = false;
         s.update = None;
-        if !s.ended {
-            s.ended = true;
-            out.push(Cmd::Kill { id: id.into() });
-        }
+        s.held = false;
+        // Sent whether or not an instance is known to run (#1450).
+        s.ended = true;
+        out.push(Cmd::Kill { id: id.into() });
         if !s.enabled {
             return;
         }
@@ -1249,16 +1316,19 @@ impl Policy {
             let in_round = self.round.as_ref().is_some_and(|r| r.contains(&id));
             let s = self.slots.get_mut(&id).unwrap();
             if held && s.enabled && !matches!(s.state, State::Off | State::InstallFailed) {
-                let live = !s.ended || s.restart_at.is_some();
+                // A start under way (asked for, not yet answered) counts: its instance is
+                // turned away when it arrives.
+                let starting = matches!(s.state, State::Starting | State::Updating);
+                let live = !s.ended || s.restart_at.is_some() || starting;
                 s.restart_at = None;
                 s.ready_by = None;
                 s.adopt_by = None;
                 s.exit_by = None;
                 s.then_launch = false;
-                if !s.ended {
-                    s.ended = true;
-                    out.push(Cmd::Kill { id: id.clone() });
-                }
+                s.held = false;
+                // Sent whether or not an instance is known to run (#1450).
+                s.ended = true;
+                out.push(Cmd::Kill { id: id.clone() });
                 if live {
                     publish(out, format!("module.{id}.restart"), Value::Null);
                     self.set_state(&id, State::Idle, None, out);
@@ -1620,6 +1690,9 @@ impl Policy {
             if s.restart_at.is_some_and(|t| t <= now) {
                 s.restart_at = None;
                 if std::mem::take(&mut s.held) {
+                    // The hold is over: what the ended instance left running ends before the
+                    // next one starts (#1450).
+                    out.push(Cmd::Kill { id: id.clone() });
                     self.note(
                         &id,
                         now,
@@ -2159,7 +2232,8 @@ mod withdrawn_tests {
         let cmds = p.handle(revoked(None), t);
         assert_eq!(p.state(ID), Some(State::Revoked));
         assert_eq!(count(&cmds, |c| matches!(c, Cmd::Notify { .. })), 0);
-        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Kill { .. })), 0);
+        // The stop reaches the driver also with no instance known to run (#1450).
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Kill { .. })), 1);
         // Another withdrawn version is a new event: notified once.
         let cmds = p.handle(
             Ev::Revoked {
@@ -3129,5 +3203,264 @@ mod rebuild_tests {
         assert_eq!(p.crashes(ID, t + Duration::from_secs(1)), 1);
         assert_eq!(p.state(ID), Some(State::Restarting));
         assert!(!c.contains(&Cmd::Exit { id: ID.into() }));
+    }
+}
+
+/// #1450: turn off, a withdrawn version, quarantine and a search's round leave nothing of the
+/// module running, whenever they arrive.
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+
+    const ID: &str = "m.stop";
+
+    fn known(p: &mut Policy, t: Instant, enabled: bool) -> Vec<Cmd> {
+        p.handle(
+            Ev::Known {
+                id: ID.into(),
+                name: "Stop".into(),
+                enabled,
+                at_enable: true,
+                previous: None,
+            },
+            t,
+        )
+    }
+
+    fn started(p: &mut Policy, t: Instant, instance: u64) -> Vec<Cmd> {
+        let id = ID.to_string();
+        p.handle(Ev::Started { id, instance }, t)
+    }
+
+    fn exited(p: &mut Policy, t: Instant, instance: u64, code: i64) -> Vec<Cmd> {
+        let id = ID.to_string();
+        p.handle(Ev::Exited { id, instance, code }, t)
+    }
+
+    fn kills(cmds: &[Cmd]) -> usize {
+        let kill = Cmd::Kill { id: ID.into() };
+        cmds.iter().filter(|c| **c == kill).count()
+    }
+
+    fn launched(cmds: &[Cmd]) -> bool {
+        cmds.iter().any(|c| matches!(c, Cmd::Launch { .. }))
+    }
+
+    /// The four stops, each as the event the driver feeds.
+    fn stops() -> Vec<(&'static str, Ev, State)> {
+        let id = ID.to_string();
+        vec![
+            ("turn off", Ev::Disable { id: id.clone() }, State::Off),
+            (
+                "withdrawn",
+                Ev::Revoked {
+                    id: id.clone(),
+                    version: "1.0.0".into(),
+                    go_back: None,
+                },
+                State::Revoked,
+            ),
+            (
+                "quarantine",
+                Ev::Quarantine { id: id.clone() },
+                State::Quarantined,
+            ),
+            (
+                "round",
+                Ev::Round {
+                    on: Some(BTreeSet::new()),
+                },
+                State::Idle,
+            ),
+        ]
+    }
+
+    /// A policy for `stop`: a search's round only holds a module back in safe mode.
+    fn policy(stop: &Ev) -> Policy {
+        let mut p = Policy::new();
+        p.safe_mode = matches!(stop, Ev::Round { .. });
+        p.round = p.safe_mode.then(|| BTreeSet::from([ID.to_string()]));
+        p
+    }
+
+    #[test]
+    fn a_stop_reaches_the_driver_after_the_instance_has_ended() {
+        for (what, stop, _) in stops() {
+            let (mut p, t) = (policy(&stop), Instant::now());
+            known(&mut p, t, true);
+            started(&mut p, t, 1);
+            p.handle(Ev::Ready { id: ID.into() }, t);
+            // Its process ended by itself: the policy knows of no running instance.
+            exited(&mut p, t, 1, 0);
+            assert_eq!(p.state(ID), Some(State::Idle), "{what}");
+            assert_eq!(kills(&p.handle(stop, t)), 1, "{what}");
+        }
+    }
+
+    #[test]
+    fn a_stop_while_running_is_sent_once_and_a_second_stop_is_harmless() {
+        for (what, stop, state) in stops() {
+            let (mut p, t) = (policy(&stop), Instant::now());
+            known(&mut p, t, true);
+            started(&mut p, t, 1);
+            p.handle(Ev::Ready { id: ID.into() }, t);
+            assert_eq!(kills(&p.handle(stop.clone(), t)), 1, "{what}");
+            assert_eq!(p.state(ID), Some(state), "{what}");
+            // The ended process's exit and a repeated stop start nothing and count nothing.
+            assert!(!launched(&exited(&mut p, t, 1, 1)), "{what}");
+            assert!(!launched(&p.handle(stop, t)), "{what}");
+            assert_eq!(p.state(ID), Some(state), "{what}");
+            assert_eq!(p.crashes(ID, t), 0, "{what}");
+        }
+    }
+
+    #[test]
+    fn a_stop_during_a_helper_hold_ends_the_hold() {
+        for (what, stop, state) in stops() {
+            let (mut p, t) = (policy(&stop), Instant::now());
+            known(&mut p, t, true);
+            started(&mut p, t, 1);
+            p.handle(Ev::Ready { id: ID.into() }, t);
+            exited(&mut p, t, 1, i64::from(PLANNED_EXIT_CODE));
+            let id = ID.to_string();
+            p.handle(Ev::HelperRunning { id, instance: 1 }, t);
+            assert!(p.helper_held(ID, 1), "{what}");
+            assert!(!p.helper_held(ID, 2), "another instance holds nothing");
+            assert_eq!(kills(&p.handle(stop, t)), 1, "{what}");
+            assert!(!p.helper_held(ID, 1), "{what}");
+            assert_eq!(p.state(ID), Some(state), "{what}");
+            // The helper's end, and the cap's time, start nothing afterwards.
+            let id = ID.to_string();
+            assert!(!launched(&p.handle(Ev::HelperDone { id, instance: 1 }, t)));
+            assert!(!launched(&p.tick(t + HELPER_WAIT_CAP)), "{what}");
+            assert_eq!(p.state(ID), Some(state), "{what}");
+        }
+    }
+
+    #[test]
+    fn the_cap_ends_what_the_held_instance_left_before_the_restart() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        known(&mut p, t, true);
+        started(&mut p, t, 1);
+        p.handle(Ev::Ready { id: ID.into() }, t);
+        exited(&mut p, t, 1, i64::from(PLANNED_EXIT_CODE));
+        let id = ID.to_string();
+        p.handle(Ev::HelperRunning { id, instance: 1 }, t);
+        let cmds = p.tick(t + HELPER_WAIT_CAP);
+        let kill = cmds.iter().position(|c| *c == Cmd::Kill { id: ID.into() });
+        let launch = cmds.iter().position(|c| matches!(c, Cmd::Launch { .. }));
+        assert!(kill.is_some() && kill < launch, "{cmds:?}");
+        assert!(!p.helper_held(ID, 1));
+        // A helper that ended in time: the restart needs no stop.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        known(&mut p, t, true);
+        started(&mut p, t, 1);
+        p.handle(Ev::Ready { id: ID.into() }, t);
+        exited(&mut p, t, 1, i64::from(PLANNED_EXIT_CODE));
+        let id = ID.to_string();
+        p.handle(Ev::HelperRunning { id, instance: 1 }, t);
+        let id = ID.to_string();
+        p.handle(Ev::HelperDone { id, instance: 1 }, t);
+        let cmds = p.tick(t + PLANNED_DELAY);
+        assert!(launched(&cmds) && kills(&cmds) == 0, "{cmds:?}");
+    }
+
+    #[test]
+    fn an_instance_that_arrives_after_a_stop_is_stopped() {
+        for (what, stop, state) in stops() {
+            let (mut p, t) = (policy(&stop), Instant::now());
+            // The start is asked for and not yet answered when the stop comes.
+            assert!(launched(&known(&mut p, t, true)), "{what}");
+            assert_eq!(p.state(ID), Some(State::Starting), "{what}");
+            p.handle(stop, t);
+            assert_eq!(p.state(ID), Some(state), "{what}");
+            // The instance arrives: stopped, never ready, never running.
+            assert_eq!(kills(&started(&mut p, t, 1)), 1, "{what}");
+            p.handle(Ev::Ready { id: ID.into() }, t);
+            assert_eq!(p.state(ID), Some(state), "{what}");
+            assert_eq!(p.next_deadline(), None, "{what}: a timer was left");
+            // Its end is not a crash and starts nothing.
+            assert!(!launched(&exited(&mut p, t, 1, 1)), "{what}");
+            assert_eq!(p.state(ID), Some(state), "{what}");
+            assert_eq!(p.crashes(ID, t), 0, "{what}");
+            assert!(p
+                .history(ID)
+                .iter()
+                .any(|(_, l)| l == "instance 1 stopped: it may not run"));
+        }
+    }
+
+    #[test]
+    fn an_instance_of_a_module_that_needs_a_newer_hub_or_is_gone_is_stopped() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        known(&mut p, t, true);
+        p.handle(Ev::NeedsHub { id: ID.into() }, t);
+        assert_eq!(kills(&started(&mut p, t, 1)), 1);
+        assert_eq!(p.state(ID), Some(State::NeedsHub));
+        // Removed while its start was under way: no slot, and still nothing runs.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        known(&mut p, t, true);
+        assert!(p.forget(ID));
+        assert_eq!(kills(&started(&mut p, t, 1)), 1);
+        assert_eq!(p.state(ID), None);
+    }
+
+    #[test]
+    fn a_wanted_start_and_the_start_after_turning_on_again_run() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        known(&mut p, t, true);
+        assert_eq!(kills(&started(&mut p, t, 1)), 0);
+        p.handle(Ev::Ready { id: ID.into() }, t);
+        assert_eq!(p.state(ID), Some(State::Running));
+        p.handle(Ev::Disable { id: ID.into() }, t);
+        exited(&mut p, t, 1, 1);
+        assert!(launched(&p.handle(Ev::Enable { id: ID.into() }, t)));
+        assert_eq!(kills(&started(&mut p, t, 2)), 0);
+        p.handle(Ev::Ready { id: ID.into() }, t);
+        assert_eq!(p.state(ID), Some(State::Running));
+    }
+
+    #[test]
+    fn a_taken_back_instance_that_may_not_run_is_stopped() {
+        let adopted = |p: &mut Policy, t: Instant| {
+            let id = ID.to_string();
+            p.handle(Ev::Adopted { id, instance: 4 }, t)
+        };
+        // Wanted: taken back as before, with its grace period.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        known(&mut p, t, true);
+        exited(&mut p, t, 0, 0);
+        assert_eq!(kills(&adopted(&mut p, t)), 0);
+        assert_eq!(p.state(ID), Some(State::Starting));
+        assert_eq!(p.next_deadline(), Some(t + GRACE));
+        // Off.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        known(&mut p, t, false);
+        assert_eq!(kills(&adopted(&mut p, t)), 1);
+        assert_eq!(p.state(ID), Some(State::Off));
+        assert_eq!(p.next_deadline(), None);
+        // Withdrawn, quarantined, waiting for a newer hub.
+        for (what, stop, state) in stops().into_iter().skip(1).take(2) {
+            let (mut p, t) = (Policy::new(), Instant::now());
+            known(&mut p, t, true);
+            exited(&mut p, t, 0, 0);
+            p.handle(stop, t);
+            assert_eq!(kills(&adopted(&mut p, t)), 1, "{what}");
+            assert_eq!(p.state(ID), Some(state), "{what}");
+            p.handle(Ev::Ready { id: ID.into() }, t);
+            assert_eq!(p.state(ID), Some(state), "{what}");
+        }
+        let (mut p, t) = (Policy::new(), Instant::now());
+        known(&mut p, t, true);
+        p.handle(Ev::NeedsHub { id: ID.into() }, t);
+        assert_eq!(kills(&adopted(&mut p, t)), 1);
+        assert_eq!(p.state(ID), Some(State::NeedsHub));
+        // Safe mode starts nothing and takes nothing back.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        p.safe_mode = true;
+        known(&mut p, t, true);
+        assert_eq!(kills(&adopted(&mut p, t)), 1);
+        assert_eq!(p.state(ID), Some(State::Idle));
+        assert_eq!(p.next_deadline(), None);
     }
 }
