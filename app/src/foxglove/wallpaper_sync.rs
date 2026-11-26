@@ -1689,9 +1689,7 @@ fn note_odd_exit(what: &str, odd: &str) {
     let line = format!("{what} {odd}");
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if *last != line {
-        eprintln!(
-            "Foxglove: wallpaper sync: {line}; not counted as a failure (#1399)"
-        );
+        eprintln!("Foxglove: wallpaper sync: {line}; not counted as a failure (#1399)");
         *last = line;
     }
 }
