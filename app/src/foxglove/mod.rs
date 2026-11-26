@@ -88,6 +88,7 @@ pub mod knob_health;
 pub mod knob_hide;
 pub mod knob_master;
 pub mod knob_popup;
+pub mod lab_run;
 pub mod lamp_health;
 pub mod lamp_hold;
 pub mod lamp_loss;

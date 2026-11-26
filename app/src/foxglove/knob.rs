@@ -968,6 +968,14 @@ pub fn start() {
     if super::repaint_trace::disabled("knob") {
         return;
     }
+    // A lab or test run never changes a real volume (#1526): the knob isn't held, the audio
+    // sessions aren't followed and master volume is never engaged. `lab_run::start` said so.
+    {
+        use foxglove_panel::audio_reach::{self, Target};
+        if !audio_reach::reach().allows(Target::Output) {
+            return;
+        }
+    }
     let (tx, rx) = mpsc::channel::<Work>();
     *WORK.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
     let sessions = foxglove_panel::sessions::start(

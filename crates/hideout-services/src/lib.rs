@@ -5,12 +5,14 @@
 //! - [`net::Broker`]: `net.open`, `net.send`, `net.close` and the events `net.data`,
 //!   `net.accepted`, `net.closed`; streams per connection, capped, ended with the connection.
 //! - [`mic::MicService`]: the `mic.*` facts and `audio.inputs.set_mute`, from Core Audio's
-//!   callbacks on Windows.
+//!   callbacks on Windows. Only the installed hub in the user's own folder reaches the real
+//!   microphone ([`mic_reach`], #1526).
 //!
 //! The router checks every call (params and grant) before it gets here; [`HostServices`] is
 //! what the hub's [`hideout_router::server::Hub::set_services`] takes.
 
 pub mod mic;
+pub mod mic_reach;
 #[cfg(windows)]
 mod mic_win;
 pub mod net;
@@ -80,10 +82,16 @@ impl Services for HostServices {
 }
 
 /// Starts the host services on `hub`: the network broker always, the microphone unless
-/// `mic` is false (lab hubs and tests leave the real microphone alone). The first `mic.*` facts
-/// are published before this returns.
-pub fn start(hub: &Hub, mic: bool) -> Arc<HostServices> {
-    let mic = mic.then(|| start_mic(hub.sink()));
+/// `mic` is false or this hub may not touch the real one ([`mic_reach`], #1526: a hub in a folder
+/// of its own, which `hub` knows from its suffix, a hub whose lab mode is on (`lab`) and a test
+/// build never read or set the PC's microphone). The first `mic.*` facts are published before
+/// this returns.
+pub fn start(hub: &Hub, mic: bool, lab: bool) -> Arc<HostServices> {
+    let real = mic_reach::set(mic_reach::decide(&hub.folder_suffix(), lab));
+    if mic && !real {
+        log::warn!("mic: {}", mic_reach::REFUSED);
+    }
+    let mic = (mic && real).then(|| start_mic(hub.sink()));
     let services = Arc::new(HostServices {
         net: Some(net::Broker::default()),
         mic,
@@ -111,7 +119,7 @@ fn start_mic(sink: Sink) -> mic::MicService {
         fn muted(&mut self) -> Result<bool, String> {
             Err("no microphone control on this system".into())
         }
-        fn set_mute(&mut self, _: bool) -> Result<(), mic::MuteError> {
+        fn set_mute(&mut self, _: bool, _: u128) -> Result<(), mic::MuteError> {
             Err(mic::MuteError::Unavailable)
         }
     }

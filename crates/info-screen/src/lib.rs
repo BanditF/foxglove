@@ -6,7 +6,9 @@
 //! - [`stats`]: CPU, GPU and memory load for the PC load layout (#506)
 //! - [`panel_lock`]: only one app draws the panel at a time
 //! - [`sessions`]: apps' audio sessions, for the knob (#719)
+//! - [`audio_reach`]: whether this run may change a real volume or mute (#1526)
 
+pub mod audio_reach;
 pub mod changes;
 pub mod clock;
 pub mod follow;

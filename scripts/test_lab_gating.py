@@ -39,6 +39,73 @@ class AppLaunchesNeedOnCall(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn('FOXGLOVE_APP_OK=1', r.stdout)
 
+    def test_the_real_microphone_cases_refuse_without_their_own_switch(self):
+        """#1526: without FOXGLOVE_LAB_REAL_MIC=1 the refusal exits 2 (BLOCKED). The case itself is
+        never run here: a test must not be able to reach the real microphone."""
+        os.environ.setdefault('APPDATA', str(Path.home()))  # labkit reads it at import (CI is Linux)
+        sys.path.insert(0, str(LAB))
+        try:
+            import labkit
+        finally:
+            sys.path.pop(0)
+        saved = os.environ.pop('FOXGLOVE_LAB_REAL_MIC', None)
+        try:
+            self.assertFalse(labkit.real_mic_ok())
+            with self.assertRaises(SystemExit) as e:
+                labkit.require_real_mic()
+            self.assertEqual(e.exception.code, 2)
+            os.environ['FOXGLOVE_LAB_REAL_MIC'] = '1'
+            self.assertTrue(labkit.real_mic_ok())
+            labkit.require_real_mic()
+        finally:
+            os.environ.pop('FOXGLOVE_LAB_REAL_MIC', None)
+            if saved is not None:
+                os.environ['FOXGLOVE_LAB_REAL_MIC'] = saved
+
+    def test_only_the_microphone_cases_hand_the_switch_to_their_app(self):
+        """#1526: labkit.App drops FOXGLOVE_LAB_REAL_MIC from the test app's environment unless the
+        case passed real_mic=True and On-call set the switch. Nothing is started here."""
+        os.environ.setdefault('APPDATA', str(Path.home()))  # labkit reads it at import (CI is Linux)
+        sys.path.insert(0, str(LAB))
+        try:
+            import labkit
+        finally:
+            sys.path.pop(0)
+        name = 'FOXGLOVE_LAB_REAL_MIC'
+        saved = os.environ.pop(name, None)
+        try:
+            app = lambda **kw: labkit.App(SOME_EXE, Path('cfg'), **kw).env
+            # Not set by On-call: no case hands it on, not even through its own env.
+            self.assertNotIn(name, app())
+            self.assertNotIn(name, app(real_mic=True))
+            self.assertNotIn(name, app(env={name: '1'}, real_mic=True))
+            os.environ[name] = '1'
+            self.assertNotIn(name, app())
+            self.assertNotIn(name, app(env={name: '1'}))
+            self.assertEqual(app(real_mic=True)[name], '1')
+            self.assertEqual(os.environ[name], '1', "the harness's own environment is left alone")
+        finally:
+            os.environ.pop(name, None)
+            if saved is not None:
+                os.environ[name] = saved
+        # Only the two microphone cases opt in (labkit.py is where the argument is defined).
+        askers = [p.name for p in sorted(LAB.glob('*.py'))
+                  if p.name != 'labkit.py' and 'real_mic=' in p.read_text(encoding='utf-8')]
+        self.assertEqual(askers, ['api_tools.py', 'mic_mute.py'])
+
+    def test_no_lab_case_reaches_the_real_audio_without_the_switch(self):
+        """#1526: a lab script reaches Core Audio only through coreaudio.ps1, and each script that
+        names it asks for the microphone switch before its first call."""
+        users = [p.name for p in sorted(LAB.glob('*.py'))
+                 if not p.name.startswith('test_') and 'coreaudio.ps1' in p.read_text(encoding='utf-8')]
+        self.assertEqual(users, ['api_tools.py', 'mic_mute.py'])
+        mic = (LAB / 'mic_mute.py').read_text(encoding='utf-8')
+        self.assertLess(mic.index('\nrequire_real_mic()'), mic.index("\noriginal_audio = audio('get')"))
+        api = (LAB / 'api_tools.py').read_text(encoding='utf-8')
+        body = api[api.index('with App('):]
+        self.assertTrue(body[body.index("audio('"):].startswith("audio('get') if real_mic_ok() else []"),
+                        'the first Core Audio read is behind the switch')
+
     def test_every_app_run_needs_the_ok(self):
         os.environ.setdefault('APPDATA', str(Path.home()))  # labkit reads it at import (CI is Linux)
         sys.path.insert(0, str(LAB))

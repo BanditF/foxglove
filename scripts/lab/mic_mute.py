@@ -9,12 +9,18 @@ the plugin auto-installed (test hook) and `toggle`/`mute`/`unmute` bound to F15/
 - Keys from the keyboard (D7 02 &kp F15-F17): toggle mutes and unmutes, mute and unmute do just
   that; checked in Core Audio itself. Needs an unlocked PC (BLOCKED otherwise).
 
-    python scripts/lab/mic_mute.py --app <foxglove.exe>      (exit 0 PASS, 1 FAIL, 2 BLOCKED)
+This case drives the REAL microphone on purpose (#1526). A lab Foxglove never changes a real volume
+or mute, so it runs only with On-call's separate switch FOXGLOVE_LAB_REAL_MIC=1 (besides
+FOXGLOVE_APP_OK=1) and is BLOCKED without it, before anything is read or set. The switch reaches
+the test app, which then may set the microphone's mute and nothing else: no output volume.
+
+    FOXGLOVE_APP_OK=1 FOXGLOVE_LAB_REAL_MIC=1 python scripts/lab/mic_mute.py --app <foxglove.exe>
+    (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 Build first: cargo build --release -p plugin-mic-mute -p foxglove-cli -p foxglove-lab.
 """
 import argparse, json, re, shutil, subprocess, time
 from pathlib import Path
-from labkit import App, tool_arg, Checks, REPO, TARGET, hue_is, locked, restore_lights, rgb, same, temp_config, wait
+from labkit import App, tool_arg, Checks, REPO, TARGET, hue_is, locked, require_real_mic, restore_lights, rgb, same, temp_config, wait
 
 PLUGIN = 'org.foxglove.mic-mute'
 F15, F16, F17 = 0x7006A, 0x7006B, 0x7006C
@@ -22,6 +28,7 @@ ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--app', required=True, type=tool_arg('--app'))
 ap.add_argument('--target', default=str(TARGET), type=tool_arg('--target', 'dir'), help='where mic-mute.exe, foxglove-cli and foxglove-lab are built')
 args = ap.parse_args()
+require_real_mic()  # before the microphone is read or set, and before anything starts (#1526)
 release = Path(args.target) / 'release'
 lab, cli = release / 'foxglove-lab.exe', release / 'foxglove-cli.exe'
 COREAUDIO = Path(__file__).with_name('coreaudio.ps1')
@@ -75,7 +82,7 @@ def ink():
 
 try:
     with App(args.app, cfg, {'FOXGLOVE_DEV_UNSIGNED_PLUGINS': '1', 'FOXGLOVE_PLUGINS_AUTOINSTALL': str(stage),
-                             'FOXGLOVE_DUMP_PANEL': str(dump)}, plugins=['mic-mute']) as app:
+                             'FOXGLOVE_DUMP_PANEL': str(dump)}, plugins=['mic-mute'], real_mic=True) as app:
         def facts():
             out = subprocess.run([str(cli), 'facts', 'mic.*'], capture_output=True, text=True, env=app.env).stdout
             return dict(re.findall(r'^(mic\.\w+) = (.*)$', out, re.M))

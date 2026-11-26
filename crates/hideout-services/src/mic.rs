@@ -37,6 +37,8 @@ pub enum MuteError {
     Unavailable,
     /// Core Audio refused, or can't be reached.
     Backend(String),
+    /// This hub may not touch the real microphone ([`crate::mic_reach`], #1526).
+    Refused,
 }
 
 /// What [`Mic`] needs from Core Audio. Every method runs on the microphone's thread.
@@ -184,6 +186,11 @@ impl<B: Backend> Mic<B> {
                         6,
                         error_id::AUDIO_BACKEND,
                         format!("Windows said no: {e}"),
+                    )),
+                    Err(MuteError::Refused) => Err(ServiceError::new(
+                        6,
+                        error_id::AUDIO_UNAVAILABLE,
+                        crate::mic_reach::REFUSED,
                     )),
                 };
                 reply(result);

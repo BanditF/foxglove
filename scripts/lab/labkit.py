@@ -266,6 +266,26 @@ def require_app_ok():
         sys.exit(2)
 
 
+REAL_MIC = 'FOXGLOVE_LAB_REAL_MIC'
+
+
+def real_mic_ok():
+    """Whether On-call set the microphone switch (FOXGLOVE_LAB_REAL_MIC=1, #1526). A lab Foxglove
+    never changes a real volume or mute; with this switch (it reaches the test app through its
+    environment) it may set the real default communications microphone's mute, nothing else."""
+    return os.environ.get(REAL_MIC) == '1'
+
+
+def require_real_mic():
+    """Lab cases that mute and unmute the PC's real microphone run only with On-call's separate
+    switch (FOXGLOVE_LAB_REAL_MIC=1, #1526): exit 2 (BLOCKED) otherwise, before anything is read,
+    set or started."""
+    if not real_mic_ok():
+        print(f'BLOCKED: this case mutes and unmutes the real microphone; On-call runs it with {REAL_MIC}=1', flush=True)
+        print('RESULT BLOCKED', flush=True)
+        sys.exit(2)
+
+
 def log_lines(cfg, piece):
     """The lines of the test app's foxglove.log (in its temp config) containing `piece`."""
     log = Path(cfg) / 'logs' / 'foxglove.log'
@@ -508,12 +528,17 @@ class Checks:
 class App:
     """Runs the build under test with `env`; stops the user's Foxglove for the duration."""
 
-    def __init__(self, exe, cfg, env=None, plugins=()):
+    def __init__(self, exe, cfg, env=None, plugins=(), real_mic=False):
         self.exe, self.cfg, self.plugins = tool(exe, '--app'), cfg, plugins
         # The lab's launch marker (FOXGLOVE_APP_OK=1) rides with the temp settings folder: together they
         # are a lab run to the app, whose pipe then grants the harness what it asks for without a dialog
         # (docs/local-api.md, #1449). __enter__ refuses to start anything unless On-call set the marker.
         self.env = {**os.environ, 'FOXGLOVE_CONFIG_DIR': str(cfg), 'FOXGLOVE_APP_OK': '1', **(env or {})}
+        # The microphone switch (#1526) reaches the test app only from a case that asked for it
+        # (`real_mic=True`, the two microphone cases) and only when On-call set it: any other case
+        # starts its app without it, whatever the shell or the case's own `env` says.
+        if not (real_mic and real_mic_ok()):
+            self.env.pop(REAL_MIC, None)
 
     def __enter__(self):
         require_app_ok()  # every app-level case launches Foxglove: On-call's OK only

@@ -154,6 +154,10 @@ mod imp {
         let (key, _) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
             .create_subkey(format!(r"Software\Classes\AppUserModelId\{APP_ID}"))?;
         key.set_value("DisplayName", &"Foxglove")?;
+        // A lab run never points the user's notifications at its own (temporary) folder (#1526).
+        if super::super::lab_run::lab_run() {
+            return Ok(());
+        }
         if let Some(dir) =
             super::super::store::path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
         {

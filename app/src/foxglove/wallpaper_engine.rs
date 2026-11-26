@@ -15,7 +15,8 @@
 //!
 //! **A lab or test run never touches the user's Wallpaper Engine (#1519).** A Foxglove whose
 //! settings folder isn't the real one (`FOXGLOVE_CONFIG_DIR`, or any test build) is such a run;
-//! that is decided once, at start, from how the process was started ([`reach`]). In it nothing
+//! that is decided once, at start, from how the process was started ([`reach`], by
+//! `lab_run`'s rule). In it nothing
 //! above is looked at: Wallpaper Engine is "not installed" and "not running", so no command is
 //! built or run, no ticket is handed over and none of its folders is read or watched. The one
 //! exception lets a lab case exercise the path: `FOXGLOVE_WALLPAPER_ENGINE_DIR` naming a
@@ -103,7 +104,7 @@ static REACH: OnceLock<Reach> = OnceLock::new();
 /// service both ask) and never again. One log line says so when it isn't the normal one.
 pub fn reach() -> &'static Reach {
     REACH.get_or_init(|| {
-        let lab = lab_run();
+        let lab = super::lab_run::lab_run();
         // Only a lab run needs to know where the installed copies are (to refuse them).
         let installed = if lab {
             candidates(&Places::installed())
@@ -123,18 +124,6 @@ pub fn reach() -> &'static Reach {
         }
         reach
     })
-}
-
-/// Whether this process was started as a lab or test run: its settings folder is set and isn't
-/// the real one. The same rule as the plugin auto-install hook (`plugin_install`), asked there.
-fn lab_run() -> bool {
-    let config_dir = match super::store::test_sandbox() {
-        Some(dir) => Some(dir.to_path_buf()),
-        None => std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from),
-    };
-    let real =
-        directories::ProjectDirs::from("", "", "Foxglove").map(|d| d.config_dir().to_path_buf());
-    super::plugin_install::autoinstall_allowed(true, config_dir.as_deref(), real.as_deref()).is_ok()
 }
 
 fn stand_in_env() -> Option<PathBuf> {
@@ -683,7 +672,7 @@ mod tests {
             Reach::StandIn(sibling)
         );
         // Every test build is a lab run.
-        assert!(lab_run());
+        assert!(crate::foxglove::lab_run::lab_run());
         assert_ne!(*reach(), Reach::Installed);
     }
 
