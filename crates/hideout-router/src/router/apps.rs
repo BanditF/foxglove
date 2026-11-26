@@ -47,7 +47,8 @@ impl Router {
                 .modules
                 .get(id)
                 .map_or_else(|| id.clone(), |m| m.name.clone()),
-            Who::Tool { name, .. } => name.clone(),
+            // A tool's name is its own word: cleaned, cut and in quotes.
+            Who::Tool { name, .. } => Self::tool_shown(name),
             Who::New => String::new(),
         };
         if !matches!(who, Who::Module { .. }) {

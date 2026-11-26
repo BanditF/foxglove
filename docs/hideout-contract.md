@@ -1593,7 +1593,9 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   “{name}” {does} yet. Open Hideout, go to Apps and press Review… on its line. If there
   is no line, close this program and start it again, then try again." With no name it reads
   "Hideout hasn't let this program {does} yet. …" R4 (program not known): "Hideout couldn't check which program this is, so it may only
-  read. Start it again from a normal window, not as administrator." R2 (never-class): "Hideout
+  read. Starting it again the usual way, not as administrator and not in a sandbox, may help.
+  If it doesn't, this program can only read." (one set of words for every cause: no process,
+  no program file the hub can read, a contained program) R2 (never-class): "Hideout
   never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
   R5 (#1470; ask-class, on a connection that was open when the user pressed Forget for its
   program and lost something; also the answer to its `channel.open`): "Hideout no longer lets “{name}” {does}. This program was

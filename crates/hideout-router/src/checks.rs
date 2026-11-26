@@ -159,7 +159,11 @@ impl Caps {
                 .filter_map(|s| match Capability::parse(s) {
                     Ok(c) => Some(c),
                     Err(e) => {
-                        log::warn!("router: grant {s:?} not understood: {e}");
+                        log::warn!(
+                            "router: grant {} not understood: {}",
+                            crate::Router::log_text(s),
+                            crate::Router::log_text(&e.to_string())
+                        );
                         None
                     }
                 })

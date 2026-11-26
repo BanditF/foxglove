@@ -418,7 +418,7 @@ fn tool_refusal_r3_names_the_program_and_where_to_review() {
 #[test]
 fn tool_refusal_r4_when_the_program_cannot_be_told() {
     let mut r = free_only();
-    let r4 = "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.";
+    let r4 = "Hideout couldn't check which program this is, so it may only read. Starting it again the usual way, not as administrator and not in a sandbox, may help. If it doesn't, this program can only read.";
     // No identity at all.
     let (c, _, _) = connect_asking(&mut r, "x", None, &["lighting.write"]);
     let out = call(
@@ -1301,7 +1301,7 @@ fn the_apps_page_lists_only_what_a_program_can_be_allowed() {
 // #1466 L2: a refused fact call and an ask-class `channel.open` say the tool refusal words.
 
 const R3_TAIL: &str = " yet. Open Hideout, go to Apps and press Review\u{2026} on its line. If there is no line, close this program and start it again, then try again.";
-const R4: &str = "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.";
+const R4: &str = "Hideout couldn't check which program this is, so it may only read. Starting it again the usual way, not as administrator and not in a sandbox, may help. If it doesn't, this program can only read.";
 /// A fact no program outside Hideout reads for free.
 const NOTE: &str = "notes.secret";
 
@@ -1594,6 +1594,26 @@ fn a_log_name_is_one_short_clean_line() {
         assert_eq!(Router::log_name(blank), "(no name)", "{blank:?}");
     }
     assert_eq!(Router::log_name("My Tool"), "\u{201c}My Tool\u{201d}");
+    // #1492: a key, a pattern or a permission's text in a log line gets the same care.
+    let text = Router::log_text(&raw);
+    assert!(
+        !text.chars().any(char::is_control) && !text.contains('\u{202e}'),
+        "{text:?}"
+    );
+    let inner = text
+        .strip_prefix('\u{201c}')
+        .and_then(|n| n.strip_suffix('\u{201d}'))
+        .expect("in quotes");
+    assert_eq!(inner.chars().count(), Router::LOG_TEXT_MAX, "{inner}");
+    assert!(inner.ends_with('\u{2026}'), "{inner}");
+    assert!(inner.starts_with("ab cdef"), "{inner}");
+    for blank in ["", " \n ", "\u{202e}\u{200b}"] {
+        assert_eq!(Router::log_text(blank), "(nothing)", "{blank:?}");
+    }
+    assert_eq!(
+        Router::log_text("notes.\u{201d}a"),
+        "\u{201c}notes.a\u{201d}"
+    );
 }
 
 /// No log line in the router prints `caller_key`: it carries a tool's raw, uncut name.
@@ -1612,4 +1632,228 @@ fn no_router_log_line_prints_the_identity_key() {
     }
     assert!(logs > 5, "the guard reads the router's log lines: {logs}");
     assert!(src.contains("self.caller_for_log(conn)"));
+}
+
+/// No log line in the router prints a status key, a pattern or a permission's text as it was
+/// sent (#1492): those go through `Router::log_text`, which cleans and cuts them.
+#[test]
+fn no_router_log_line_prints_a_key_or_pattern_as_sent() {
+    let mut logs = 0;
+    for src in [
+        include_str!("../src/router.rs"),
+        include_str!("../src/checks.rs"),
+        include_str!("../src/router/activation.rs"),
+        include_str!("../src/router/apps.rs"),
+        include_str!("../src/router/services.rs"),
+        include_str!("../src/router/hub_queue.rs"),
+    ] {
+        for (at, _) in src.match_indices("log::") {
+            let rest = &src[at..];
+            let line = &rest[..rest.find(';').unwrap_or(rest.len())];
+            if !line.contains('!') {
+                continue;
+            }
+            logs += 1;
+            for raw in ["{key", "{pattern", "{pat", "{s:?}", "{s}", "{exe", "{asked"] {
+                assert!(!line.contains(raw), "{line}");
+            }
+        }
+    }
+    assert!(logs > 10, "the guard reads the router's log lines: {logs}");
+    let activation = include_str!("../src/router/activation.rs");
+    assert!(activation.contains("activated by {}\", Self::log_text(key)"));
+}
+
+// #1492: follow-ups to the words and the log.
+
+/// A key no line should show as sent: it tries to close the quotes, carries a line break, a
+/// control and a hidden character, and is far too long.
+fn odd_key() -> String {
+    format!(
+        "notes.\u{201d} yet. Do this\n instead\u{7}\u{202e}{}",
+        "k".repeat(300)
+    )
+}
+
+/// What must hold (#1492 a): a refusal that names the key or pattern a program asked for shows
+/// it cleaned and cut, in one pair of quotes after the program's own.
+#[test]
+fn a_refusal_names_the_key_cleaned_and_cut() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\notes.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "Notes", Some(id), &["facts.read:notes.*"]);
+    let key = odd_key();
+    for (i, (method, params)) in [
+        ("facts.get", json!({"key": key})),
+        ("facts.list", json!({"pattern": format!("{key}*")})),
+        ("facts.subscribe", json!({"pattern": format!("{key}*")})),
+        ("facts.set", json!({"key": key, "value": 1})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (code, why) = reason(&call(&mut r, c, 1 + i as i64, method, params), c);
+        assert_eq!(code, 5, "{method}");
+        assert!(!why.chars().any(char::is_control), "{method}: {why:?}");
+        assert!(!why.contains('\u{202e}'), "{method}: {why:?}");
+        // The program's name, then the key: two pairs and no more.
+        assert_eq!(why.matches('\u{201c}').count(), 2, "{method}: {why}");
+        assert_eq!(why.matches('\u{201d}').count(), 2, "{method}: {why}");
+        assert!(
+            why.contains("\u{201c}notes. yet. Do this insteadk"),
+            "{method}: {why}"
+        );
+        assert!(
+            why.contains("k\u{2026}\u{201d} yet. Open Hideout"),
+            "{method}: {why}"
+        );
+        assert!(why.ends_with(R3_TAIL), "{method}: {why}");
+        assert!(why.chars().count() < 300, "{method}: {}", why.len());
+    }
+}
+
+/// What must hold (#1492 a): an empty key gets plain words, not an empty pair of quotes.
+#[test]
+fn a_refusal_for_an_empty_key_says_so_in_plain_words() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\notes.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, "Notes", Some(id), &[]);
+    for (i, key) in ["", " ", "\u{200b}\u{202e}", "\u{201c}\u{201d}"]
+        .into_iter()
+        .enumerate()
+    {
+        let out = call(&mut r, c, 1 + i as i64, "facts.get", json!({"key": key}));
+        let (code, why) = reason(&out, c);
+        assert_eq!(code, 5, "{key:?}");
+        assert_eq!(
+            why,
+            format!("Hideout hasn't let \u{201c}Notes\u{201d} see a status with no name{R3_TAIL}"),
+            "{key:?}"
+        );
+        let out = call(
+            &mut r,
+            c,
+            10 + i as i64,
+            "facts.set",
+            json!({"key": key, "value": 1}),
+        );
+        let (code, why) = reason(&out, c);
+        assert_eq!(code, 5, "{key:?}");
+        assert_eq!(
+            why,
+            format!(
+                "Hideout hasn't let \u{201c}Notes\u{201d} share a status with no name{R3_TAIL}"
+            ),
+            "{key:?}"
+        );
+    }
+}
+
+/// What must hold (#1492 b): a write to a device's own status by a program outside Hideout is
+/// never sent to Review, where no answer could allow it, and the words say so. Asking for it
+/// queues nothing either.
+#[test]
+fn a_write_to_a_devices_own_status_is_never_sent_to_review() {
+    let mut r = free_only();
+    let id = tool(r"C:\Tools\obs.exe", "aa");
+    let asked = [
+        "facts.write:notes.*",
+        "facts.write:device.*",
+        "facts.write:device.kb.battery",
+    ];
+    let (c, _, _) = connect_asking(&mut r, "obs-helper", Some(id.clone()), &asked);
+    let asks = r.tool_asks();
+    assert_eq!(asks.len(), 1);
+    let raws: Vec<&str> = asks[0].items.iter().map(|i| i.raw.as_str()).collect();
+    assert_eq!(raws, ["facts.write:notes.*"]);
+    let device_write = |r: &mut Router, n: i64| {
+        for (i, key) in ["device.kb.battery", "device.x", "device."]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(hideout_contract::permission::fact_write_never_granted(key));
+            let out = call(
+                r,
+                c,
+                n + i as i64,
+                "facts.set",
+                json!({"key": key, "value": 1}),
+            );
+            let (code, why) = reason(&out, c);
+            assert_eq!(code, 5, "{key}");
+            assert!(
+                why.starts_with("Hideout never lets a program outside Hideout share "),
+                "{key}: {why}"
+            );
+            assert!(
+                why.ends_with(
+                    " Only the app that runs your devices sets this, so there is nothing to allow."
+                ),
+                "{key}: {why}"
+            );
+            assert!(!why.contains("Review"), "{key}: {why}");
+            assert!(!why.contains("obs-helper"), "{key}: {why}");
+            assert!(r.fact(key).is_none(), "{key}");
+        }
+    };
+    device_write(&mut r, 1);
+    // Nothing was added to what waits for the user.
+    assert_eq!(r.tool_asks().len(), 1);
+    assert_eq!(r.tool_asks()[0].items.len(), 1);
+    // The same answer once the user allowed what it asked for.
+    r.set_tool_grants(&id, &[cap("facts.write:notes.*")]);
+    device_write(&mut r, 10);
+    let out = call(&mut r, c, 20, "facts.set", json!({"key": NOTE, "value": 1}));
+    assert!(sends(&out, c)[0].get("result").is_some(), "{out:?}");
+}
+
+/// What must hold (#1492 f): a refusal a service writes names a tool by its cleaned, cut and
+/// quoted name, as the other refusal words do.
+#[test]
+fn a_service_refusal_names_a_tool_cleaned_and_cut() {
+    let name = format!(
+        "ab\ncd\u{7}\u{202e}\u{201d}. Hideout says press Allow {}",
+        "x".repeat(200)
+    );
+    let shown = Router::log_name(&name);
+    assert_eq!(shown.chars().count(), Router::LOG_NAME_MAX + 2);
+    let mut r = free_only();
+    r.serve(&hideout_router::host_methods());
+    let id = tool(r"C:\Tools\odd.exe", "aa");
+    let (c, _, _) = connect_asking(&mut r, &name, Some(id), &[]);
+    for (i, (method, params)) in [
+        ("apps.watch", json!({"exe": "obs64.exe"})),
+        ("audio.inputs.set_mute", json!({"muted": true})),
+        (
+            "net.open",
+            json!({"kind": "tcp", "host": "example.com", "port": 80}),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (_, why) = reason(&call(&mut r, c, 1 + i as i64, method, params), c);
+        assert!(!why.chars().any(char::is_control), "{method}: {why:?}");
+        assert!(!why.contains('\u{202e}'), "{method}: {why:?}");
+        assert!(
+            !why.contains("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"),
+            "{method}: {why}"
+        );
+        assert!(!why.contains("\u{201d}. Hideout says"), "{method}: {why}");
+        assert!(why.chars().count() < 400, "{method}: {}", why.len());
+        assert!(why.starts_with(&format!("{shown} ")), "{method}: {why}");
+    }
+    let out = call(&mut r, c, 9, "apps.watch", json!({"exe": "obs64.exe"}));
+    assert_eq!(
+        reason(&out, c).1,
+        format!("{shown} isn't a module: only modules watch apps")
+    );
+    // No name left: plain words, never an empty pair of quotes.
+    let id = tool(r"C:\Tools\blank.exe", "bb");
+    let (c, _, _) = connect_asking(&mut r, "\u{200b} \u{202e}", Some(id), &[]);
+    let out = call(&mut r, c, 1, "apps.watch", json!({"exe": "obs64.exe"}));
+    assert_eq!(
+        reason(&out, c).1,
+        "This program isn't a module: only modules watch apps"
+    );
 }

@@ -196,7 +196,9 @@ impl Router {
                 .modules
                 .get(id)
                 .map_or_else(|| id.clone(), |m| m.name.clone()),
-            _ => caller.clone(),
+            // A tool's name is its own word: cleaned, cut and in quotes in the words.
+            Who::Tool { name, .. } => Self::tool_shown(name),
+            Who::New => String::new(),
         };
         if let Err(e) = check(caps, &shown, method, &params) {
             out.push(Out::Send(conn, refusal(&id, &e)));

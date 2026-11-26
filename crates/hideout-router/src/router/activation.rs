@@ -115,7 +115,7 @@ impl Router {
         }
         for (m, t) in &self.triggers {
             if t.facts.iter().any(|p| key_matches(p, key)) && self.cold(m) {
-                log::info!("router: {m}: activated by {key}");
+                log::info!("router: {m}: activated by {}", Self::log_text(key));
                 out.push(Out::Activate(m.clone()));
             }
         }
