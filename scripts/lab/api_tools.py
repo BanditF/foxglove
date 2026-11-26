@@ -4,9 +4,13 @@ per-plugin secret store (#213/#249).
 - mic.* facts are readable (audio.inputs.read): mic.state is muted/unmuted/unavailable with an
   endpoint name, or unknown with mic.error.
 - secrets.get / secrets.set are denied to an outside tool (secrets belong to plugins only).
-- audio.inputs.set_mute on the default communications mic: mic.state follows and Core Audio agrees.
-  The mic's mute and volume are recorded first (coreaudio.ps1) and put back exactly in a `finally`,
-  so nothing stays muted (the user chose this over installing VB-CABLE).
+- audio.inputs.set_mute: a lab Foxglove never changes a real volume or mute (#1526), so the call is
+  refused ("audio: off for this run"), mic.state is unavailable, and this case reads and sets
+  nothing on the real microphone.
+  Only with On-call's separate switch FOXGLOVE_LAB_REAL_MIC=1 does it drive the REAL default
+  communications mic: mic.state follows and Core Audio agrees. The mic's mute and volume are then
+  recorded first (coreaudio.ps1) and put back exactly in a `finally`, so nothing stays muted (the
+  user chose this over installing VB-CABLE).
 - pc_lighting.set_zone on the first writable PC lighting device (#617): zone 1 to a test colour,
   read back with pc_lighting.list, one "zone colours of" line in the log; the user's saved colour
   (copied from the real foxglove.toml's [pc_lighting]) goes back in a `finally`.
@@ -17,7 +21,7 @@ per-plugin secret store (#213/#249).
 """
 import argparse, json, os, subprocess, tomllib
 from pathlib import Path
-from labkit import App, tool_arg, Checks, connect, temp_config, wait
+from labkit import App, tool_arg, Checks, connect, real_mic_ok, temp_config, wait
 
 COREAUDIO = Path(__file__).with_name('coreaudio.ps1')
 REAL_STORE = Path(os.environ['APPDATA']) / 'Foxglove' / 'foxglove.toml'
@@ -73,10 +77,22 @@ with App(args.app, cfg):
         except RuntimeError as e:
             check(f'{method} denied to an outside tool', 'denied' in str(e).lower() or "'code': 5" in str(e), e)
 
-    original = audio('get')
+    def refused_microphone():
+        """Without On-call's microphone switch (#1526): the real microphone is neither read nor set,
+        by this script or by the test app."""
+        check('mic.state is unavailable in a lab run', state == 'unavailable', m)
+        try:
+            api.call('audio.inputs.set_mute', {'muted': True})
+            check('set_mute refused in a lab run', False, 'it answered')
+        except RuntimeError as e:
+            check('set_mute refused in a lab run', 'audio: off for this run' in str(e), e)
+
+    original = audio('get') if real_mic_ok() else []
     comms = lambda: next(e for e in audio('get') if e['role'] == 'communications')
     try:
-        if not comms().get('id'):
+        if not real_mic_ok():
+            refused_microphone()
+        elif not comms().get('id'):
             check('set_mute', False, 'no default capture device on this PC: needs a human', blocked=True)
         else:
             was = comms()['muted']
@@ -90,9 +106,10 @@ with App(args.app, cfg):
         for e in original:
             if e.get('id'):
                 audio('set', e['role'], '1' if e['muted'] else '0', str(e['volume']))
-        now = audio('get')
-        check('microphone left exactly as it was', [(e.get('muted'), e.get('volume')) for e in now]
-              == [(e.get('muted'), e.get('volume')) for e in original], now)
+        if real_mic_ok():
+            now = audio('get')
+            check('microphone left exactly as it was', [(e.get('muted'), e.get('volume')) for e in now]
+                  == [(e.get('muted'), e.get('volume')) for e in original], now)
 
     # Case zones (#617): set, read back, log line, the user's colour back.
     pcs = lambda: api.call('pc_lighting.list', {})

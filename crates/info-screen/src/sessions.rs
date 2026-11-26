@@ -636,6 +636,7 @@ mod imp {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
+    use crate::audio_reach::{self, write};
     use windows::core::{implement, Interface, Ref, Result, BOOL, GUID, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
         CloseHandle, ERROR_SUCCESS, FILETIME, HANDLE, MAX_PATH, PROPERTYKEY, S_OK,
@@ -1144,9 +1145,9 @@ mod imp {
         // SAFETY: COM calls on the sessions' MTA thread.
         unsafe {
             let new = step_level(e.GetMasterVolumeLevelScalar()?, steps);
-            e.SetMasterVolumeLevelScalar(new, &OWN_CHANGES)?;
+            write::endpoint_level(e, new, &OWN_CHANGES)?;
             if e.GetMute()?.as_bool() {
-                e.SetMute(false, &OWN_CHANGES)?;
+                write::endpoint_mute(e, false, &OWN_CHANGES)?;
             }
             Ok((new * 100.0).round() as u8)
         }
@@ -1157,7 +1158,7 @@ mod imp {
         // SAFETY: COM calls on the sessions' MTA thread.
         unsafe {
             let muted = !e.GetMute()?.as_bool();
-            e.SetMute(muted, &OWN_CHANGES)?;
+            write::endpoint_mute(e, muted, &OWN_CHANGES)?;
             Ok(muted)
         }
     }
@@ -1255,13 +1256,11 @@ mod imp {
         }
         fn set_endpoint(&mut self, level: f32) -> std::result::Result<(), String> {
             let e = self.endpoint.ok_or("no output device")?;
-            // SAFETY: as above.
-            unsafe { e.SetMasterVolumeLevelScalar(level, &OWN_CHANGES) }.map_err(|e| e.to_string())
+            write::endpoint_level(e, level, &OWN_CHANGES).map_err(|e| e.to_string())
         }
         fn set_endpoint_mute(&mut self, muted: bool) -> std::result::Result<(), String> {
             let e = self.endpoint.ok_or("no output device")?;
-            // SAFETY: as above.
-            unsafe { e.SetMute(muted, &OWN_CHANGES) }.map_err(|e| e.to_string())
+            write::endpoint_mute(e, muted, &OWN_CHANGES).map_err(|e| e.to_string())
         }
         fn sessions(&self) -> Vec<Live> {
             self.sessions
@@ -1281,8 +1280,7 @@ mod imp {
                 .find(|t| t.id == id)
                 .ok_or("the app's sound ended")?;
             let v = t.volume()?;
-            // SAFETY: as above.
-            unsafe { v.SetMasterVolume(level, &OWN_CHANGES) }.map_err(|e| e.to_string())?;
+            write::session_level(&v, level, &OWN_CHANGES).map_err(|e| e.to_string())?;
             t.level = level;
             Ok(())
         }
@@ -1293,8 +1291,7 @@ mod imp {
                 .find(|t| t.id == id)
                 .ok_or("the app's sound ended")?;
             let v = t.volume()?;
-            // SAFETY: as above.
-            unsafe { v.SetMute(muted, &OWN_CHANGES) }.map_err(|e| e.to_string())?;
+            write::session_mute(&v, muted, &OWN_CHANGES).map_err(|e| e.to_string())?;
             t.muted = muted;
             Ok(())
         }
@@ -1744,7 +1741,7 @@ mod imp {
                         unsafe {
                             let level = v.GetMasterVolume().map_err(|e| e.to_string())?;
                             let new = step_level(level, steps);
-                            v.SetMasterVolume(new, &OWN_CHANGES)
+                            write::session_level(&v, new, &OWN_CHANGES)
                                 .map_err(|e| e.to_string())?;
                             Ok(new)
                         }
@@ -1757,8 +1754,7 @@ mod imp {
                 }
                 Req::Mute(id, muted, reply) => {
                     let r = self.find(&id).and_then(|t| t.volume()).and_then(|v| {
-                        // SAFETY: COM call on this MTA thread.
-                        unsafe { v.SetMute(muted, &OWN_CHANGES) }.map_err(|e| e.to_string())?;
+                        write::session_mute(&v, muted, &OWN_CHANGES).map_err(|e| e.to_string())?;
                         Ok(muted)
                     });
                     if let (Ok(_), Some(t)) = (&r, self.sessions.iter_mut().find(|t| t.id == id)) {
@@ -2242,11 +2238,16 @@ mod imp {
     }
 
     /// Starts following Windows' sessions; `notify` hears each change (on the sessions' thread:
-    /// only enqueue). `None` when the thread can't start.
+    /// only enqueue). `None` when the thread can't start, and in a run that may not change the
+    /// output's volumes (#1526, [`audio_reach`]): then nothing is followed, so no device is
+    /// opened, master volume is never engaged and no journal is read or written.
     pub fn start(
         notify: impl Fn(Change) + Send + Sync + 'static,
         host: Option<Box<dyn master::Host>>,
     ) -> Option<Box<dyn Sessions>> {
+        if !audio_reach::reach().allows(audio_reach::Target::Output) {
+            return None;
+        }
         let (tx, rx): (Sender<Req>, Receiver<Req>) = channel();
         let worker_tx = tx.clone();
         *CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());

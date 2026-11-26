@@ -111,7 +111,10 @@ fn folder() -> Result<PathBuf> {
 const NO_RESTART: &str = "--no-restart";
 
 pub fn start() {
-    if let Ok(p) = folder() {
+    // A lab run leaves the user's own update folder alone (#1526): its last error is the user's
+    // Foxglove's to read and clear. (A test build's folder is its own, above.)
+    let own = cfg!(test) || !super::lab_run::lab_run();
+    if let Some(p) = folder().ok().filter(|_| own) {
         if let Ok(error) = std::fs::read_to_string(p.join("error.txt")) {
             state().message = error;
             let _ = std::fs::remove_file(p.join("error.txt"));

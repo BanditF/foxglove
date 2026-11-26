@@ -38,6 +38,7 @@ mod imp {
     };
 
     use super::{Mic, MicState};
+    use crate::audio_reach::{self, write, Target};
 
     /// Marks Foxglove's own mute changes in the callbacks it receives.
     pub const OWN_CHANGES: GUID = GUID::from_u128(0x6f78_676c_6f76_6500_8000_0000_0000_0237);
@@ -138,7 +139,17 @@ mod imp {
 
     /// Calls `on_change` with the microphone's state now and after every change, from a thread
     /// of its own that sleeps between callbacks.
+    ///
+    /// In a run that may not touch the real microphone (#1526, [`audio_reach`]) there is no
+    /// thread and no device: it is unavailable, said once, at once.
     pub fn watch(on_change: impl Fn(Mic) + Send + 'static) {
+        if audio_reach::guard(Target::Mic).is_err() {
+            return on_change(Mic {
+                state: MicState::Unavailable,
+                id: String::new(),
+                name: String::new(),
+            });
+        }
         let _ = std::thread::Builder::new()
             .name("mic-watch".into())
             .spawn(move || {
@@ -186,16 +197,15 @@ mod imp {
     }
 
     /// Mutes or unmutes the default communications microphone, now.
+    /// Refused in a run that may not touch the real microphone (#1526), before any device is
+    /// looked for.
     pub fn set_mute(muted: bool) -> std::result::Result<(), String> {
+        audio_reach::guard(Target::Mic)?;
         let devices = enumerator()?;
         let Some((_, volume)) = current(&devices)? else {
             return Err("no microphone".into());
         };
-        unsafe {
-            volume
-                .SetMute(muted, &OWN_CHANGES)
-                .map_err(|e| format!("mute: {e}"))
-        }
+        write::mic_mute(&volume, muted, &OWN_CHANGES).map_err(|e| format!("mute: {e}"))
     }
 }
 
@@ -212,6 +222,7 @@ mod imp {
     }
 
     pub fn set_mute(_: bool) -> Result<(), String> {
+        crate::audio_reach::guard(crate::audio_reach::Target::Mic)?;
         Err("no microphone control on this system".into())
     }
 }

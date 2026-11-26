@@ -57,6 +57,9 @@ fn main() {
     if !foxglove::single_instance::claim(!foxglove::settings_open::tray_start()) {
         return;
     }
+    // Foxglove (#1526): what this run may do with the PC's real audio, said once before anything
+    // starts: a lab or test run changes no volume or mute.
+    foxglove::lab_run::start();
     // Foxglove: settings and log redirected into another app's package (started from it)?
     foxglove::store_split::start();
     foxglove::signin_counts::start(); // sign-in hand-over health row

@@ -266,6 +266,26 @@ def require_app_ok():
         sys.exit(2)
 
 
+REAL_MIC = 'FOXGLOVE_LAB_REAL_MIC'
+
+
+def real_mic_ok():
+    """Whether On-call set the microphone switch (FOXGLOVE_LAB_REAL_MIC=1, #1526). A lab Foxglove
+    never changes a real volume or mute; with this switch (it reaches the test app through its
+    environment) it may set the real default communications microphone's mute, nothing else."""
+    return os.environ.get(REAL_MIC) == '1'
+
+
+def require_real_mic():
+    """Lab cases that mute and unmute the PC's real microphone run only with On-call's separate
+    switch (FOXGLOVE_LAB_REAL_MIC=1, #1526): exit 2 (BLOCKED) otherwise, before anything is read,
+    set or started."""
+    if not real_mic_ok():
+        print(f'BLOCKED: this case mutes and unmutes the real microphone; On-call runs it with {REAL_MIC}=1', flush=True)
+        print('RESULT BLOCKED', flush=True)
+        sys.exit(2)
+
+
 def log_lines(cfg, piece):
     """The lines of the test app's foxglove.log (in its temp config) containing `piece`."""
     log = Path(cfg) / 'logs' / 'foxglove.log'

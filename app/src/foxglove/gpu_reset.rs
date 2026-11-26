@@ -199,6 +199,11 @@ fn restart(reason: &str) {
 pub fn start() {
     // The hub's module (`--module`) never starts a plain copy of itself (it would draw a tray
     // and serve the pipe beside the hub): `restart` takes the planned exit instead (#1143 P7).
+    // A lab or test run never starts a fresh copy of itself either (#1526): a GPU reset anywhere
+    // on the PC would leave a second lab Foxglove behind, outside its harness.
+    if super::lab_run::lab_run() {
+        return;
+    }
     imp::start();
 }
 

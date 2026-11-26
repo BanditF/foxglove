@@ -408,7 +408,7 @@ pub fn autoinstall() {
 }
 
 /// The hook's guard: developer mode, and a config dir that's set and not the real one.
-/// Also how `wallpaper_engine` tells a lab or test run (#1519).
+/// Also how a lab or test run is told (`lab_run`, #1519, #1526).
 pub(super) fn autoinstall_allowed(
     dev_unsigned: bool,
     config_dir: Option<&Path>,
