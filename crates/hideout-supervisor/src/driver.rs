@@ -1389,28 +1389,47 @@ impl Supervisor {
     /// still listed (two starts overlapped) is ended here, with everything in its job, and
     /// never left running untracked (#1450). Its job stays listed for the caller check until
     /// it is empty.
+    ///
+    /// The instance with the higher number stays: one that arrives after a later one is the
+    /// one ended. The ended one's job is listed before the `live` lock is let go, so it is
+    /// never in neither list (lock order: `live`, then `retired`).
     fn set_live(&self, id: &str, new: Live) {
-        let old = self.0.live.lock().unwrap().insert(id.into(), new);
-        let Some(old) = old else { return };
+        let mut live = self.0.live.lock().unwrap();
+        let out = match live.get(id) {
+            Some(cur) if cur.instance > new.instance => new,
+            _ => match live.insert(id.into(), new) {
+                Some(old) => old,
+                None => return,
+            },
+        };
         log::warn!(
-            "supervisor: {id}: instance {} was still listed when the next one started; ended",
-            old.instance
+            "supervisor: {id}: instance {} overlapped another start; ended",
+            out.instance
         );
-        old.kill(1);
-        if let Some(job) = old.job {
-            if job.active_processes().is_ok_and(|n| n > 0) {
-                self.0.retired.lock().unwrap().push((id.to_string(), job));
-            }
+        out.kill(1);
+        if let Some(job) = out.job {
+            self.retire(id, job);
+        }
+    }
+
+    /// Lists `job` as one an ended instance of `id` left, if it still holds processes (a job
+    /// that can't be asked counts as holding some). Emptied jobs are dropped from the list.
+    fn retire(&self, id: &str, job: Arc<Job>) {
+        let mut retired = self.0.retired.lock().unwrap();
+        retired.retain(|(_, j)| j.active_processes().map_or(true, |n| n > 0));
+        if job.active_processes().map_or(true, |n| n > 0) {
+            retired.push((id.to_string(), job));
         }
     }
 
     /// Ends the jobs `id`'s ended instances left with processes in them. They stay listed for
-    /// the caller check until they are empty.
+    /// the caller check until they are empty; the emptied ones are dropped.
     fn end_retired(&self, id: &str) {
-        let retired = self.0.retired.lock().unwrap();
+        let mut retired = self.0.retired.lock().unwrap();
         for (_, j) in retired.iter().filter(|(of, _)| of == id) {
             j.kill(1);
         }
+        retired.retain(|(_, j)| j.active_processes().map_or(true, |n| n > 0));
     }
 
     /// [`grant_listed_in`] on this hub's folder and router.
@@ -2463,11 +2482,13 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
                     // for (decided below, once the policy has seen the exit).
                     if helper_job.is_none() {
                         job.kill(1);
+                    } else {
+                        // One helper job per module: what an earlier ended instance still
+                        // has running ends when a new helper job is kept.
+                        sup.end_retired(id);
                     }
                     // Listed for the caller check for as long as anything in it still lives.
-                    if job.active_processes().is_ok_and(|n| n > 0) {
-                        sup.0.retired.lock().unwrap().push((id.to_string(), job));
-                    }
+                    sup.retire(id, job);
                 }
             }
             sup.0.expected.lock().unwrap().remove(id);

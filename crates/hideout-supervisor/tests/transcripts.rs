@@ -185,7 +185,10 @@ impl Sim {
         self.since(from)
             .into_iter()
             .filter_map(|c| match c {
-                Cmd::Launch { id } | Cmd::Kill { id } | Cmd::Exit { id } => Some(id.clone()),
+                Cmd::Launch { id }
+                | Cmd::Kill { id }
+                | Cmd::KillInstance { id, .. }
+                | Cmd::Exit { id } => Some(id.clone()),
                 _ => None,
             })
             .collect()
@@ -589,7 +592,9 @@ fn play(file: &str, doc: &Value) -> Result<(), String> {
             check(s.p.crashes(ART, s.now) == 0, "crashed before 30 s")?;
             s.at(30_000);
             check(
-                s.cmds.iter().any(|(_, c)| matches!(c, Cmd::Kill { .. })),
+                s.cmds
+                    .iter()
+                    .any(|(_, c)| matches!(c, Cmd::KillInstance { .. })),
                 "not ended in its Job Object",
             )?;
             check(s.p.crashes(ART, s.now) == 1, "not counted as a crash")
@@ -931,7 +936,7 @@ fn play(file: &str, doc: &Value) -> Result<(), String> {
             });
             s.at(5_000);
             check(
-                has(&s.since(0), |c| matches!(c, Cmd::Kill { .. })),
+                has(&s.since(0), |c| matches!(c, Cmd::KillInstance { .. })),
                 "not ended after 5 s",
             )?;
             s.ev(Ev::Exited {
@@ -1055,7 +1060,10 @@ fn taken_back_module_not_back_in_grace_starts_fresh() {
     s.at(29_000);
     assert!(s.launches().is_empty());
     s.at(30_000);
-    assert!(s.cmds.iter().any(|(_, c)| matches!(c, Cmd::Kill { .. })));
+    assert!(s
+        .cmds
+        .iter()
+        .any(|(_, c)| matches!(c, Cmd::KillInstance { .. })));
     assert_eq!(s.launches(), vec![30_000]);
     assert_eq!(s.p.crashes(ART, s.now), 0);
     // The old instance's exit afterwards changes nothing.
