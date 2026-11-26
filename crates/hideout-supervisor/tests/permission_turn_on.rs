@@ -12,6 +12,8 @@ use std::sync::mpsc;
 use hideout_registry::Registry;
 use hideout_router::server::Hub;
 use hideout_router::{Router, Settings};
+use hideout_supervisor::instances::Instances;
+use hideout_supervisor::policy::Ev;
 use hideout_supervisor::win::Process;
 
 const NOW: &str = "2026-11-13T00:00:00Z";
@@ -278,6 +280,15 @@ fn an_allow_widens_the_router_only_by_what_it_granted() {
 /// leftover's pid to the returned file and exits at once with `code`. Turned on and running
 /// when this returns.
 fn leftover_module(name: &str, code: i32) -> (PathBuf, String, PathBuf, common::Reaped) {
+    leftover_module_after(name, code, 0)
+}
+
+/// [`leftover_module`] whose program exits `linger_ms` after it wrote the leftover's pid.
+fn leftover_module_after(
+    name: &str,
+    code: i32,
+    linger_ms: u32,
+) -> (PathBuf, String, PathBuf, common::Reaped) {
     let (home, exe, id) = adopted_home(name);
     let folder = home.parent().unwrap().join("manifest");
     let pid_file = home.parent().unwrap().join("leftover.pid");
@@ -291,7 +302,7 @@ fn leftover_module(name: &str, code: i32) -> (PathBuf, String, PathBuf, common::
     let helper = exe.display().to_string();
     let script = format!(
         "$p = Start-Process -WindowStyle Hidden -PassThru -FilePath '{helper}' -ArgumentList '-n','120','127.0.0.1'; \
-         Set-Content -Path '{}' -Value $p.Id; exit {code}",
+         Set-Content -Path '{}' -Value $p.Id; Start-Sleep -Milliseconds {linger_ms}; exit {code}",
         pid_file.display()
     );
     let run = format!(
@@ -409,6 +420,117 @@ fn a_planned_exits_helper_stays_the_modules_and_a_stop_ends_it() {
     assert!(
         ends_within(pid, 20),
         "turning the module off left its helper running"
+    );
+    assert!(sup.pid(&id).is_none(), "the module was started again");
+    no_job_is_kept(&sup);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+/// The instance number the supervisor recorded for `id`'s running instance.
+fn recorded_instance(home: &Path, id: &str) -> u64 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if let Some(rec) = Instances::load(home).modules.get(id) {
+            return rec.instance;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no instance was recorded"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// #1450: a module has one live instance. When a second start overlaps a first that still
+/// runs, the first is ended with the start of the second and never left running untracked.
+#[test]
+fn an_overlapping_start_ends_the_earlier_instance() {
+    let (home, _exe, id) = adopted_home("overlap");
+    let sup = common::start(&home, hub());
+    let list = Registry::open_from_env(&home)
+        .unwrap()
+        .permission_list(&id)
+        .unwrap();
+    sup.grant_listed(
+        &id,
+        list.code(),
+        &strs(&["hub.notify", "ui.window"]),
+        &[],
+        "dialog",
+    )
+    .unwrap();
+    sup.turn_on(&id).unwrap();
+    let first = sup.pid(&id).expect("the module did not start");
+    let instance = recorded_instance(&home, &id);
+    // The policy is told the instance ended while its process still runs, then asked to start
+    // the module: the second start finds the first still listed.
+    sup.feed(Ev::Exited {
+        id: id.clone(),
+        instance,
+        code: 0,
+    });
+    sup.start_again(&id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while sup.pid(&id) == Some(first) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let second = sup.pid(&id).expect("the second start did not happen");
+    assert_ne!(second, first, "the second start did not happen");
+    assert!(
+        ends_within(first, 20),
+        "the earlier instance ran on beside the later one"
+    );
+    let later = Process::open(second).expect("the later instance is gone");
+    assert!(later.running(), "the later instance was ended too");
+    // The earlier one's end is not taken for the later one's.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(sup.pid(&id), Some(second));
+    assert!(later.running());
+    no_job_is_kept(&sup);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+/// #1450: Remove ends what an ended instance left running (here a planned exit's helper, kept
+/// while its restart is held).
+#[test]
+fn remove_ends_what_an_ended_instance_left_running() {
+    let (home, id, pid_file, sup) = leftover_module("removed", 75);
+    let pid = leftover_pid(&pid_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while sup.retired_jobs() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(sup.retired_jobs() >= 1, "the helper's job was dropped");
+    assert!(Process::open(pid).is_ok_and(|p| p.running()));
+    let _ = sup.remove(&id);
+    assert!(
+        ends_within(pid, 20),
+        "Remove left the module's helper running"
+    );
+    assert!(sup.pid(&id).is_none(), "the module was started again");
+    no_job_is_kept(&sup);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+/// #1450: a planned exit keeps what it left running only while its restart is held for it. With
+/// no restart held (here the policy had already counted the instance as ended), the leftover
+/// is ended with the instance, long before the hold's cap.
+#[test]
+fn a_planned_exit_with_no_restart_held_keeps_nothing_running() {
+    let (home, id, pid_file, sup) = leftover_module_after("nohold", 75, 3000);
+    let pid = leftover_pid(&pid_file);
+    let instance = recorded_instance(&home, &id);
+    sup.feed(Ev::Exited {
+        id: id.clone(),
+        instance,
+        code: 0,
+    });
+    assert!(
+        ends_within(pid, 25),
+        "a planned exit with no restart held left its helper running"
     );
     assert!(sup.pid(&id).is_none(), "the module was started again");
     no_job_is_kept(&sup);

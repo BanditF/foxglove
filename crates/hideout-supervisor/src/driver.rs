@@ -1376,6 +1376,34 @@ impl Supervisor {
         self.end_retired(id);
     }
 
+    /// Ends `id`'s live instance if it is `instance`: one that arrived for a module that may
+    /// not run. A later instance, or none, is left as it is.
+    fn end_instance(&self, id: &str, instance: u64) {
+        let live = self.0.live.lock().unwrap();
+        if let Some(l) = live.get(id).filter(|l| l.instance == instance) {
+            l.kill(1);
+        }
+    }
+
+    /// Makes `new` the live instance of `id`. One module has one live instance: an earlier one
+    /// still listed (two starts overlapped) is ended here, with everything in its job, and
+    /// never left running untracked (#1450). Its job stays listed for the caller check until
+    /// it is empty.
+    fn set_live(&self, id: &str, new: Live) {
+        let old = self.0.live.lock().unwrap().insert(id.into(), new);
+        let Some(old) = old else { return };
+        log::warn!(
+            "supervisor: {id}: instance {} was still listed when the next one started; ended",
+            old.instance
+        );
+        old.kill(1);
+        if let Some(job) = old.job {
+            if job.active_processes().is_ok_and(|n| n > 0) {
+                self.0.retired.lock().unwrap().push((id.to_string(), job));
+            }
+        }
+    }
+
     /// Ends the jobs `id`'s ended instances left with processes in them. They stay listed for
     /// the caller check until they are empty.
     fn end_retired(&self, id: &str) {
@@ -1730,6 +1758,7 @@ impl Supervisor {
                 }
                 Cmd::Exit { id } => self.call(&id, "module.exit", serde_json::json!({}), false),
                 Cmd::Kill { id } => self.end_all(&id),
+                Cmd::KillInstance { id, instance } => self.end_instance(&id, instance),
                 // The policy has no clock: a `rebuilt` true becomes the local time of day.
                 Cmd::Publish { key, value } => {
                     let value = if key.ends_with(".rebuilt") && value == Value::Bool(true) {
@@ -2080,8 +2109,8 @@ impl Supervisor {
                 pin: Some(pin.clone()),
             },
         );
-        self.0.live.lock().unwrap().insert(
-            id.into(),
+        self.set_live(
+            id,
             Live {
                 instance,
                 pid,
@@ -2221,8 +2250,8 @@ impl Supervisor {
                     .map(Arc::new),
             },
         );
-        self.0.live.lock().unwrap().insert(
-            id.into(),
+        self.set_live(
+            id,
             Live {
                 instance: rec.instance,
                 pid: rec.pid,

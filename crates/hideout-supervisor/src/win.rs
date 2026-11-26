@@ -349,7 +349,10 @@ impl Job {
     /// Ends every process in the job.
     pub fn kill(&self, code: u32) {
         // SAFETY: an owned job handle.
-        unsafe { TerminateJobObject(self.handle.0, code) };
+        if unsafe { TerminateJobObject(self.handle.0, code) } == 0 {
+            let e = io::Error::last_os_error();
+            log::warn!("supervisor: ending a module's job failed: {e}");
+        }
     }
 
     /// Starts `command` suspended, puts it in this job, then lets it run: the process and every
@@ -459,7 +462,14 @@ impl Process {
     /// Ends this one process (never by name).
     pub fn kill(&self, code: u32) {
         // SAFETY: a process handle with PROCESS_TERMINATE.
-        unsafe { TerminateProcess(self.0 .0, code) };
+        if unsafe { TerminateProcess(self.0 .0, code) } == 0 {
+            let e = io::Error::last_os_error();
+            // Ending a process that has already ended fails too: only one still running is
+            // worth a line.
+            if self.running() {
+                log::warn!("supervisor: ending a process failed: {e}");
+            }
+        }
     }
 
     /// The full path of its exe.
