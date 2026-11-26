@@ -50,6 +50,25 @@ pub fn render(l: &Listing, granted: &[String], declined: &[String]) -> String {
         },
         l.exe_sha256
     );
+    // The whole command (#1452): every argument, cleaned as the window shows it.
+    if let Some(heading) = hideout_shell::permission_dialog::args_heading(l.run_args.len()) {
+        s.push_str(&format!("{heading}\n"));
+        for a in &l.run_args {
+            s.push_str(&format!(
+                "  {}\n",
+                hideout_shell::permission_dialog::arg_line(a)
+            ));
+        }
+        if l.run_args
+            .iter()
+            .any(|a| hideout_shell::permission_dialog::shown_arg(a).1)
+        {
+            s.push_str(&format!(
+                "  {}\n",
+                hideout_shell::permission_dialog::ARGS_NOTE
+            ));
+        }
+    }
     for i in &l.items {
         let state = if granted.contains(&i.raw) {
             "allowed"
@@ -218,7 +237,15 @@ pub fn handle(
                     for (r, e) in &o.refused {
                         s.push_str(&format!("refused   {r} ({})\n", e.id()));
                     }
-                    s.push_str(&format!("bound to {}\n", o.bound_path));
+                    if o.one_run.is_some() {
+                        // Nothing was bound (#1452): say so, in the dialog's words.
+                        s.push_str(&format!(
+                            "{}\n",
+                            hideout_shell::permission_dialog::one_run_reply(&o.bound_path)
+                        ));
+                    } else {
+                        s.push_str(&format!("bound to {}\n", o.bound_path));
+                    }
                     if keyboard {
                         match crate::keyboard_actions::dialog_path(home, id)
                             .and_then(|p| crate::keyboard_actions::allow(home, hub, id, &p))
@@ -542,6 +569,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let folder = base.join("manifest");
         std::fs::create_dir_all(&folder).unwrap();
+        // A program file of the app's own for [`own`]: plain text, never run.
+        std::fs::write(base.join("app.exe"), "placeholder, not a program").unwrap();
         let id = format!("example.lab.ctl{name}");
         let b = base.display().to_string();
         let run: Vec<String> = run
@@ -631,6 +660,12 @@ mod tests {
         ]
     }
 
+    /// An app with a program file of its own (the fixture's stand-in; these tests never start
+    /// it), so its OK is remembered. [`ping`] is a part of Windows: allowed for one run (#1452).
+    fn own() -> Vec<String> {
+        vec![r"{base}\app.exe".into(), "--quiet".into()]
+    }
+
     fn state(f: &Fx) -> (Vec<String>, Vec<String>) {
         let r = Registry::open_from_env(&f.paths.root).unwrap();
         let m = &r.inventory.modules[&f.id];
@@ -666,7 +701,7 @@ mod tests {
 
     #[test]
     fn the_pipe_grants_only_the_listed_code_and_exit_codes_say_what_happened() {
-        let f = fx("grant", &ping());
+        let f = fx("grant", &own());
         // No code: the list is printed, exit 3, nothing granted.
         let (c, t) = ask(&f.pipe, &format!("grant {} --all-listed", f.id));
         assert_eq!(c, NEEDS_OK, "{t}");
@@ -856,7 +891,7 @@ mod tests {
     /// alone: no pipe word sets it, and a pipe grant binds without one.
     #[test]
     fn the_pipe_cannot_set_a_follow_folder_grant() {
-        let f = fx("follow", &ping());
+        let f = fx("follow", &own());
         let good = code(&f);
         for word in ["--follow", "--follow-folder", "--keep-folder", "--keep-ok"] {
             let line = format!("grant {} --all-listed {word} --listed {good}", f.id);
@@ -873,6 +908,49 @@ mod tests {
         let b = r.inventory.modules[&f.id].bound.clone().unwrap();
         assert_eq!(b.by, "cli");
         assert!(b.follow.is_none(), "{b:?}");
+    }
+
+    /// #1452: the list names the whole command, and a grant for an app whose program is a part
+    /// of Windows is for one run: the reply says so in the dialog's words and nothing is stored
+    /// as remembered.
+    #[test]
+    fn the_pipe_shows_the_whole_command_and_allows_a_windows_program_for_one_run() {
+        let f = fx("onerun", &ping());
+        let (c, text) = permissions(&f.paths.root, &f.id);
+        assert_eq!(c, DONE, "{text}");
+        assert!(
+            text.contains(
+                "Runs with 3 arguments:\n  \u{201c}-n\u{201d}\n  \u{201c}60\u{201d}\n  \
+                 \u{201c}127.0.0.1\u{201d}\n"
+            ),
+            "{text}"
+        );
+        let good = code(&f);
+        let (c, t) = ask(
+            &f.pipe,
+            &format!("grant {} --all-listed --listed {good}", f.id),
+        );
+        assert_eq!(c, DONE, "{t}");
+        let r = Registry::open_from_env(&f.paths.root).unwrap();
+        let m = &r.inventory.modules[&f.id];
+        let said = hideout_shell::permission_dialog::one_run_reply(
+            &m.one_run.as_ref().expect("allowed for one run").exe_path,
+        );
+        assert!(
+            said.to_lowercase()
+                .contains("ping.exe runs whatever it is given"),
+            "{said}"
+        );
+        assert!(t.contains(&said) && !t.contains("bound to"), "{t}");
+        assert!(m.bound.is_none(), "{:?}", m.bound);
+        assert_eq!(m.granted.len(), 2);
+        // An app with a program file of its own keeps the old answer.
+        let o = fx("onerun-own", &own());
+        let (_, text) = permissions(&o.paths.root, &o.id);
+        assert!(
+            text.contains("Runs with 1 argument:\n  \u{201c}--quiet\u{201d}\n"),
+            "{text}"
+        );
     }
 
     #[test]

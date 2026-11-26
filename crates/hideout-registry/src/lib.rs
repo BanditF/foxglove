@@ -24,6 +24,7 @@ pub mod installed;
 pub mod inventory;
 pub mod keyboard;
 pub mod lab;
+pub mod one_run;
 pub mod permission;
 pub mod sync_root;
 pub mod tools;
@@ -211,6 +212,10 @@ pub struct Registry {
     /// The disk and cloud-sync questions the dev-folder checks ask (the system's, unless a test
     /// sets fakes with `Registry::with_dev_probes`, behind the `test-probes` feature).
     pub(crate) probes: dev_folder::DevProbes,
+    /// The Windows folder, as the system reports it ([`one_run::system_windows_folder`]): an
+    /// app whose program is inside it gets a one-run OK (#1452). A test sets another with
+    /// `Registry::set_windows_folder`, behind the `test-probes` feature.
+    pub(crate) windows_folder: Option<String>,
     /// The API a legacy `plugin.toml` is checked against (§4.10): the Foxglove plugin API
     /// (`foxglove_plugin_api::API_VERSION`, what `plugin-host` serves), not the hub's version.
     pub legacy_api: Version,
@@ -276,6 +281,7 @@ fn void_carried(o: &mut Installed, now: &str) {
         o.last_choice = old;
     }
     o.bound = None;
+    o.one_run = None;
     if let Some(k) = o
         .keyboard
         .as_mut()
@@ -391,6 +397,7 @@ impl Registry {
             dev_unsigned: dev.unsigned,
             dev_folders: dev.folders,
             probes: dev_folder::DevProbes::default(),
+            windows_folder: one_run::system_windows_folder(),
             legacy_api: foxglove_plugin_api::API_VERSION,
             lab: false,
             lab_report: Vec::new(),
@@ -420,6 +427,13 @@ impl Registry {
     pub fn with_dev_probes(mut self, probes: dev_folder::DevProbes) -> Registry {
         self.probes = probes;
         self
+    }
+
+    /// Takes `folder` for the Windows folder instead of the system's (tests only: the one-run
+    /// rule for a program "inside Windows" is then tried on a folder a test owns).
+    #[cfg(feature = "test-probes")]
+    pub fn set_windows_folder(&mut self, folder: Option<&str>) {
+        self.windows_folder = folder.map(String::from);
     }
 
     /// [`Registry::with_dev_probes`] on a registry already open (tests only).
@@ -543,6 +557,7 @@ impl Registry {
                 declined_permissions: Vec::new(),
                 last_choice: Vec::new(),
                 bound: None,
+                one_run: None,
                 keyboard: None,
                 identity: None,
             },
@@ -603,6 +618,7 @@ impl Registry {
                 declined_permissions: Vec::new(),
                 last_choice: Vec::new(),
                 bound: None,
+                one_run: None,
                 keyboard: None,
                 identity: None,
             },
@@ -998,6 +1014,7 @@ impl Registry {
                 .map(|o| o.last_choice.clone())
                 .unwrap_or_default(),
             bound: old.as_ref().and_then(|o| o.bound.clone()),
+            one_run: None,
             // The grant is for the adopted legacy module only; a catalog install never has one.
             keyboard: None,
             identity: None,
@@ -1090,6 +1107,7 @@ impl Registry {
                 .map(|o| o.last_choice.clone())
                 .unwrap_or_default(),
             bound: old.as_ref().and_then(|o| o.bound.clone()),
+            one_run: old.as_ref().and_then(|o| o.one_run.clone()),
             // Registering again keeps the user's grant as it is: it is checked against the
             // program's path and hash at every launch, never carried by the id.
             keyboard: old.as_ref().and_then(|o| o.keyboard.clone()),

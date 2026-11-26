@@ -1471,6 +1471,45 @@ pub fn quoted_line(raw: &str, max: usize) -> Option<String> {
     unquoted_line(raw, max).map(|n| format!("\u{201c}{n}\u{201d}"))
 }
 
+/// One argument of an app's command as it is drawn between “ ” marks on one line. The hidden
+/// characters of [`hidden_in_name`] (every control character, so a tab and a line break too)
+/// and the line and paragraph separators are dropped, and every double quote mark
+/// ([`QUOTE_MARKS`]) becomes `'`, so an argument cannot end its own quotes. Spaces stay where
+/// they are: they are part of the argument, and an empty argument stays empty. Also answers
+/// whether anything was dropped or replaced (the reader is then told).
+pub fn shown_argument(raw: &str) -> (String, bool) {
+    let mut changed = false;
+    let text = raw
+        .chars()
+        .filter_map(|c| {
+            if hidden_in_name(c) || matches!(c, '\u{2028}' | '\u{2029}') {
+                changed = true;
+                None
+            } else if QUOTE_MARKS.contains(&c) {
+                changed = true;
+                Some('\'')
+            } else {
+                Some(c)
+            }
+        })
+        .collect();
+    (text, changed)
+}
+
+/// `text` cut in the middle when it has more than `max` characters: its first `head`, "…" and
+/// its last `max - head - 1`, so the end stays visible. Shorter text is returned as it is.
+pub fn cut_middle(text: &str, max: usize, head: usize) -> String {
+    let n = text.chars().count();
+    if n <= max {
+        return text.to_string();
+    }
+    let head = head.min(max.saturating_sub(1));
+    let tail = max.saturating_sub(head + 1);
+    let start: String = text.chars().take(head).collect();
+    let end: String = text.chars().skip(n - tail).collect();
+    format!("{start}\u{2026}{end}")
+}
+
 /// A [`Head`]'s name: [`display_name`], at most [`HEAD_NAME_MAX`] characters (nothing else in
 /// that file was checked).
 fn head_name(raw: &str, id: &str) -> String {
@@ -1870,5 +1909,46 @@ mod line_tests {
         // The cut counts what is inside the quotes.
         let long = quoted_line(&"y".repeat(90), 40).unwrap();
         assert_eq!(long.chars().count(), 42, "{long}");
+    }
+
+    #[test]
+    fn a_shown_argument_keeps_its_spaces_and_cannot_end_its_quotes() {
+        // Plain text, spaces included, is untouched and not reported as changed.
+        assert_eq!(
+            shown_argument("--name  two words "),
+            ("--name  two words ".into(), false)
+        );
+        assert_eq!(shown_argument(""), (String::new(), false));
+        assert_eq!(shown_argument("Bob's"), ("Bob's".into(), false));
+        // Every double quote mark becomes an apostrophe; none is left to close the quotes.
+        let every: String = QUOTE_MARKS.iter().collect();
+        let (text, changed) = shown_argument(&format!("a{every}b"));
+        assert!(changed);
+        assert_eq!(text, format!("a{}b", "'".repeat(QUOTE_MARKS.len())));
+        // Controls (tab and line breaks too), direction marks, zero-width characters and the
+        // line and paragraph separators are dropped: one line, nothing hidden.
+        let (text, changed) =
+            shown_argument("a\tb\r\nc\u{202e}d\u{200b}e\u{2028}f\u{2029}g\u{7}\u{85}h");
+        assert!(changed);
+        assert_eq!(text, "abcdefgh");
+        assert_eq!(shown_argument("\u{202e}\n"), (String::new(), true));
+    }
+
+    #[test]
+    fn a_long_text_is_cut_in_the_middle_and_keeps_its_end() {
+        let exact: String = "x".repeat(80);
+        assert_eq!(cut_middle(&exact, 80, 30), exact);
+        let long = format!("{}{}", "a".repeat(40), "z".repeat(41));
+        let cut = cut_middle(&long, 80, 30);
+        assert_eq!(cut.chars().count(), 80, "{cut}");
+        let end = format!("{}{}", "a".repeat(8), "z".repeat(41));
+        assert_eq!(cut, format!("{}\u{2026}{end}", "a".repeat(30)), "{cut}");
+        // Counted in characters, not bytes.
+        let wide = "\u{e9}".repeat(100);
+        assert_eq!(cut_middle(&wide, 40, 20).chars().count(), 40);
+        // Nothing breaks at the smallest lengths.
+        assert_eq!(cut_middle("abc", 0, 5), "\u{2026}");
+        assert_eq!(cut_middle("abc", 1, 5), "\u{2026}");
+        assert_eq!(cut_middle("abc", 2, 5), "a\u{2026}");
     }
 }

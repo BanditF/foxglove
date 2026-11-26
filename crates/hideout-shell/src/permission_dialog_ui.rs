@@ -10,10 +10,11 @@ use crate::egui;
 use crate::keyboard_grant::{DIALOG_FOOTER, DIALOG_ITEMS};
 use crate::keyboard_grant_ui::rgb as c;
 use crate::permission_dialog::{
-    earlier_label, keep_understand_said, keep_warning, keyboard_line, needs_ok_heading, All,
-    FirstRun, Group, ItemWord, Keep, KeepAnswer, KeepConfirm, PermAnswer, PermDialog, PermHeader,
-    Section, CANCEL, CHANGE, FIRST_RUN_INTRO, HIDE, HISTORY_SHOWN, KEEP_CONFIRM_OK,
-    KEEP_CONFIRM_TITLE, KEEP_LABEL, NOT_NOW, SHOW, TURN_ALL_OFF, TURN_OFF, UNDERSTAND,
+    earlier_label, keep_understand_said, keep_warning, keyboard_line, needs_ok_heading, show_all,
+    All, FirstRun, Group, ItemWord, Keep, KeepAnswer, KeepConfirm, PermAnswer, PermDialog,
+    PermHeader, Section, ARGS_NOTE, ARGS_OPEN_LINES, CANCEL, CHANGE, FIRST_RUN_INTRO, HIDE,
+    HISTORY_SHOWN, KEEP_CONFIRM_OK, KEEP_CONFIRM_TITLE, KEEP_LABEL, NOT_NOW, SHOW, SHOW_FEWER,
+    TURN_ALL_OFF, TURN_OFF, UNDERSTAND,
 };
 use crate::theme::Tokens;
 
@@ -97,7 +98,7 @@ pub(crate) fn perm_dialog_ids(
             if d.reason.is_some() || !d.before_lines().is_empty() {
                 ui.add_space(6.0);
             }
-            head_ui(ui, t, d);
+            head_ui(ui, t, d, &mut ids);
             ui.add_space(6.0);
             // Scrolls inside when the list is taller than the window allows; the buttons stay.
             let scroll = egui::ScrollArea::vertical()
@@ -225,7 +226,7 @@ pub(crate) fn first_run_dialog_ids(
                                 let rt = egui::RichText::new(line).color(c(t.attention));
                                 ui.label(if i == 0 { rt.strong() } else { rt });
                             }
-                            head_ui(ui, t, sec);
+                            head_ui(ui, t, sec, &mut ids);
                             ui.add_space(6.0);
                             list_ui(ui, t, sec, &mut ids);
                             ui.add_space(8.0);
@@ -287,7 +288,7 @@ pub(crate) fn first_run_dialog_ids(
 }
 
 /// The intro, what the app can do (always visible, bold) and where it comes from.
-fn head_ui(ui: &mut egui::Ui, t: &Tokens, d: &PermDialog) {
+fn head_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui::Id>) {
     if let Some(line) = d.capability_line() {
         ui.label(egui::RichText::new(line).strong().color(c(t.text)));
         ui.add_space(4.0);
@@ -304,6 +305,7 @@ fn head_ui(ui: &mut egui::Ui, t: &Tokens, d: &PermDialog) {
                     .wrap()
                     .selectable(true),
             );
+            args_ui(ui, t, d, ids);
         });
         ui.add_space(8.0);
     }
@@ -311,6 +313,64 @@ fn head_ui(ui: &mut egui::Ui, t: &Tokens, d: &PermDialog) {
     // collapsed list under it.
     if d.capability_line().is_none() {
         ui.label(d.intro());
+    }
+}
+
+/// The arguments the program is run with, under its path in the same plate (#1452): one per
+/// line in quotes, the first few of a long list with a link that opens the rest (in a scroll
+/// area, so a long list can't push the buttons away). Nothing is drawn for no arguments.
+fn args_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui::Id>) {
+    let Some(heading) = d.args_heading() else {
+        return;
+    };
+    let line = |ui: &mut egui::Ui, text: String| {
+        ui.add(
+            egui::Label::new(fine(ui, text).monospace().color(c(t.text_muted)))
+                .wrap()
+                .selectable(true),
+        );
+    };
+    ui.add_space(4.0);
+    line(ui, heading);
+    let lines = d.args_drawn();
+    let open = d.args_fold() && d.view.args_open;
+    // One scope either way, so the link under it keeps its id (and the focus) when it is used.
+    ui.scope(|ui| {
+        if open {
+            let row =
+                ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y;
+            egui::ScrollArea::vertical()
+                .id_salt(("hideout.permission-dialog.args", &d.id))
+                .max_height(row * ARGS_OPEN_LINES as f32)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for text in lines {
+                        line(ui, text);
+                    }
+                });
+        } else {
+            for text in lines {
+                line(ui, text);
+            }
+        }
+    });
+    if d.args_note() {
+        ui.label(fine(ui, ARGS_NOTE).color(c(t.text_muted)));
+    }
+    if d.args_fold() {
+        let word = if d.view.args_open {
+            SHOW_FEWER.to_string()
+        } else {
+            show_all(d.args.len())
+        };
+        let b =
+            ui.add(egui::Button::new(egui::RichText::new(&word).color(c(t.accent))).frame(false));
+        let said = format!("{word} arguments");
+        ui.ctx().accesskit_node_builder(b.id, |n| n.set_label(said));
+        if b.clicked() {
+            d.view.args_open = !d.view.args_open;
+        }
+        ids.push(b.id);
     }
 }
 
@@ -540,10 +600,13 @@ fn binding_ui(
     ids: &mut Vec<egui::Id>,
     code: bool,
 ) {
-    let [b0, b1, b2] = d.binding_lines();
-    ui.label(b0);
-    ui.label(fine(ui, b1).color(c(t.text_muted)));
-    ui.label(fine(ui, b2).color(c(t.text_muted)));
+    let mut lines = d.binding_text().into_iter();
+    if let Some(first) = lines.next() {
+        ui.label(first);
+    }
+    for line in lines {
+        ui.add(egui::Label::new(fine(ui, line).color(c(t.text_muted))).wrap());
+    }
     if let Some(k) = d.keep.as_mut() {
         keep_block(ui, t, &d.name, &d.path, d.items.is_empty(), k, ids);
     }

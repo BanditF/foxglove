@@ -15,8 +15,9 @@ use hideout_contract::permission::{fact_words, Permission};
 use hideout_contract::{Error, ErrorId};
 use serde::Serialize;
 
-use crate::inventory::{Bound, FollowFolder, ADOPTED};
+use crate::inventory::{Bound, FollowFolder, RunOk, RunState, ADOPTED};
 use crate::keyboard::{canonical_path, VoidReason};
+use crate::one_run::OneRun;
 use crate::{adopted_exe, Failure, Registry};
 
 /// The list format the code is computed over.
@@ -267,10 +268,19 @@ pub struct View {
     /// PC's own fixed drive. Only then may a re-ask show the earlier answer as pre-checked
     /// (display only). Moved, network, removable or unbound: false.
     pub same_place: bool,
+    /// For an app with a one-run OK ([`View::one_run`]) nothing is bound: this is then that
+    /// run's record in a binding's shape ([`crate::inventory::RunOk::as_bound`]), so the page
+    /// can say when it was allowed. It keeps and follows nothing.
     pub bound: Option<Bound>,
     /// The program changed or moved since the allow (or the binding was already voided).
     pub void: Option<VoidReason>,
     pub adopted: bool,
+    /// The app's program runs whatever it is handed (#1452, [`crate::one_run`]): an Allow holds
+    /// for one run, nothing is remembered and "Keep my OK" is not offered.
+    pub one_run: Option<OneRun>,
+    /// A one-run app whose OK was used up by a start (or was a remembered OK from before the
+    /// rule): the ask is the ordinary one for a start, not "the app changed".
+    pub asks_again: bool,
     /// Whether a cloud service keeps the app's folder in step (adopted apps with a path; else
     /// `Local`). `Unknown` when it could not be read: nothing is kept for such a folder.
     pub folder_sync: crate::sync_root::SyncAnswer,
@@ -287,6 +297,8 @@ pub struct Outcome {
     pub bound_path: String,
     /// That program's SHA-256 as the grant records it.
     pub bound_sha256: String,
+    /// The OK was stored for one run only, and why (#1452); nothing was bound.
+    pub one_run: Option<OneRun>,
 }
 
 fn list_changed(shown: &str, now: &str) -> Failure {
@@ -294,6 +306,24 @@ fn list_changed(shown: &str, now: &str) -> Failure {
         ErrorId::PermissionListChanged,
         format!("the list changed since it was shown (shown {shown}, now {now})"),
     ))
+}
+
+/// The end of a one-run OK (#1452): everything allowed waits for the user again, the choice
+/// kept for the next ask, and a dev-folder enrolment ends with it.
+fn end_grants(m: &mut crate::inventory::Installed) {
+    let old = std::mem::take(&mut m.granted);
+    m.pending_permissions.extend(old.iter().cloned());
+    m.pending_permissions.sort();
+    m.pending_permissions.dedup();
+    if !old.is_empty() {
+        m.last_choice = old;
+    }
+    if m.identity
+        .as_ref()
+        .is_some_and(|i| matches!(i.class, crate::inventory::IdentityClass::DevFolder { .. }))
+    {
+        m.identity = None;
+    }
 }
 
 pub(crate) fn io_invalid(msg: &str) -> Failure {
@@ -530,7 +560,7 @@ impl Registry {
         let mut canon: Vec<(&str, ItemState)> =
             items.iter().map(|i| (i.raw.as_str(), i.state)).collect();
         canon.sort_by(|a, b| a.0.cmp(b.0));
-        let doc = serde_json::json!({
+        let mut doc = serde_json::json!({
             "format": LIST_FORMAT,
             "id": id,
             "version": m.version,
@@ -542,6 +572,12 @@ impl Registry {
                 .map(|(r, s)| serde_json::json!({"raw": r, "state": s}))
                 .collect::<Vec<_>>(),
         });
+        // The code is for the whole command (#1452): an Allow for one argument list is refused
+        // for another. Only a list that has arguments adds them, so the code of an app without
+        // any is what it was before, and an OK stored for it still matches.
+        if !run_args.is_empty() {
+            doc["run_args"] = serde_json::json!(run_args);
+        }
         let list_hash = foxglove_plugin_trust::sha256_hex(doc.to_string().as_bytes());
         Ok(Listing {
             id: id.into(),
@@ -579,8 +615,18 @@ impl Registry {
             .collect();
         granted.sort_by(|a, b| (a.group, &a.raw).cmp(&(b.group, &b.raw)));
         let listing_path = listing.exe_path.clone();
+        let one_run = self.one_run(id);
+        let bound = m
+            .bound
+            .clone()
+            .or_else(|| m.one_run.as_ref().map(RunOk::as_bound));
+        let asks_again = one_run.is_some()
+            && match m.one_run.as_ref() {
+                Some(r) => r.state == RunState::Ended,
+                None => m.bound.as_ref().is_some_and(|b| !b.void),
+            };
         let same_place = m.source == ADOPTED
-            && m.bound.as_ref().is_some_and(|b| {
+            && bound.as_ref().is_some_and(|b| {
                 // Args compared exactly (fail closed): a grant bound with no args does not
                 // match a manifest that now has some.
                 reask_same_place(&listing.exe_path, &b.exe_path) && self.run_args(id) == b.run_args
@@ -592,9 +638,11 @@ impl Registry {
             pending: m.pending_permissions.clone(),
             last_choice: m.last_choice.clone(),
             same_place,
-            bound: m.bound.clone(),
+            bound,
             void: self.binding_void(id),
             adopted: m.source == ADOPTED,
+            one_run,
+            asks_again,
             folder_sync: if m.source == ADOPTED && !listing_path.is_empty() {
                 self.probes.sync.check(&listing_path)
             } else {
@@ -619,6 +667,12 @@ impl Registry {
     /// and only for an adopted program on a local fixed drive; anything else is refused and
     /// nothing is written. Every Allow states it again: `false` leaves no follow.
     ///
+    /// An app whose program runs whatever it is handed ([`crate::one_run`], #1452) gets no
+    /// binding from any caller: the Allow is stored as one run's OK
+    /// ([`crate::inventory::RunOk`]), `follow` is refused, and no dev folder enrols it. This is
+    /// the only place an Allow is stored, so the rule holds for the window and the control pipe
+    /// alike.
+    ///
     /// [`FollowFolder`]: crate::inventory::FollowFolder
     #[allow(clippy::too_many_arguments)]
     pub fn approve_listed(
@@ -634,7 +688,7 @@ impl Registry {
         self.reload_inventory()?;
         // A new build the folder grant keeps is recorded first, so the Sensitive items it
         // withholds are pending in the list this Allow is checked against (#1465).
-        self.keep_followed(id, now)?;
+        self.keep_followed_inner(id, now)?;
         // An Allow (or a Deny) writes a binding. Grants that are void (legacy, no binding, or
         // the program changed) must not ride into it unseen: move them back to waiting first,
         // so the list code changes and the dialog reopens with everything the binding covers.
@@ -644,6 +698,16 @@ impl Registry {
         let list = self.permission_list(id)?;
         if !list.matches(list_code) {
             return Err(list_changed(list_code, list.code()));
+        }
+        let one_run = if self.inventory.modules[id].source == ADOPTED {
+            crate::one_run::one_run_rule(&list.exe_path, self.windows_folder.as_deref())
+        } else {
+            None
+        };
+        if follow && one_run.is_some() {
+            return Err(io_invalid(
+                "the OK for this app is for one run only and can't be kept",
+            ));
         }
         let follow = if follow {
             if by != FOLLOW_SET_BY {
@@ -682,6 +746,7 @@ impl Registry {
         // (identity `dev-folder`, nothing inherited: `sensitive_confirmed` starts empty). Any
         // other Allow (and a Deny, which allows nothing) drops a dev-folder identity the app had.
         let dev_folder = if by == FOLLOW_SET_BY
+            && one_run.is_none()
             && !chosen.is_empty()
             && self.inventory.modules[id].source == ADOPTED
         {
@@ -735,18 +800,34 @@ impl Registry {
         m.declined_permissions.sort();
         m.declined_permissions.dedup();
         m.last_choice.clear();
-        m.bound = Some(Bound {
-            manifest_sha256: list.manifest_sha256.clone(),
-            exe_path: list.exe_path.clone(),
-            exe_sha256: list.exe_sha256.clone(),
-            list_hash: list.list_hash.clone(),
-            at: now.into(),
-            by: by.into(),
-            run_args: list.run_args.clone(),
-            void: false,
-            attested: m.bound.take().map(|b| b.attested).unwrap_or_default(),
-            follow,
-        });
+        if one_run.is_some() {
+            // Nothing is remembered: this OK is for the next start, and that start uses it up.
+            m.bound = None;
+            m.one_run = Some(RunOk {
+                manifest_sha256: list.manifest_sha256.clone(),
+                exe_path: list.exe_path.clone(),
+                exe_sha256: list.exe_sha256.clone(),
+                list_hash: list.list_hash.clone(),
+                at: now.into(),
+                by: by.into(),
+                run_args: list.run_args.clone(),
+                state: RunState::Allowed,
+            });
+        } else {
+            m.one_run = None;
+            m.bound = Some(Bound {
+                manifest_sha256: list.manifest_sha256.clone(),
+                exe_path: list.exe_path.clone(),
+                exe_sha256: list.exe_sha256.clone(),
+                list_hash: list.list_hash.clone(),
+                at: now.into(),
+                by: by.into(),
+                run_args: list.run_args.clone(),
+                void: false,
+                attested: m.bound.take().map(|b| b.attested).unwrap_or_default(),
+                follow,
+            });
+        }
         self.save_inventory()?;
         let refused: Vec<(String, Error)> = refused_raw.into_iter().zip(refused).collect();
         Ok(Outcome {
@@ -755,6 +836,7 @@ impl Registry {
             refused,
             bound_sha256: list.exe_sha256,
             bound_path: list.exe_path,
+            one_run,
         })
     }
 
@@ -878,6 +960,13 @@ impl Registry {
         let Some(m) = self.inventory.modules.get(id) else {
             return Check::Fine;
         };
+        // A one-run app is held to its run's record, never to a binding: one from before the
+        // rule (or written into the file) is not an OK for it.
+        if m.source == ADOPTED
+            && (self.one_run(id).is_some() || (m.bound.is_none() && m.one_run.is_some()))
+        {
+            return self.one_run_check(id, m, program, pinned);
+        }
         let Some(b) = m.bound.as_ref() else {
             // Old data: an adopted record with grants and no binding would carry them to any
             // program. Every Allow writes a binding, so this has no legitimate source.
@@ -924,6 +1013,118 @@ impl Registry {
         }
     }
 
+    /// The check for an app with a one-run OK (#1452). Without a record there is no OK: grants
+    /// that are there anyway (a remembered OK from before the rule) are void. A record that is
+    /// over allows nothing. A live one holds the program to the path, the bytes and the
+    /// arguments of the Allow; nothing excuses a difference (no follow, no dev folder). At the
+    /// launch (`pinned`) the start must also have been counted ([`Registry::keep_followed`]),
+    /// so a start that could not be written down does not run on an OK that stays unused.
+    fn one_run_check(
+        &self,
+        id: &str,
+        m: &crate::inventory::Installed,
+        program: impl FnOnce() -> Result<(String, String), Failure>,
+        pinned: bool,
+    ) -> Check {
+        let Some(r) = m.one_run.as_ref() else {
+            return if m.granted.is_empty() && m.bound.as_ref().is_none_or(|b| !b.void) {
+                Check::Fine
+            } else {
+                Check::Void(VoidReason::Changed)
+            };
+        };
+        if !r.live() {
+            return Check::Void(VoidReason::Changed);
+        }
+        match program() {
+            Ok((path, hash)) => {
+                if self.run_args(id) != r.run_args {
+                    Check::Void(VoidReason::Changed)
+                } else if !crate::keyboard::same_path(&path, &r.exe_path) {
+                    Check::Void(VoidReason::Moved)
+                } else if !hash.eq_ignore_ascii_case(&r.exe_sha256)
+                    || (pinned && r.state != RunState::Started)
+                {
+                    Check::Void(VoidReason::Changed)
+                } else {
+                    Check::Fine
+                }
+            }
+            Err(Failure::Io(e)) if e.kind() != std::io::ErrorKind::NotFound => Check::Unreadable,
+            Err(_) => Check::Void(VoidReason::Moved),
+        }
+    }
+
+    /// Why `id` gets a one-run OK (#1452), or `None`: the rule of [`crate::one_run`] on the
+    /// canonical path of an adopted app's program as it is now (the path as written when the
+    /// file is not there, so a missing runner is still a runner).
+    pub fn one_run(&self, id: &str) -> Option<OneRun> {
+        self.inventory
+            .modules
+            .get(id)
+            .filter(|m| m.source == ADOPTED)?;
+        let exe = adopted_exe(&self.manifest_checked(id).ok()?).ok()?;
+        let path = canonical_path(&exe).unwrap_or_else(|_| exe.to_string_lossy().into_owned());
+        crate::one_run::one_run_rule(&path, self.windows_folder.as_deref())
+    }
+
+    /// Counts a start of a one-run app (#1452), before the launch checks: the first start after
+    /// an Allow marks the OK as used (`started`); any start after that ends it, so everything
+    /// allowed waits for the user again (the choice kept in `last_choice`) and the launch is
+    /// refused until the next Allow. A remembered OK such an app still has from before the rule
+    /// ends the same way. Written under the inventory's lock, against the file as it is then.
+    fn one_run_step(&mut self, id: &str, now: &str) -> Result<(), Failure> {
+        let Some(m) = self.inventory.modules.get(id) else {
+            return Ok(());
+        };
+        if m.source != ADOPTED {
+            return Ok(());
+        }
+        let rule = self.one_run(id).is_some();
+        let old_binding = rule && m.bound.is_some();
+        if !old_binding && !m.one_run.as_ref().is_some_and(RunOk::live) {
+            return Ok(());
+        }
+        let mut ended = false;
+        let inv = crate::inventory::Inventory::update(&self.home.join("inventory.json"), |inv| {
+            let Some(m) = inv.modules.get_mut(id) else {
+                return;
+            };
+            if rule {
+                if let Some(b) = m.bound.take() {
+                    m.one_run = Some(RunOk {
+                        manifest_sha256: b.manifest_sha256,
+                        exe_path: b.exe_path,
+                        exe_sha256: b.exe_sha256,
+                        list_hash: b.list_hash,
+                        at: b.at,
+                        by: b.by,
+                        run_args: b.run_args,
+                        state: RunState::Started,
+                    });
+                }
+            }
+            let Some(r) = m.one_run.as_mut().filter(|r| r.live()) else {
+                return;
+            };
+            if r.state == RunState::Allowed {
+                r.state = RunState::Started;
+                return;
+            }
+            r.state = RunState::Ended;
+            r.exe_sha256.clear();
+            end_grants(m);
+            ended = true;
+        })?;
+        if let Some(m) = inv.modules.get(id) {
+            self.inventory.modules.insert(id.into(), m.clone());
+        }
+        if ended {
+            let _ = self.void_keyboard(id, VoidReason::Other, now);
+        }
+        Ok(())
+    }
+
     /// Whether `b`'s follow-folder grant keeps a new hash of the program now at `path`
     /// (canonical, as [`Registry::program`] read it): a follow set by the dialog, the binding
     /// not void, `path` exactly the bound path and exactly the follow's folder and file name, on
@@ -956,8 +1157,18 @@ impl Registry {
     /// updater or installer attests it first (`attest_update`), so the binding already names
     /// the new file. A dev-folder step is unchanged: its record moves with it. Does nothing (false) without a follow, with no
     /// change, or with a change the follow does not keep (that one voids as before). Hub-side
-    /// only; the turn-on check and the launch call it before they check the binding.
+    /// only; the launch calls it before it checks the binding.
+    ///
+    /// It is called once for every start, so it is also where a start of a one-run app is
+    /// counted (#1452): the start after an Allow uses that OK, and every later one ends it.
     pub fn keep_followed(&mut self, id: &str, now: &str) -> Result<bool, Failure> {
+        self.one_run_step(id, now)?;
+        self.keep_followed_inner(id, now)
+    }
+
+    /// [`Registry::keep_followed`] without counting a start: what an Allow and the turn-on
+    /// check use.
+    fn keep_followed_inner(&mut self, id: &str, now: &str) -> Result<bool, Failure> {
         let Some(m) = self.inventory.modules.get(id) else {
             return Ok(false);
         };
@@ -1092,17 +1303,23 @@ impl Registry {
     /// check ([`Registry::binding_void`], the launch) still refuses, and the next check that
     /// can read the file decides.
     pub fn void_if_changed(&mut self, id: &str, now: &str) -> Result<Option<VoidReason>, Failure> {
-        self.keep_followed(id, now)?;
+        self.keep_followed_inner(id, now)?;
         let Check::Void(reason) = self.binding_check(id, || self.program(id), false) else {
             return Ok(None);
         };
-        if self.inventory.modules[id]
-            .bound
-            .as_ref()
-            .is_some_and(|b| b.void)
+        let m = &self.inventory.modules[id];
+        if m.bound.as_ref().is_some_and(|b| b.void) {
+            return Ok(None);
+        }
+        // A one-run OK that is already over, with nothing left to take back.
+        if m.bound.is_none()
+            && m.granted.is_empty()
+            && m.one_run.as_ref().is_some_and(|r| !r.live())
         {
             return Ok(None);
         }
+        // A one-run app keeps no binding, void or not: what is left is its run's record.
+        let one_run = m.bound.is_none() || self.one_run(id).is_some();
         let path = self.home.join("inventory.json");
         let inv = crate::inventory::Inventory::update(&path, |inv| {
             if let Some(m) = inv.modules.get_mut(id) {
@@ -1117,7 +1334,27 @@ impl Registry {
                 }) {
                     m.identity = None;
                 }
-                if let Some(b) = m.bound.as_mut() {
+                if one_run {
+                    if let Some(b) = m.bound.take() {
+                        // A remembered OK from before the rule: over, as a used one is.
+                        m.one_run = Some(RunOk {
+                            manifest_sha256: b.manifest_sha256,
+                            exe_path: b.exe_path,
+                            exe_sha256: String::new(),
+                            list_hash: b.list_hash,
+                            at: b.at,
+                            by: b.by,
+                            run_args: b.run_args,
+                            state: RunState::Ended,
+                        });
+                    }
+                    if let Some(r) = m.one_run.as_mut() {
+                        if r.live() {
+                            r.state = RunState::Void;
+                        }
+                        r.exe_sha256.clear();
+                    }
+                } else if let Some(b) = m.bound.as_mut() {
                     b.void = true;
                     b.exe_sha256.clear();
                     b.at = now.into();
