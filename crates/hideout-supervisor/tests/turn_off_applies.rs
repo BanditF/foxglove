@@ -5,7 +5,8 @@
 //!
 //! What must hold: an app never keeps running as it was allowed before. It is restarted, and
 //! one that can't be started again is stopped. A turn-off that leaves the containment as it
-//! was restarts nothing; with nothing running, nothing restarts.
+//! was restarts nothing; with nothing running, nothing restarts. With no supervisor to ask,
+//! nothing claims the app is not running. A turn-off that can't be recorded stops the app.
 #![cfg(windows)]
 // It turns on developer mode from the environment, which only a build with `lab-switches` reads.
 #![cfg(feature = "lab-switches")]
@@ -34,8 +35,8 @@ fn temp(name: &str) -> PathBuf {
 }
 
 /// An app allowed any network, a keyboard and notifications, in a hub that contains apps. Its
-/// program is removed once it is registered: nothing of it can ever start.
-fn fixture(id: &str) -> PathBuf {
+/// program (the second path) is removed before a supervisor starts: nothing of it can ever start.
+fn fixture(id: &str) -> (PathBuf, PathBuf) {
     let out = temp("out");
     let exe = out.join("app.exe");
     std::fs::write(&exe, b"build 1").unwrap();
@@ -69,8 +70,7 @@ fn fixture(id: &str) -> PathBuf {
     let mut text = std::fs::read_to_string(&toml).unwrap_or_default();
     text.push_str("\n[supervisor]\nappcontainer = true\n");
     std::fs::write(&toml, text).unwrap();
-    std::fs::remove_file(&exe).unwrap();
-    home
+    (home, exe)
 }
 
 fn hub(home: &Path) -> Hub {
@@ -109,8 +109,23 @@ fn runs(sup: &Supervisor, id: &str, n: u64) {
 fn a_turn_off_that_changes_containment_reaches_the_app_that_runs() {
     let id = format!("turn-off-{}", std::process::id());
     let id = id.as_str();
-    let home = fixture(id);
+    let (home, exe) = fixture(id);
     let h = hub(&home);
+
+    // No supervisor on this folder yet: nothing can tell whether the app runs, and nothing
+    // says it does not.
+    let a = off(&home, &h, id, "net");
+    assert!(a.unreached() && !a.restarts(), "{a:?}");
+    assert_eq!(a.pipe_line(), Some(words::PIPE_UNREACHED));
+    // Allowed again, as an Allow would.
+    let mut reg = Registry::open_from_env(&home).unwrap();
+    let list = reg.permission_list(id).unwrap();
+    let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    reg.approve_listed(id, list.code(), &all, &[], NOW, "dialog", false)
+        .unwrap();
+    drop(reg);
+    std::fs::remove_file(&exe).unwrap();
+
     let sup = Supervisor::start(&home, h.clone());
     sup.feed(Ev::Known {
         id: id.into(),
@@ -156,4 +171,21 @@ fn a_turn_off_that_changes_containment_reaches_the_app_that_runs() {
         Value::Null,
         "a start by hand after the stop is not a restart to apply"
     );
+
+    // It runs, and a turn-off can't be recorded (the hub's records don't read): it is stopped
+    // and not started again, and the caller hears both.
+    assert_eq!(fact(&h, id, "state"), Value::String("running".into()));
+    std::fs::write(home.join("inventory.json"), b"not json").unwrap();
+    let e = revoke_items_in(&home, &h, id, Some(&["hub.notify".to_string()])).unwrap_err();
+    assert!(e.stopped, "{e:?}");
+    assert!(!e.why.is_empty());
+    assert_eq!(
+        fact(&h, id, "state"),
+        Value::String("install-failed".into())
+    );
+    assert_eq!(fact(&h, id, "failed"), Value::String("apply".into()));
+    assert_eq!(fact(&h, id, "restarted"), Value::Null);
+    // Nothing runs now: a second failure has nothing to stop and says so.
+    let e = revoke_items_in(&home, &h, id, Some(&["hub.notify".to_string()])).unwrap_err();
+    assert!(!e.stopped, "{e:?}");
 }

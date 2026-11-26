@@ -321,6 +321,12 @@ pub enum Ev {
         id: String,
         instance: Option<u64>,
     },
+    /// A turn-off that changes how the app is contained could not be recorded (#1451): what
+    /// runs of it is ended and nothing starts it again. It never keeps running as it was
+    /// allowed before; the row says it is stopped, with Start again.
+    StopUnapplied {
+        id: String,
+    },
 }
 
 /// How a turn-off that changes an app's containment came to apply ([`Cmd::Applied`]).
@@ -776,7 +782,9 @@ impl Policy {
             s.applying = true;
             s.then_launch = true;
             s.ready_by = None;
-            s.exit_by = None;
+            // Its end is reported within the wait any stop gets, or it counts as stopped
+            // (`tick`): whoever waits for this restart's answer always gets one.
+            s.exit_by = Some(now + EXIT_AFTER_PIPE);
             s.adopt_by = None;
             // The later cause is the one the row names.
             s.rebuilt_restart = false;
@@ -812,6 +820,37 @@ impl Policy {
                 how: Applied::NotRunning,
             });
         }
+    }
+
+    /// [`Ev::StopUnapplied`]: the running instance is ended and stays ended.
+    fn stop_unapplied(&mut self, id: &str, now: Instant, out: &mut Vec<Cmd>) {
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        if s.ended {
+            return;
+        }
+        s.then_launch = false;
+        s.restart_at = None;
+        s.ready_by = None;
+        s.adopt_by = None;
+        s.exit_by = None;
+        s.held = false;
+        s.ended = true;
+        let enabled = s.enabled;
+        self.note(id, now, "turned off but not recorded: stopped".into());
+        out.push(Cmd::Kill { id: id.into() });
+        if enabled {
+            self.stopped_to_apply(id, out);
+        }
+    }
+
+    /// The row of an app stopped because a turn-off could not be applied to it by a restart;
+    /// a restart that waits for its answer hears Stopped (`set_state`).
+    fn stopped_to_apply(&mut self, id: &str, out: &mut Vec<Cmd>) {
+        let reason = words::COULDNT_RESTART_TO_APPLY.to_string();
+        self.set_state(id, State::InstallFailed, Some(reason), out);
+        publish(out, format!("module.{id}.failed"), json!("apply"));
     }
 
     fn launch(&mut self, id: &str, out: &mut Vec<Cmd>) {
@@ -1418,6 +1457,7 @@ impl Policy {
             Ev::Round { on } => self.round(on, now, &mut out),
             Ev::Rebuilt { id } => self.rebuilt(&id, now, &mut out),
             Ev::Reapply { id, instance } => self.reapply(&id, instance, now, &mut out),
+            Ev::StopUnapplied { id } => self.stop_unapplied(&id, now, &mut out),
             Ev::StartNormally => {
                 self.safe_mode = false;
                 self.round = None;
@@ -1919,6 +1959,27 @@ impl Policy {
                 }
                 continue;
             }
+            if s.applying && s.then_launch && s.exit_by.is_some_and(|t| t <= now) {
+                // Ended to apply a turn-off (#1451) and no end was reported in time: nothing
+                // is started beside what may still be there. It is ended once more and the
+                // app reads as stopped; a late end starts nothing.
+                s.exit_by = None;
+                s.then_launch = false;
+                s.ended = true;
+                let instance = s.instance;
+                out.push(Cmd::KillInstance {
+                    id: id.clone(),
+                    instance,
+                });
+                out.push(Cmd::Kill { id: id.clone() });
+                self.note(
+                    &id,
+                    now,
+                    "ended to apply a turn-off; no end reported within 5 s: stopped".into(),
+                );
+                self.stopped_to_apply(&id, &mut out);
+                continue;
+            }
             if s.then_launch && s.exit_by.is_some_and(|t| t <= now) {
                 // Asked to exit for a swap or Start again and still there: ended through its
                 // job, not a crash; its exit starts the next instance.
@@ -2078,7 +2139,7 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
         ),
         Ev::Idle { id } => (id.clone(), "module.idle".into()),
         // `rebuilt` and `reapply` leave their own lines (or none, when they do nothing).
-        Ev::Rebuilt { .. } | Ev::Reapply { .. } => return None,
+        Ev::Rebuilt { .. } | Ev::Reapply { .. } | Ev::StopUnapplied { .. } => return None,
         Ev::Known { .. }
         | Ev::Activate { .. }
         | Ev::StartNormally
@@ -3545,6 +3606,63 @@ mod rebuild_tests {
         exited(&mut p, t, 1, 1);
         assert!(reapply(&mut p, t).is_empty(), "the launch is under way");
         assert_eq!(applied(&started(&mut p, t, 2)), [Applied::Restarted]);
+    }
+
+    /// Whoever waits for the restart's answer always gets one: an end that is not reported
+    /// within the stop wait counts as stopped, and a late end starts nothing.
+    #[test]
+    fn a_restart_to_apply_with_no_end_reported_ends_stopped() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        reapply(&mut p, t);
+        assert_eq!(p.next_deadline(), Some(t + EXIT_AFTER_PIPE));
+        assert!(applied(&p.tick(t + EXIT_AFTER_PIPE - Duration::from_millis(1))).is_empty());
+        let c = p.tick(t + EXIT_AFTER_PIPE);
+        assert_eq!(applied(&c), [Applied::Stopped]);
+        assert!(c.contains(&Cmd::Kill { id: ID.into() }), "{c:?}");
+        assert_eq!(p.state(ID), Some(State::InstallFailed));
+        assert_eq!(fact(&c, "failed"), Some(json!("apply")));
+        assert_eq!(launches(&c), 0);
+        let late = exited(&mut p, t + EXIT_AFTER_PIPE, 1, 1);
+        assert_eq!(launches(&late), 0);
+        assert_eq!(p.crashes(ID, t + EXIT_AFTER_PIPE), 0);
+        assert_eq!(p.state(ID), Some(State::InstallFailed));
+        // An end reported in time: no deadline is left to fire.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        reapply(&mut p, t);
+        exited(&mut p, t, 1, 1);
+        started(&mut p, t, 2);
+        assert!(applied(&p.tick(t + EXIT_AFTER_PIPE)).is_empty());
+        assert_ne!(p.state(ID), Some(State::InstallFailed));
+    }
+
+    /// A turn-off that could not be recorded: the running app is stopped, not restarted.
+    #[test]
+    fn a_turn_off_that_cant_be_recorded_stops_the_running_app() {
+        let stop = |p: &mut Policy, t| p.handle(Ev::StopUnapplied { id: ID.into() }, t);
+        let (mut p, t) = (Policy::new(), Instant::now());
+        // Nothing known, nothing running: nothing to do.
+        assert!(stop(&mut p, t).is_empty());
+        running(&mut p, t);
+        let c = stop(&mut p, t);
+        assert!(c.contains(&Cmd::Kill { id: ID.into() }), "{c:?}");
+        assert_eq!(launches(&c), 0);
+        assert_eq!(p.state(ID), Some(State::InstallFailed));
+        assert_eq!(fact(&c, "failed"), Some(json!("apply")));
+        assert_eq!(p.restart_at(ID), None);
+        assert_eq!(launches(&exited(&mut p, t, 1, 1)), 0);
+        assert_eq!(p.crashes(ID, t), 0);
+        assert!(stop(&mut p, t).is_empty(), "already stopped");
+        // Start again is the way back.
+        assert_eq!(launches(&p.handle(Ev::StartAgain { id: ID.into() }, t)), 1);
+        // A restart to apply that is under way hears Stopped.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        reapply(&mut p, t);
+        let c = stop(&mut p, t);
+        assert_eq!(applied(&c), [Applied::Stopped]);
+        assert_eq!(launches(&exited(&mut p, t, 1, 1)), 0);
     }
 
     /// The driver's check after a start counts for that instance only.

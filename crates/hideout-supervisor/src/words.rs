@@ -628,6 +628,8 @@ pub fn every_string() -> Vec<String> {
         stopped_to_apply_row(),
         stopped_to_apply_said("Art"),
         turned_off_restarts("Art"),
+        turned_off_unreached("Art"),
+        NOT_SAVED_STOPPED.into(),
         DEV_CHIP_SAID.into(),
         NEW_BUILD_HELD_FOR_GAME.into(),
         NEW_BUILD_READY.into(),
@@ -731,6 +733,24 @@ pub const PIPE_RESTARTED: &str = "restarted to apply";
 pub const PIPE_STOPPED: &str =
     "stopped: couldn't restart to apply; start it again from the Apps page";
 pub const PIPE_NOT_RUNNING: &str = "not running; applies at the next start";
+/// The same place, when the restart has no outcome yet after the pipe's wait.
+pub const PIPE_STILL_RESTARTING: &str = "still restarting to apply; check the Apps page";
+/// The same place, when nothing here could tell whether the app runs.
+pub const PIPE_UNREACHED: &str =
+    "couldn't check if the app is running; if it is, turn it off and on again from the Apps page";
+/// The control pipe's line after the error of a turn-off that couldn't be saved, when the
+/// running app was stopped for it.
+pub const PIPE_STOPPED_UNSAVED: &str =
+    "stopped: the change couldn't be saved; start it again from the Apps page";
+
+/// A turn-off that couldn't be saved, and the running app was stopped so it doesn't keep
+/// running as it was allowed before.
+pub const NOT_SAVED_STOPPED: &str = "Turned off, but the change couldn't be saved. The app was stopped. Start it again from the Apps page.";
+
+/// The Access page's line for a turn-off when nothing could tell whether the app runs.
+pub fn turned_off_unreached(name: &str) -> String {
+    format!("Turned off. If {name} is running, turn it off and on again to apply.")
+}
 
 /// A rebuild is carried but waits for the end of a game.
 pub const NEW_BUILD_HELD_FOR_GAME: &str = "New build ready. Restarts after your game.";
@@ -1205,6 +1225,11 @@ mod tests {
             PIPE_RESTARTED.into(),
             PIPE_STOPPED.into(),
             PIPE_NOT_RUNNING.into(),
+            PIPE_STILL_RESTARTING.into(),
+            PIPE_UNREACHED.into(),
+            PIPE_STOPPED_UNSAVED.into(),
+            NOT_SAVED_STOPPED.into(),
+            turned_off_unreached("Foxglove"),
             NEW_BUILD_HELD_FOR_GAME.into(),
             NEW_BUILD_READY.into(),
             REBUILD_STARTS_IT.into(),

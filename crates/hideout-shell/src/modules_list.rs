@@ -614,7 +614,9 @@ pub fn row_changed(
         // Only with its line on the row: what is announced is what can be read.
         restarted_said: if restarted_line.as_ref() == Some(&words) {
             Some(words::restarted_said(&m.name))
-        } else if words == words::stopped_to_apply_row() {
+        } else if state.as_deref() == Some("install-failed")
+            && get("failed").as_deref() == Some("apply")
+        {
             Some(words::stopped_to_apply_said(&m.name))
         } else {
             None

@@ -1476,9 +1476,29 @@ impl Supervisor {
         crate::attest::attest_installed(&self.0.home, id, update)
     }
 
-    /// [`revoke_items_in`] on this hub's folder and router.
-    pub fn revoke_items(&self, id: &str, items: Option<&[String]>) -> Result<TurnedOff, String> {
-        revoke_items_in(&self.0.home, &self.0.hub, id, items)
+    /// [`revoke_items_in`] on this hub's folder and router, reaching this supervisor's apps.
+    pub fn revoke_items(
+        &self,
+        id: &str,
+        items: Option<&[String]>,
+    ) -> Result<TurnedOff, NotTurnedOff> {
+        turn_off(&self.0.home, &self.0.hub, Some(self), id, items)
+    }
+
+    /// A turn-off that changes how `id` is contained could not be recorded (#1451): what runs
+    /// of it is stopped and not started again ([`Ev::StopUnapplied`]). Whether it stopped
+    /// anything.
+    fn stop_unapplied(&self, id: &str) -> bool {
+        let cmds = self
+            .0
+            .policy
+            .lock()
+            .unwrap()
+            .handle(Ev::StopUnapplied { id: id.into() }, Instant::now());
+        let stopped = cmds.iter().any(|c| matches!(c, Cmd::Kill { .. }));
+        self.run(cmds);
+        self.0.lab.stepped();
+        stopped
     }
 
     /// A turn-off changed how `id` is contained (#1451): what runs of it is ended and started
@@ -2849,7 +2869,8 @@ fn grant_listed_inner(
 }
 
 /// The supervisors of this process, by hub folder: a turn-off made without one in hand (the
-/// Access page, the control pipe) still reaches the app that runs ([`revoke_items_in`]).
+/// Access page, the Apps page) still reaches the app that runs ([`revoke_items_in`]). A caller
+/// that holds its supervisor uses [`Supervisor::revoke_items`] instead.
 static SUPERVISORS: Mutex<Vec<(PathBuf, Weak<Inner>)>> = Mutex::new(Vec::new());
 
 /// The supervisor last started on the hub folder `home`, if it still lives.
@@ -2884,6 +2905,29 @@ pub enum Applies {
     /// receiver answers once: `true` when the new instance runs, `false` (or a closed channel)
     /// when it could not be started and is stopped.
     Restarting(Receiver<bool>),
+    /// The app's containment changes and no supervisor was found to say whether it runs: it
+    /// may still run as it was allowed before, and the caller must not say otherwise.
+    Unreached,
+}
+
+/// How long the control pipe waits for a restart's outcome ([`Applies::pipe_line`]). The policy
+/// answers well within it (an end not reported in [`crate::policy::EXIT_AFTER_PIPE`] counts as
+/// stopped); this bounds the wait whatever else happens.
+pub const APPLY_WAIT: Duration = Duration::from_secs(15);
+
+/// A turn-off that could not be recorded.
+#[derive(Debug)]
+pub struct NotTurnedOff {
+    /// The registry's error.
+    pub why: String,
+    /// The running app was stopped, so it doesn't keep running as it was allowed before.
+    pub stopped: bool,
+}
+
+impl std::fmt::Display for NotTurnedOff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.why)
+    }
 }
 
 impl Applies {
@@ -2892,15 +2936,28 @@ impl Applies {
         matches!(self, Applies::Restarting(_))
     }
 
+    /// Whether nothing could tell if the app runs.
+    pub fn unreached(&self) -> bool {
+        matches!(self, Applies::Unreached)
+    }
+
     /// The control pipe's line for a turn-off that changes containment; waits for a restart's
-    /// outcome. `None` when containment did not change.
+    /// outcome, at most [`APPLY_WAIT`]. `None` when containment did not change.
     pub fn pipe_line(self) -> Option<&'static str> {
+        self.pipe_line_within(APPLY_WAIT)
+    }
+
+    /// [`Applies::pipe_line`] with its wait. It says stopped only when that is known: the
+    /// policy said so, or the app was removed while it restarted.
+    pub fn pipe_line_within(self, wait: Duration) -> Option<&'static str> {
         match self {
             Applies::Unchanged => None,
             Applies::NotRunning => Some(words::PIPE_NOT_RUNNING),
-            Applies::Restarting(rx) => Some(match rx.recv() {
+            Applies::Unreached => Some(words::PIPE_UNREACHED),
+            Applies::Restarting(rx) => Some(match rx.recv_timeout(wait) {
                 Ok(true) => words::PIPE_RESTARTED,
-                _ => words::PIPE_STOPPED,
+                Ok(false) | Err(RecvTimeoutError::Disconnected) => words::PIPE_STOPPED,
+                Err(RecvTimeoutError::Timeout) => words::PIPE_STILL_RESTARTING,
             }),
         }
     }
@@ -2912,30 +2969,74 @@ impl Applies {
 ///
 /// A turn-off that changes how the app is contained (network or files access, #1451) applies to
 /// the app that runs now: it is ended and started again as it is allowed now, and one that
-/// can't be started again is stopped. It never keeps running as it was allowed before.
+/// can't be started again is stopped. It never keeps running as it was allowed before: when the
+/// turn-off can't be recorded, the running app is stopped and the error says so.
+///
+/// The supervisor is the one started on `home` in this process; a caller that holds it uses
+/// [`Supervisor::revoke_items`].
 pub fn revoke_items_in(
     home: &Path,
     hub: &Hub,
     id: &str,
     items: Option<&[String]>,
-) -> Result<TurnedOff, String> {
+) -> Result<TurnedOff, NotTurnedOff> {
+    turn_off(home, hub, supervisor_of(home).as_ref(), id, items)
+}
+
+fn turn_off(
+    home: &Path,
+    hub: &Hub,
+    sup: Option<&Supervisor>,
+    id: &str,
+    items: Option<&[String]>,
+) -> Result<TurnedOff, NotTurnedOff> {
     let owned = items.map(<[String]>::to_vec);
     hub.act(|r| r.drop_module_grants(id, owned.as_deref()));
-    let mut reg = Registry::open_with(home, hideout_registry::DevFlags::from_env())
-        .map_err(|e| format!("{e:?}"))?;
+    // Not recorded: the app must not keep running as it was allowed before, and nothing can
+    // start it as it is allowed now. What runs of it is stopped.
+    let not_recorded = |why: String, stop: bool| {
+        let stopped = stop && sup.is_some_and(|s| s.stop_unapplied(id));
+        if stop && sup.is_none() {
+            log::warn!("permissions: {id}: turn-off not recorded and no supervisor to stop it");
+        }
+        log::warn!("permissions: {id}: turn-off not recorded ({why}); stopped: {stopped}");
+        NotTurnedOff { why, stopped }
+    };
+    let mut reg = match Registry::open_with(home, hideout_registry::DevFlags::from_env()) {
+        Ok(r) => r,
+        // Nothing says how it is contained: it counts as changed.
+        Err(e) => return Err(not_recorded(format!("{e:?}"), true)),
+    };
     let before = reg.inventory.modules.get(id).map(|m| m.granted.clone());
-    let left = reg.revoke_items(id, items).map_err(|e| format!("{e:?}"))?;
+    let contains = reg.hub.appcontainer();
+    let differs = |b: &[String], after: &[String]| {
+        !crate::contain::plan_for(b).same_containment(&crate::contain::plan_for(after))
+    };
+    let left = match reg.revoke_items(id, items) {
+        Ok(left) => left,
+        Err(e) => {
+            // What would have been left, had it been recorded.
+            let after: Vec<String> = match (&before, items) {
+                (Some(b), Some(off)) => b.iter().filter(|g| !off.contains(g)).cloned().collect(),
+                _ => Vec::new(),
+            };
+            let changes = contains && before.as_ref().is_none_or(|b| differs(b, &after));
+            return Err(not_recorded(format!("{e:?}"), changes));
+        }
+    };
     log::info!("permissions: {id}: turned off {items:?} by user");
-    let changed = reg.hub.appcontainer()
-        && before.is_some_and(|b| {
-            !crate::contain::plan_for(&b).same_containment(&crate::contain::plan_for(&left))
-        });
+    let changed = contains && before.is_some_and(|b| differs(&b, &left));
     let applies = if !changed {
         Applies::Unchanged
     } else {
-        match supervisor_of(home) {
+        match sup {
             Some(sup) => sup.apply_turn_off(id),
-            None => Applies::NotRunning,
+            None => {
+                log::warn!(
+                    "permissions: {id}: no supervisor for this folder; if the app runs it keeps its containment until it is restarted"
+                );
+                Applies::Unreached
+            }
         }
     };
     Ok(TurnedOff { left, applies })

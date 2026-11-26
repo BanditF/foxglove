@@ -35,13 +35,25 @@ pub fn take_turned_off() -> bool {
 
 pub const NOT_SAVED: &str = "Turned off, but the change couldn't be saved.";
 
-/// What a turn-off says: the note when it wasn't saved, else "Turned off", with the restart
-/// when one was started for `restarting` (the app's name).
-fn turned_off_said(note: Option<&str>, restarting: Option<&str>) -> String {
-    match (note, restarting) {
-        (Some(n), _) => n.to_string(),
-        (None, Some(name)) => hideout_supervisor::words::turned_off_restarts(name),
-        (None, None) => "Turned off".to_string(),
+/// What a turn-off meant for the app that runs, as far as the page says it.
+#[derive(Clone, Copy)]
+enum After {
+    Nothing,
+    /// A restart was started to apply it.
+    Restarts,
+    /// Nothing could tell whether the app runs.
+    Unreached,
+}
+
+/// What a turn-off says: the note when it wasn't saved, else "Turned off", with what it meant
+/// for the running app `name` (a manifest name: already made safe to draw where it is read).
+fn turned_off_said(note: Option<&str>, name: Option<&str>, after: After) -> String {
+    use hideout_supervisor::words;
+    match (note, name, after) {
+        (Some(n), ..) => n.to_string(),
+        (None, Some(name), After::Restarts) => words::turned_off_restarts(name),
+        (None, Some(name), After::Unreached) => words::turned_off_unreached(name),
+        _ => "Turned off".to_string(),
     }
 }
 
@@ -123,7 +135,11 @@ impl AccessPage {
         self.note = None;
         // The app restarts when the turn-off changes how it is contained (#1451): said with
         // the turn-off. How the restart ended is the Apps page's row to say.
-        let restarts = r.as_ref().is_ok_and(|off| off.applies.restarts());
+        let after = match &r {
+            Ok(off) if off.applies.restarts() => After::Restarts,
+            Ok(off) if off.applies.unreached() => After::Unreached,
+            _ => After::Nothing,
+        };
         let name = self
             .groups
             .iter()
@@ -132,13 +148,20 @@ impl AccessPage {
             .map(|row| row.name.clone());
         if let Err(e) = r {
             log::warn!("permissions: {app}: turn off not saved ({e})");
-            self.note = Some(NOT_SAVED.to_string());
+            // Stopped so it doesn't keep running as it was allowed before: said with it.
+            let note = if e.stopped {
+                hideout_supervisor::words::NOT_SAVED_STOPPED
+            } else {
+                NOT_SAVED
+            };
+            self.note = Some(note.to_string());
         }
         self.refresh();
         TURNED_OFF.store(true, Ordering::Relaxed);
         self.said.push(turned_off_said(
             self.note.as_deref(),
-            name.as_deref().filter(|_| restarts),
+            name.as_deref(),
+            after,
         ));
     }
 }
@@ -194,12 +217,23 @@ mod tests {
     /// #1451: a turn-off that restarts the app says so, by the app's name.
     #[test]
     fn a_turn_off_says_when_the_app_restarts_to_apply() {
-        assert_eq!(turned_off_said(None, None), "Turned off");
+        assert_eq!(turned_off_said(None, None, After::Restarts), "Turned off");
         assert_eq!(
-            turned_off_said(None, Some("Art")),
+            turned_off_said(None, Some("Art"), After::Nothing),
+            "Turned off"
+        );
+        assert_eq!(
+            turned_off_said(None, Some("Art"), After::Restarts),
             "Turned off. Art restarts to apply."
         );
-        assert_eq!(turned_off_said(Some(NOT_SAVED), Some("Art")), NOT_SAVED);
+        assert_eq!(
+            turned_off_said(None, Some("Art"), After::Unreached),
+            "Turned off. If Art is running, turn it off and on again to apply."
+        );
+        assert_eq!(
+            turned_off_said(Some(NOT_SAVED), Some("Art"), After::Restarts),
+            NOT_SAVED
+        );
     }
 
     /// One test: the flags are process-wide.

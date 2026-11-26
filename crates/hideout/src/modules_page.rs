@@ -803,6 +803,10 @@ impl ModulesPage {
                 .as_ref()
                 .and_then(|_| facts(&format!("module.{}.rebuilt", r.id)))
                 .and_then(|v| v.as_str().map(str::to_string));
+            // The key of one restart is its fact's value. It relies on the driver publishing
+            // the clock time in place of the policy's `true`; with no time known every restart
+            // has the same value, and it is the fact's clearing in between (any state other
+            // than running) that makes the next one new.
             let applied = r.restarted_said.as_ref().map(|_| {
                 match facts(&format!("module.{}.restarted", r.id)).filter(|v| !v.is_null()) {
                     Some(v) => format!("restarted {v}"),
