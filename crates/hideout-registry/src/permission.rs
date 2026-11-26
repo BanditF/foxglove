@@ -830,8 +830,20 @@ impl Registry {
         m.last_choice.clear();
         if one_run.is_some() && deny {
             // A Deny allows nothing, so it is not an OK for a run: an OK that is still live
-            // stays as it was, one that is over is dropped, and none is written.
-            m.bound = None;
+            // stays as it was, one that is over is dropped, and none is written. A binding
+            // from before the rule is dropped, and a keyboard record that is `on` goes with it.
+            if m.bound.take().is_some() {
+                if let Some(k) = m
+                    .keyboard
+                    .as_mut()
+                    .filter(|k| k.state == crate::keyboard::GrantState::On)
+                {
+                    k.state = crate::keyboard::GrantState::Void;
+                    k.sha256.clear();
+                    k.reason = Some(VoidReason::Other);
+                    k.at = now.into();
+                }
+            }
             if !m.one_run.as_ref().is_some_and(RunOk::live) {
                 m.one_run = None;
             }
@@ -1177,6 +1189,10 @@ impl Registry {
         let rule = self.one_run(id).is_some();
         let old_binding = rule && m.bound.is_some();
         if !old_binding && !m.one_run.as_ref().is_some_and(RunOk::live) {
+            if rule {
+                // No OK to count this start against: nothing remembered goes with it.
+                self.void_keyboard_uncounted(id, now)?;
+            }
             return Ok(());
         }
         let mut ended = false;
@@ -1220,6 +1236,22 @@ impl Registry {
         }
         if counted {
             self.counted_start = Some(id.into());
+        } else if rule {
+            self.void_keyboard_uncounted(id, now)?;
+        }
+        Ok(())
+    }
+
+    /// A one-run app's start that is not the counted one gets no keyboard grant: a record that
+    /// is `on` (kept from before the rule) goes void. Does nothing without such a record.
+    fn void_keyboard_uncounted(&mut self, id: &str, now: &str) -> Result<(), Failure> {
+        let on = self.inventory.modules.get(id).is_some_and(|m| {
+            m.keyboard
+                .as_ref()
+                .is_some_and(|k| k.state == crate::keyboard::GrantState::On)
+        });
+        if on {
+            self.void_keyboard(id, VoidReason::Other, now)?;
         }
         Ok(())
     }

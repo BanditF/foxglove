@@ -61,7 +61,15 @@ fn read_windows_folder() -> Option<String> {
     } else {
         String::from_utf16(&buf[..n]).ok()
     };
-    let raw = asked.or_else(|| folder_from(std::env::var_os("SystemRoot")))?;
+    let raw = asked.or_else(|| {
+        let env = folder_from(std::env::var_os("SystemRoot"));
+        // Read once for the process, so this is logged once.
+        log::warn!(
+            "one-run rule: Windows did not name its folder; SystemRoot is {}",
+            if env.is_some() { "used" } else { "not usable" }
+        );
+        env
+    })?;
     // The same form the program's path has, so the two compare component by component.
     Some(crate::keyboard::canonical_path(std::path::Path::new(&raw)).unwrap_or(raw))
 }

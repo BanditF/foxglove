@@ -6131,7 +6131,8 @@ fn the_show_all_link_of_the_arguments_is_reached_and_used_from_the_keyboard() {
     for i in 1..=6 {
         assert!(has(&texts, &format!("\u{201c}--arg-{i}\u{201d}")), "{i}");
     }
-    assert!(has(&texts, "Show fewer arguments"));
+    assert!(has(&texts, "Show fewer"));
+    assert!(!has(&texts, "Show fewer arguments"));
     assert_eq!(ids[0], link, "the link keeps its place");
     for _ in 0..(ids.len() + 3) {
         let _ = ctx.run(input(800.0, 900.0, vec![tab.clone()]), |c| {
@@ -6198,16 +6199,16 @@ fn the_dialog_draws_the_arguments_and_the_one_run_lines() {
     let whole = format!("\u{201c}{long}\u{201d}");
     assert!(!texts.contains(&whole), "{texts:?}");
     assert!(texts.iter().any(|x| x.contains(&whole)), "{texts:?}");
-    assert!(texts.iter().any(|x| x == "Show all arguments"), "{texts:?}");
+    assert!(
+        texts.iter().any(|x| x == "Show whole arguments"),
+        "{texts:?}"
+    );
     c.view.args_open = true;
     let (texts, n) = draw(&mut c);
     assert_eq!(n, n_plain + 1);
     assert!(texts.contains(&whole), "{texts:?}");
     assert!(!texts.iter().any(|x| x.contains("more characters)")));
-    assert!(
-        texts.iter().any(|x| x == "Show fewer arguments"),
-        "{texts:?}"
-    );
+    assert!(texts.iter().any(|x| x == "Show fewer"), "{texts:?}");
 
     let mut r = keep_test_dialog(2, None);
     r.path = r"C:\Python312\python.exe".into();

@@ -76,7 +76,7 @@ const ARG_HEAD: usize = 30;
 /// What stands for an argument that is nothing but characters that are not drawn.
 pub const ARG_UNSEEN: &str = "characters that can't be shown";
 /// The link that opens the list when all arguments are listed and one is cut.
-pub const SHOW_ALL: &str = "Show all";
+pub const SHOW_ALL: &str = "Show whole arguments";
 /// Shown when an argument holds characters that are not drawn (or quote marks, drawn as `'`).
 pub const ARGS_NOTE: &str = "Some characters can't be shown.";
 pub const SHOW_FEWER: &str = "Show fewer";
@@ -88,9 +88,9 @@ pub fn file_of(path: &str) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or("").to_string()
 }
 
-/// "Show all 6": the link that opens the whole argument list.
+/// "Show all 6 arguments": the link that opens the whole argument list.
 pub fn show_all(n: usize) -> String {
-    format!("Show all {n}")
+    format!("Show all {n} arguments")
 }
 
 /// One argument as it is shown, whole: cleaned ([`hideout_contract::module::shown_argument`]:
@@ -861,8 +861,9 @@ impl PermDialog {
         self.args.len() > ARGS_SHOWN || self.args.iter().any(|a| arg_is_cut(a))
     }
 
-    /// The link under the arguments, `None` when everything is drawn anyway: "Show all 6" for
-    /// a long list, "Show all" when only a cut argument is opened, "Show fewer" to close.
+    /// The link under the arguments, `None` when everything is drawn anyway: "Show all 6
+    /// arguments" for a long list, "Show whole arguments" when only a cut argument is opened,
+    /// "Show fewer" to close. It is read out as it is drawn.
     pub fn args_link(&self) -> Option<String> {
         if !self.args_fold() {
             return None;
@@ -2362,7 +2363,7 @@ mod tests {
         assert!(d.args_fold());
         assert_eq!(d.args_drawn().len(), ARGS_SHOWN);
         assert_eq!(d.args_drawn()[3], "\u{201c}a4\u{201d}");
-        assert_eq!(show_all(d.args.len()), "Show all 6");
+        assert_eq!(show_all(d.args.len()), "Show all 6 arguments");
         let said = d.said();
         for a in &d.args {
             assert!(said.contains(&format!("\u{201c}{a}\u{201d}")), "{said}");
@@ -2374,7 +2375,7 @@ mod tests {
         assert_eq!(SHOW_FEWER, "Show fewer");
         assert_eq!(d.args_link().as_deref(), Some("Show fewer"));
         d.view.args_open = false;
-        assert_eq!(d.args_link().as_deref(), Some("Show all 6"));
+        assert_eq!(d.args_link().as_deref(), Some("Show all 6 arguments"));
         // Four fit without a link.
         let four = with_args(&["1", "2", "3", "4"]);
         assert!(!four.args_fold());
@@ -2464,7 +2465,7 @@ mod tests {
         // One cut argument is enough for the link, with fewer than five arguments.
         let mut d = with_args(&["--config", &long]);
         assert!(d.args_fold());
-        assert_eq!(d.args_link().as_deref(), Some("Show all"));
+        assert_eq!(d.args_link().as_deref(), Some("Show whole arguments"));
         assert_eq!(
             d.args_drawn(),
             ["\u{201c}--config\u{201d}".to_string(), arg_line_cut(&long)]
@@ -2487,7 +2488,7 @@ mod tests {
 
         // In a long list the opened view shows every argument whole.
         let mut many = with_args(&["1", "2", &long, "4", "5", &long]);
-        assert_eq!(many.args_link().as_deref(), Some("Show all 6"));
+        assert_eq!(many.args_link().as_deref(), Some("Show all 6 arguments"));
         assert_eq!(many.args_drawn().len(), ARGS_SHOWN);
         assert_eq!(many.args_drawn()[2], arg_line_cut(&long));
         many.view.args_open = true;

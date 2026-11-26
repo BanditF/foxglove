@@ -401,6 +401,97 @@ fn the_keyboard_ok_is_not_remembered_for_a_one_run_app() {
     assert!(f.module().keyboard.is_none());
 }
 
+/// Writes into the app's record in the inventory file, as data from before the rule would
+/// stand there, and reads it back.
+fn rewrite(f: &mut Fx, change: impl FnOnce(&mut serde_json::Value)) {
+    let path = f.home.join("inventory.json");
+    let mut all: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    change(&mut all["modules"][ID]);
+    std::fs::write(&path, serde_json::to_string_pretty(&all).unwrap()).unwrap();
+    f.reg = Registry::open(&f.home, true).unwrap();
+}
+
+fn keyboard_on(f: &Fx) -> serde_json::Value {
+    let (path, sha256) = f.pinned();
+    serde_json::json!({ "state": "on", "path": path, "sha256": sha256, "at": NOW })
+}
+
+fn keyboard_state(f: &Fx) -> Option<hideout_registry::keyboard::GrantState> {
+    f.module().keyboard.as_ref().map(|k| k.state)
+}
+
+/// A keyboard record that is `on` for a one-run app (kept from before the rule) does not go
+/// with a start that is not the counted one: it is void before the launch is checked.
+#[test]
+fn a_start_that_is_not_counted_takes_no_keyboard_ok_with_it() {
+    use hideout_registry::keyboard::GrantState;
+    // No binding and no OK for a run: nothing to count the start against.
+    let mut f = fx("keys-none", "python.exe", &["app.py"]);
+    let on = keyboard_on(&f);
+    rewrite(&mut f, |m| m["keyboard"] = on);
+    assert_eq!(keyboard_state(&f), Some(GrantState::On));
+    let (path, sha) = f.pinned();
+    f.reg.keep_followed(ID, LATER).unwrap();
+    assert!(!f.reg.start_counted(ID));
+    assert_eq!(keyboard_state(&f), Some(GrantState::Void));
+    let k = f.module().keyboard.clone().unwrap();
+    assert!(!k.allows(&path, &sha) && k.sha256.is_empty(), "{k:?}");
+    assert_eq!(f.on_disk()["keyboard"]["state"], "void");
+
+    // An OK that is used up: the start after the counted one.
+    let mut g = fx("keys-used", "python.exe", &["app.py"]);
+    allow(&mut g, "dialog", false).unwrap();
+    g.reg.keep_followed(ID, LATER).unwrap();
+    assert!(g.reg.start_counted(ID));
+    let on = keyboard_on(&g);
+    rewrite(&mut g, |m| m["keyboard"] = on);
+    g.reg.keep_followed(ID, LATER).unwrap();
+    assert!(!g.reg.start_counted(ID));
+    assert_eq!(keyboard_state(&g), Some(GrantState::Void));
+
+    // An app with a program file of its own is not touched.
+    let mut o = fx("keys-own", "foxglove.exe", &["--quiet"]);
+    allow(&mut o, "dialog", false).unwrap();
+    let (path, sha) = o.pinned();
+    o.reg.allow_keyboard(ID, &path, &sha, NOW).unwrap();
+    o.reg.keep_followed(ID, LATER).unwrap();
+    assert_eq!(keyboard_state(&o), Some(GrantState::On));
+}
+
+/// A Deny that drops a binding from before the rule leaves no keyboard record `on`.
+#[test]
+fn a_deny_that_drops_a_binding_voids_the_keyboard_ok() {
+    use hideout_registry::keyboard::GrantState;
+    let mut f = fx("keys-deny", "python.exe", &["app.py"]);
+    let list = f.reg.permission_list(ID).unwrap();
+    let on = keyboard_on(&f);
+    let bound = serde_json::json!({
+        "manifest_sha256": list.manifest_sha256,
+        "exe_path": list.exe_path,
+        "exe_sha256": list.exe_sha256,
+        "list_hash": list.list_hash,
+        "at": NOW,
+        "by": "dialog",
+        "run_args": list.run_args,
+    });
+    rewrite(&mut f, |m| {
+        m["keyboard"] = on;
+        m["bound"] = bound;
+    });
+    assert!(f.module().bound.is_some());
+    assert_eq!(keyboard_state(&f), Some(GrantState::On));
+    let list = f.reg.permission_list(ID).unwrap();
+    let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    f.reg
+        .deny_listed(ID, list.code(), &all, LATER, "cli")
+        .unwrap();
+    assert!(f.module().bound.is_none() && f.module().one_run.is_none());
+    assert_eq!(keyboard_state(&f), Some(GrantState::Void));
+    assert_eq!(f.on_disk()["keyboard"]["state"], "void");
+    assert_eq!(f.on_disk()["keyboard"]["sha256"], "");
+}
+
 /// The list code as it was computed before the arguments were part of it.
 fn code_without_arguments(f: &Fx) -> String {
     let list = f.reg.permission_list(ID).unwrap();

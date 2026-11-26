@@ -360,8 +360,6 @@ fn args_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
     if let Some(word) = d.args_link() {
         let b =
             ui.add(egui::Button::new(egui::RichText::new(&word).color(c(t.accent))).frame(false));
-        let said = format!("{word} arguments");
-        ui.ctx().accesskit_node_builder(b.id, |n| n.set_label(said));
         if b.clicked() {
             d.view.args_open = !d.view.args_open;
         }
