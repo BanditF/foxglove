@@ -29,9 +29,11 @@ Waits: one deadline for the whole case. The window has no "drawn" event to wait 
 Automation read turns the accessibility tree on in that process, so uia_tree is tried up to 4 times, 4 s
 apart, inside the deadline; each try is itself bounded (uia_tree's -TimeoutSec).
 
-Live region: UIA's LiveSetting is read by uia_tree.ps1 (field liveSetting, 1 = polite) through
-AutomationProperty.LookupById(30135). If the .NET client cannot read it, every node says null and the
-check is BLOCKED (not FAIL): a Narrator or Accessibility Insights look is then the proof.
+Live region: UIA's LiveSetting (property 30135) is read by uia_tree.ps1 (field liveSetting: 0 off,
+1 polite, 2 assertive) through COM UI Automation, because the .NET client does not know that property.
+A node that was not read says null, never a guess. FAIL needs every node read and none polite; if no
+polite node is found and some (or all) nodes say null, the check is BLOCKED (not FAIL): a Narrator or
+Accessibility Insights look is then the proof. `uia_tree.ps1 -LiveProbe` says whether this PC can read it.
 
 Human only: "Narrator reads the Start button on the Scenes page" (docs/scripts/uia_start.md).
 """
@@ -115,15 +117,19 @@ def judge(tree, page_opened=True):
                                       f'{[n.get("name") for n in nodes if n.get("role") == "Button"][:12]}',
                         not page_opened))
     live = [n for n in nodes if n.get('liveSetting') in (POLITE, 2)]
-    readable = any(n.get('liveSetting') is not None for n in nodes)
+    unread = [n for n in nodes if n.get('liveSetting') is None]
     if live:
         res.append(('the live region', True, f'{len(live)} node(s) with LiveSetting '
                                              f'{sorted({n["liveSetting"] for n in live})} (1 polite, 2 assertive), role {live[0].get("role")}', False))
-    elif readable:
-        res.append(('the live region', False, 'LiveSetting is readable and no node is polite', False))
+    elif not unread:
+        res.append(('the live region', False, f'LiveSetting was read on all {len(nodes)} nodes and none is polite', False))
+    elif len(unread) == len(nodes):
+        res.append(('the live region', False, 'LiveSetting was not read (every node says null; uia_tree says why): look with '
+                                              'Narrator or Accessibility Insights', True))
     else:
-        res.append(('the live region', False, 'this UIA client cannot read LiveSetting (every node says null): look with Narrator '
-                                              'or Accessibility Insights', True))
+        res.append(('the live region', False, f'no polite node among those read, and LiveSetting was not read on {len(unread)} of '
+                                              f'{len(nodes)} nodes (first: {[(n.get("role"), n.get("name")) for n in unread[:4]]}): '
+                                              'look with Narrator or Accessibility Insights', True))
     return res
 
 

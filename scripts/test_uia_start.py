@@ -32,6 +32,14 @@ def scenes_tree(start=True, effect=True, scenes_on=True, live=1, extra=12):
     return node('Window', 'Foxglove', sidebar + page + filler)
 
 
+def all_read(tree):
+    """The tree with LiveSetting read on every node: a null becomes 0 (off)."""
+    for n in u.nodes_of(tree):
+        if n['liveSetting'] is None:
+            n['liveSetting'] = 0
+    return tree
+
+
 def verdicts(tree, **kw):
     return {name: (ok, blocked) for name, ok, _detail, blocked in u.judge(tree, **kw)}
 
@@ -73,8 +81,13 @@ class Pure(unittest.TestCase):
     def test_live_region_states(self):
         self.assertEqual(verdicts(scenes_tree(live=1))['the live region'], (True, False))
         self.assertEqual(verdicts(scenes_tree(live=2))['the live region'], (True, False))
-        self.assertEqual(verdicts(scenes_tree(live=0))['the live region'], (False, False))  # readable, none polite
-        self.assertEqual(verdicts(scenes_tree(live=None))['the live region'], (False, True))  # unreadable: BLOCKED
+        self.assertEqual(verdicts(all_read(scenes_tree(live=1)))['the live region'], (True, False))
+        self.assertEqual(verdicts(all_read(scenes_tree(live=0)))['the live region'], (False, False))  # all read, none polite
+        self.assertEqual(verdicts(scenes_tree(live=None))['the live region'], (False, True))  # nothing read: BLOCKED
+        # Some nodes read, none polite, the rest null: the region may be one of those. BLOCKED, never a guess.
+        self.assertEqual(verdicts(scenes_tree(live=0))['the live region'], (False, True))
+        detail = [d for name, _ok, d, _b in u.judge(scenes_tree(live=0)) if name == 'the live region'][0]
+        self.assertIn('not read on', detail)
 
     def test_pid_line(self):
         said = ['QUIET-LAUNCH desktop=ql-uiaab12cd pid=4242 image=foxglove.exe timeout=150\n']

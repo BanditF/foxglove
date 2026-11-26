@@ -5,6 +5,7 @@
 #   uia_tree.ps1 -ProcessId 1234 [-Title Foxglove] [-Page Scenes] [-Expect 'Button:Start','RadioButton:Temperature:on']
 #                [-TimeoutSec 20] [-MaxNodes 4000] [-OutFile tree.json]
 #   uia_tree.ps1 -SelfTest        (pure parts only: JSON shape, expectation matching; no UIA, no process)
+#   uia_tree.ps1 -LiveProbe       (can this PC read LiveSetting? one read on the desktop root; no Foxglove, no window)
 #
 # Needs FOXGLOVE_APP_OK=1 (On-call's OK, like every lab case that touches Foxglove): the first read
 # of the tree turns AccessKit on in that process until it restarts, which changes its CPU profile.
@@ -26,6 +27,12 @@
 # the title (an older build titled the overlay "Foxglove" too) the script refuses and lists them; pick one with
 # -Handle (decimal or 0x hex native window handle from that list).
 #
+# LiveSetting (the live region, UIA property 30135) is read through COM UI Automation
+# (CUIAutomation, IUIAutomationElement::GetCurrentPropertyValue): the managed client this script
+# walks with does not know that property. The COM read lists the window's elements once, and each
+# dumped node gets its value by its UIA runtime id. liveSetting is 0, 1 or 2 when read, and null
+# when not (COM not available, or a node the COM list did not have): never a guess.
+#
 # Exit codes: 0 all expectations met (or none given), 2 an expectation is missing, 3 refused or
 # window not found or ambiguous or the -Page entry not found, 4 timed out (a hard limit: a hung window cannot block it). Nothing is clicked, typed or focused, and the tree is only read, except that -Page selects, invokes or toggles one sidebar entry through UIA.
 param(
@@ -38,7 +45,8 @@ param(
     [string]$OutFile = '',
     [string]$Handle = '',
     [string]$Page = '',
-    [switch]$SelfTest
+    [switch]$SelfTest,
+    [switch]$LiveProbe
 )
 $ErrorActionPreference = 'Stop'
 # Names carry characters outside ASCII ("Update firmware…", "0.3.0 (dev) · 2d6a7fe"): write them as
@@ -57,6 +65,121 @@ function New-NodeRecord($role, $name, $autoId, $enabled, $state, $rect, $childre
         state = $state; rect = $rect; liveSetting = $live; children = @($children)
     }
 }
+
+# The COM read of LiveSetting. Only the methods called are named; the others hold their place,
+# because a COM interface is called by position: IUIAutomation is CompareElements,
+# CompareRuntimeIds, GetRootElement, ElementFromHandle, ... CreateTrueCondition (19th);
+# IUIAutomationElement is SetFocus, GetRuntimeId, FindFirst, FindAll, ... GetCurrentPropertyValue
+# (8th). The order is uiautomationclient.h's. Nothing here sets, invokes or focuses anything.
+$LiveSource = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+namespace FoxgloveLab {
+    [ComImport, Guid("ff48dba4-60ef-4201-aa87-54103eef594e")]
+    class CUIAutomation { }
+
+    [ComImport, Guid("352ffba8-0973-437c-a61f-f64cafd81df9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IUIAutomationCondition { }
+
+    [ComImport, Guid("14314595-b4bc-4055-95f2-58f2e42c9855"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IUIAutomationElementArray {
+        [PreserveSig] int get_Length(out int length);
+        [PreserveSig] int GetElement(int index, out IUIAutomationElement element);
+    }
+
+    [ComImport, Guid("d22108aa-8ac5-49a5-837b-37bbb3d7591e"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IUIAutomationElement {
+        void _SetFocus();
+        [PreserveSig] int GetRuntimeId([MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_I4)] out int[] runtimeId);
+        void _FindFirst();
+        [PreserveSig] int FindAll(int scope, IUIAutomationCondition condition, out IUIAutomationElementArray found);
+        void _FindFirstBuildCache();
+        void _FindAllBuildCache();
+        void _BuildUpdatedCache();
+        [PreserveSig] int GetCurrentPropertyValue(int propertyId, [MarshalAs(UnmanagedType.Struct)] out object value);
+    }
+
+    [ComImport, Guid("30cbe57d-d9d0-452a-ab13-7ac5ac4825ee"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IUIAutomation {
+        void _CompareElements();
+        void _CompareRuntimeIds();
+        [PreserveSig] int GetRootElement(out IUIAutomationElement root);
+        [PreserveSig] int ElementFromHandle(IntPtr hwnd, out IUIAutomationElement element);
+        void _ElementFromPoint();
+        void _GetFocusedElement();
+        void _GetRootElementBuildCache();
+        void _ElementFromHandleBuildCache();
+        void _ElementFromPointBuildCache();
+        void _GetFocusedElementBuildCache();
+        void _CreateTreeWalker();
+        void _get_ControlViewWalker();
+        void _get_ContentViewWalker();
+        void _get_RawViewWalker();
+        void _get_RawViewCondition();
+        void _get_ControlViewCondition();
+        void _get_ContentViewCondition();
+        void _CreateCacheRequest();
+        [PreserveSig] int CreateTrueCondition(out IUIAutomationCondition condition);
+    }
+
+    public static class UiaLive {
+        public const int LiveSettingProperty = 30135;  // UIA_LiveSettingPropertyId
+        const int Subtree = 7;                          // TreeScope_Subtree
+
+        // A runtime id as text: what the managed and the COM client both give for one element.
+        public static string Key(int[] runtimeId) {
+            return runtimeId == null ? "" : string.Join(".", Array.ConvertAll(runtimeId, delegate(int i) { return i.ToString(); }));
+        }
+
+        static void Ok(int hr, string what) {
+            if (hr < 0) throw new InvalidOperationException(what + " failed: 0x" + hr.ToString("X8"));
+        }
+
+        static object Live(IUIAutomationElement e) {
+            object v;
+            if (e.GetCurrentPropertyValue(LiveSettingProperty, out v) < 0) return null;
+            return v is int ? v : null;
+        }
+
+        // LiveSetting of the desktop root element (0 there): proves the COM read works on this PC.
+        public static object Root() {
+            IUIAutomation uia = (IUIAutomation)new CUIAutomation();
+            IUIAutomationElement root;
+            Ok(uia.GetRootElement(out root), "GetRootElement");
+            if (root == null) throw new InvalidOperationException("no root element");
+            return Live(root);
+        }
+
+        // Runtime id -> LiveSetting for the window and everything under it (at most `max`
+        // elements, none after `deadlineTicks`, UTC). An element whose value did not read is left out.
+        public static Dictionary<string, int> Map(IntPtr hwnd, int max, long deadlineTicks) {
+            IUIAutomation uia = (IUIAutomation)new CUIAutomation();
+            IUIAutomationElement window;
+            Ok(uia.ElementFromHandle(hwnd, out window), "ElementFromHandle");
+            if (window == null) throw new InvalidOperationException("no element for the window");
+            IUIAutomationCondition all;
+            Ok(uia.CreateTrueCondition(out all), "CreateTrueCondition");
+            IUIAutomationElementArray found;
+            Ok(window.FindAll(Subtree, all, out found), "FindAll");
+            Dictionary<string, int> map = new Dictionary<string, int>();
+            if (found == null) return map;
+            int n;
+            Ok(found.get_Length(out n), "get_Length");
+            for (int i = 0; i < n && i < max && DateTime.UtcNow.Ticks < deadlineTicks; i++) {
+                IUIAutomationElement e;
+                int[] id;
+                if (found.GetElement(i, out e) < 0 || e == null) continue;
+                if (e.GetRuntimeId(out id) < 0 || id == null || id.Length == 0) continue;
+                object v = Live(e);
+                if (v != null) map[Key(id)] = (int)v;
+            }
+            return map;
+        }
+    }
+}
+'@
 
 # "Button:Start" -> @{ Role; Name; State }. State is $null when not given.
 function ConvertTo-Expectation([string]$text) {
@@ -126,14 +249,46 @@ if ($SelfTest) {
     Check ($back.children[1].name -eq 'Start' -and $back.children[0].children.Count -eq 2) 'JSON keeps the shape'
     Check ($null -eq $back.liveSetting -and $back.PSObject.Properties.Name -contains 'liveSetting') 'liveSetting is in every record, null when not read'
     Check ((New-NodeRecord 'Text' '' '' $true $null $rect @() 1).liveSetting -eq 1) 'liveSetting carries the number'
+    Check ((New-NodeRecord 'Text' '' '' $true $null $rect @() 0 | ConvertTo-Json | ConvertFrom-Json).liveSetting -eq 0) 'a read 0 (off) is 0, not null'
+    # The COM read compiles here (Windows PowerShell's own C# compiler); nothing of it runs but Key.
+    $compiled = $false
+    try { Add-Type -TypeDefinition $LiveSource; $compiled = $true } catch { $script:fail += "the COM LiveSetting reader does not compile: $_" }
+    if ($compiled) {
+        Check ([FoxgloveLab.UiaLive]::Key([int[]](42, 1234, 7)) -ceq '42.1234.7') 'a runtime id is keyed by its numbers'
+        Check ([FoxgloveLab.UiaLive]::Key($null) -ceq '') 'no runtime id is no key'
+        Check ([FoxgloveLab.UiaLive]::LiveSettingProperty -eq 30135) 'the property is UIA_LiveSettingPropertyId'
+    }
     # Attach only: the script text starts nothing.
     $self = Get-Content -LiteralPath $PSCommandPath -Raw
+    Check (-not $self.Contains('Lookup' + 'ById')) 'LiveSetting is not asked of the managed client (it does not know it)'
+    # A COM interface is called by position: the named methods stay in the header's order.
+    $at = @('void _SetFocus();', 'int GetRuntimeId(', 'void _FindFirst();', 'int FindAll(', 'void _BuildUpdatedCache();', 'int GetCurrentPropertyValue(',
+            'void _CompareRuntimeIds();', 'int GetRootElement(', 'int ElementFromHandle(', 'void _CreateCacheRequest();', 'int CreateTrueCondition(') | ForEach-Object { $self.IndexOf($_) }
+    Check (($at -notcontains -1) -and (($at | Sort-Object) -join ',') -eq ($at -join ',')) 'the COM methods keep their places'
+    Check (([regex]::Matches($LiveSource, '(?m)^\s+(void _|\[PreserveSig\])')).Count -eq 2 + 8 + 19) 'the COM interfaces declare every method up to the last one called'
     foreach ($w in ('Start' + '-Process'), ('Invoke' + '-Item'), ('Invoke' + '-Expression'), ('Process]::' + 'Start')) {
         Check (-not $self.Contains($w)) "the script never uses $w"
     }
     Check ($self -match 'TogglePattern\]::Pattern, \[ref\]\$pat') 'the -Page lookup falls back to TogglePattern (sidebar buttons have no Select or Invoke)'
     if ($fail.Count) { $fail | ForEach-Object { Write-Host "FAIL: $_" }; exit 1 }
     Write-Host 'uia_tree self-test: ok'
+    exit 0
+}
+
+# ---- can this PC read LiveSetting? -------------------------------------------------------------
+
+# One read of one property on the desktop's root element, through the same COM route the dump
+# uses. Reads only; touches no window, no Foxglove, no focus.
+if ($LiveProbe) {
+    try {
+        Add-Type -TypeDefinition $LiveSource
+        $v = [FoxgloveLab.UiaLive]::Root()
+    } catch {
+        Write-Host "LiveSetting not read through COM UI Automation: $($_.Exception.Message)"
+        exit 3
+    }
+    if ($null -eq $v) { Write-Host 'LiveSetting not read through COM UI Automation: the desktop root gave no number'; exit 3 }
+    Write-Host "LiveSetting read through COM UI Automation: the desktop root says $v (0 off, 1 polite, 2 assertive)"
     exit 0
 }
 
@@ -169,7 +324,7 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 # The walk runs in its own runspace so a hung window cannot block this script: the wait below is a
 # hard limit, and leaving the process ends the stuck thread.
 $walk = {
-    param($pid_, $title, $handle, $maxNodes, $deadlineTicks, $recordFn, $page)
+    param($pid_, $title, $handle, $maxNodes, $deadlineTicks, $recordFn, $page, $liveSource)
     $ErrorActionPreference = 'Stop'
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     Set-Item -Path function:New-NodeRecord -Value ([scriptblock]::Create($recordFn))
@@ -190,15 +345,17 @@ $walk = {
         return $null
     }
 
-    # UIA_LiveSettingPropertyId (30135): the managed wrapper may not know it (LookupById then gives
-    # $null, or reading it throws); every node then says liveSetting null, never a guess.
-    $script:liveProp = $null
-    try { $script:liveProp = [System.Windows.Automation.AutomationProperty]::LookupById(30135) } catch { }
+    # UIA_LiveSettingPropertyId (30135) comes from the COM client (the managed one does not know
+    # the property): $script:liveMap is runtime id -> value, filled once before the walk. Without
+    # it, or for a node it does not hold, liveSetting is null, never a guess.
+    $script:liveMap = $null
+    $script:liveError = $null
     function Get-Live($el) {
-        if ($null -eq $script:liveProp) { return $null }
+        if ($null -eq $script:liveMap) { return $null }
         try {
-            $v = $el.GetCurrentPropertyValue($script:liveProp, $true)
-            if ($v -is [int]) { return $v }
+            $key = [FoxgloveLab.UiaLive]::Key([int[]]$el.GetRuntimeId())
+            $v = 0
+            if ($key -and $script:liveMap.TryGetValue($key, [ref]$v)) { return $v }
         } catch { }
         return $null
     }
@@ -266,8 +423,17 @@ $walk = {
         # One short settle for the page to redraw and the tree to update (a single wait, no loop).
         Start-Sleep -Milliseconds 700
     }
+    try {
+        Add-Type -TypeDefinition $liveSource
+        $script:liveMap = [FoxgloveLab.UiaLive]::Map([IntPtr][int]$hits[0].Current.NativeWindowHandle, $maxNodes * 4, $deadlineTicks)
+    } catch {
+        $script:liveMap = $null
+        $script:liveError = "$($_.Exception.Message)"
+    }
     $tree = Read-Node $hits[0] 0
-    @{ tree = $tree; timedOut = $script:timedOut; count = $script:count }
+    $liveRead = 0
+    if ($null -ne $script:liveMap) { $liveRead = $script:liveMap.Count }
+    @{ tree = $tree; timedOut = $script:timedOut; count = $script:count; liveRead = $liveRead; liveError = $script:liveError }
 }
 
 $handleNum = ''
@@ -277,7 +443,7 @@ if ($Handle) {
 }
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
 $ps = [powershell]::Create()
-[void]$ps.AddScript($walk.ToString()).AddArgument($ProcessId).AddArgument($Title).AddArgument($handleNum).AddArgument($MaxNodes).AddArgument($deadline.Ticks).AddArgument(${function:New-NodeRecord}.ToString()).AddArgument($Page)
+[void]$ps.AddScript($walk.ToString()).AddArgument($ProcessId).AddArgument($Title).AddArgument($handleNum).AddArgument($MaxNodes).AddArgument($deadline.Ticks).AddArgument(${function:New-NodeRecord}.ToString()).AddArgument($Page).AddArgument($LiveSource)
 $async = $ps.BeginInvoke()
 if (-not $async.AsyncWaitHandle.WaitOne(($TimeoutSec + 5) * 1000)) {
     Write-Host "timed out: the window did not answer within $TimeoutSec s (hung?)"
@@ -292,6 +458,8 @@ if ($res.error) { Write-Host $res.error; exit 3 }
 $tree = $res.tree
 $json = $tree | ConvertTo-Json -Depth 60
 if ($OutFile) { [System.IO.File]::WriteAllText($OutFile, $json, (New-Object System.Text.UTF8Encoding($false))) } else { $json }
+if ($res.liveError) { Write-Host "LiveSetting not read (COM UI Automation): $($res.liveError); every node says null" }
+elseif ($res.liveRead -eq 0) { Write-Host 'LiveSetting not read (COM UI Automation listed no element); every node says null' }
 if ($res.timedOut) { Write-Host "timed out after $($res.count) nodes (-TimeoutSec / -MaxNodes)"; exit 4 }
 
 $missing = @(Find-Missing $tree $Expect)

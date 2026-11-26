@@ -24,13 +24,15 @@ Run `scripts/ops/game-check.ps1` first. Exit 0 PASS, 1 FAIL, 2 BLOCKED; the last
 | the Scenes page is open | sidebar `Button` "Scenes" is on |
 | the Start button | a `Button` named `Start` |
 | the Effect group | a `Group` named `Effect` (AccessKit's radio group) |
-| the live region | a node whose UIA LiveSetting is polite; BLOCKED, not FAIL, when the .NET UIA client cannot read LiveSetting (then Narrator is the proof) |
+| the live region | a node whose UIA LiveSetting is polite. FAIL when LiveSetting was read on every node and none is polite; BLOCKED, not FAIL, when no polite node is found and LiveSetting was not read on some or all nodes (then Narrator is the proof) |
 
 If the Scenes page cannot be opened (`-Page Scenes` finds no sidebar entry), the case reads the window as it is: the tree and the live region are checked, Start and Effect are BLOCKED and the missing page is printed.
 
 Waits: one deadline. The first UI Automation read turns the accessibility tree on in that process, so `uia_tree.ps1` is tried up to 4 times, 4 s apart, each bounded by its own `-TimeoutSec` (there is no "window drawn" event to wait on).
 
-Window-free tests: `python -m unittest scripts/test_uia_start.py` (run by `scripts/check.ps1`). `uia_tree.ps1` gained a `liveSetting` field per node (UIA LiveSetting, `null` when unreadable) for the live check; its `-SelfTest` covers it.
+Window-free tests: `python -m unittest scripts/test_uia_start.py` (run by `scripts/check.ps1`). `uia_tree.ps1` gives each node a `liveSetting` field (UIA LiveSetting: 0 off, 1 polite, 2 assertive; `null` when not read, never a guess) for the live check; its `-SelfTest` covers it.
+
+LiveSetting is read through COM UI Automation (`CUIAutomation`, property 30135), because the .NET UI Automation client the script walks the tree with does not know that property: the first run on 11/25 was BLOCKED with every node `null` for that reason. The COM read lists the window's elements once and each dumped node takes its value by its UIA runtime id. If the COM read fails, `uia_tree.ps1` prints `LiveSetting not read (COM UI Automation): ...` and every node says `null`. `uia_tree.ps1 -LiveProbe` reads the property once on the desktop's root element (no Foxglove, no window, read only) and says whether this PC can read it.
 
 ## Human-only row
 
