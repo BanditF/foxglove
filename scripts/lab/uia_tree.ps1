@@ -49,10 +49,12 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 # ---- pure parts (tested by -SelfTest) --------------------------------------------------------
 
 # One dumped node as a plain object: the shape of the JSON.
-function New-NodeRecord($role, $name, $autoId, $enabled, $state, $rect, $children) {
+# liveSetting: UIA's LiveSetting as a number (0 off, 1 polite, 2 assertive), or $null when the
+# client cannot read that property (the tree then has no live information at all).
+function New-NodeRecord($role, $name, $autoId, $enabled, $state, $rect, $children, $live = $null) {
     [ordered]@{
         role = $role; name = $name; automationId = $autoId; enabled = $enabled
-        state = $state; rect = $rect; children = @($children)
+        state = $state; rect = $rect; liveSetting = $live; children = @($children)
     }
 }
 
@@ -122,6 +124,8 @@ if ($SelfTest) {
     $json = $tree | ConvertTo-Json -Depth 20
     $back = $json | ConvertFrom-Json
     Check ($back.children[1].name -eq 'Start' -and $back.children[0].children.Count -eq 2) 'JSON keeps the shape'
+    Check ($null -eq $back.liveSetting -and $back.PSObject.Properties.Name -contains 'liveSetting') 'liveSetting is in every record, null when not read'
+    Check ((New-NodeRecord 'Text' '' '' $true $null $rect @() 1).liveSetting -eq 1) 'liveSetting carries the number'
     # Attach only: the script text starts nothing.
     $self = Get-Content -LiteralPath $PSCommandPath -Raw
     foreach ($w in ('Start' + '-Process'), ('Invoke' + '-Item'), ('Invoke' + '-Expression'), ('Process]::' + 'Start')) {
@@ -186,6 +190,19 @@ $walk = {
         return $null
     }
 
+    # UIA_LiveSettingPropertyId (30135): the managed wrapper may not know it (LookupById then gives
+    # $null, or reading it throws); every node then says liveSetting null, never a guess.
+    $script:liveProp = $null
+    try { $script:liveProp = [System.Windows.Automation.AutomationProperty]::LookupById(30135) } catch { }
+    function Get-Live($el) {
+        if ($null -eq $script:liveProp) { return $null }
+        try {
+            $v = $el.GetCurrentPropertyValue($script:liveProp, $true)
+            if ($v -is [int]) { return $v }
+        } catch { }
+        return $null
+    }
+
     function Read-Node($el, [int]$depth) {
         $script:count++
         if ([DateTime]::UtcNow.Ticks -gt $deadlineTicks -or $script:count -gt $maxNodes) { $script:timedOut = $true }
@@ -204,7 +221,7 @@ $walk = {
             }
         }
         $role = $c.ControlType.ProgrammaticName -replace '^ControlType\.', ''
-        New-NodeRecord $role $c.Name $c.AutomationId $c.IsEnabled (Get-State $el) $rect $kids
+        New-NodeRecord $role $c.Name $c.AutomationId $c.IsEnabled (Get-State $el) $rect $kids (Get-Live $el)
     }
 
     $cond = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::ProcessIdProperty), $pid_

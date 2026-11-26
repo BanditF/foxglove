@@ -65,6 +65,8 @@ push or merge, and you don't invent harness features that don't exist.
   panel hold (bit 15). Use the readback as screen evidence; the host preview isn't proof.
 - App-level cases (temp `FOXGLOVE_CONFIG_DIR`, lights restored): `scripts/lab/{leases,pomodoro,
   mic_mute,api_tools,broadcast,plugin_actions,resilience}.py`, built on `labkit.py`.
+  `scripts/lab/uia_start.py` (#1376: the Scenes page's UI Automation tree has Start, on a hidden desktop via
+  `quiet-launch.ps1`; docs/scripts/uia_start.md).
 - Release gate: `scripts/release-test.ps1 -Firmware <dir> -AllowApp -NonInteractive` (preflight →
   usb → release suite; never flashes).
 - ZMK sim: `tests/zmk-sim/`, CI `zmk-sim.yml`. It runs in real time, `run.sh` kills a case at
