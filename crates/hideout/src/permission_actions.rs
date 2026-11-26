@@ -348,7 +348,9 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
             }
         })
         .collect();
+    // An app whose OK is for one run can have nothing remembered for it, so it is not offered.
     let keyboard = (id == crate::keyboard_actions::MODULE
+        && v.one_run.is_none()
         && matches!(
             reg.keyboard_state(id),
             hideout_registry::keyboard::KeyboardState::NotAsked
@@ -362,8 +364,9 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
     // A kept grant whose update asked for more: only what was never answered is New.
     let more =
         reason.is_none() && v.void.is_none() && v.bound.is_some() && !asked_pending(&v).is_empty();
+    // A one-run app that asks again at a start did not change: no "changed" reason for it.
     let reason = reason
-        .or(v.void.map(|_| Reason::Void))
+        .or(v.void.filter(|_| !v.asks_again).map(|_| Reason::Void))
         .or(kept.then_some(Reason::Kept))
         .or(more.then_some(Reason::More));
     let mut items = items;
@@ -378,6 +381,8 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
         name: v.listing.name.clone(),
         code: v.listing.code().to_string(),
         path: v.listing.exe_path.clone(),
+        args: v.listing.run_args.clone(),
+        one_run: v.one_run,
         items,
         reason,
         keyboard,
@@ -400,7 +405,8 @@ fn keep_is_on(v: &View) -> bool {
 /// The dialog's "Keep my OK after updates in this folder": only for an adopted app with a path;
 /// refused for a folder that is not on this PC's own drive; checked when already on.
 fn keep_choice(v: &View) -> Option<Keep> {
-    if !v.adopted || v.listing.exe_path.is_empty() {
+    // Not offered for an app whose OK is for one run (#1452); the registry refuses it too.
+    if !v.adopted || v.listing.exe_path.is_empty() || v.one_run.is_some() {
         return None;
     }
     Some(
@@ -565,6 +571,7 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
 /// stay), the app is an adopted one on this PC's own drive.
 fn keep_can_turn_on(v: &View) -> bool {
     v.adopted
+        && v.one_run.is_none()
         && v.void.is_none()
         && !v.granted.is_empty()
         && v.bound.as_ref().is_some_and(|b| !b.void)
@@ -574,7 +581,7 @@ fn keep_can_turn_on(v: &View) -> bool {
 
 /// The Permissions section's row for the choice; `None` for a module with no app path.
 fn keep_row(name: &str, v: &View) -> Option<KeepRow> {
-    if !v.adopted || v.listing.exe_path.is_empty() {
+    if !v.adopted || v.listing.exe_path.is_empty() || v.one_run.is_some() {
         return None;
     }
     let path = &v.listing.exe_path;
@@ -623,7 +630,10 @@ fn dev_build(v: &View) -> bool {
 
 /// Which header line a module gets, if any. `enabled`: the module is on in the hub's settings.
 pub fn header_kind(v: &View, enabled: bool, cli_seen: bool) -> Option<HeaderKind> {
-    if v.void.is_some() {
+    if v.asks_again {
+        // A one-run app whose OK a start used up (#1452): the ordinary ask, nothing changed.
+        Some(HeaderKind::Ask)
+    } else if v.void.is_some() {
         Some(HeaderKind::Changed)
     } else if v.bound.is_none() && v.adopted && !v.pending.is_empty() {
         // Slice 2 (allow means on): an Off adopted app asks too, because Allow turns it on.
@@ -2529,6 +2539,91 @@ mod tests {
             .unwrap();
     }
 
+    /// An app whose program is a script runner (a plain-text stand-in named like one), run with
+    /// two arguments.
+    fn runner_fx(tag: &str) -> Fx {
+        fx_from(tag, |exe| {
+            let runner = exe.with_file_name("python.exe");
+            std::fs::write(&runner, b"placeholder, not a program").unwrap();
+            with_args(&runner, ", '-m', 'vulpes'")
+        })
+    }
+
+    /// #1452: the dialog carries the whole command; for an app whose program runs whatever it
+    /// is given, Allow is for one run, the keep box is not offered anywhere, nothing is stored
+    /// as remembered, and the next start is the ordinary ask, not "changed".
+    #[test]
+    fn an_app_run_by_a_script_runner_is_asked_with_its_whole_command_for_one_run() {
+        use hideout_contract::permission::OneRun;
+        let mut f = runner_fx("one-run");
+        f.ui.open(ID, Opener::TurnOn);
+        let d = f.ui.dialog.clone().unwrap();
+        assert!(d.path.ends_with("python.exe"), "{}", d.path);
+        assert_eq!(d.args, ["-m", "vulpes"]);
+        assert_eq!(d.one_run, Some(OneRun::Scripts));
+        assert!(d.keep.is_none());
+        assert_eq!(d.binding_text().len(), 4);
+        let v = view(&f);
+        assert!(keep_choice(&v).is_none() && keep_row("Vulpes", &v).is_none());
+        assert!(!keep_can_turn_on(&v));
+        // An answer that asks to keep the OK anyway is refused whole.
+        let mut kept = d.allowed();
+        kept.keep = true;
+        let _ = f.ui.answer(PermAnswer::Allow(kept));
+        let m = Registry::open_from_env(&f.home).unwrap().inventory.modules[ID].clone();
+        assert!(m.granted.is_empty() && m.bound.is_none() && m.one_run.is_none());
+        // Allow: on for this run, nothing remembered.
+        f.ui.open(ID, Opener::TurnOn);
+        let d = f.ui.dialog.clone().unwrap();
+        assert!(f.ui.answer(PermAnswer::Allow(d.allowed())).is_some());
+        let m = Registry::open_from_env(&f.home).unwrap().inventory.modules[ID].clone();
+        assert_eq!(m.granted.len(), 2);
+        assert!(m.bound.is_none() && m.one_run.is_some());
+        assert!(!f.ui.needs_ok(ID));
+        // The start that uses the OK, then the next start.
+        for _ in 0..2 {
+            let mut reg = Registry::open_from_env(&f.home).unwrap();
+            reg.keep_followed(ID, NOW).unwrap();
+        }
+        f.ui.refresh();
+        let v = view(&f);
+        assert!(v.asks_again && v.granted.is_empty());
+        assert!(f.ui.needs_ok(ID));
+        assert_eq!(header_kind(&v, true, false), Some(HeaderKind::Ask));
+        f.ui.open(ID, Opener::Header);
+        let d = f.ui.dialog.clone().unwrap();
+        assert_eq!(d.reason, None, "asked again, not changed");
+        assert_eq!(d.one_run, Some(OneRun::Scripts));
+        assert!(d.keep.is_none());
+    }
+
+    /// #1452: an app with a program file of its own shows its arguments and keeps the
+    /// remembered OK and the keep box.
+    #[test]
+    fn an_app_with_its_own_program_shows_its_arguments_and_keeps_its_ok() {
+        let mut f = fx("args-own", &["hub.notify", "lighting.lease"]);
+        f.ui.open(ID, Opener::TurnOn);
+        let d = f.ui.dialog.clone().unwrap();
+        assert!(d.args.is_empty() && d.one_run.is_none());
+        f.ui.answer(PermAnswer::NotNow);
+        readopt(&f, with_args(&f.exe, ", '--profile', 'work files', ''"));
+        f.ui.refresh();
+        f.ui.open(ID, Opener::TurnOn);
+        let d = f.ui.dialog.clone().unwrap();
+        assert_eq!(d.args, ["--profile", "work files", ""]);
+        assert!(d.one_run.is_none() && d.keep.is_some());
+        assert!(d.binding_lines()[0].ends_with("(the file and arguments above):"));
+        assert!(f.ui.answer(PermAnswer::Allow(d.allowed())).is_some());
+        let b = view(&f).bound.expect("remembered");
+        assert_eq!(b.run_args, ["--profile", "work files", ""]);
+        for _ in 0..2 {
+            let mut reg = Registry::open_from_env(&f.home).unwrap();
+            reg.keep_followed(ID, NOW).unwrap();
+        }
+        assert_eq!(view(&f).granted.len(), 2);
+        assert!(!f.ui.needs_ok(ID));
+    }
+
     #[test]
     fn changed_run_args_after_the_void_get_the_full_ask_bound_empty_or_not() {
         // Bound with no args, then the manifest adds one.
@@ -3012,6 +3107,8 @@ on = [\"open\", \"call\"]
             name: "Foxglove".into(),
             code: "0".into(),
             path: String::new(),
+            args: Vec::new(),
+            one_run: None,
             items: Vec::new(),
             reason: Some(Reason::More),
             keyboard: None,

@@ -67,6 +67,11 @@ pub struct Installed {
     /// again. The same holds for a binding with an empty program hash that still holds grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound: Option<Bound>,
+    /// This run's OK of an app whose program runs whatever it is handed (#1452,
+    /// [`crate::one_run`]). Such an app never has a `bound`: nothing is remembered for it, and
+    /// this record is used up by the next start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub one_run: Option<RunOk>,
     /// The user's grant of the reserved areas to the adopted legacy module (#1155-B): path and
     /// hash of its program at Allow. Only [`Registry::allow_keyboard`] writes `on`.
     ///
@@ -179,6 +184,69 @@ pub struct Bound {
     /// [`Registry::approve_listed`]: crate::Registry::approve_listed
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow: Option<FollowFolder>,
+}
+
+/// The OK of one run (#1452): what the user allowed and for which program and arguments, held
+/// until the app's next start has used it. It is not a binding: nothing keeps it (no
+/// follow-folder, no attested update, no dev folder), and after one start it allows nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunOk {
+    pub manifest_sha256: String,
+    /// Canonical path of `run[0]` at the Allow.
+    #[serde(default)]
+    pub exe_path: String,
+    /// SHA-256 of the program at the Allow; cleared once the OK is over.
+    #[serde(default)]
+    pub exe_sha256: String,
+    pub list_hash: String,
+    pub at: String,
+    /// `dialog` or `cli`.
+    pub by: String,
+    /// `run[1..]` at the Allow; the start is held to exactly these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub run_args: Vec<String>,
+    pub state: RunState,
+}
+
+/// Where a one-run OK stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunState {
+    /// Allowed; the app has not started since.
+    Allowed,
+    /// The start it was given for was made. The next start ends it.
+    Started,
+    /// Used up by a start: Hideout asks again.
+    Ended,
+    /// The program or its arguments changed before or during the run.
+    Void,
+    /// A state this hub does not know (a newer or edited file): never an OK.
+    #[serde(other)]
+    Unknown,
+}
+
+impl RunOk {
+    /// Whether the OK still allows something: given, and not yet over.
+    pub fn live(&self) -> bool {
+        matches!(self.state, RunState::Allowed | RunState::Started) && !self.exe_sha256.is_empty()
+    }
+
+    /// The record in the shape of a binding, for the readers that show when and how the app was
+    /// allowed. Never stored: it keeps nothing and follows nothing.
+    pub fn as_bound(&self) -> Bound {
+        Bound {
+            manifest_sha256: self.manifest_sha256.clone(),
+            exe_path: self.exe_path.clone(),
+            exe_sha256: self.exe_sha256.clone(),
+            list_hash: self.list_hash.clone(),
+            at: self.at.clone(),
+            by: self.by.clone(),
+            run_args: self.run_args.clone(),
+            void: !self.live(),
+            attested: Vec::new(),
+            follow: None,
+        }
+    }
 }
 
 /// The folder and file name a follow-folder grant was set for, and when (always `by: "dialog"`;

@@ -8,6 +8,8 @@
 //! Sentence case. The window never says "permission string", "provide", "method", "router",
 //! "hash" or an id, except the selectable path and the list code.
 
+use hideout_contract::permission::OneRun;
+
 pub const ALLOW_NONE: &str = "Allow none";
 /// The button of an app that asks for nothing (there is nothing to count).
 pub const ALLOW: &str = "Allow";
@@ -63,12 +65,104 @@ pub const KEEP_TURN_ON_SAID: &str = "Turn on keep my OK after updates, opens a c
 pub const KEEP_TURN_OFF_SAID: &str = "Turn off keep my OK after updates";
 /// Shown when the choice could not be saved.
 pub const KEEP_NOT_SAVED: &str = "Hideout couldn't save your choice. Nothing changed. Try again.";
+/// How many arguments show before "Show all N" (#1452).
+pub const ARGS_SHOWN: usize = 4;
+/// How many lines the opened argument list shows before it scrolls.
+pub const ARGS_OPEN_LINES: usize = 8;
+/// An argument longer than this is cut in the middle while the list is closed: its start, how
+/// many characters are left out, its end. The open list shows it whole.
+pub const ARG_MAX: usize = 80;
+const ARG_HEAD: usize = 30;
+/// What stands for an argument that is nothing but characters that are not drawn.
+pub const ARG_UNSEEN: &str = "characters that can't be shown";
+/// The link that opens the list when all arguments are listed and one is cut.
+pub const SHOW_ALL: &str = "Show whole arguments";
+/// Shown when an argument holds characters that are not drawn (or quote marks, drawn as `'`).
+pub const ARGS_NOTE: &str = "Some characters can't be shown.";
+pub const SHOW_FEWER: &str = "Show fewer";
 /// How many of the newest history lines show before "and N earlier".
 pub const HISTORY_SHOWN: usize = 3;
 
 /// The last part of a path (`C:\Apps\Foxglove\foxglove.exe` gives `foxglove.exe`).
 pub fn file_of(path: &str) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or("").to_string()
+}
+
+/// "Show all 6 arguments": the link that opens the whole argument list.
+pub fn show_all(n: usize) -> String {
+    format!("Show all {n} arguments")
+}
+
+/// One argument as it is shown, whole: cleaned ([`hideout_contract::module::shown_argument`]:
+/// nothing in it can end its quotes, break its line or turn its direction), and whether
+/// cleaning changed it. Never cut: this is what is spoken, what the control pipe lists and what
+/// the opened list draws.
+pub fn shown_arg(raw: &str) -> (String, bool) {
+    hideout_contract::module::shown_argument(raw)
+}
+
+/// A cleaned argument cut for the closed list, `None` when it fits ([`ARG_MAX`]): its start,
+/// "…(123 more characters)…" with the number that is left out, and its end, so the end
+/// stays visible and the reader sees how much is not.
+fn cut_arg(clean: &str) -> Option<String> {
+    let n = clean.chars().count();
+    if n <= ARG_MAX {
+        return None;
+    }
+    let mark = |left_out: usize| format!("\u{2026}({left_out} more characters)\u{2026}");
+    // Room for the mark with its longest number, so the line never passes `ARG_MAX`.
+    let tail = ARG_MAX.saturating_sub(ARG_HEAD + mark(n - ARG_HEAD).chars().count());
+    let start: String = clean.chars().take(ARG_HEAD).collect();
+    let end: String = clean.chars().skip(n - tail).collect();
+    Some(format!("{start}{}{end}", mark(n - ARG_HEAD - tail)))
+}
+
+/// Whether the closed list cuts this argument (the list can then be opened to see it whole).
+pub fn arg_is_cut(raw: &str) -> bool {
+    shown_arg(raw).0.chars().count() > ARG_MAX
+}
+
+/// "Runs with 2 arguments:", the heading over the arguments; `None` for none.
+pub fn args_heading(n: usize) -> Option<String> {
+    match n {
+        0 => None,
+        1 => Some("Runs with 1 argument:".into()),
+        n => Some(format!("Runs with {n} arguments:")),
+    }
+}
+
+/// One argument as its line, whole: in quotes, an empty one marked so that it is seen, and one
+/// that is nothing but characters that are not drawn marked as that (it is not empty).
+pub fn arg_line(raw: &str) -> String {
+    match shown_arg(raw).0 {
+        s if s.is_empty() && raw.is_empty() => "\u{201c}\u{201d} (empty)".to_string(),
+        s if s.is_empty() => format!("\u{201c}\u{201d} ({ARG_UNSEEN})"),
+        s => format!("\u{201c}{s}\u{201d}"),
+    }
+}
+
+/// [`arg_line`] for the closed list: a long argument cut in the middle ([`ARG_MAX`]).
+pub fn arg_line_cut(raw: &str) -> String {
+    match cut_arg(&shown_arg(raw).0) {
+        Some(cut) => format!("\u{201c}{cut}\u{201d}"),
+        None => arg_line(raw),
+    }
+}
+
+/// A program's file name inside a sentence: cleaned like an argument and cut to 40 characters.
+pub fn shown_file(path: &str) -> String {
+    let (clean, _) = hideout_contract::module::shown_argument(&file_of(path));
+    hideout_contract::module::cut_middle(&clean, 40, 20)
+}
+
+/// What the control pipe answers when an Allow was stored for one run only (#1452): the same
+/// facts as the dialog's lines.
+pub fn one_run_reply(path: &str) -> String {
+    format!(
+        "allowed for this run only; {} runs whatever it is given, so Hideout asks again at the \
+         next start",
+        shown_file(path)
+    )
 }
 
 /// The helper under the label.
@@ -503,6 +597,12 @@ pub struct PermDialog {
     pub code: String,
     /// The program's canonical path (adopted modules); empty otherwise.
     pub path: String,
+    /// The arguments the program is run with, as the manifest gives them (untrusted text: drawn
+    /// only through [`shown_arg`]). Shown under the path; the list code covers them.
+    pub args: Vec<String>,
+    /// The program runs whatever it is given (a script runner, a part of Windows): Allow is
+    /// for this run only and "Keep my OK" is not offered (#1452).
+    pub one_run: Option<OneRun>,
     pub items: Vec<ListItem>,
     pub reason: Option<Reason>,
     pub keyboard: Option<KeyboardChoice>,
@@ -525,6 +625,8 @@ pub struct View {
     pub starts: bool,
     /// The everyday items are listed (they start collapsed, still ticked).
     pub everyday_open: bool,
+    /// Every argument is listed (a list of more than [`ARGS_SHOWN`] starts with the first few).
+    pub args_open: bool,
     /// One "I understand" for the whole sensitive group (first run): `None` when it is not
     /// offered (each sensitive item then has its own), else whether it is ticked. Ticking it
     /// ticks and confirms every sensitive item; each item can still be unticked by itself.
@@ -666,9 +768,32 @@ impl PermDialog {
         let keeping = self.keep.as_ref().is_some_and(|k| !k.is_refused() && k.on);
         let above = if self.path.is_empty() {
             ""
-        } else {
+        } else if self.args.is_empty() {
             " (the file above)"
+        } else {
+            " (the file and arguments above)"
         };
+        if let Some(why) = self.one_run {
+            let (file, name) = (shown_file(&self.path), &self.name);
+            return [
+                format!("Your OK is for this run of {name} only:"),
+                match why {
+                    OneRun::Scripts => format!(
+                        "{file} runs whatever it is given, so Hideout asks again each time \
+                         {name} starts."
+                    ),
+                    OneRun::Windows => format!(
+                        "{file} is part of Windows and runs whatever it is given, so Hideout \
+                         asks again each time {name} starts."
+                    ),
+                },
+                match self.items.len() {
+                    0 => format!("You can turn {name} off any time in Apps."),
+                    1 => format!("You can turn it off any time in Apps, {name}."),
+                    _ => format!("You can turn each one off any time in Apps, {name}."),
+                },
+            ];
+        }
         match self.items.len() {
             0 => [
                 format!("Your OK is only for this copy of {}{above}:", self.name),
@@ -693,6 +818,93 @@ impl PermDialog {
                 },
             ],
         }
+    }
+
+    /// Every line under the list, in order: [`PermDialog::binding_lines`], and for an app whose
+    /// OK is for one run the next step, after the reason.
+    pub fn binding_text(&self) -> Vec<String> {
+        let [a, b, c] = self.binding_lines();
+        match self.one_run {
+            Some(_) => vec![a, b, self.one_run_next(), c],
+            None => vec![a, b, c],
+        }
+    }
+
+    /// What the user can do to be asked only once (one-run apps).
+    pub fn one_run_next(&self) -> String {
+        format!(
+            "To be asked only once, use a version of {} that has its own program file.",
+            self.name
+        )
+    }
+
+    /// "Runs with 2 arguments:", the heading over the arguments; `None` when there are none
+    /// (nothing is then added to the dialog).
+    pub fn args_heading(&self) -> Option<String> {
+        args_heading(self.args.len())
+    }
+
+    /// Every argument, whole, as one line in quotes, in order. An empty one is marked, so it
+    /// is seen.
+    pub fn arg_lines(&self) -> Vec<String> {
+        self.args.iter().map(|a| arg_line(a)).collect()
+    }
+
+    /// Whether an argument holds something that is not drawn as written ([`ARGS_NOTE`]).
+    pub fn args_note(&self) -> bool {
+        self.args.iter().any(|a| shown_arg(a).1)
+    }
+
+    /// The argument list can be opened and closed: it has more than [`ARGS_SHOWN`] arguments,
+    /// or one of them is cut while it is closed. So nothing of an argument is out of reach.
+    pub fn args_fold(&self) -> bool {
+        self.args.len() > ARGS_SHOWN || self.args.iter().any(|a| arg_is_cut(a))
+    }
+
+    /// The link under the arguments, `None` when everything is drawn anyway: "Show all 6
+    /// arguments" for a long list, "Show whole arguments" when only a cut argument is opened,
+    /// "Show fewer" to close. It is read out as it is drawn.
+    pub fn args_link(&self) -> Option<String> {
+        if !self.args_fold() {
+            return None;
+        }
+        Some(if self.view.args_open {
+            SHOW_FEWER.to_string()
+        } else if self.args.len() > ARGS_SHOWN {
+            show_all(self.args.len())
+        } else {
+            SHOW_ALL.to_string()
+        })
+    }
+
+    /// The argument lines drawn now. Opened: every argument, whole. Closed: the first
+    /// [`ARGS_SHOWN`], a long one cut in the middle with the number of characters left out.
+    pub fn args_drawn(&self) -> Vec<String> {
+        if !self.args_fold() || self.view.args_open {
+            return self.arg_lines();
+        }
+        self.args
+            .iter()
+            .take(ARGS_SHOWN)
+            .map(|a| arg_line_cut(a))
+            .collect()
+    }
+
+    /// The arguments as they are spoken: the heading and every argument in order, whole (never
+    /// only the first few, never cut), an empty one as "empty", then the note.
+    pub fn args_said(&self) -> Option<String> {
+        let mut s = self.args_heading()?;
+        for a in &self.args {
+            match shown_arg(a).0 {
+                x if x.is_empty() && a.is_empty() => s.push_str(" empty"),
+                x if x.is_empty() => s.push_str(&format!(" {ARG_UNSEEN}")),
+                x => s.push_str(&format!(" \u{201c}{x}\u{201d}")),
+            }
+        }
+        if self.args_note() {
+            s.push_str(&format!(" {ARGS_NOTE}"));
+        }
+        Some(s)
     }
 
     /// Marks what a changed list added (`new`) and records what it dropped (`removed`),
@@ -957,8 +1169,14 @@ impl PermDialog {
 
     /// The accessible description: intro plus the binding lines, and the state of the keep box.
     pub fn said(&self) -> String {
-        let [a, b, c] = self.binding_lines();
-        let mut s = format!("{} {a} {} {b} {c}", self.intro(), self.path);
+        let lines = self.binding_text();
+        let mut s = format!("{} {} {}", self.intro(), lines[0], self.path);
+        if let Some(args) = self.args_said() {
+            s.push_str(&format!(" {args}"));
+        }
+        for line in &lines[1..] {
+            s.push_str(&format!(" {line}"));
+        }
         if let Some(k) = &self.keep {
             s.push_str(&format!(
                 " {KEEP_LABEL}: {}.",
@@ -1286,6 +1504,8 @@ mod tests {
             name: "Foxglove".into(),
             code: "7f3a91c20b4e55d1".into(),
             path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+            args: Vec::new(),
+            one_run: None,
             items: vec![
                 item("key.events", Group::Sensitive, true, false),
                 item("provide:a.set", Group::MakeChanges, false, true),
@@ -2061,5 +2281,377 @@ mod tests {
         d.view.everyday_open = false;
         d.items[0].new = true;
         assert!(d.everyday_shown(), "a new item is never hidden");
+    }
+    // The whole command in the Allow dialog (#1452). Numbers are the UX plan's checklist.
+
+    fn with_args(args: &[&str]) -> PermDialog {
+        PermDialog {
+            args: args.iter().map(|a| a.to_string()).collect(),
+            ..dialog()
+        }
+    }
+
+    /// The dialog's spoken text as it was before the arguments were part of it.
+    fn said_before(d: &PermDialog) -> String {
+        let [a, b, c] = d.binding_lines();
+        format!("{} {a} {} {b} {c}", d.intro(), d.path)
+    }
+
+    /// 1: an app without arguments has the dialog and the spoken text it had.
+    #[test]
+    fn an_app_without_arguments_adds_nothing_to_the_dialog() {
+        let d = dialog();
+        assert_eq!(d.args_heading(), None);
+        assert!(d.args_drawn().is_empty() && !d.args_fold() && !d.args_note());
+        assert_eq!(d.args_said(), None);
+        assert_eq!(d.binding_text(), d.binding_lines().to_vec());
+        assert_eq!(
+            d.binding_lines()[0],
+            "Only for this copy of Foxglove (the file above):"
+        );
+        assert_eq!(d.said(), said_before(&d));
+        let nothing = PermDialog {
+            items: Vec::new(),
+            ..dialog()
+        };
+        assert_eq!(nothing.said(), said_before(&nothing));
+    }
+
+    #[test]
+    fn the_arguments_are_listed_under_the_path_one_per_line_in_quotes() {
+        let d = with_args(&["--profile", "work files"]);
+        assert_eq!(d.args_heading().as_deref(), Some("Runs with 2 arguments:"));
+        assert_eq!(
+            d.args_drawn(),
+            ["\u{201c}--profile\u{201d}", "\u{201c}work files\u{201d}"]
+        );
+        assert!(!d.args_fold() && !d.args_note());
+        assert_eq!(
+            d.binding_lines()[0],
+            "Only for this copy of Foxglove (the file and arguments above):"
+        );
+        let nothing = PermDialog {
+            items: Vec::new(),
+            ..with_args(&["-v"])
+        };
+        assert_eq!(
+            nothing.args_heading().as_deref(),
+            Some("Runs with 1 argument:")
+        );
+        assert_eq!(
+            nothing.binding_lines()[0],
+            "Your OK is only for this copy of Foxglove (the file and arguments above):"
+        );
+        // Spoken after the path, before the rest of the lines.
+        let [a, b, c] = d.binding_lines();
+        assert_eq!(
+            d.said(),
+            format!(
+                "{} {a} {} Runs with 2 arguments: \u{201c}--profile\u{201d} \
+                 \u{201c}work files\u{201d} {b} {c}",
+                d.intro(),
+                d.path
+            )
+        );
+    }
+
+    /// 2: every argument can be reached, and all of them are always spoken.
+    #[test]
+    fn a_long_argument_list_shows_its_first_four_and_opens_to_all() {
+        let mut d = with_args(&["a1", "a2", "a3", "a4", "a5", "a6"]);
+        assert_eq!(d.args_heading().as_deref(), Some("Runs with 6 arguments:"));
+        assert!(d.args_fold());
+        assert_eq!(d.args_drawn().len(), ARGS_SHOWN);
+        assert_eq!(d.args_drawn()[3], "\u{201c}a4\u{201d}");
+        assert_eq!(show_all(d.args.len()), "Show all 6 arguments");
+        let said = d.said();
+        for a in &d.args {
+            assert!(said.contains(&format!("\u{201c}{a}\u{201d}")), "{said}");
+        }
+        d.view.args_open = true;
+        assert_eq!(d.args_drawn(), d.arg_lines());
+        assert_eq!(d.args_drawn().len(), 6);
+        assert_eq!(d.said(), said, "spoken the same, open or not");
+        assert_eq!(SHOW_FEWER, "Show fewer");
+        assert_eq!(d.args_link().as_deref(), Some("Show fewer"));
+        d.view.args_open = false;
+        assert_eq!(d.args_link().as_deref(), Some("Show all 6 arguments"));
+        // Four fit without a link.
+        let four = with_args(&["1", "2", "3", "4"]);
+        assert!(!four.args_fold());
+        assert_eq!(four.args_link(), None);
+    }
+
+    /// 3: nothing in an argument ends its quotes, breaks its line or turns its direction.
+    #[test]
+    fn an_argument_stays_inside_its_quotes_on_one_line() {
+        for bad in [
+            "a\u{201d} \u{201c}b",
+            "a\" \"b",
+            "line one\nline two\r\n\tthree",
+            "abc\u{202e}exe.txt",
+            "a\u{200b}b\u{2066}c\u{2069}",
+            "x\u{0}y\u{1b}[31mz",
+        ] {
+            let d = with_args(&["ok", bad]);
+            let line = d.arg_lines()[1].clone();
+            let inner: String = {
+                let mut c = line.chars();
+                assert_eq!(c.next(), Some('\u{201c}'), "{line:?}");
+                assert_eq!(c.next_back(), Some('\u{201d}'), "{line:?}");
+                c.collect()
+            };
+            assert!(
+                !inner.chars().any(|c| c.is_control()
+                    || matches!(c, '"' | '\u{201c}' | '\u{201d}')
+                    || hideout_contract::module::hidden_in_name(c)),
+                "{bad:?} gives {line:?}"
+            );
+            assert!(d.args_note(), "{bad:?}");
+            assert!(d.said().ends_with(&said_tail(&d)), "{bad:?}");
+            assert!(d.args_said().unwrap().ends_with(ARGS_NOTE));
+        }
+        assert_eq!(arg_line("a\u{201d} \u{201c}b"), "\u{201c}a' 'b\u{201d}");
+        assert_eq!(ARGS_NOTE, "Some characters can't be shown.");
+        // Plain text, spaces included, is shown as written, with no note.
+        let d = with_args(&["C:\\My Files\\a b.txt", "--x=1"]);
+        assert_eq!(d.arg_lines()[0], "\u{201c}C:\\My Files\\a b.txt\u{201d}");
+        assert!(!d.args_note());
+        assert!(!d.said().contains(ARGS_NOTE));
+    }
+
+    fn said_tail(d: &PermDialog) -> String {
+        d.binding_text()[1..].join(" ")
+    }
+
+    /// 4: a long argument is cut in the middle while the list is closed, so its end is seen;
+    /// the cut says how many characters it leaves out, and the list opens to all of it.
+    #[test]
+    fn a_long_argument_is_cut_in_the_middle_and_can_be_seen_whole() {
+        let long = format!(
+            "{}{}",
+            "a".repeat(40),
+            "tail-of-41-characters-that-must-be-seen!!"
+        );
+        assert_eq!(long.chars().count(), 81);
+        assert_eq!(shown_arg(&long), (long.clone(), false), "never cut here");
+        assert!(arg_is_cut(&long));
+        let head: String = long.chars().take(30).collect();
+        let tail: String = long.chars().skip(81 - 28).collect();
+        assert_eq!(
+            arg_line_cut(&long),
+            format!("\u{201c}{head}\u{2026}(23 more characters)\u{2026}{tail}\u{201d}")
+        );
+        assert_eq!(arg_line_cut(&long).chars().count(), ARG_MAX + 2);
+        assert!(arg_line_cut(&long).ends_with("must-be-seen!!\u{201d}"));
+        // What is shown and what is left out add up to the whole argument, at any length.
+        for n in [81, 82, 100, 999, 1_000, 12_345, 400_000] {
+            let arg: String = ('a'..='z').cycle().take(n).collect();
+            let line = arg_line_cut(&arg);
+            assert!(line.chars().count() <= ARG_MAX + 2, "{n}");
+            let (start, rest) = line.split_once("\u{2026}(").expect("the cut");
+            let (count, end) = rest
+                .split_once(" more characters)\u{2026}")
+                .expect("the count");
+            let left_out: usize = count.parse().unwrap();
+            let shown = start.chars().count() - 1 + end.chars().count() - 1;
+            assert_eq!(shown + left_out, n, "{line}");
+            assert!(arg.starts_with(&start[3..]) && arg.ends_with(&end[..end.len() - 3]));
+        }
+        let exact = "b".repeat(80);
+        assert!(!arg_is_cut(&exact));
+        assert_eq!(arg_line_cut(&exact), arg_line(&exact));
+
+        // One cut argument is enough for the link, with fewer than five arguments.
+        let mut d = with_args(&["--config", &long]);
+        assert!(d.args_fold());
+        assert_eq!(d.args_link().as_deref(), Some("Show whole arguments"));
+        assert_eq!(
+            d.args_drawn(),
+            ["\u{201c}--config\u{201d}".to_string(), arg_line_cut(&long)]
+        );
+        // Spoken whole, open or not.
+        let said = d.said();
+        assert!(said.contains(&format!("\u{201c}{long}\u{201d}")), "{said}");
+        assert!(!said.contains("more characters"), "{said}");
+        d.view.args_open = true;
+        assert_eq!(d.args_link().as_deref(), Some("Show fewer"));
+        assert_eq!(
+            d.args_drawn(),
+            [
+                "\u{201c}--config\u{201d}".to_string(),
+                format!("\u{201c}{long}\u{201d}")
+            ]
+        );
+        assert_eq!(d.said(), said);
+        assert!(!d.args_note());
+
+        // In a long list the opened view shows every argument whole.
+        let mut many = with_args(&["1", "2", &long, "4", "5", &long]);
+        assert_eq!(many.args_link().as_deref(), Some("Show all 6 arguments"));
+        assert_eq!(many.args_drawn().len(), ARGS_SHOWN);
+        assert_eq!(many.args_drawn()[2], arg_line_cut(&long));
+        many.view.args_open = true;
+        assert_eq!(many.args_drawn(), many.arg_lines());
+        assert_eq!(many.args_drawn()[5], format!("\u{201c}{long}\u{201d}"));
+    }
+
+    /// An argument that is nothing but characters that are not drawn is not "empty".
+    #[test]
+    fn an_argument_of_unseen_characters_is_not_called_empty() {
+        for unseen in [
+            "\u{3164}",
+            "\u{2800}\u{2800}",
+            "\u{200b}\u{fe0f}",
+            "\u{115f}\u{1160}\u{ffa0}",
+        ] {
+            let d = with_args(&["--name", unseen]);
+            assert_eq!(
+                d.arg_lines()[1],
+                "\u{201c}\u{201d} (characters that can't be shown)",
+                "{unseen:?}"
+            );
+            assert_eq!(d.args_drawn()[1], d.arg_lines()[1]);
+            assert!(d.args_note(), "{unseen:?}");
+            assert_eq!(
+                d.args_said().as_deref(),
+                Some(
+                    "Runs with 2 arguments: \u{201c}--name\u{201d} characters that can't be \
+                     shown Some characters can't be shown."
+                ),
+                "{unseen:?}"
+            );
+            assert!(!d.args_said().unwrap().contains("empty"));
+        }
+        // Inside other text they are dropped and the note says so.
+        let d = with_args(&["a\u{3164}b"]);
+        assert_eq!(d.arg_lines()[0], "\u{201c}ab\u{201d}");
+        assert!(d.args_note());
+    }
+
+    /// 5: an empty argument is seen and spoken.
+    #[test]
+    fn an_empty_argument_is_shown_and_spoken() {
+        let d = with_args(&["--name", "", "x"]);
+        assert_eq!(d.arg_lines()[1], "\u{201c}\u{201d} (empty)");
+        assert_eq!(
+            d.args_said().as_deref(),
+            Some("Runs with 3 arguments: \u{201c}--name\u{201d} empty \u{201c}x\u{201d}")
+        );
+        assert!(!d.args_note());
+    }
+
+    fn one_run(why: OneRun, path: &str, args: &[&str]) -> PermDialog {
+        PermDialog {
+            path: path.into(),
+            one_run: Some(why),
+            keep: None,
+            ..with_args(args)
+        }
+    }
+
+    /// 6 and 7: an app whose program runs whatever it is given is allowed for this run only;
+    /// the lines name the file, say why and give the next step.
+    #[test]
+    fn a_one_run_app_says_its_ok_is_for_this_run_and_why() {
+        let d = one_run(OneRun::Scripts, r"C:\Python312\python.exe", &["-m", "fox"]);
+        assert_eq!(
+            d.binding_text(),
+            [
+                "Your OK is for this run of Foxglove only:",
+                "python.exe runs whatever it is given, so Hideout asks again each time \
+                 Foxglove starts.",
+                "To be asked only once, use a version of Foxglove that has its own program file.",
+                "You can turn each one off any time in Apps, Foxglove.",
+            ]
+        );
+        assert_eq!(
+            d.said(),
+            format!(
+                "{} Your OK is for this run of Foxglove only: C:\\Python312\\python.exe Runs \
+                 with 2 arguments: \u{201c}-m\u{201d} \u{201c}fox\u{201d} python.exe runs \
+                 whatever it is given, so Hideout asks again each time Foxglove starts. To be \
+                 asked only once, use a version of Foxglove that has its own program file. You \
+                 can turn each one off any time in Apps, Foxglove.",
+                d.intro()
+            )
+        );
+        let w = one_run(
+            OneRun::Windows,
+            r"C:\Windows\System32\rundll32.exe",
+            &["x.dll,Go"],
+        );
+        assert_eq!(
+            w.binding_text()[1],
+            "rundll32.exe is part of Windows and runs whatever it is given, so Hideout asks \
+             again each time Foxglove starts."
+        );
+        for d in [&d, &w] {
+            let said = d.said();
+            assert!(
+                !said.contains("this copy") && !said.contains(KEEP_LABEL),
+                "{said}"
+            );
+            assert_eq!(
+                d.binding_text()[0],
+                "Your OK is for this run of Foxglove only:"
+            );
+            assert!(!d.allowed().keep);
+        }
+        // The same without arguments and for an app that asks for nothing.
+        let bare = PermDialog {
+            items: Vec::new(),
+            ..one_run(OneRun::Scripts, r"C:\Tools\node.exe", &[])
+        };
+        assert_eq!(bare.binding_text().len(), 4);
+        assert_eq!(
+            bare.binding_text()[3],
+            "You can turn Foxglove off any time in Apps."
+        );
+        // The file's name is untrusted text too: cleaned, and cut to 40 characters.
+        let long = format!(r"C:\T\{}\u{{202e}}python.exe", "p".repeat(60))
+            .replace("\\u{202e}", "\u{202e}");
+        let file = shown_file(&long);
+        assert_eq!(file.chars().count(), 40);
+        assert!(file.ends_with("python.exe") && !file.contains('\u{202e}'));
+    }
+
+    /// 9: the control pipe's answer carries the dialog's facts.
+    #[test]
+    fn the_pipe_reply_for_a_one_run_app_says_what_the_dialog_says() {
+        assert_eq!(
+            one_run_reply(r"C:\Python312\python.exe"),
+            "allowed for this run only; python.exe runs whatever it is given, so Hideout asks \
+             again at the next start"
+        );
+    }
+
+    /// 10: the new words keep to the window's vocabulary.
+    #[test]
+    fn the_new_lines_use_app_and_program_only() {
+        let d = one_run(OneRun::Scripts, r"C:\Python312\python.exe", &["a\u{0}", ""]);
+        let w = one_run(
+            OneRun::Windows,
+            r"C:\Windows\System32\cmd.exe",
+            &["/c", "x"],
+        );
+        let plain = with_args(&["1", "2", "3", "4", "5"]);
+        let mut all = vec![
+            ARGS_NOTE.to_string(),
+            SHOW_FEWER.to_string(),
+            show_all(5),
+            one_run_reply(&d.path),
+            d.args_said().unwrap(),
+            plain.args_said().unwrap(),
+        ];
+        all.extend(d.binding_text());
+        all.extend(w.binding_text());
+        all.extend(plain.binding_text());
+        for line in &all {
+            let low = line.to_lowercase();
+            for word in ["module", "hash", "grant", "microsoft", "python ", "sha"] {
+                assert!(!low.contains(word), "{line:?} says {word:?}");
+            }
+        }
     }
 }

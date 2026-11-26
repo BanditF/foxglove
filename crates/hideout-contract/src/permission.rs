@@ -274,6 +274,16 @@ pub fn tool_runs_scripts(file: &str) -> bool {
         .is_some_and(|s| s.ends_with(|c: char| c.is_ascii_digit()) && versioned(s))
 }
 
+/// Why an app's OK holds for one run only and is never remembered: its program runs whatever
+/// it is handed, so the program file says nothing about what runs in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OneRun {
+    /// The program file's name is a script runner's ([`tool_runs_scripts`]).
+    Scripts,
+    /// The program file is inside the Windows folder.
+    Windows,
+}
+
 /// Whether the fact pattern `pattern` (as asked in `facts.read:<pattern>`) lies wholly inside
 /// [`TOOL_FREE_FACTS`].
 pub fn tool_free_fact(pattern: &str) -> bool {

@@ -3565,6 +3565,8 @@ fn renders_the_permission_dialog_for_review() {
             name: "Foxglove".into(),
             code: "7f3a91c20b4e55d1".into(),
             path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+            args: Vec::new(),
+            one_run: None,
             items,
             reason,
             keyboard: Some(KeyboardChoice {
@@ -3933,6 +3935,8 @@ fn renders_the_grants_more_header_for_review() {
             name: "Foxglove".into(),
             code: "5be0c7d21a9f4e36".into(),
             path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+            args: Vec::new(),
+            one_run: None,
             items,
             reason: Some(Reason::More),
             keyboard: None,
@@ -4024,6 +4028,8 @@ fn renders_the_reask_with_allowed_before_for_review() {
             name: "Foxglove".into(),
             code: "5be0c7d21a9f4e36".into(),
             path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+            args: Vec::new(),
+            one_run: None,
             items,
             reason: Some(Reason::Void),
             keyboard: None,
@@ -4091,6 +4097,8 @@ fn renders_the_gpu_manager_dialog_for_review() {
             name: "GPU Helper".into(),
             code: "9c41e07b3a5d8f26".into(),
             path: r"C:\Program Files\GPU Helper\gpu-helper.exe".into(),
+            args: Vec::new(),
+            one_run: None,
             items: vec![
                 it(
                     "provide:gpu.*",
@@ -4153,6 +4161,8 @@ fn keep_test_dialog(
         name: "Foxglove".into(),
         code: "7f3a91c20b4e55d1".into(),
         path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+        args: Vec::new(),
+        one_run: None,
         items,
         reason: None,
         keyboard: None,
@@ -4163,6 +4173,7 @@ fn keep_test_dialog(
             starts: false,
             handover: false,
             everyday_open: true,
+            args_open: false,
             group_ack: None,
         },
         error: None,
@@ -4482,6 +4493,8 @@ fn first_run_test_dialog() -> crate::permission_dialog::FirstRun {
         name: name.into(),
         code: code.into(),
         path: format!(r"C:\Program Files\{name}\{id}.exe"),
+        args: Vec::new(),
+        one_run: None,
         items,
         reason: None,
         keyboard: None,
@@ -4774,6 +4787,8 @@ fn fr2_test_dialog() -> crate::permission_dialog::PermDialog {
         name: "Gizmo Keys".into(),
         code: "7f3a91c20b4e55d1".into(),
         path: r"C:\Users\someone\Programs\Gizmo\gizmo.exe".into(),
+        args: Vec::new(),
+        one_run: None,
         items,
         reason: None,
         keyboard: None,
@@ -4784,6 +4799,7 @@ fn fr2_test_dialog() -> crate::permission_dialog::PermDialog {
             starts: true,
             handover: false,
             everyday_open: false,
+            args_open: false,
             group_ack: Some(false),
         },
         error: None,
@@ -5145,6 +5161,8 @@ fn renders_the_consent_copy_for_review() {
             name: "Sensors".into(),
             code: "7f3a91c20b4e55d1".into(),
             path: r"C:\Program Files\Foxglove\sensors.exe".into(),
+            args: Vec::new(),
+            one_run: None,
             items,
             reason: None,
             keyboard: None,
@@ -6032,4 +6050,176 @@ fn renders_home_connected_for_review() {
         save_png(file, 944, h, rgba);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Every text the dialog drew this frame, as a screen reader gets it.
+fn drawn_texts(out: &egui::FullOutput) -> Vec<String> {
+    let upd = out.platform_output.accesskit_update.as_ref().unwrap();
+    upd.nodes
+        .iter()
+        .flat_map(|(_, n)| [n.label(), n.value(), n.description()])
+        .flatten()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// #1452, checklist 2 and 11: a long argument list shows its first four and a "Show all" link
+/// that is in Tab order, opens the whole list from the keyboard, and Tab still stays inside.
+#[test]
+fn the_show_all_link_of_the_arguments_is_reached_and_used_from_the_keyboard() {
+    use crate::permission_dialog_ui::perm_dialog_ids;
+    let t = crate::theme::tokens(true);
+    let mut d = keep_test_dialog(3, None);
+    d.args = (1..=6).map(|i| format!("--arg-{i}")).collect();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut ids = Vec::new();
+    let mut last = None;
+    for i in 0..3 {
+        last = Some(ctx.run(input(800.0, 900.0, vec![]), |c| {
+            ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
+        }));
+    }
+    // The link, All, Hide, 3 items, Allow, Not now.
+    assert_eq!(ids.len(), 1 + 2 + 3 + 2, "{ids:?}");
+    let texts = drawn_texts(last.as_ref().unwrap());
+    let has = |texts: &[String], l: &str| texts.iter().any(|x| x == l);
+    assert!(has(&texts, "Runs with 6 arguments:"), "{texts:?}");
+    assert!(has(&texts, "\u{201c}--arg-4\u{201d}"));
+    assert!(!has(&texts, "\u{201c}--arg-5\u{201d}"), "collapsed");
+    assert!(has(&texts, "Show all 6 arguments"), "the link is named");
+    // Collapsed or not, the dialog speaks every argument.
+    let spoken = texts
+        .iter()
+        .find(|x| x.contains("Runs with 6 arguments: "))
+        .expect("the dialog says the arguments");
+    assert!(spoken.contains("\u{201c}--arg-6\u{201d}"), "{spoken}");
+    // Tab reaches the link and stays inside.
+    let link = ids[0];
+    let tab = key(Key::Tab, Modifiers::NONE);
+    let mut reached = false;
+    for _ in 0..(ids.len() + 3) {
+        let _ = ctx.run(input(800.0, 900.0, vec![tab.clone()]), |c| {
+            ids = perm_dialog_ids(c, &t, &mut d, false).1;
+        });
+        let f = ctx.memory(|m| m.focused());
+        assert!(f.is_some_and(|f| ids.contains(&f)), "focus left: {f:?}");
+        reached |= f == Some(link);
+    }
+    assert!(reached, "Tab reaches the link");
+    // Space on the focused link opens the list.
+    for _ in 0..(ids.len() + 1) {
+        if ctx.memory(|m| m.focused()) == Some(link) {
+            break;
+        }
+        let _ = ctx.run(input(800.0, 900.0, vec![tab.clone()]), |c| {
+            ids = perm_dialog_ids(c, &t, &mut d, false).1;
+        });
+    }
+    assert_eq!(ctx.memory(|m| m.focused()), Some(link));
+    let mut answer = None;
+    for events in [vec![key(Key::Space, Modifiers::NONE)], vec![], vec![]] {
+        last = Some(ctx.run(input(800.0, 900.0, events), |c| {
+            let (a, i) = perm_dialog_ids(c, &t, &mut d, false);
+            answer = answer.take().or(a);
+            ids = i;
+        }));
+    }
+    assert!(answer.is_none(), "the link answers nothing");
+    assert!(d.view.args_open);
+    let texts = drawn_texts(last.as_ref().unwrap());
+    for i in 1..=6 {
+        assert!(has(&texts, &format!("\u{201c}--arg-{i}\u{201d}")), "{i}");
+    }
+    assert!(has(&texts, "Show fewer"));
+    assert!(!has(&texts, "Show fewer arguments"));
+    assert_eq!(ids[0], link, "the link keeps its place");
+    for _ in 0..(ids.len() + 3) {
+        let _ = ctx.run(input(800.0, 900.0, vec![tab.clone()]), |c| {
+            ids = perm_dialog_ids(c, &t, &mut d, false).1;
+        });
+        let f = ctx.memory(|m| m.focused());
+        assert!(f.is_some_and(|f| ids.contains(&f)), "focus left: {f:?}");
+    }
+}
+
+/// #1452, checklist 1, 3, 5 and 6 as drawn: no arguments draw nothing; an argument with
+/// characters that can't be shown gets the note; an empty one is marked; a one-run app has no
+/// keep box and neither "this copy" line.
+#[test]
+fn the_dialog_draws_the_arguments_and_the_one_run_lines() {
+    use crate::permission_dialog::{Keep, ARGS_NOTE, KEEP_LABEL};
+    use crate::permission_dialog_ui::perm_dialog_ids;
+    use hideout_contract::permission::OneRun;
+    let t = crate::theme::tokens(true);
+    let draw = |d: &mut crate::permission_dialog::PermDialog| {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut ids = Vec::new();
+        let mut last = None;
+        for i in 0..3 {
+            last = Some(ctx.run(input(800.0, 900.0, vec![]), |c| {
+                ids = perm_dialog_ids(c, &t, d, i == 0).1;
+            }));
+        }
+        (drawn_texts(&last.unwrap()), ids.len())
+    };
+    let (plain, n_plain) = draw(&mut keep_test_dialog(2, Some(Keep::offered(false))));
+    assert!(
+        !plain.iter().any(|x| x.starts_with("Runs with")),
+        "{plain:?}"
+    );
+    assert!(plain.iter().any(|x| x.contains("(the file above)")));
+
+    let mut d = keep_test_dialog(2, Some(Keep::offered(false)));
+    d.args = vec!["a\u{201d}\nb".into(), String::new()];
+    let (texts, n) = draw(&mut d);
+    assert_eq!(n, n_plain, "two arguments add nothing to Tab order");
+    assert!(texts.iter().any(|x| x == "Runs with 2 arguments:"));
+    assert!(
+        texts.iter().any(|x| x == "\u{201c}a'b\u{201d}"),
+        "{texts:?}"
+    );
+    assert!(texts.iter().any(|x| x == "\u{201c}\u{201d} (empty)"));
+    assert!(texts.iter().any(|x| x == ARGS_NOTE));
+    assert!(texts
+        .iter()
+        .any(|x| x.contains("(the file and arguments above)")));
+
+    // A long argument is cut while the list is closed, with a link that opens it whole.
+    let long: String = ('a'..='z').cycle().take(300).collect();
+    let mut c = keep_test_dialog(2, Some(Keep::offered(false)));
+    c.args = vec!["--config".into(), long.clone()];
+    let (texts, n) = draw(&mut c);
+    assert_eq!(n, n_plain + 1, "the link is in Tab order");
+    let cut = crate::permission_dialog::arg_line_cut(&long);
+    assert!(cut.contains("more characters)"), "{cut}");
+    assert!(texts.contains(&cut), "{texts:?}");
+    // Drawn cut, spoken whole.
+    let whole = format!("\u{201c}{long}\u{201d}");
+    assert!(!texts.contains(&whole), "{texts:?}");
+    assert!(texts.iter().any(|x| x.contains(&whole)), "{texts:?}");
+    assert!(
+        texts.iter().any(|x| x == "Show whole arguments"),
+        "{texts:?}"
+    );
+    c.view.args_open = true;
+    let (texts, n) = draw(&mut c);
+    assert_eq!(n, n_plain + 1);
+    assert!(texts.contains(&whole), "{texts:?}");
+    assert!(!texts.iter().any(|x| x.contains("more characters)")));
+    assert!(texts.iter().any(|x| x == "Show fewer"), "{texts:?}");
+
+    let mut r = keep_test_dialog(2, None);
+    r.path = r"C:\Python312\python.exe".into();
+    r.args = vec!["-m".into(), "fox".into()];
+    r.one_run = Some(OneRun::Scripts);
+    let (texts, n) = draw(&mut r);
+    assert_eq!(n, n_plain - 1, "no keep box");
+    for line in r.binding_text() {
+        assert!(texts.contains(&line), "{line} in {texts:?}");
+    }
+    assert!(!texts
+        .iter()
+        .any(|x| x.contains("this copy") || x.contains(KEEP_LABEL)));
 }
