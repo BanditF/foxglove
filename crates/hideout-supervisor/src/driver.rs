@@ -20,7 +20,7 @@ use hideout_router::{ModuleEntry, Out};
 use serde_json::Value;
 
 use crate::instances::{Instances, Record};
-use crate::policy::{Cmd, Ev, Policy};
+use crate::policy::{Applied, Cmd, Ev, Policy};
 use crate::sha256_file;
 use crate::win::{self, Caps, Job, Process};
 use crate::words;
@@ -290,6 +290,9 @@ struct Inner {
     /// whether its answer is a drain's. Tags stay below the panel feed's (`1 << 40`).
     calls: Mutex<BTreeMap<u64, (String, bool)>>,
     next_tag: AtomicU64,
+    /// Who waits to hear how an app's restart to apply a turn-off ended (#1451): `true` when
+    /// its new instance runs, `false` when it is stopped. Dropped unanswered with the app.
+    applying: Mutex<BTreeMap<String, Vec<Sender<bool>>>>,
     /// Lab hub only (#1096, [`lab`]): what the next `module.drain` answer of a lab module reads
     /// as, set by a lab verb; and the condvar every policy step signals, for a verb's wait.
     lab: lab::LabState,
@@ -571,8 +574,15 @@ impl Supervisor {
             early: Mutex::new(Vec::new()),
             calls: Mutex::new(BTreeMap::new()),
             next_tag: AtomicU64::new(1),
+            applying: Mutex::new(BTreeMap::new()),
             lab: lab::LabState::default(),
         }));
+        {
+            // A turn-off finds the supervisor of its hub folder here ([`revoke_items_in`]).
+            let mut all = SUPERVISORS.lock().unwrap();
+            all.retain(|(_, w)| w.strong_count() > 0);
+            all.push((home.to_path_buf(), Arc::downgrade(&sup.0)));
+        }
         hub.act(|r| {
             let seen = expected.clone();
             r.set_launch_check(Box::new(move |id, pid| launch_check(&expected, id, pid)));
@@ -896,6 +906,7 @@ impl Supervisor {
         self.0.last_started.lock().unwrap().remove(id);
         self.0.prepared.lock().unwrap().remove(id);
         self.0.withdrawals.lock().unwrap().remove(id);
+        self.0.applying.lock().unwrap().remove(id);
         let recorded = self.0.records.lock().unwrap().modules.remove(id).is_some();
         if recorded {
             self.save_records();
@@ -1465,9 +1476,81 @@ impl Supervisor {
         crate::attest::attest_installed(&self.0.home, id, update)
     }
 
-    /// [`revoke_items_in`] on this hub's folder and router.
-    pub fn revoke_items(&self, id: &str, items: Option<&[String]>) -> Result<Vec<String>, String> {
-        revoke_items_in(&self.0.home, &self.0.hub, id, items)
+    /// [`revoke_items_in`] on this hub's folder and router, reaching this supervisor's apps.
+    pub fn revoke_items(
+        &self,
+        id: &str,
+        items: Option<&[String]>,
+    ) -> Result<TurnedOff, NotTurnedOff> {
+        turn_off(&self.0.home, &self.0.hub, Some(self), id, items)
+    }
+
+    /// A turn-off that changes how `id` is contained could not be recorded (#1451): what runs
+    /// of it is stopped and not started again ([`Ev::StopUnapplied`]). Whether it stopped
+    /// anything.
+    fn stop_unapplied(&self, id: &str) -> bool {
+        let cmds = self
+            .0
+            .policy
+            .lock()
+            .unwrap()
+            .handle(Ev::StopUnapplied { id: id.into() }, Instant::now());
+        // It is ended either way; "stopped" is the row saying so (something ran or was due).
+        let stopped = cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Publish { key, .. } if key.ends_with(".failed")));
+        self.run(cmds);
+        self.0.lab.stepped();
+        stopped
+    }
+
+    /// A turn-off changed how `id` is contained (#1451): what runs of it is ended and started
+    /// again as it is allowed now, through the policy's own restart ([`Ev::Reapply`]).
+    fn apply_turn_off(&self, id: &str) -> Applies {
+        let (tx, rx) = mpsc::channel();
+        // Listed before the policy hears of it: the answer can come from another thread.
+        self.0
+            .applying
+            .lock()
+            .unwrap()
+            .entry(id.into())
+            .or_default()
+            .push(tx);
+        let tracked = self.0.live.lock().unwrap().contains_key(id);
+        let (instance, cmds) = {
+            let mut p = self.0.policy.lock().unwrap();
+            let instance = p.instance(id);
+            let ev = Ev::Reapply {
+                id: id.into(),
+                instance: None,
+            };
+            (instance, p.handle(ev, Instant::now()))
+        };
+        let not_running = cmds.iter().any(|c| {
+            matches!(
+                c,
+                Cmd::Applied {
+                    how: Applied::NotRunning,
+                    ..
+                }
+            )
+        });
+        let ends = cmds.iter().any(|c| matches!(c, Cmd::Kill { .. }));
+        self.run(cmds);
+        self.0.lab.stepped();
+        if not_running {
+            return Applies::NotRunning;
+        }
+        if ends && !tracked {
+            // The policy counted an instance this supervisor holds no process of: nothing will
+            // report its end, so it is reported here and the restart goes on.
+            self.feed(Ev::Exited {
+                id: id.into(),
+                instance,
+                code: 1,
+            });
+        }
+        Applies::Restarting(rx)
     }
 
     /// **Turn on** from the Modules page: saved as on, then started as `enable` does (§7.4).
@@ -1781,10 +1864,29 @@ impl Supervisor {
                 Cmd::Exit { id } => self.call(&id, "module.exit", serde_json::json!({}), false),
                 Cmd::Kill { id } => self.end_all(&id),
                 Cmd::KillInstance { id, instance } => self.end_instance(&id, instance),
-                // The policy has no clock: a `rebuilt` true becomes the local time of day.
+                Cmd::Applied { id, how } => {
+                    let waiting = self.0.applying.lock().unwrap().remove(&id);
+                    for tx in waiting.unwrap_or_default() {
+                        match how {
+                            // Answered where the turn-off was fed.
+                            Applied::NotRunning => {}
+                            Applied::Restarted => drop(tx.send(true)),
+                            Applied::Stopped => drop(tx.send(false)),
+                        }
+                    }
+                }
+                // The policy has no clock: a `rebuilt` true becomes the local time of day. So
+                // does a `restarted` true (#1451), which stays `true` when the time is not
+                // known: the row then names no time.
                 Cmd::Publish { key, value } => {
-                    let value = if key.ends_with(".rebuilt") && value == Value::Bool(true) {
+                    let value = if value != Value::Bool(true) {
+                        value
+                    } else if key.ends_with(".rebuilt") {
                         Value::String(local_clock())
+                    } else if key.ends_with(".restarted") {
+                        Some(local_clock())
+                            .filter(|t| !t.is_empty())
+                            .map_or(value, Value::String)
                     } else {
                         value
                     };
@@ -2186,11 +2288,33 @@ impl Supervisor {
         let mut child = child;
         std::thread::Builder::new()
             .name(format!("hideout-supervisor-{id}"))
-            .spawn(move || {
-                let code = child.wait();
-                ended(me, &id, instance, code);
+            .spawn({
+                let id = id.clone();
+                move || {
+                    let code = child.wait();
+                    ended(me, &id, instance, code);
+                }
             })
             .map_err(|e| format!("{e}"))?;
+        // This start read what the app is allowed before it ran. Something turned off since
+        // (#1451) that changes how it is contained: this instance is ended and the next start
+        // applies it. An app is never left running as it was allowed before.
+        if reg.hub.appcontainer() {
+            let now = Registry::open_from_env(&self.0.home)
+                .ok()
+                .and_then(|r| r.inventory.modules.get(&id).map(|m| m.granted.clone()));
+            let same = now.is_some_and(|now| {
+                crate::contain::plan_for(&l.granted)
+                    .same_containment(&crate::contain::plan_for(&now))
+            });
+            if !same {
+                log::info!("supervisor: {id}: what it is allowed changed as it started");
+                self.feed(Ev::Reapply {
+                    id,
+                    instance: Some(instance),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -2747,22 +2871,178 @@ fn grant_listed_inner(
     Ok(out)
 }
 
+/// The supervisors of this process, by hub folder: a turn-off made without one in hand (the
+/// Access page, the Apps page) still reaches the app that runs ([`revoke_items_in`]). A caller
+/// that holds its supervisor uses [`Supervisor::revoke_items`] instead.
+static SUPERVISORS: Mutex<Vec<(PathBuf, Weak<Inner>)>> = Mutex::new(Vec::new());
+
+/// The supervisor last started on the hub folder `home`, if it still lives.
+fn supervisor_of(home: &Path) -> Option<Supervisor> {
+    SUPERVISORS
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .filter(|(h, _)| same_path(h, home))
+        .find_map(|(_, w)| w.upgrade())
+        .map(Supervisor)
+}
+
+/// What a turn-off left ([`revoke_items_in`]).
+#[derive(Debug)]
+pub struct TurnedOff {
+    /// What is still allowed.
+    pub left: Vec<String>,
+    /// What the turn-off means for the app that runs now.
+    pub applies: Applies,
+}
+
+/// How a turn-off reaches the running app (#1451).
+#[derive(Debug)]
+pub enum Applies {
+    /// The app is contained as before: nothing restarts.
+    Unchanged,
+    /// The app's containment changes and nothing of it runs: its next start applies it.
+    NotRunning,
+    /// The app's containment changes and it ran: it was ended and is started again. The
+    /// receiver answers once: `true` when the new instance runs, `false` (or a closed channel)
+    /// when it could not be started and is stopped.
+    Restarting(Receiver<bool>),
+    /// The app's containment changes and no supervisor was found to say whether it runs: it
+    /// may still run as it was allowed before, and the caller must not say otherwise.
+    Unreached,
+}
+
+/// How long the control pipe waits for a restart's outcome ([`Applies::pipe_line`]). The policy
+/// answers well within it (an end not reported in [`crate::policy::EXIT_AFTER_PIPE`] counts as
+/// stopped); this bounds the wait whatever else happens.
+pub const APPLY_WAIT: Duration = Duration::from_secs(15);
+
+/// A turn-off that could not be recorded.
+#[derive(Debug)]
+pub struct NotTurnedOff {
+    /// The registry's error.
+    pub why: String,
+    /// The running app was stopped, so it doesn't keep running as it was allowed before.
+    pub stopped: bool,
+}
+
+impl std::fmt::Display for NotTurnedOff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.why)
+    }
+}
+
+impl Applies {
+    /// Whether a restart was started.
+    pub fn restarts(&self) -> bool {
+        matches!(self, Applies::Restarting(_))
+    }
+
+    /// Whether nothing could tell if the app runs.
+    pub fn unreached(&self) -> bool {
+        matches!(self, Applies::Unreached)
+    }
+
+    /// The control pipe's line for a turn-off that changes containment; waits for a restart's
+    /// outcome, at most [`APPLY_WAIT`]. `None` when containment did not change.
+    pub fn pipe_line(self) -> Option<&'static str> {
+        self.pipe_line_within(APPLY_WAIT)
+    }
+
+    /// [`Applies::pipe_line`] with its wait. It says stopped only when that is known: the
+    /// policy said so, or the app was removed while it restarted.
+    pub fn pipe_line_within(self, wait: Duration) -> Option<&'static str> {
+        match self {
+            Applies::Unchanged => None,
+            Applies::NotRunning => Some(words::PIPE_NOT_RUNNING),
+            Applies::Unreached => Some(words::PIPE_UNREACHED),
+            Applies::Restarting(rx) => Some(match rx.recv_timeout(wait) {
+                Ok(true) => words::PIPE_RESTARTED,
+                Ok(false) | Err(RecvTimeoutError::Disconnected) => words::PIPE_STOPPED,
+                Err(RecvTimeoutError::Timeout) => words::PIPE_STILL_RESTARTING,
+            }),
+        }
+    }
+}
+
 /// Turn off: the router drops the items first (routes go, leases end `revoked`), then the file
 /// is written; a failed write is reported and never undoes the router's change. `None` turns
 /// every item off. Returns what is still allowed.
+///
+/// A turn-off that changes how the app is contained (network or files access, #1451) applies to
+/// the app that runs now: it is ended and started again as it is allowed now, and one that
+/// can't be started again is stopped. It never keeps running as it was allowed before: when the
+/// turn-off can't be recorded, the running app is stopped and the error says so.
+///
+/// The supervisor is the one started on `home` in this process; a caller that holds it uses
+/// [`Supervisor::revoke_items`].
 pub fn revoke_items_in(
     home: &Path,
     hub: &Hub,
     id: &str,
     items: Option<&[String]>,
-) -> Result<Vec<String>, String> {
+) -> Result<TurnedOff, NotTurnedOff> {
+    turn_off(home, hub, supervisor_of(home).as_ref(), id, items)
+}
+
+fn turn_off(
+    home: &Path,
+    hub: &Hub,
+    sup: Option<&Supervisor>,
+    id: &str,
+    items: Option<&[String]>,
+) -> Result<TurnedOff, NotTurnedOff> {
     let owned = items.map(<[String]>::to_vec);
     hub.act(|r| r.drop_module_grants(id, owned.as_deref()));
-    let mut reg = Registry::open_with(home, hideout_registry::DevFlags::from_env())
-        .map_err(|e| format!("{e:?}"))?;
-    let left = reg.revoke_items(id, items).map_err(|e| format!("{e:?}"))?;
+    // Not recorded: the app must not keep running as it was allowed before, and nothing can
+    // start it as it is allowed now. What runs of it is stopped.
+    let not_recorded = |why: String, stop: bool| {
+        let stopped = stop && sup.is_some_and(|s| s.stop_unapplied(id));
+        if stop && sup.is_none() {
+            log::warn!("permissions: {id}: turn-off not recorded and no supervisor to stop it");
+        }
+        log::warn!("permissions: {id}: turn-off not recorded ({why}); stopped: {stopped}");
+        NotTurnedOff { why, stopped }
+    };
+    let mut reg = match Registry::open_with(home, hideout_registry::DevFlags::from_env()) {
+        Ok(r) => r,
+        // Nothing says how it is contained: it counts as changed.
+        Err(e) => return Err(not_recorded(format!("{e:?}"), true)),
+    };
+    let before = reg.inventory.modules.get(id).map(|m| m.granted.clone());
+    let contains = reg.hub.appcontainer();
+    let differs = |b: &[String], after: &[String]| {
+        !crate::contain::plan_for(b).same_containment(&crate::contain::plan_for(after))
+    };
+    let left = match reg.revoke_items(id, items) {
+        Ok(left) => left,
+        Err(e) => {
+            // What would have been left, had it been recorded.
+            let after: Vec<String> = match (&before, items) {
+                (Some(b), Some(off)) => b.iter().filter(|g| !off.contains(g)).cloned().collect(),
+                _ => Vec::new(),
+            };
+            let changes = contains && before.as_ref().is_none_or(|b| differs(b, &after));
+            return Err(not_recorded(format!("{e:?}"), changes));
+        }
+    };
     log::info!("permissions: {id}: turned off {items:?} by user");
-    Ok(left)
+    let changed = contains && before.is_some_and(|b| differs(&b, &left));
+    let applies = if !changed {
+        Applies::Unchanged
+    } else {
+        match sup {
+            Some(sup) => sup.apply_turn_off(id),
+            None => {
+                log::warn!(
+                    "permissions: {id}: no supervisor for this folder; if the app runs it keeps its containment until it is restarted"
+                );
+                Applies::Unreached
+            }
+        }
+    };
+    Ok(TurnedOff { left, applies })
 }
 
 /// The PC's local time of day as "20:41", for the row's "Rebuilt and restarted at" line.

@@ -1334,6 +1334,83 @@ fn the_planned_restart_row_has_no_count_and_the_crash_row_keeps_it() {
     save_png("built-planned-vs-crash-restart-row.png", w, h, px);
 }
 
+/// #1451, checklist 7: the row of an app restarted to apply a turn-off, and of one that
+/// couldn't be restarted, keeps its visible line as its accessible text, and says nothing live
+/// (the announcement is the page's, once).
+#[test]
+fn a_row_restarted_to_apply_keeps_its_visible_line_as_its_label() {
+    let app = installed()[0].clone();
+    let all = [app.clone()];
+    let cases: [(&[(&str, serde_json::Value)], &str); 4] = [
+        (
+            &[
+                ("state", serde_json::json!("running")),
+                ("restarted", serde_json::json!("20:41")),
+            ],
+            "On \u{b7} Restarted at 20:41 to apply your change",
+        ),
+        (
+            &[
+                ("state", serde_json::json!("running")),
+                ("restarted", serde_json::json!(true)),
+            ],
+            "On \u{b7} Restarted to apply your change",
+        ),
+        (
+            &[
+                ("state", serde_json::json!("install-failed")),
+                ("failed", serde_json::json!("apply")),
+            ],
+            "Stopped \u{b7} Couldn't restart to apply your change. Start it again.",
+        ),
+        (
+            &[
+                ("state", serde_json::json!("install-failed")),
+                ("failed", serde_json::json!("unsaved")),
+            ],
+            "Stopped \u{b7} Your change couldn't be saved. Start it again to try again.",
+        ),
+    ];
+    for (facts, want) in cases {
+        let ctx = ctx();
+        ctx.enable_accesskit();
+        let fact = |k: &str| {
+            let name = k.strip_prefix("module.m.art.")?;
+            facts
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v.clone())
+        };
+        let rows = vec![row_in(&app, &all, &fact, None)];
+        assert_eq!(rows[0].state, want);
+        let t = theme::tokens(true);
+        let mut nodes = Vec::new();
+        for _ in 0..3 {
+            let out = ctx.run(input(1000.0, 700.0, vec![]), |c| {
+                egui::CentralPanel::default().show(c, |ui| {
+                    page_ui(ui, &t, &rows, None);
+                });
+            });
+            nodes.extend(
+                out.platform_output
+                    .accesskit_update
+                    .iter()
+                    .flat_map(|u| u.nodes.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>()),
+            );
+        }
+        assert!(
+            nodes.iter().any(|n| n.value() == Some(want)),
+            "the state node keeps the visible line as its text: {want}"
+        );
+        assert!(
+            nodes
+                .iter()
+                .all(|n| n.live() != Some(egui::accesskit::Live::Polite)),
+            "the row itself says nothing live"
+        );
+    }
+}
+
 /// A rebuilt app's row (#1325): the Dev chip's description is the plan's line, the visible
 /// state line is the accessible label (no live relabel), and nothing on the row is live.
 #[test]

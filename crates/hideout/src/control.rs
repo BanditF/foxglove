@@ -15,6 +15,7 @@
 //! approval or the list code is missing or stale, 4 busy, 5 the hub isn't running.
 
 use std::path::Path;
+use std::time::Duration;
 
 use hideout_registry::permission::{ItemState, Listing};
 use hideout_registry::Registry;
@@ -125,12 +126,38 @@ fn exit_for(e: &str) -> i32 {
     }
 }
 
+/// What a revoke prints: what is still allowed and, when the turn-off changes how the app is
+/// contained (#1451), one more line saying how that reached the app that runs. It waits for a
+/// restart's outcome for at most `wait` (the pipe serves one request at a time: no request may
+/// hold it), so the line is what is known; the exit code is the same either way.
+fn turned_off_text(off: hideout_supervisor::driver::TurnedOff, wait: Duration) -> String {
+    let mut out = format!("turned off; still allowed: {}\n", off.left.len());
+    if let Some(line) = off.applies.pipe_line_within(wait) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// What a revoke that could not be recorded prints: that it holds for now only and what to do
+/// next (with the stop, when the running app was stopped for it), then the error.
+fn not_turned_off_text(e: &hideout_supervisor::driver::NotTurnedOff) -> String {
+    use hideout_supervisor::words;
+    let line = if e.stopped {
+        words::PIPE_STOPPED_UNSAVED
+    } else {
+        words::PIPE_NOT_SAVED
+    };
+    format!("{line}\nhideout: {e}\n")
+}
+
 /// Runs one request line (`grant|deny|revoke <id> ...`) in the hub. `caller_ok` is the result
 /// of the caller check; a caller that may not grant is refused with `permission.caller` and
 /// nothing is read or written.
 pub fn handle(
     home: &Path,
     hub: &hideout_router::server::Hub,
+    sup: Option<&hideout_supervisor::driver::Supervisor>,
     caller_ok: bool,
     line: &str,
     queue: &crate::grant_queue::GrantQueue,
@@ -167,24 +194,36 @@ pub fn handle(
             if !all_items && items.is_empty() && !keyboard {
                 return usage("revoke needs items, --all or --keyboard");
             }
-            let mut out = String::new();
+            // Every turn-off of the request is applied before anything waits for a restart.
+            let mut off = None;
             if all_items || !items.is_empty() {
                 let which = if all_items {
                     None
                 } else {
                     Some(items.as_slice())
                 };
-                match hideout_supervisor::driver::revoke_items_in(home, hub, id, which) {
-                    Ok(left) => {
-                        out.push_str(&format!("turned off; still allowed: {}\n", left.len()))
-                    }
-                    Err(e) => return (exit_for(&e), format!("hideout: {e}\n")),
+                let r = match sup {
+                    Some(sup) => sup.revoke_items(id, which),
+                    None => hideout_supervisor::driver::revoke_items_in(home, hub, id, which),
+                };
+                match r {
+                    Ok(o) => off = Some(o),
+                    Err(e) => return (exit_for(&e.why), not_turned_off_text(&e)),
                 }
             }
             if keyboard {
                 if let Err(e) = crate::keyboard_actions::turn_off(home, hub, id) {
                     return (REFUSED, format!("hideout: {e}\n"));
                 }
+            }
+            let mut out = String::new();
+            if let Some(off) = off {
+                out.push_str(&turned_off_text(
+                    off,
+                    hideout_supervisor::driver::APPLY_WAIT,
+                ));
+            }
+            if keyboard {
                 out.push_str("keyboard grant turned off\n");
             }
             (DONE, out)
@@ -405,7 +444,7 @@ pub fn serve(
                     let (code, text) = if ok && line.is_empty() {
                         usage("no request line")
                     } else {
-                        handle(&home, &hub, ok, &line, &queue, auto_confirm)
+                        handle(&home, &hub, Some(&sup), ok, &line, &queue, auto_confirm)
                     };
                     let _ = conn.write_all(
                         format!(
@@ -760,6 +799,81 @@ mod tests {
         assert!(f.hub.read(|r| r.module_grants(&f.id)).is_empty());
     }
 
+    /// #1451, checklist 5: every revoke that changes containment prints one of the three
+    /// lines after the usual one; one that doesn't prints the usual line alone.
+    #[test]
+    fn a_revoke_that_changes_containment_says_how_it_reached_the_app() {
+        use hideout_supervisor::driver::{Applies, TurnedOff};
+        use hideout_supervisor::words;
+        let brief = Duration::from_millis(20);
+        let text = |applies| {
+            turned_off_text(
+                TurnedOff {
+                    left: vec!["hub.notify".into()],
+                    applies,
+                },
+                brief,
+            )
+        };
+        let usual = "turned off; still allowed: 1\n";
+        assert_eq!(text(Applies::Unchanged), usual);
+        assert_eq!(
+            text(Applies::NotRunning),
+            format!("{usual}not running; applies at the next start\n")
+        );
+        let restart = |answer: Option<bool>| {
+            let (tx, rx) = mpsc::channel();
+            if let Some(a) = answer {
+                tx.send(a).unwrap();
+            }
+            drop(tx);
+            text(Applies::Restarting(rx))
+        };
+        assert_eq!(restart(Some(true)), format!("{usual}restarted to apply\n"));
+        let stopped = format!(
+            "{usual}stopped: couldn't restart to apply; start it again from the Apps page\n"
+        );
+        assert_eq!(restart(Some(false)), stopped);
+        // The app went away before it answered: it does not run, so it reads as stopped.
+        assert_eq!(restart(None), stopped);
+        // No answer within the wait: the pipe is not held, and the line claims no outcome.
+        let (_held, rx) = mpsc::channel();
+        let began = std::time::Instant::now();
+        assert_eq!(
+            text(Applies::Restarting(rx)),
+            format!("{usual}still restarting to apply; check the Apps page\n")
+        );
+        assert!(began.elapsed() < Duration::from_secs(5));
+        // Nothing could tell whether it runs: never "not running".
+        let unreached = text(Applies::Unreached);
+        assert!(unreached.starts_with(usual) && unreached.contains("if it is, turn it off"));
+        assert!(!unreached.contains("next start"), "{unreached}");
+        // Not recorded: the error, and the stop when the running app was stopped.
+        let e = |stopped| hideout_supervisor::driver::NotTurnedOff {
+            why: "Io".into(),
+            stopped,
+        };
+        assert_eq!(
+            not_turned_off_text(&e(false)),
+            "not saved: turned off for now; it may be on again after a restart; turn it off again\nhideout: Io\n"
+        );
+        assert_eq!(
+            not_turned_off_text(&e(true)),
+            "stopped: the change couldn't be saved; it may be on again after a restart; turn it off again\nhideout: Io\n"
+        );
+        for l in [
+            words::PIPE_RESTARTED,
+            words::PIPE_STOPPED,
+            words::PIPE_NOT_RUNNING,
+            words::PIPE_STILL_RESTARTING,
+            words::PIPE_UNREACHED,
+            words::PIPE_STOPPED_UNSAVED,
+            words::PIPE_NOT_SAVED,
+        ] {
+            assert!(!l.is_empty() && !l.contains('\n'), "{l:?}");
+        }
+    }
+
     #[test]
     fn no_hub_is_exit_5_and_the_cli_words_are_parsed() {
         let f = fx("cli", &ping());
@@ -828,6 +942,7 @@ mod tests {
         let (c, t) = handle(
             &f.paths.root,
             &f.hub,
+            None,
             false,
             &format!("grant {} --all-listed --listed {good}", f.id),
             &f.queue,
@@ -837,9 +952,11 @@ mod tests {
         assert!(t.starts_with("permission.caller"), "{t}");
         assert!(state(&f).0.is_empty());
         // Even an unparsable line is answered with the caller refusal, not usage.
-        assert!(handle(&f.paths.root, &f.hub, false, "???", &f.queue, true)
-            .1
-            .starts_with("permission.caller"));
+        assert!(
+            handle(&f.paths.root, &f.hub, None, false, "???", &f.queue, true)
+                .1
+                .starts_with("permission.caller")
+        );
         assert!(f.queue.for_home(&f.paths.root).is_empty());
     }
 

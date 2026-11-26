@@ -621,6 +621,19 @@ pub fn every_string() -> Vec<String> {
     v.extend([
         rebuilt_row("20:41"),
         rebuilt_said("Art"),
+        restarted_row(Some("20:41")),
+        restarted_row(None),
+        restarted_said("Art"),
+        COULDNT_RESTART_TO_APPLY.into(),
+        stopped_to_apply_row(),
+        stopped_to_apply_said("Art"),
+        turned_off_restarts("Art"),
+        turned_off_unreached("Art"),
+        NOT_SAVED_STOPPED.into(),
+        NOT_SAVED.into(),
+        STOPPED_UNSAVED.into(),
+        stopped_unsaved_row(),
+        stopped_unsaved_said("Art"),
         DEV_CHIP_SAID.into(),
         NEW_BUILD_HELD_FOR_GAME.into(),
         NEW_BUILD_READY.into(),
@@ -678,6 +691,89 @@ pub fn rebuilt_row(at: &str) -> String {
 /// open).
 pub fn rebuilt_said(name: &str) -> String {
     format!("{name} rebuilt and restarted")
+}
+
+// ---- A turn-off that changes how a running app is contained (#1451) ----------------------------
+// The app is restarted so the change applies now. The noun is "app".
+
+/// The row's state line after a restart that applied a turn-off, until the next state change.
+/// `at` is the local time of day, "20:41"; a time that is not known is left out, never shown
+/// as "00:00" or as a blank.
+pub fn restarted_row(at: Option<&str>) -> String {
+    match at.filter(|t| !t.is_empty()) {
+        Some(at) => format!("On \u{b7} Restarted at {at} to apply your change"),
+        None => "On \u{b7} Restarted to apply your change".to_string(),
+    }
+}
+
+/// What a screen reader is told, once per such restart (polite, only while the window is open).
+pub fn restarted_said(name: &str) -> String {
+    format!("{name} restarted to apply your change")
+}
+
+/// `module.<id>.reason` when the app could not be started again after a turn-off: it is stopped,
+/// never left running as it was.
+pub const COULDNT_RESTART_TO_APPLY: &str = "Couldn't restart to apply your change. Start it again.";
+
+/// The row's state line for [`COULDNT_RESTART_TO_APPLY`]; its button is [`START_AGAIN`].
+pub fn stopped_to_apply_row() -> String {
+    format!("Stopped \u{b7} {COULDNT_RESTART_TO_APPLY}")
+}
+
+/// What a screen reader is told, once, when that happens.
+pub fn stopped_to_apply_said(name: &str) -> String {
+    format!("{name} stopped. Couldn't restart to apply your change.")
+}
+
+/// `module.<id>.reason` when the app was stopped because a turn-off could not be saved (no
+/// restart was tried): `module.<id>.failed` is "unsaved".
+pub const STOPPED_UNSAVED: &str = "Your change couldn't be saved. Start it again to try again.";
+
+/// The row's state line for [`STOPPED_UNSAVED`]; its button is [`START_AGAIN`].
+pub fn stopped_unsaved_row() -> String {
+    format!("Stopped \u{b7} {STOPPED_UNSAVED}")
+}
+
+/// What a screen reader is told, once, when that happens.
+pub fn stopped_unsaved_said(name: &str) -> String {
+    format!("{name} stopped. Your change couldn't be saved.")
+}
+
+/// The Access page's status after a turn-off that restarts the running app.
+pub fn turned_off_restarts(name: &str) -> String {
+    format!("Turned off. {name} restarts to apply.")
+}
+
+/// The control pipe's one line after "turned off; still allowed: n", for a turn-off that
+/// changes how the app is contained: it was restarted, it could not be and is stopped, or it
+/// was not running.
+pub const PIPE_RESTARTED: &str = "restarted to apply";
+pub const PIPE_STOPPED: &str =
+    "stopped: couldn't restart to apply; start it again from the Apps page";
+pub const PIPE_NOT_RUNNING: &str = "not running; applies at the next start";
+/// The same place, when the restart has no outcome yet after the pipe's wait.
+pub const PIPE_STILL_RESTARTING: &str = "still restarting to apply; check the Apps page";
+/// The same place, when nothing here could tell whether the app runs.
+pub const PIPE_UNREACHED: &str =
+    "couldn't check if the app is running; if it is, turn it off and on again from the Apps page";
+/// The control pipe's line after the error of a turn-off that couldn't be saved, when the
+/// running app was stopped for it.
+pub const PIPE_STOPPED_UNSAVED: &str =
+    "stopped: the change couldn't be saved; it may be on again after a restart; turn it off again";
+/// The same, when nothing was stopped.
+pub const PIPE_NOT_SAVED: &str =
+    "not saved: turned off for now; it may be on again after a restart; turn it off again";
+
+/// A turn-off that holds for now and couldn't be saved (the Access page, an app's page).
+pub const NOT_SAVED: &str = "Turned off for now, but the change couldn't be saved. It may be on again after Hideout restarts. Turn it off again.";
+
+/// A turn-off that couldn't be saved, and the running app was stopped so it doesn't keep
+/// running as it was allowed before.
+pub const NOT_SAVED_STOPPED: &str = "Turned off for now, but the change couldn't be saved. The app was stopped. Starting it again may allow it again, so turn it off again first.";
+
+/// The Access page's line for a turn-off when nothing could tell whether the app runs.
+pub fn turned_off_unreached(name: &str) -> String {
+    format!("Turned off. If {name} is running, turn it off and on again to apply.")
 }
 
 /// A rebuild is carried but waits for the end of a game.
@@ -1002,6 +1098,65 @@ mod tests {
             "On \u{b7} Rebuilt and restarted at 20:41"
         );
         assert_eq!(rebuilt_said("Foxglove"), "Foxglove rebuilt and restarted");
+    }
+
+    /// #1451: the lines of a restart that applies a turn-off, as the plan words them. A time
+    /// that is not known leaves the time out.
+    #[test]
+    fn the_restart_to_apply_lines_read_as_the_plan_words_them() {
+        assert_eq!(
+            restarted_row(Some("20:41")),
+            "On \u{b7} Restarted at 20:41 to apply your change"
+        );
+        for none in [None, Some("")] {
+            assert_eq!(
+                restarted_row(none),
+                "On \u{b7} Restarted to apply your change"
+            );
+        }
+        assert_eq!(
+            restarted_said("Foxglove"),
+            "Foxglove restarted to apply your change"
+        );
+        assert_eq!(
+            stopped_to_apply_row(),
+            "Stopped \u{b7} Couldn't restart to apply your change. Start it again."
+        );
+        assert_eq!(
+            stopped_to_apply_said("Foxglove"),
+            "Foxglove stopped. Couldn't restart to apply your change."
+        );
+        // Stopped for a change that couldn't be saved: no restart was tried, and none is named.
+        assert_eq!(
+            stopped_unsaved_row(),
+            "Stopped \u{b7} Your change couldn't be saved. Start it again to try again."
+        );
+        assert_eq!(
+            stopped_unsaved_said("Foxglove"),
+            "Foxglove stopped. Your change couldn't be saved."
+        );
+        assert_eq!(
+            NOT_SAVED,
+            "Turned off for now, but the change couldn't be saved. It may be on again after Hideout restarts. Turn it off again."
+        );
+        assert_eq!(
+            NOT_SAVED_STOPPED,
+            "Turned off for now, but the change couldn't be saved. The app was stopped. Starting it again may allow it again, so turn it off again first."
+        );
+        assert_eq!(
+            turned_off_restarts("Foxglove"),
+            "Turned off. Foxglove restarts to apply."
+        );
+        assert_eq!(PIPE_RESTARTED, "restarted to apply");
+        assert_eq!(
+            PIPE_STOPPED,
+            "stopped: couldn't restart to apply; start it again from the Apps page"
+        );
+        assert_eq!(PIPE_NOT_RUNNING, "not running; applies at the next start");
+    }
+
+    #[test]
+    fn the_rebuild_asks_lines_read_as_the_plan_words_them() {
         assert_eq!(
             build_asks_for_more("Foxglove", 1),
             "Foxglove's new build asks for 1 more thing"
@@ -1102,6 +1257,24 @@ mod tests {
             DEV_CHIP_SAID.into(),
             rebuilt_row("20:41"),
             rebuilt_said("Foxglove"),
+            restarted_row(Some("20:41")),
+            restarted_row(None),
+            restarted_said("Foxglove"),
+            stopped_to_apply_row(),
+            stopped_to_apply_said("Foxglove"),
+            turned_off_restarts("Foxglove"),
+            PIPE_RESTARTED.into(),
+            PIPE_STOPPED.into(),
+            PIPE_NOT_RUNNING.into(),
+            PIPE_STILL_RESTARTING.into(),
+            PIPE_UNREACHED.into(),
+            PIPE_STOPPED_UNSAVED.into(),
+            NOT_SAVED_STOPPED.into(),
+            NOT_SAVED.into(),
+            PIPE_NOT_SAVED.into(),
+            stopped_unsaved_row(),
+            stopped_unsaved_said("Foxglove"),
+            turned_off_unreached("Foxglove"),
             NEW_BUILD_HELD_FOR_GAME.into(),
             NEW_BUILD_READY.into(),
             REBUILD_STARTS_IT.into(),

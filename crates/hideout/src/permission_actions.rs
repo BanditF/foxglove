@@ -1380,10 +1380,13 @@ impl PermUi {
         // The router already closed it: the section says Off whatever the file says.
         if let Err(e) = r {
             log::warn!("permissions: {id}: turn off not saved ({e})");
-            self.note(
-                id,
-                "Turned off, but the change couldn't be saved.".to_string(),
-            );
+            // Stopped so it doesn't keep running as it was allowed before: said with it.
+            let note = if e.stopped {
+                hideout_supervisor::words::NOT_SAVED_STOPPED
+            } else {
+                hideout_supervisor::words::NOT_SAVED
+            };
+            self.note(id, note.to_string());
         }
     }
 

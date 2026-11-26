@@ -218,7 +218,7 @@ fn an_allow_for_a_late_app_holds_after_a_hub_restart_and_a_turn_off_does_too() {
     assert_eq!(sup.pid(id), None, "an app that is off was started");
 
     // Turned off in the permission list: gone now, and still gone after the next restart.
-    let left = sup.revoke_items(id, None).unwrap();
+    let left = sup.revoke_items(id, None).unwrap().left;
     assert!(left.is_empty(), "still allowed: {left:?}");
     assert!(file_grants(&home)[id].is_empty());
     assert!(!may_read_sensors(&hub, id), "reads after the turn-off");
