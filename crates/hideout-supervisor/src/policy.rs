@@ -313,6 +313,25 @@ pub enum Ev {
     Rebuilt {
         id: String,
     },
+    /// A turn-off changed how the app is contained (#1451). What runs of it was started as it
+    /// was allowed before: it is ended and started again as it is allowed now, at once (never
+    /// held for a game). `instance: Some` is the driver's check right after a start and counts
+    /// for that instance only; `None` is the turn-off itself, answered with [`Cmd::Applied`].
+    Reapply {
+        id: String,
+        instance: Option<u64>,
+    },
+}
+
+/// How a turn-off that changes an app's containment came to apply ([`Cmd::Applied`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Applied {
+    /// Nothing of the app ran: it starts as it is allowed now at its next start.
+    NotRunning,
+    /// The app was ended and a new instance of it runs.
+    Restarted,
+    /// The app was ended and could not be started again: it is stopped.
+    Stopped,
 }
 
 /// Where a waiting update is (§7.6).
@@ -381,6 +400,9 @@ pub enum Cmd {
     /// Send `module.exit` (§7.6): the old instance finishes and exits; its exit starts the new
     /// one. Ended through its job after [`EXIT_AFTER_PIPE`] if it doesn't.
     Exit { id: String },
+    /// The answer to [`Ev::Reapply`], once per restart: [`Applied::NotRunning`] with the event
+    /// itself, the other two when the restart's outcome is known.
+    Applied { id: String, how: Applied },
 }
 
 #[derive(Debug)]
@@ -404,6 +426,14 @@ struct Slot {
     rebuilt_restart: bool,
     /// `module.<id>.rebuilt` is published now; the next state other than Running clears it.
     rebuilt_shown: bool,
+    /// The instance was ended to apply a turn-off (#1451) and the next one has not started yet.
+    applying: bool,
+    /// The instance that runs was started to apply a turn-off: the next Running says so
+    /// (`module.<id>.restarted`). Never set together with `rebuilt_restart`: the later cause
+    /// is the one the row names.
+    applied_restart: bool,
+    /// `module.<id>.restarted` is published now; the next state other than Running clears it.
+    applied_shown: bool,
     /// Restarts in this run, for the backoff step.
     run_restarts: u32,
     restart_at: Option<Instant>,
@@ -594,16 +624,19 @@ impl Policy {
             s.withdrawn.is_some(),
             s.quarantined || s.needs_hub,
         );
-        let unsettled = matches!(
-            s.state,
-            State::Starting | State::Updating | State::Running | State::Waiting
-        );
+        // A restart to apply a turn-off (#1451) that is turned away never reads as restarting.
+        let unsettled = s.applying
+            || matches!(
+                s.state,
+                State::Starting | State::Updating | State::Running | State::Waiting
+            );
         self.note(
             id,
             now,
             format!("instance {instance} stopped: it may not run"),
         );
         if !unsettled {
+            self.applied(id, Applied::Stopped, out);
             return;
         }
         if !enabled {
@@ -654,18 +687,130 @@ impl Policy {
         let Some(s) = self.slots.get_mut(id) else {
             return;
         };
+        // #1451: the "Restarted to apply your change" line follows the same rule. The two
+        // flags are never set together, so the two lines never show together.
+        let on_the_way = matches!(state, State::Starting | State::Restarting | State::Updating);
         if state == State::Running && s.rebuilt_restart {
             s.rebuilt_restart = false;
             s.rebuilt_shown = true;
             publish(out, format!("module.{id}.rebuilt"), json!(true));
+        } else if state == State::Running && s.applied_restart {
+            s.applied_restart = false;
+            s.applied_shown = true;
+            publish(out, format!("module.{id}.restarted"), json!(true));
         } else if state != State::Running {
             if state != State::Starting && state != State::Restarting {
                 s.rebuilt_restart = false;
+            }
+            if !on_the_way {
+                s.applied_restart = false;
             }
             if s.rebuilt_shown {
                 s.rebuilt_shown = false;
                 publish(out, format!("module.{id}.rebuilt"), Value::Null);
             }
+            if s.applied_shown {
+                s.applied_shown = false;
+                publish(out, format!("module.{id}.restarted"), Value::Null);
+            }
+        }
+        if !on_the_way {
+            // A restart to apply a turn-off that ends anywhere but in a new instance: the app
+            // is stopped, and the turn-off is answered so.
+            self.applied(id, Applied::Stopped, out);
+        }
+    }
+
+    /// Answers the restart that applies a turn-off, once (#1451). Nothing when none is under way.
+    fn applied(&mut self, id: &str, how: Applied, out: &mut Vec<Cmd>) {
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        if !std::mem::take(&mut s.applying) {
+            return;
+        }
+        if how == Applied::Restarted {
+            s.applied_restart = true;
+            s.rebuilt_restart = false;
+        }
+        out.push(Cmd::Applied { id: id.into(), how });
+    }
+
+    /// A turn-off changed how `id` is contained (#1451). A running instance was started as it
+    /// was allowed before, so everything the app started is ended now and its exit starts the
+    /// next instance, which the launch contains as it is allowed now. It is not asked to exit
+    /// first and nothing waits (not for a game either): until it has ended, the app still runs
+    /// as it did. An app that cannot be started again stays stopped. Nothing running: what an
+    /// ended instance left behind is ended, and the next start applies the change.
+    fn reapply(&mut self, id: &str, only: Option<u64>, now: Instant, out: &mut Vec<Cmd>) {
+        let Some(s) = self.slots.get_mut(id) else {
+            if only.is_none() {
+                out.push(Cmd::Applied {
+                    id: id.into(),
+                    how: Applied::NotRunning,
+                });
+            }
+            return;
+        };
+        if only.is_some_and(|i| i != s.instance || s.ended) {
+            return;
+        }
+        if s.applying {
+            // Already being restarted for an earlier turn-off: that restart's answer is this
+            // one's too, and the driver's check after its start covers a launch that read the
+            // permissions before this one.
+            return;
+        }
+        if !s.ended && !s.enabled {
+            // Being turned off: it is ended now, and nothing starts it again.
+            out.push(Cmd::Kill { id: id.into() });
+            if only.is_none() {
+                out.push(Cmd::Applied {
+                    id: id.into(),
+                    how: Applied::NotRunning,
+                });
+            }
+            return;
+        }
+        if !s.ended {
+            s.applying = true;
+            s.then_launch = true;
+            s.ready_by = None;
+            s.exit_by = None;
+            s.adopt_by = None;
+            // The later cause is the one the row names.
+            s.rebuilt_restart = false;
+            s.applied_restart = false;
+            let swapping = s
+                .update
+                .as_ref()
+                .is_some_and(|u| u.phase == Phase::Swapping);
+            self.note(id, now, "turned off: restarting to apply".into());
+            if !swapping {
+                self.set_state(id, State::Restarting, None, out);
+            }
+            out.push(Cmd::Kill { id: id.into() });
+            return;
+        }
+        // A launch that is under way is the driver's to check once it has started
+        // (`instance: Some`); ending anything here could end the instance it is starting.
+        let launching =
+            s.restart_at.is_none() && matches!(s.state, State::Starting | State::Updating);
+        if !launching {
+            if s.held && s.restart_at.is_some() {
+                // What the ended instance left running (an installer's helper) was started as
+                // the app was allowed before: it ends too, and the held restart goes ahead.
+                s.held = false;
+                s.restart_at = Some(now);
+                self.note(id, now, "turned off: the held restart goes ahead".into());
+            }
+            out.push(Cmd::Kill { id: id.into() });
+        }
+        if only.is_none() {
+            out.push(Cmd::Applied {
+                id: id.into(),
+                how: Applied::NotRunning,
+            });
         }
     }
 
@@ -681,6 +826,7 @@ impl Policy {
             if s.enabled {
                 self.show_withdrawn(id, out);
             }
+            self.applied(id, Applied::Stopped, out);
             return;
         }
         if s.quarantined || s.needs_hub {
@@ -690,6 +836,7 @@ impl Policy {
             if s.enabled {
                 self.show_blocked(id, out);
             }
+            self.applied(id, Applied::Stopped, out);
             return;
         }
         s.restart_at = None;
@@ -799,6 +946,9 @@ impl Policy {
                     rebuild_held_noted: false,
                     rebuilt_restart: false,
                     rebuilt_shown: false,
+                    applying: false,
+                    applied_restart: false,
+                    applied_shown: false,
                     run_restarts: 0,
                     restart_at: None,
                     held: false,
@@ -855,15 +1005,26 @@ impl Policy {
                     s.instance = instance;
                     s.ended = false;
                     s.ready_by = Some(now + READY_TIMEOUT);
+                    // The instance that applies a turn-off runs (#1451).
+                    self.applied(&id, Applied::Restarted, &mut out);
                 }
             }
             Ev::LaunchFailed { id, reason } => {
+                let mut applying = false;
                 if let Some(s) = self.slots.get_mut(&id) {
                     s.ready_by = None;
+                    applying = s.applying;
                 }
+                // The restart that applies a turn-off didn't start (#1451): the row says the
+                // app is stopped and why, with Start again. The log has the launch's reason.
+                let (reason, failed) = if applying {
+                    (words::COULDNT_RESTART_TO_APPLY.to_string(), "apply")
+                } else {
+                    // It came from launching: "Couldn't start <Module>" (UX plan, #983).
+                    (reason, "launch")
+                };
                 self.set_state(&id, State::InstallFailed, Some(reason), &mut out);
-                // It came from launching: "Couldn't start <Module>" (UX plan, #983).
-                publish(&mut out, format!("module.{id}.failed"), json!("launch"));
+                publish(&mut out, format!("module.{id}.failed"), json!(failed));
             }
             Ev::NeedsOk { id } => {
                 if let Some(s) = self.slots.get_mut(&id) {
@@ -1256,6 +1417,7 @@ impl Policy {
             }
             Ev::Round { on } => self.round(on, now, &mut out),
             Ev::Rebuilt { id } => self.rebuilt(&id, now, &mut out),
+            Ev::Reapply { id, instance } => self.reapply(&id, instance, now, &mut out),
             Ev::StartNormally => {
                 self.safe_mode = false;
                 self.round = None;
@@ -1598,6 +1760,8 @@ impl Policy {
         }
         s.rebuild_held_noted = false;
         s.rebuilt_restart = true;
+        // The later cause is the one the row names (#1451).
+        s.applied_restart = false;
         s.rebuilds.push_back(now);
         match how {
             0 => {
@@ -1913,8 +2077,8 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
             },
         ),
         Ev::Idle { id } => (id.clone(), "module.idle".into()),
-        // `rebuilt` leaves its own lines (or none, when it does nothing).
-        Ev::Rebuilt { .. } => return None,
+        // `rebuilt` and `reapply` leave their own lines (or none, when they do nothing).
+        Ev::Rebuilt { .. } | Ev::Reapply { .. } => return None,
         Ev::Known { .. }
         | Ev::Activate { .. }
         | Ev::StartNormally
@@ -3169,6 +3333,261 @@ mod rebuild_tests {
             t,
         );
         assert_eq!(rebuilt_fact(&c), Some(Value::Null));
+    }
+
+    // #1451: a turn-off that changes how the app is contained restarts what runs.
+
+    fn reapply(p: &mut Policy, t: Instant) -> Vec<Cmd> {
+        p.handle(
+            Ev::Reapply {
+                id: ID.into(),
+                instance: None,
+            },
+            t,
+        )
+    }
+
+    fn started(p: &mut Policy, t: Instant, instance: u64) -> Vec<Cmd> {
+        p.handle(
+            Ev::Started {
+                id: ID.into(),
+                instance,
+            },
+            t,
+        )
+    }
+
+    fn fact(c: &[Cmd], name: &str) -> Option<Value> {
+        c.iter().rev().find_map(|c| match c {
+            Cmd::Publish { key, value } if key == &format!("module.{ID}.{name}") => {
+                Some(value.clone())
+            }
+            _ => None,
+        })
+    }
+
+    fn applied(c: &[Cmd]) -> Vec<Applied> {
+        c.iter()
+            .filter_map(|c| match c {
+                Cmd::Applied { how, .. } => Some(*how),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_turn_off_ends_the_running_app_at_once_and_its_end_starts_it_again() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        let c = reapply(&mut p, t);
+        assert!(c.contains(&Cmd::Kill { id: ID.into() }), "{c:?}");
+        assert!(
+            !c.iter().any(|c| matches!(c, Cmd::Exit { .. })),
+            "it is not asked first: until it has ended it runs as it was allowed before"
+        );
+        assert_eq!(launches(&c), 0, "it starts when the old one is gone");
+        assert_eq!(p.state(ID), Some(State::Restarting));
+        assert!(applied(&c).is_empty(), "the answer waits for the outcome");
+        // Its end is no crash, whatever its exit code.
+        let c = exited(&mut p, t, 1, 1);
+        assert_eq!(launches(&c), 1);
+        assert_eq!(p.crashes(ID, t), 0);
+        assert!(applied(&c).is_empty());
+        let c = started(&mut p, t, 2);
+        assert_eq!(applied(&c), [Applied::Restarted]);
+    }
+
+    /// Checklist 1: the line appears only after Running and goes at the next state change.
+    #[test]
+    fn the_restarted_line_shows_from_running_until_the_next_state_change() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        let mut before = reapply(&mut p, t);
+        before.extend(exited(&mut p, t, 1, 1));
+        before.extend(started(&mut p, t, 2));
+        assert_eq!(fact(&before, "restarted"), None, "not before it runs");
+        let c = p.handle(Ev::Ready { id: ID.into() }, t);
+        assert_eq!(p.state(ID), Some(State::Running));
+        assert_eq!(fact(&c, "restarted"), Some(json!(true)));
+        // The next state other than Running clears it, and a later start does not bring it back.
+        let c = exited(&mut p, t, 2, 1);
+        assert_eq!(fact(&c, "restarted"), Some(Value::Null));
+        started(&mut p, t, 3);
+        let c = p.handle(Ev::Ready { id: ID.into() }, t);
+        assert_eq!(fact(&c, "restarted"), None);
+    }
+
+    /// Checklist 6: a rebuild line and a restart line never show together; the later cause is
+    /// the one the row names.
+    #[test]
+    fn a_rebuild_line_and_a_restart_line_never_show_together() {
+        // A turn-off while the app restarts for a new build: the row names the turn-off.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        rebuilt(&mut p, t);
+        reapply(&mut p, t);
+        exited(&mut p, t, 1, 1);
+        started(&mut p, t, 2);
+        let c = p.handle(Ev::Ready { id: ID.into() }, t);
+        assert_eq!(fact(&c, "restarted"), Some(json!(true)));
+        assert_eq!(fact(&c, "rebuilt"), None);
+
+        // A new build while the restarted line shows: the line goes before the rebuilt one
+        // can show, and only the rebuilt one comes back.
+        let later = t + Duration::from_secs(1);
+        let mut c = rebuilt(&mut p, later);
+        assert_eq!(fact(&c, "restarted"), Some(Value::Null));
+        c.extend(exited(&mut p, later, 2, 0));
+        c.extend(started(&mut p, later, 3));
+        c.extend(p.handle(Ev::Ready { id: ID.into() }, later));
+        assert_eq!(fact(&c, "rebuilt"), Some(json!(true)));
+        assert_eq!(fact(&c, "restarted"), Some(Value::Null));
+
+        // A new build right after the restart to apply started, before it is ready.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        reapply(&mut p, t);
+        exited(&mut p, t, 1, 1);
+        started(&mut p, t, 2);
+        let mut c = rebuilt(&mut p, t);
+        c.extend(exited(&mut p, t, 2, 0));
+        c.extend(started(&mut p, t, 3));
+        c.extend(p.handle(Ev::Ready { id: ID.into() }, t));
+        assert_eq!(fact(&c, "rebuilt"), Some(json!(true)));
+        assert_eq!(fact(&c, "restarted"), None);
+    }
+
+    /// An app that can't be started again is stopped, and its row says why (checklist 3's
+    /// facts: install-failed with `failed` = "apply").
+    #[test]
+    fn an_app_that_cant_restart_to_apply_is_stopped_and_says_so() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        reapply(&mut p, t);
+        exited(&mut p, t, 1, 1);
+        let c = p.handle(
+            Ev::LaunchFailed {
+                id: ID.into(),
+                reason: words::DIDNT_START.into(),
+            },
+            t,
+        );
+        assert_eq!(p.state(ID), Some(State::InstallFailed));
+        assert_eq!(fact(&c, "failed"), Some(json!("apply")));
+        assert_eq!(
+            fact(&c, "reason"),
+            Some(json!(words::COULDNT_RESTART_TO_APPLY))
+        );
+        assert_eq!(applied(&c), [Applied::Stopped]);
+        assert_eq!(fact(&c, "restarted"), None);
+        // Start again starts it; no restarted line then, and a later failure reads as any other.
+        let c = p.handle(Ev::StartAgain { id: ID.into() }, t);
+        assert_eq!(launches(&c), 1);
+        let c = p.handle(
+            Ev::LaunchFailed {
+                id: ID.into(),
+                reason: words::DIDNT_START.into(),
+            },
+            t,
+        );
+        assert_eq!(fact(&c, "failed"), Some(json!("launch")));
+        assert!(applied(&c).is_empty());
+    }
+
+    #[test]
+    fn a_restart_to_apply_that_may_not_start_ends_stopped() {
+        // Turned off by the user while it restarts.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        reapply(&mut p, t);
+        let c = p.handle(Ev::Disable { id: ID.into() }, t);
+        assert_eq!(applied(&c), [Applied::Stopped]);
+        assert_eq!(p.state(ID), Some(State::Off));
+        assert_eq!(launches(&exited(&mut p, t, 1, 1)), 0);
+
+        // The program is gone.
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        reapply(&mut p, t);
+        exited(&mut p, t, 1, 1);
+        let c = p.handle(
+            Ev::NotInstalled {
+                id: ID.into(),
+                path: "C:\\gone.exe".into(),
+            },
+            t,
+        );
+        assert_eq!(applied(&c), [Applied::Stopped]);
+        assert_ne!(p.state(ID), Some(State::Restarting));
+    }
+
+    #[test]
+    fn a_turn_off_with_nothing_running_restarts_nothing() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        // Not known at all.
+        assert_eq!(applied(&reapply(&mut p, t)), [Applied::NotRunning]);
+        // Known and stopped.
+        running(&mut p, t);
+        exited(&mut p, t, 1, 0);
+        let c = reapply(&mut p, t);
+        assert_eq!(applied(&c), [Applied::NotRunning]);
+        assert_eq!(launches(&c), 0);
+        assert_eq!(fact(&c, "restarted"), None);
+        assert_eq!(p.state(ID), Some(State::Idle));
+    }
+
+    #[test]
+    fn a_second_turn_off_during_the_restart_shares_its_answer() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        reapply(&mut p, t);
+        assert!(reapply(&mut p, t).is_empty());
+        exited(&mut p, t, 1, 1);
+        assert!(reapply(&mut p, t).is_empty(), "the launch is under way");
+        assert_eq!(applied(&started(&mut p, t, 2)), [Applied::Restarted]);
+    }
+
+    /// The driver's check after a start counts for that instance only.
+    #[test]
+    fn the_check_after_a_start_restarts_that_instance_only() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        let stale = p.handle(
+            Ev::Reapply {
+                id: ID.into(),
+                instance: Some(7),
+            },
+            t,
+        );
+        assert!(stale.is_empty());
+        let c = p.handle(
+            Ev::Reapply {
+                id: ID.into(),
+                instance: Some(1),
+            },
+            t,
+        );
+        assert!(c.contains(&Cmd::Kill { id: ID.into() }));
+        assert_eq!(launches(&exited(&mut p, t, 1, 1)), 1);
+    }
+
+    /// A turn-off is not held for a helper an ended instance left running: it ends too.
+    #[test]
+    fn a_turn_off_ends_what_an_ended_instance_left_running() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        exited(&mut p, t, 1, i64::from(PLANNED_EXIT_CODE));
+        p.handle(
+            Ev::HelperRunning {
+                id: ID.into(),
+                instance: 1,
+            },
+            t,
+        );
+        let c = reapply(&mut p, t);
+        assert!(c.contains(&Cmd::Kill { id: ID.into() }));
+        assert_eq!(applied(&c), [Applied::NotRunning]);
+        assert_eq!(p.restart_at(ID), Some(t), "the held restart goes ahead");
     }
 
     // The stop for a rebuild is only ever sent after the driver verified and pinned the new

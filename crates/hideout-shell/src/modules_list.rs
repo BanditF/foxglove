@@ -218,6 +218,9 @@ pub struct Row {
     pub dev_said: Option<String>,
     /// What the shell announces once when a rebuild restart finishes; None otherwise.
     pub rebuilt_said: Option<String>,
+    /// What the shell announces once after a turn-off restarted the app to apply it, or
+    /// stopped it because it couldn't be restarted; None otherwise. Never with `rebuilt_said`.
+    pub restarted_said: Option<String>,
     /// The state in plain words (never an id).
     pub state: String,
     /// It needs the user (stopped, couldn't start or install, needs a newer Hideout): the red
@@ -414,6 +417,14 @@ pub fn row_changed(
     let sentence = state.as_deref() == Some("install-failed")
         && matches!(get("failed").as_deref(), Some("missing" | "version"))
         && get("reason").is_some();
+    // A restart that applied a turn-off finished (`module.<id>.restarted`): the clock time, or
+    // no time when it is not known (the fact is then `true`; never shown as 00:00 or blank).
+    let restarted = fact(&format!("module.{}.restarted", m.id))
+        .filter(|v| !v.is_null())
+        .map(|v| v.as_str().filter(|t| !t.is_empty()).map(String::from));
+    let restarted_line = restarted
+        .as_ref()
+        .map(|at| words::restarted_row(at.as_deref()));
     // A withdrawn row's check, said on the row itself (the same words as the module's page).
     let check = get("check");
     let checking = check.as_deref() == Some("checking");
@@ -455,11 +466,12 @@ pub fn row_changed(
             primary(words::UPDATE_IN_HIDEOUT, Does::UpdateInHideout),
         ),
         // A rebuild restart finished (`module.<id>.rebuilt` is the clock time) until the next
-        // state change.
+        // state change. So for a restart that applied a turn-off; the two never show together.
         None | Some("running") => (
-            match get("rebuilt").filter(|t| !t.is_empty()) {
-                Some(at) => words::rebuilt_row(&at),
-                None => "On".into(),
+            match (&restarted_line, get("rebuilt").filter(|t| !t.is_empty())) {
+                (Some(line), _) => line.clone(),
+                (None, Some(at)) => words::rebuilt_row(&at),
+                (None, None) => "On".into(),
             },
             false,
             None,
@@ -542,6 +554,13 @@ pub fn row_changed(
             true,
             primary(words::REVIEW_OK, Does::TurnOn),
         ),
+        // It was ended to apply a turn-off and couldn't be started again: stopped, never
+        // left running as it was allowed before. Start again starts it as it is allowed now.
+        Some("install-failed") if get("failed").as_deref() == Some("apply") => (
+            words::stopped_to_apply_row(),
+            true,
+            primary(words::START_AGAIN, Does::StartAgain),
+        ),
         Some("install-failed") if get("failed").as_deref() == Some("launch") => (
             words::COULDNT_START.into(),
             true,
@@ -590,7 +609,16 @@ pub fn row_changed(
         rebuilt_said: (state.as_deref().is_none_or(|s| s == "running") && m.enabled)
             .then(|| get("rebuilt").filter(|t| !t.is_empty()))
             .flatten()
+            .filter(|_| restarted.is_none())
             .map(|_| words::rebuilt_said(&m.name)),
+        // Only with its line on the row: what is announced is what can be read.
+        restarted_said: if restarted_line.as_ref() == Some(&words) {
+            Some(words::restarted_said(&m.name))
+        } else if words == words::stopped_to_apply_row() {
+            Some(words::stopped_to_apply_said(&m.name))
+        } else {
+            None
+        },
         version_said: {
             let mut v = format!("version {}", m.version);
             if m.adopted {
@@ -1342,6 +1370,7 @@ mod tests {
             version_said: String::new(),
             dev_said: None,
             rebuilt_said: None,
+            restarted_said: None,
             state: String::new(),
             stopped,
             off,
@@ -1469,6 +1498,93 @@ mod tests {
         assert_eq!(r.state, "Restarting\u{2026}");
         assert_eq!(r.rebuilt_said, None);
         assert_eq!(row(&a, &|_: &str| None, None).state, "On");
+    }
+
+    /// #1451: after a restart that applied a turn-off the row says so, with the time when it
+    /// is known and without one when it is not (checklist 2: never 00:00 or blank); a rebuild
+    /// line never shows with it (6); any other state drops the line.
+    #[test]
+    fn a_restart_to_apply_shows_its_line_and_is_told_to_a_screen_reader() {
+        let a = m("vulpes", true);
+        let id = format!("module.{}.", a.id);
+        let with = |state: &'static str, at: Value, rebuilt: bool| {
+            let id = id.clone();
+            move |k: &str| -> Option<Value> {
+                match k.strip_prefix(&id)? {
+                    "state" => Some(Value::String(state.into())),
+                    "restarted" => Some(at.clone()),
+                    "rebuilt" if rebuilt => Some(Value::String("20:30".into())),
+                    _ => None,
+                }
+            }
+        };
+        let said = format!("{} restarted to apply your change", a.name);
+        let r = row(&a, &with("running", "20:41".into(), false), None);
+        assert_eq!(r.state, "On \u{b7} Restarted at 20:41 to apply your change");
+        assert_eq!(r.restarted_said.as_deref(), Some(said.as_str()));
+        assert!(!r.off && !r.stopped && r.primary.is_none());
+        // Checklist 7: the accessible label is the visible line, after the app's name.
+        assert_eq!(r.label, words::row_label(&a.name, &r.state));
+        // The time is not known: the line names none.
+        for unknown in [Value::Bool(true), Value::String(String::new())] {
+            let r = row(&a, &with("running", unknown, false), None);
+            assert_eq!(r.state, "On \u{b7} Restarted to apply your change");
+            assert!(!r.state.contains("00:00") && !r.state.contains("at "));
+            assert_eq!(r.restarted_said.as_deref(), Some(said.as_str()));
+            assert_eq!(r.label, words::row_label(&a.name, &r.state));
+        }
+        // Both facts set: one line, the restart's, and one announcement.
+        let r = row(&a, &with("running", "20:41".into(), true), None);
+        assert_eq!(r.state, "On \u{b7} Restarted at 20:41 to apply your change");
+        assert_eq!(r.rebuilt_said, None);
+        assert!(r.restarted_said.is_some());
+        // Not while it restarts, and not once the fact is gone.
+        let r = row(&a, &with("restarting", "20:41".into(), false), None);
+        assert_eq!(r.state, "Restarting\u{2026}");
+        assert_eq!(r.restarted_said, None);
+        let r = row(&a, &with("running", Value::Null, false), None);
+        assert_eq!(r.state, "On");
+        assert_eq!(r.restarted_said, None);
+    }
+
+    /// #1451, checklist 3: an app that couldn't be restarted to apply a turn-off is stopped:
+    /// red-marked, at the top of the list, with Start again.
+    #[test]
+    fn an_app_that_couldnt_restart_to_apply_is_a_stopped_row_with_start_again() {
+        let a = m("vulpes", true);
+        let b = m("aardvark", true);
+        let id = format!("module.{}.", a.id);
+        let fact = move |k: &str| -> Option<Value> {
+            match k.strip_prefix(&id)? {
+                "state" => Some("install-failed".into()),
+                "failed" => Some("apply".into()),
+                "reason" => Some(words::COULDNT_RESTART_TO_APPLY.into()),
+                _ => None,
+            }
+        };
+        let r = row(&a, &fact, None);
+        assert_eq!(
+            r.state,
+            "Stopped \u{b7} Couldn't restart to apply your change. Start it again."
+        );
+        assert!(r.stopped && !r.off);
+        assert_eq!(
+            r.primary,
+            Some(Primary {
+                label: words::START_AGAIN.into(),
+                does: Does::StartAgain,
+            })
+        );
+        assert_eq!(
+            r.restarted_said.as_deref(),
+            Some(format!("{} stopped. Couldn't restart to apply your change.", a.name).as_str())
+        );
+        // Checklist 7.
+        assert_eq!(r.label, words::row_label(&a.name, &r.state));
+        // Above a running app that sorts before it by name.
+        let mut rows = vec![row(&b, &|_: &str| None, None), r];
+        order(&mut rows);
+        assert_eq!(rows[0].id, a.id);
     }
 
     fn changed_app(enabled: bool) -> Installed {

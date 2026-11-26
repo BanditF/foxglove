@@ -794,14 +794,23 @@ impl ModulesPage {
                 )
             })
             .collect();
-        // A rebuild restart is told once, when its line first appears (absent to set).
+        // A rebuild restart is told once, when its line first appears (absent to set). So is a
+        // restart that applied a turn-off, or the stop when it couldn't restart (#1451); a row
+        // has one of the two lines at most.
         for r in &rows {
             let at = r
                 .rebuilt_said
                 .as_ref()
                 .and_then(|_| facts(&format!("module.{}.rebuilt", r.id)))
                 .and_then(|v| v.as_str().map(str::to_string));
-            match (at, r.rebuilt_said.as_ref()) {
+            let applied = r.restarted_said.as_ref().map(|_| {
+                match facts(&format!("module.{}.restarted", r.id)).filter(|v| !v.is_null()) {
+                    Some(v) => format!("restarted {v}"),
+                    None => "stopped".to_string(),
+                }
+            });
+            let said = r.rebuilt_said.as_ref().or(r.restarted_said.as_ref());
+            match (at.or(applied), said) {
                 (Some(at), Some(said)) => {
                     let new = self.told.by_id.get(&r.id) != Some(&at);
                     if new && self.told.seeded {
@@ -1917,6 +1926,87 @@ mod tests {
         set("running", Some("20:41"));
         page.rows();
         assert_eq!(page.take_said(), ["Art rebuilt and restarted"]);
+    }
+
+    /// #1451, checklist 4: a restart that applied a turn-off is handed to the shell once per
+    /// restart: not on the first frame (the window opening on a line already there), not on a
+    /// redraw, and again for the next restart. So is the stop when it couldn't restart.
+    #[test]
+    fn a_restart_to_apply_is_told_once_per_restart() {
+        use hideout_shell::Page;
+        let facts: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
+        > = Default::default();
+        let page = || {
+            let f = facts.clone();
+            ModulesPage {
+                installed: vec![hideout_shell::modules_list::Installed {
+                    id: "m.a".into(),
+                    name: "Art".into(),
+                    version: "1".into(),
+                    enabled: true,
+                    adopted: false,
+                    dev: false,
+                    dev_folder: None,
+                }],
+                facts: Some(Box::new(move |k: &str| f.lock().unwrap().get(k).cloned())),
+                actions: None,
+                safe_by_closes: false,
+                restarts: Default::default(),
+                done: Default::default(),
+                ask: Default::default(),
+                told: Default::default(),
+                grant: None,
+                perm: None,
+                finder: None,
+                fresh: None,
+                discover: None,
+            }
+        };
+        let set = |state: &str, at: Option<serde_json::Value>, failed: Option<&str>| {
+            let mut m = facts.lock().unwrap();
+            m.insert("module.m.a.state".into(), state.into());
+            for (k, v) in [("restarted", at), ("failed", failed.map(Into::into))] {
+                match v {
+                    Some(v) => m.insert(format!("module.m.a.{k}"), v),
+                    None => m.remove(&format!("module.m.a.{k}")),
+                };
+            }
+        };
+        const SAID: &str = "Art restarted to apply your change";
+        let mut p = page();
+        set("running", None, None);
+        p.rows();
+        assert!(p.take_said().is_empty());
+        set("restarting", None, None);
+        p.rows();
+        assert!(p.take_said().is_empty(), "nothing before it runs again");
+        set("running", Some("20:41".into()), None);
+        p.rows();
+        assert_eq!(p.take_said(), [SAID]);
+        p.rows();
+        p.rows();
+        assert!(p.take_said().is_empty(), "a redraw says nothing");
+        // The next restart, in the same minute and with no time known: told again, once.
+        set("restarting", None, None);
+        p.rows();
+        set("running", Some(true.into()), None);
+        p.rows();
+        p.rows();
+        assert_eq!(p.take_said(), [SAID]);
+        // A window opened while the line is there says nothing.
+        let mut opened = page();
+        opened.rows();
+        opened.rows();
+        assert!(opened.take_said().is_empty(), "not on window open");
+        // It couldn't restart: the stop is told once.
+        set("install-failed", None, Some("apply"));
+        p.rows();
+        p.rows();
+        assert_eq!(
+            p.take_said(),
+            ["Art stopped. Couldn't restart to apply your change."]
+        );
     }
 
     /// A changed app on the Apps page (window-free, a fake machine and a temp hub folder): the row

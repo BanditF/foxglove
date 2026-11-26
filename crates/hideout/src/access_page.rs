@@ -35,6 +35,16 @@ pub fn take_turned_off() -> bool {
 
 pub const NOT_SAVED: &str = "Turned off, but the change couldn't be saved.";
 
+/// What a turn-off says: the note when it wasn't saved, else "Turned off", with the restart
+/// when one was started for `restarting` (the app's name).
+fn turned_off_said(note: Option<&str>, restarting: Option<&str>) -> String {
+    match (note, restarting) {
+        (Some(n), _) => n.to_string(),
+        (None, Some(name)) => hideout_supervisor::words::turned_off_restarts(name),
+        (None, None) => "Turned off".to_string(),
+    }
+}
+
 pub struct AccessPage {
     home: PathBuf,
     hub: Hub,
@@ -111,17 +121,25 @@ impl AccessPage {
             Some(std::slice::from_ref(&raw.to_string())),
         );
         self.note = None;
+        // The app restarts when the turn-off changes how it is contained (#1451): said with
+        // the turn-off. How the restart ended is the Apps page's row to say.
+        let restarts = r.as_ref().is_ok_and(|off| off.applies.restarts());
+        let name = self
+            .groups
+            .iter()
+            .flat_map(|g| &g.rows)
+            .find(|row| row.app == app)
+            .map(|row| row.name.clone());
         if let Err(e) = r {
             log::warn!("permissions: {app}: turn off not saved ({e})");
             self.note = Some(NOT_SAVED.to_string());
         }
         self.refresh();
         TURNED_OFF.store(true, Ordering::Relaxed);
-        self.said.push(
-            self.note
-                .clone()
-                .unwrap_or_else(|| "Turned off".to_string()),
-        );
+        self.said.push(turned_off_said(
+            self.note.as_deref(),
+            name.as_deref().filter(|_| restarts),
+        ));
     }
 }
 
@@ -172,6 +190,17 @@ impl hideout_shell::Page for AccessPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1451: a turn-off that restarts the app says so, by the app's name.
+    #[test]
+    fn a_turn_off_says_when_the_app_restarts_to_apply() {
+        assert_eq!(turned_off_said(None, None), "Turned off");
+        assert_eq!(
+            turned_off_said(None, Some("Art")),
+            "Turned off. Art restarts to apply."
+        );
+        assert_eq!(turned_off_said(Some(NOT_SAVED), Some("Art")), NOT_SAVED);
+    }
 
     /// One test: the flags are process-wide.
     #[test]

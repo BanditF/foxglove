@@ -41,6 +41,19 @@ pub enum Plan {
     Refused(String),
 }
 
+impl Plan {
+    /// Whether an app started on `self` is contained as `other` asks: outside is outside
+    /// whichever grant put it there, and a container is the same one only with the same
+    /// capability names. A running app whose plan no longer matches is restarted (#1451).
+    pub fn same_containment(&self, other: &Plan) -> bool {
+        match (self, other) {
+            (Plan::Contained(a), Plan::Contained(b)) => a == b,
+            (Plan::Outside(_), Plan::Outside(_)) | (Plan::Refused(_), Plan::Refused(_)) => true,
+            _ => false,
+        }
+    }
+}
+
 /// The plan for a module with `granted` permissions (ungranted ones count for nothing: a
 /// declared `net` the user never approved doesn't take the module out). Its transport doesn't
 /// matter (#1092).
@@ -89,6 +102,27 @@ mod tests {
 
     fn caps(list: &[&str]) -> Vec<Capability> {
         list.iter().map(|c| Capability::parse(c).unwrap()).collect()
+    }
+
+    /// #1451: a turn-off that takes an app from outside into a container, or changes what its
+    /// container may do, changes its containment; one that leaves it where it is does not.
+    #[test]
+    fn the_same_containment_is_the_same_place_with_the_same_capabilities() {
+        let of = |g: &[&str]| plan_for(&g.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let (net, files, none) = (of(&["net"]), of(&["files"]), of(&[]));
+        assert!(matches!(net, Plan::Outside(_)));
+        assert!(matches!(none, Plan::Contained(_)));
+        assert!(!net.same_containment(&none));
+        assert!(!files.same_containment(&none));
+        // Outside for one reason or another is still outside.
+        assert!(net.same_containment(&files));
+        assert!(of(&["net", "files"]).same_containment(&net));
+        assert!(none.same_containment(&of(&[])));
+        // A grant that doesn't parse is its own case: never the same as a plan that starts.
+        let bad = of(&["not a permission"]);
+        assert!(matches!(bad, Plan::Refused(_)));
+        assert!(!bad.same_containment(&none));
+        assert!(!bad.same_containment(&net));
     }
 
     #[test]

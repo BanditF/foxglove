@@ -125,6 +125,18 @@ fn exit_for(e: &str) -> i32 {
     }
 }
 
+/// What a revoke prints: what is still allowed and, when the turn-off changes how the app is
+/// contained (#1451), one more line saying how that reached the app that runs. It waits for a
+/// restart's outcome, so the line is what happened; the exit code is the same either way.
+fn turned_off_text(off: hideout_supervisor::driver::TurnedOff) -> String {
+    let mut out = format!("turned off; still allowed: {}\n", off.left.len());
+    if let Some(line) = off.applies.pipe_line() {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// Runs one request line (`grant|deny|revoke <id> ...`) in the hub. `caller_ok` is the result
 /// of the caller check; a caller that may not grant is refused with `permission.caller` and
 /// nothing is read or written.
@@ -175,9 +187,7 @@ pub fn handle(
                     Some(items.as_slice())
                 };
                 match hideout_supervisor::driver::revoke_items_in(home, hub, id, which) {
-                    Ok(left) => {
-                        out.push_str(&format!("turned off; still allowed: {}\n", left.len()))
-                    }
+                    Ok(off) => out.push_str(&turned_off_text(off)),
                     Err(e) => return (exit_for(&e), format!("hideout: {e}\n")),
                 }
             }
@@ -758,6 +768,48 @@ mod tests {
         assert_eq!(c, DONE, "{t}");
         assert!(state(&f).0.is_empty());
         assert!(f.hub.read(|r| r.module_grants(&f.id)).is_empty());
+    }
+
+    /// #1451, checklist 5: every revoke that changes containment prints one of the three
+    /// lines after the usual one; one that doesn't prints the usual line alone.
+    #[test]
+    fn a_revoke_that_changes_containment_says_how_it_reached_the_app() {
+        use hideout_supervisor::driver::{Applies, TurnedOff};
+        use hideout_supervisor::words;
+        let text = |applies| {
+            turned_off_text(TurnedOff {
+                left: vec!["hub.notify".into()],
+                applies,
+            })
+        };
+        let usual = "turned off; still allowed: 1\n";
+        assert_eq!(text(Applies::Unchanged), usual);
+        assert_eq!(
+            text(Applies::NotRunning),
+            format!("{usual}not running; applies at the next start\n")
+        );
+        let restart = |answer: Option<bool>| {
+            let (tx, rx) = mpsc::channel();
+            if let Some(a) = answer {
+                tx.send(a).unwrap();
+            }
+            drop(tx);
+            text(Applies::Restarting(rx))
+        };
+        assert_eq!(restart(Some(true)), format!("{usual}restarted to apply\n"));
+        let stopped = format!(
+            "{usual}stopped: couldn't restart to apply; start it again from the Apps page\n"
+        );
+        assert_eq!(restart(Some(false)), stopped);
+        // The app went away before it answered: it does not run, so it reads as stopped.
+        assert_eq!(restart(None), stopped);
+        for l in [
+            words::PIPE_RESTARTED,
+            words::PIPE_STOPPED,
+            words::PIPE_NOT_RUNNING,
+        ] {
+            assert!(!l.is_empty() && !l.contains('\n'), "{l:?}");
+        }
     }
 
     #[test]
