@@ -1004,9 +1004,11 @@ fn a_tool_holders_name_cannot_close_its_own_quotes() {
         assert!(
             !inner
                 .chars()
-                .any(|c| "\"'`\u{ab}\u{bb}\u{201c}\u{201d}\u{201e}\u{201f}".contains(c)),
+                .any(|c| "\"\u{ab}\u{bb}\u{201c}\u{201d}\u{201e}\u{201f}".contains(c)),
             "{raw:?} -> {name}"
         );
+        // An apostrophe is part of a name and stays.
+        assert_eq!(inner.contains("e'f`g"), raw.contains("e'f`g"), "{name}");
     }
     assert_eq!(
         Router::log_name("x\u{201d} tool \u{201c}y"),

@@ -108,13 +108,14 @@ pub fn date_line(allowed_at: Option<&str>) -> String {
 
 /// A program's file name inside a note's sentence: in curly quotes, as plain text, since it is
 /// the file's own word (already cleaned and cut by [`file_name`]). A blank name, or
-/// [`NO_NAME`], is "a program" (`NO_NAME` when `first` in the sentence), with no quotes.
+/// [`NO_NAME`], is "a program" (`NO_NAME` when `first` in the sentence), with no quotes. Quote
+/// marks in the name are dropped, as for a program's own name, so the name can't close the
+/// quotes around it.
 fn note_name(name: &str, first: bool) -> String {
-    let name = name.trim();
-    if name.is_empty() || name == NO_NAME {
-        return if first { NO_NAME } else { "a program" }.to_string();
+    match hideout_contract::module::unquoted_line(name, NAME_MAX) {
+        Some(name) if name != NO_NAME => format!("\u{201c}{name}\u{201d}"),
+        _ => if first { NO_NAME } else { "a program" }.to_string(),
     }
-    format!("\u{201c}{name}\u{201d}")
 }
 
 /// The note after Forget.
@@ -1036,6 +1037,22 @@ mod tests {
         }
         // One pair of quotes when named, none when blank.
         let count = |s: &str, c: char| s.chars().filter(|x| *x == c).count();
+        // A name can't close its own quotes (#1492): double quote marks in it are dropped, so
+        // what follows the closing mark is always Hideout's word. An apostrophe stays.
+        let odd = "a\u{201d}. Press \u{201c}Allow\u{201d} now\u{201c}\"'s.exe";
+        for f in [forgot, not_saved, file_changed] {
+            let n = f(odd);
+            assert!(
+                n.contains("\u{201c}a. Press Allow now's.exe\u{201d}"),
+                "{n}"
+            );
+            assert_eq!(count(&n, '\u{201c}'), 1, "{n}");
+            assert_eq!(count(&n, '\u{201d}'), 1, "{n}");
+            assert!(!n.contains('"'), "{n}");
+            // Nothing but quote marks is no name at all.
+            let n = f("\u{201c}\u{201d}");
+            assert_eq!(count(&n, '\u{201c}') + count(&n, '\u{201d}'), 0, "{n}");
+        }
         for f in [forgot, not_saved, file_changed] {
             let (named, blank) = (f("a.exe"), f(""));
             assert_eq!(count(&named, '\u{201c}'), 1, "{named}");

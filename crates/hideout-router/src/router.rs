@@ -2495,34 +2495,25 @@ impl Router {
     /// [`Router::clean_name_to`] for a program outside Hideout, which is never "An app": `None`
     /// when nothing is left after the hidden characters and spaces are dropped.
     pub fn clean_name_opt(raw: &str, max: usize) -> Option<String> {
-        // Control characters other than whitespace are dropped too (a name is one line).
-        let raw: String = raw
-            .chars()
-            .filter(|c| !c.is_control() || c.is_whitespace())
-            .collect();
-        let name = hideout_contract::module::display_name(&raw, "");
-        if name.is_empty() {
-            return None;
-        }
-        if name.chars().count() <= max {
-            return Some(name);
-        }
-        let cut: String = name.chars().take(max - 1).collect();
-        Some(format!("{}\u{2026}", cut.trim_end()))
+        hideout_contract::module::clean_line(raw, max)
     }
 
     /// A program's own name inside “ ” quotes: quote marks in the name itself are dropped
     /// first, so the entry holds one opening and one closing mark and nothing after the
     /// closing mark is the program's word. `None` when nothing is left.
     pub fn quoted_name(raw: &str, max: usize) -> Option<String> {
-        const MARKS: &[char] = &[
-            '"', '\'', '`', '\u{ab}', '\u{bb}', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}',
-            '\u{201c}', '\u{201d}', '\u{201e}', '\u{201f}', '\u{2032}', '\u{2033}', '\u{2035}',
-            '\u{2036}', '\u{2039}', '\u{203a}', '\u{275b}', '\u{275c}', '\u{275d}', '\u{275e}',
-            '\u{301d}', '\u{301e}', '\u{301f}', '\u{ff02}', '\u{ff07}',
-        ];
-        let raw: String = raw.chars().filter(|c| !MARKS.contains(c)).collect();
-        Self::clean_name_opt(&raw, max).map(|n| format!("\u{201c}{n}\u{201d}"))
+        hideout_contract::module::quoted_line(raw, max)
+    }
+
+    /// The most characters of a status key, a pattern or a permission's own text that a log
+    /// line keeps.
+    pub const LOG_TEXT_MAX: usize = hideout_contract::permission::FACT_NAME_MAX;
+
+    /// Text an outside program or an app sent (a status key, a pattern, a permission) for a log
+    /// line: cleaned, one line, at most [`Self::LOG_TEXT_MAX`] characters, inside “ ” quotes;
+    /// "(nothing)" when nothing is left.
+    pub fn log_text(raw: &str) -> String {
+        Self::quoted_name(raw, Self::LOG_TEXT_MAX).unwrap_or_else(|| "(nothing)".into())
     }
 
     /// The most characters of a tool's own name a log line keeps: the length the refusal words
@@ -3025,9 +3016,14 @@ impl Router {
     /// The refusal text for a call the caller has no permission for: names the module the call
     /// goes to and says where to allow it.
     fn needs_permission(&self, conn: ConnId, who: &Who, method: &str, params: &Value) -> String {
-        if let Who::Tool { name, .. } = who {
-            return self.tool_refusal(conn, name, method, params);
-        }
+        let caller = match who {
+            Who::Tool { name, .. } => return self.tool_refusal(conn, name, method, params),
+            Who::Module { id, .. } => self
+                .modules
+                .get(id)
+                .map_or_else(|| id.clone(), |m| m.name.clone()),
+            Who::New => String::new(),
+        };
         let target = self
             .routes
             .iter()
@@ -3047,14 +3043,6 @@ impl Router {
         let target = target
             .and_then(|t| self.modules.get(&t).map(|m| m.name.clone()))
             .unwrap_or_else(|| "this app".into());
-        let caller = match who {
-            Who::Tool { name, .. } => name.clone(),
-            Who::Module { id, .. } => self
-                .modules
-                .get(id)
-                .map_or_else(|| id.clone(), |m| m.name.clone()),
-            Who::New => String::new(),
-        };
         format!(
             "{caller} needs permission to call {method} on {target}. Allow it in Hideout's permissions for {caller}."
         )
@@ -3080,7 +3068,8 @@ impl Router {
     /// (S1). Never-class says only an app may (R2). Otherwise, when the hub can tell which
     /// program this is, it says the hub hasn't let it yet and where to review it (R3); when it
     /// can't (no process, no readable file, a contained program), it says the program may only
-    /// read and how to start it again (R4). A connection that was open when the user pressed
+    /// read, what may help and that nothing else does (R4: one set of words for every cause,
+    /// so the caller learns no more about why than before). A connection that was open when the user pressed
     /// Forget for its program, and lost something, is told that (R5) until it is allowed again.
     /// The name is the tool's own word, cleaned and quoted; it never decides anything.
     fn tool_refusal(&self, conn: ConnId, name: &str, method: &str, params: &Value) -> String {
@@ -3103,7 +3092,7 @@ impl Router {
                 "Hideout never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
             )
         } else if self.tool_identity(conn).is_none() {
-            "Hideout couldn't check which program this is, so it may only read. Start it again from a normal window, not as administrator.".to_string()
+            "Hideout couldn't check which program this is, so it may only read. Starting it again the usual way, not as administrator and not in a sandbox, may help. If it doesn't, nothing else will: this program can only read.".to_string()
         } else if self.conns.get(&conn).is_some_and(|c| c.forgotten) {
             let who = Self::quoted_name(name, 40).unwrap_or_else(|| "this program".to_string());
             format!(
@@ -4571,10 +4560,15 @@ impl Router {
                 let ok_write =
                     !hub_fact && !free && (owned || (!foreign && grant.can_write_fact(&key)));
                 if !ok_write {
+                    // The rule `can_write_fact` reads: no permission covers this key, so there
+                    // is nothing for the user to review.
+                    let no_grant = hideout_contract::permission::fact_write_never_granted(&key);
                     let set_by = if hub_fact {
                         Some("Hideout sets this itself")
                     } else if free {
                         Some("Only Hideout and its apps set this")
+                    } else if no_grant {
+                        Some("Only the app that runs your devices sets this")
                     } else if foreign {
                         Some("One of your apps sets this")
                     } else {

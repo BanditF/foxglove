@@ -1428,6 +1428,49 @@ pub fn display_name(raw: &str, id: &str) -> String {
     }
 }
 
+/// Text some other program wrote (a name, a status key, a file name), made safe to show or log:
+/// control characters and the hidden characters of [`hidden_in_name`] dropped, whitespace runs
+/// as one space, trimmed, and cut to `max` characters (the last one "…" when cut). `None` when
+/// nothing is left. One line, always.
+pub fn clean_line(raw: &str, max: usize) -> Option<String> {
+    // Control characters other than whitespace are dropped too (a line break becomes a space).
+    let raw: String = raw
+        .chars()
+        .filter(|c| !c.is_control() || c.is_whitespace())
+        .collect();
+    let line = display_name(&raw, "");
+    if line.is_empty() {
+        return None;
+    }
+    if line.chars().count() <= max {
+        return Some(line);
+    }
+    let cut: String = line.chars().take(max.saturating_sub(1)).collect();
+    Some(format!("{}\u{2026}", cut.trim_end()))
+}
+
+/// Every mark that reads as a double quote mark: dropped from text that is shown inside
+/// “ ” quotes. An apostrophe and the other single marks stay: names have them ("Bob's Tool"),
+/// and one alone can't end the quotes Hideout writes.
+pub const QUOTE_MARKS: &[char] = &[
+    '"', '\u{ab}', '\u{bb}', '\u{201c}', '\u{201d}', '\u{201e}', '\u{201f}', '\u{2033}',
+    '\u{2036}', '\u{275d}', '\u{275e}', '\u{301d}', '\u{301e}', '\u{301f}', '\u{ff02}',
+];
+
+/// [`clean_line`] with every double quote mark in the text dropped first ([`QUOTE_MARKS`]), for text
+/// the caller puts inside quotes of its own. `None` when nothing is left.
+pub fn unquoted_line(raw: &str, max: usize) -> Option<String> {
+    let raw: String = raw.chars().filter(|c| !QUOTE_MARKS.contains(c)).collect();
+    clean_line(&raw, max)
+}
+
+/// Another program's text inside “ ” quotes: [`unquoted_line`], so the entry holds one opening
+/// and one closing mark and nothing after the closing mark is that program's word. `None` when
+/// nothing is left.
+pub fn quoted_line(raw: &str, max: usize) -> Option<String> {
+    unquoted_line(raw, max).map(|n| format!("\u{201c}{n}\u{201d}"))
+}
+
 /// A [`Head`]'s name: [`display_name`], at most [`HEAD_NAME_MAX`] characters (nothing else in
 /// that file was checked).
 fn head_name(raw: &str, id: &str) -> String {
@@ -1778,5 +1821,54 @@ anything = true
         std::fs::write(dir.join("module.toml"), NEWER).unwrap();
         assert_eq!(read_head(&dir).unwrap().unwrap().name, "Kiln");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod line_tests {
+    use super::*;
+
+    /// What must hold (#1492): text another program wrote is shown as one short line with no
+    /// control or hidden characters, and inside quotes it holds no quote mark of its own.
+    #[test]
+    fn another_programs_text_is_one_short_clean_line() {
+        let raw = format!("ab\r\ncd\u{7}ef\u{202e}\u{200b} \t gh{}", "x".repeat(80));
+        let line = clean_line(&raw, 20).unwrap();
+        assert_eq!(line.chars().count(), 20, "{line}");
+        assert!(line.starts_with("ab cdef gh"), "{line}");
+        assert!(line.ends_with('\u{2026}'), "{line}");
+        assert!(!line.chars().any(|c| c.is_control() || hidden_in_name(c)));
+        assert_eq!(clean_line("My Tool", 20).as_deref(), Some("My Tool"));
+        for blank in ["", " \n ", "\u{202e}\u{200b}", "\u{7}"] {
+            assert_eq!(clean_line(blank, 20), None, "{blank:?}");
+            assert_eq!(quoted_line(blank, 20), None, "{blank:?}");
+        }
+        // Nothing breaks at the smallest lengths.
+        assert_eq!(clean_line("abc", 0).as_deref(), Some("\u{2026}"));
+        assert_eq!(clean_line("abc", 1).as_deref(), Some("\u{2026}"));
+    }
+
+    #[test]
+    fn quoted_text_holds_one_pair_of_quote_marks() {
+        let every: String = QUOTE_MARKS.iter().collect();
+        assert_eq!(unquoted_line(&every, 40), None);
+        assert_eq!(quoted_line(&every, 40), None);
+        let raw = format!("a{every}b\u{201d}. Hideout says \u{201c}c");
+        let q = quoted_line(&raw, 40).unwrap();
+        assert_eq!(q, "\u{201c}ab. Hideout says c\u{201d}");
+        let marks = q.chars().filter(|c| QUOTE_MARKS.contains(c)).count();
+        assert_eq!(marks, 2, "{q}");
+        // An apostrophe is part of a name and stays, as every single mark does.
+        assert_eq!(
+            quoted_line("Bob's Tool.exe", 40).as_deref(),
+            Some("\u{201c}Bob's Tool.exe\u{201d}")
+        );
+        assert_eq!(
+            unquoted_line("Bob\u{2019}s `Tool`.exe", 40).as_deref(),
+            Some("Bob\u{2019}s `Tool`.exe")
+        );
+        // The cut counts what is inside the quotes.
+        let long = quoted_line(&"y".repeat(90), 40).unwrap();
+        assert_eq!(long.chars().count(), 42, "{long}");
     }
 }

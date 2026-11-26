@@ -1593,8 +1593,25 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   “{name}” {does} yet. Open Hideout, go to Apps and press Review… on its line. If there
   is no line, close this program and start it again, then try again." With no name it reads
   "Hideout hasn't let this program {does} yet. …" R4 (program not known): "Hideout couldn't check which program this is, so it may only
-  read. Start it again from a normal window, not as administrator." R2 (never-class): "Hideout
+  read. Starting it again the usual way, not as administrator and not in a sandbox, may help.
+  If it doesn't, nothing else will: this program can only read." (one set of words for every
+  cause: no process, no program file the hub can read, a contained program). R2 (never-class): "Hideout
   never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
+  A write to a device's own status (`device.*`), which no permission covers, reads "Hideout
+  never lets a program outside Hideout {does}. Only the app that runs your devices sets this,
+  so there is nothing to allow." and is never put up for review.
+  (#1492) Host services answer a tool with the same words and show no permission's id:
+  `apps.watch` is R2 with "start watching another program"; `net.open` is R2 with
+  "connect to “{host}” port {port}" ("connect to an unnamed host port {port}" when no
+  host is left; "listen on port {port} on this PC" for `udp` and `tcp-listen`);
+  `audio.inputs.set_mute` is R3, R4 or R5 with "mute and unmute your microphone".
+  (#1492) Everything a tool sent is shown cleaned, on one line, cut and inside “ ” quotes:
+  its name (40 characters), a status key or pattern and a host (60). Double quote marks in
+  it are dropped, so the words after the closing mark are always Hideout's; an apostrophe
+  stays ("Bob's Tool.exe"). When nothing is left the words say so and never show empty
+  quotes: "this program", "see an unnamed status" / "share an unnamed status",
+  "see every status with an unreadable name" (a pattern ending in `*`), and for a
+  permission with no plain words "use “{permission}”" or "use something unreadable".
   R5 (#1470; ask-class, on a connection that was open when the user pressed Forget for its
   program and lost something; also the answer to its `channel.open`): "Hideout no longer lets “{name}” {does}. This program was
   forgotten on Hideout's Apps page. Close this program and start it again, then allow it in

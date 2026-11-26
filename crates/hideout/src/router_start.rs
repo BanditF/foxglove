@@ -24,8 +24,9 @@ pub(crate) fn approve(tool: &str, asked: &[Capability], lab: bool) -> Vec<Capabi
         let (yes, no): (Vec<_>, Vec<_>) = asked.iter().cloned().partition(|c| !c.sensitive());
         if !no.is_empty() {
             log::warn!(
-                "router: {} asked for sensitive {no:?}; left out",
-                Router::log_name(tool)
+                "router: {} asked for sensitive {}; left out",
+                Router::log_name(tool),
+                asked_for_log(&no)
             );
         }
         return yes;
@@ -35,13 +36,42 @@ pub(crate) fn approve(tool: &str, asked: &[Capability], lab: bool) -> Vec<Capabi
         .cloned()
         .partition(|c| tool_class(c, None) == ToolClass::Free);
     if !no.is_empty() {
-        let no: Vec<String> = no.iter().map(|c| c.to_string()).collect();
         log::info!(
-            "router: outside tool {} not granted {no:?}",
-            Router::log_name(tool)
+            "router: outside tool {} not granted {}",
+            Router::log_name(tool),
+            asked_for_log(&no)
         );
     }
     yes
+}
+
+/// The most permissions [`asked_for_log`] names; the rest are counted.
+const ASKED_LOG_MAX: usize = 8;
+
+/// What an outside tool asked for, for a log line. Each permission is the tool's own text, so
+/// each goes through [`Router::log_text`] (cleaned, one line, cut); at most [`ASKED_LOG_MAX`]
+/// are named and the rest counted, so the line has a fixed longest length.
+pub(crate) fn asked_for_log(asked: &[Capability]) -> String {
+    let mut line = asked
+        .iter()
+        .take(ASKED_LOG_MAX)
+        .map(|c| Router::log_text(&c.to_string()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if asked.len() > ASKED_LOG_MAX {
+        line.push_str(&format!(" and {} more", asked.len() - ASKED_LOG_MAX));
+    }
+    line
+}
+
+/// The most characters of one router event the debug log keeps.
+const EVENT_LOG_MAX: usize = 300;
+
+/// One router event for the debug log. An event can carry what an outside tool sent (its name,
+/// a status key, a message), so the line is cleaned, one line and cut to [`EVENT_LOG_MAX`]
+/// characters.
+pub(crate) fn event_for_log(event: &impl std::fmt::Debug) -> String {
+    hideout_contract::module::clean_line(&format!("{event:?}"), EVENT_LOG_MAX).unwrap_or_default()
 }
 
 fn approver(lab: bool) -> hideout_router::Approver {
@@ -367,7 +397,7 @@ pub fn start(
                 crate::signin_signal::on_event(&event);
                 s.on_router(&event);
                 side.on_router(&event);
-                log::debug!("router: {event:?}");
+                log::debug!("router: {}", event_for_log(&event));
             }
         })
         .expect("router events thread");
@@ -1053,5 +1083,58 @@ permissions = [\"apps.watch:{label}.exe\"]
             approve("lab-script", &asked, false),
             caps(&["devices.read"])
         );
+    }
+}
+
+#[cfg(test)]
+mod log_line_tests {
+    use super::*;
+
+    /// What must hold (#1492 d): what an outside tool asked for reaches the log cleaned, on
+    /// one line and with a fixed longest length, however much it asked for.
+    #[test]
+    fn what_a_tool_asked_for_is_logged_short_and_on_one_line() {
+        let odd = format!("notes.a\nb\u{7}\u{202e}\u{201d}{}", "k".repeat(500));
+        let mut asked = vec![Capability::Provide(odd)];
+        asked.extend((0..40).map(|i| Capability::Provide(format!("p{i}.*"))));
+        let line = asked_for_log(&asked);
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(!line.contains('\u{202e}'), "{line:?}");
+        assert!(line.starts_with("\u{201c}provide:notes.a b"), "{line}");
+        assert!(line.ends_with(" and 33 more"), "{line}");
+        let longest = ASKED_LOG_MAX * (Router::LOG_TEXT_MAX + 4) + " and 99999 more".len();
+        assert!(line.chars().count() <= longest, "{line}");
+        assert_eq!(
+            asked_for_log(&asked[1..3]),
+            "\u{201c}provide:p0.*\u{201d}, \u{201c}provide:p1.*\u{201d}"
+        );
+    }
+
+    /// What must hold (#1492 f): the debug dump of a router event is one cleaned, cut line,
+    /// whatever a tool put in its name or its message.
+    #[test]
+    fn a_router_event_is_logged_as_one_short_clean_line() {
+        #[derive(Debug)]
+        #[allow(dead_code)]
+        struct Event {
+            name: String,
+            note: &'static str,
+        }
+        let event = Event {
+            name: format!("ab\ncd\u{202e}\u{200b}{}", "x".repeat(2000)),
+            note: "end",
+        };
+        let line = event_for_log(&event);
+        assert!(line.chars().count() <= EVENT_LOG_MAX, "{}", line.len());
+        assert!(line.ends_with('\u{2026}'), "{line}");
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(
+            !line.chars().any(hideout_contract::module::hidden_in_name),
+            "{line:?}"
+        );
+        assert!(line.starts_with("Event { name: "), "{line}");
+        let source = include_str!("router_start.rs");
+        let dump = ["log::debug!(\"router: ", "{event:?}\")"].concat();
+        assert!(!source.contains(&dump));
     }
 }

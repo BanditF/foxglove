@@ -507,19 +507,37 @@ pub const FACT_WORDS: &[(&str, &str, &str)] = &[
 /// A fact pattern in plain words, starting with the verb ("see ...", "share ..."). A known
 /// pattern uses [`FACT_WORDS`]. Any other still names the key, in a sentence: an exact key reads
 /// `see the status called “x.y”`, a prefix `see every status whose name starts with “x.”`, and
-/// `*` `see every status any app shares`. A wildcard always says "every" or "all of".
+/// `*` `see every status any app shares`. A wildcard always says "every" or "all of". The key is
+/// whatever its sender wrote, so it is shown cleaned: one line, no hidden characters, no quote
+/// marks of its own, at most [`FACT_NAME_MAX`] characters; a key with nothing left to show gets
+/// plain words instead of an empty pair of quotes.
 pub fn fact_words(read: bool, pattern: &str) -> String {
     if let Some((_, r, w)) = FACT_WORDS.iter().find(|(p, _, _)| *p == pattern) {
         return (if read { *r } else { *w }).to_string();
     }
     let verb = if read { "see" } else { "share" };
+    let shown = |s: &str| crate::module::quoted_line(s, FACT_NAME_MAX);
     match pattern.strip_suffix('*') {
         Some("") => format!("{verb} every status any app shares"),
-        Some(prefix) => {
-            format!("{verb} every status whose name starts with \u{201c}{prefix}\u{201d}")
-        }
-        None => format!("{verb} the status called \u{201c}{pattern}\u{201d}"),
+        Some(prefix) => match shown(prefix) {
+            Some(q) => format!("{verb} every status whose name starts with {q}"),
+            None => format!("{verb} every status with an unreadable name"),
+        },
+        None => match shown(pattern) {
+            Some(q) => format!("{verb} the status called {q}"),
+            None => format!("{verb} an unnamed status"),
+        },
     }
+}
+
+/// The most characters of a status key or pattern [`fact_words`] shows; a longer one is cut.
+pub const FACT_NAME_MAX: usize = 60;
+
+/// Whether no `facts.write` permission can cover a write to `key`: the device's own statuses
+/// (§6.6) are set by the app registered for them and nobody else. [`Grant::can_write_fact`]
+/// and the words for a refused write both read this one rule.
+pub fn fact_write_never_granted(key: &str) -> bool {
+    key.starts_with("device.")
 }
 
 /// Every line [`fact_words`] says for the table, plus one of each fallback shape, for the copy
@@ -762,7 +780,7 @@ impl Grant {
     }
 
     pub fn can_write_fact(&self, key: &str) -> bool {
-        !key.starts_with("device.")
+        !fact_write_never_granted(key)
             && self
                 .0
                 .iter()
@@ -1153,5 +1171,86 @@ mod tests {
         assert!(g.can_subscribe("media.title"));
         assert!(!g.can_subscribe("*"));
         assert!(!g.can_subscribe("clock.*"));
+    }
+}
+
+#[cfg(test)]
+mod outside_words_tests {
+    use super::*;
+
+    /// What must hold (#1492 a): the words name a key or pattern cleaned (one line, no control
+    /// or hidden characters, no quote mark of its own) and cut; a key with nothing to show
+    /// gets plain words, never an empty pair of quotes.
+    #[test]
+    fn fact_words_show_a_key_cleaned_cut_and_never_in_empty_quotes() {
+        let open = '\u{201c}';
+        let close = '\u{201d}';
+        let odd = format!(
+            "notes.\u{201d} yet. Do this\n instead\u{7}\u{202e} \u{201c}{}",
+            "k".repeat(200)
+        );
+        for read in [true, false] {
+            for pattern in [odd.clone(), format!("{odd}*")] {
+                let w = fact_words(read, &pattern);
+                assert!(!w.chars().any(char::is_control), "{w:?}");
+                assert!(!w.chars().any(crate::module::hidden_in_name), "{w:?}");
+                assert_eq!(w.chars().filter(|c| *c == open).count(), 1, "{w}");
+                assert_eq!(w.chars().filter(|c| *c == close).count(), 1, "{w}");
+                assert!(w.ends_with("\u{2026}\u{201d}"), "{w}");
+                let inside = w.split(open).nth(1).unwrap().trim_end_matches(close);
+                assert_eq!(inside.chars().count(), FACT_NAME_MAX, "{w}");
+                assert!(inside.starts_with("notes. yet. Do this instead k"), "{w}");
+            }
+            let verb = if read { "see" } else { "share" };
+            for blank in ["", " ", "\u{200b}", "\n", "\u{201c}\u{201d}"] {
+                let w = fact_words(read, blank);
+                assert_eq!(w, format!("{verb} an unnamed status"), "{blank:?}");
+                let w = fact_words(read, &format!("{blank}*"));
+                if blank.is_empty() {
+                    assert_eq!(w, format!("{verb} every status any app shares"));
+                } else {
+                    assert_eq!(
+                        w,
+                        format!("{verb} every status with an unreadable name"),
+                        "{blank:?}"
+                    );
+                }
+            }
+        }
+        // An ordinary key reads as before.
+        assert_eq!(
+            fact_words(true, "notes.secret"),
+            "see the status called \u{201c}notes.secret\u{201d}"
+        );
+        assert_eq!(
+            fact_words(false, "notes.*"),
+            "share every status whose name starts with \u{201c}notes.\u{201d}"
+        );
+    }
+
+    /// What must hold (#1492 b): "no permission can cover this write" is one rule, read by the
+    /// grant check, the class an outside program's ask gets and the dialog's style.
+    #[test]
+    fn a_write_no_permission_covers_is_one_rule() {
+        use crate::capability::{tool_ask_is_red, tool_class, Capability, ToolClass};
+        let wide = Grant(vec![
+            Permission::FactsWrite("*".into()),
+            Permission::FactsWrite("device.*".into()),
+            Permission::FactsWrite("device.kb.battery".into()),
+            Permission::FactsWrite("notes.*".into()),
+        ]);
+        for key in ["device.kb.battery", "device.", "device.a.b.c"] {
+            assert!(fact_write_never_granted(key), "{key}");
+            assert!(!wide.can_write_fact(key), "{key}");
+            let cap = Capability::Kept(Permission::FactsWrite(key.into()));
+            assert_eq!(tool_class(&cap, None), ToolClass::Never, "{key}");
+            assert!(!tool_ask_is_red(&cap, None), "{key}");
+        }
+        for key in ["notes.a", "devices.count", "device", "mydevice.x"] {
+            assert!(!fact_write_never_granted(key), "{key}");
+            assert!(wide.can_write_fact(key), "{key}");
+            let cap = Capability::Kept(Permission::FactsWrite(key.into()));
+            assert_eq!(tool_class(&cap, None), ToolClass::Ask, "{key}");
+        }
     }
 }

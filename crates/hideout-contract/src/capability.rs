@@ -216,8 +216,15 @@ pub fn tool_class(cap: &Capability, risk: Option<&str>) -> ToolClass {
             Permission::DevicesRead => Free,
             // It reads all of `mic.*`, the microphone's name included; the mute state alone is
             // free as `facts.read:mic.state`.
+            // A write no permission can cover is never asked about.
+            Permission::FactsWrite(pat) => {
+                if crate::permission::fact_write_never_granted(pat) {
+                    Never
+                } else {
+                    Ask
+                }
+            }
             Permission::AudioInputsRead
-            | Permission::FactsWrite(_)
             | Permission::LightingWrite
             | Permission::BehaviorsInvoke
             | Permission::ScreensWrite
@@ -263,6 +270,10 @@ pub fn tool_class(cap: &Capability, risk: Option<&str>) -> ToolClass {
     }
 }
 
+/// The most characters of a permission's own text [`tool_phrase`] shows when it has no plain
+/// words for it.
+pub const TOOL_PHRASE_RAW_MAX: usize = crate::permission::FACT_NAME_MAX;
+
 /// What the tool asks to do, as the end of "Hideout didn't let it ...": the plain words for a
 /// permission an outside tool asked for. Display only. Shared by the router's refusal text and
 /// the hub's dialog so the two always say the same thing.
@@ -278,7 +289,11 @@ pub fn tool_phrase(cap: &Capability) -> String {
         Capability::ModulesManage => "manage your apps".into(),
         // One phrase: the app's id and the channel's name are internal, or another program's.
         Capability::ChannelOpen { .. } => "get a live feed from one of your apps".into(),
-        other => format!("use {other}"),
+        // The permission's own text, which its sender wrote: cleaned, cut and in quotes.
+        other => match crate::module::quoted_line(&other.to_string(), TOOL_PHRASE_RAW_MAX) {
+            Some(q) => format!("use {q}"),
+            None => "use something unreadable".into(),
+        },
     }
 }
 
@@ -288,7 +303,9 @@ pub fn tool_phrase(cap: &Capability) -> String {
 pub fn tool_ask_is_red(cap: &Capability, risk: Option<&str>) -> bool {
     match cap {
         Capability::Kept(Permission::BehaviorsInvoke | Permission::AudioInputsMute) => true,
-        Capability::Kept(Permission::FactsWrite(p)) => !p.starts_with("device."),
+        Capability::Kept(Permission::FactsWrite(p)) => {
+            !crate::permission::fact_write_never_granted(p)
+        }
         Capability::ChannelOpen { .. } => risk == Some("sensitive"),
         Capability::AiAsk(_) => true,
         _ => false,
@@ -514,5 +531,42 @@ mod tests {
             assert_eq!(words, "get a live feed from one of your apps");
             assert!(!words.contains(':') && !words.contains('/'), "{words}");
         }
+    }
+}
+
+#[cfg(test)]
+mod outside_words_tests {
+    use super::*;
+
+    /// What must hold (#1492 a): a permission with no plain words is named by its own text
+    /// cleaned, cut and in one pair of quotes.
+    #[test]
+    fn a_permission_without_plain_words_is_named_cleaned_and_cut() {
+        let odd = format!(
+            "x\u{201d} yet. Do this\n instead\u{7}\u{202e}{}",
+            "p".repeat(200)
+        );
+        for cap in [
+            Capability::Provide(odd.clone()),
+            Capability::ChannelOffer(odd.clone()),
+            Capability::DeviceHid(odd.clone()),
+            Capability::SecretsRef(odd.clone()),
+        ] {
+            let w = tool_phrase(&cap);
+            assert!(w.starts_with("use \u{201c}"), "{w}");
+            assert!(w.ends_with("\u{2026}\u{201d}"), "{w}");
+            assert!(!w.chars().any(char::is_control), "{w:?}");
+            assert!(!w.contains('\u{202e}'), "{w:?}");
+            assert_eq!(w.chars().filter(|c| *c == '\u{201d}').count(), 1, "{w}");
+            assert_eq!(w.chars().count(), "use ".len() + 2 + TOOL_PHRASE_RAW_MAX);
+        }
+        assert_eq!(
+            tool_phrase(&Capability::Provide("lighting.*".into())),
+            "use \u{201c}provide:lighting.*\u{201d}"
+        );
+        assert_eq!(
+            tool_phrase(&Capability::LightingLease),
+            "use \u{201c}lighting.lease\u{201d}"
+        );
     }
 }

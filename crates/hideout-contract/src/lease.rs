@@ -91,6 +91,8 @@ pub const MAX_PER_CALLER: usize = 16;
 /// ([`family`]) and each holder by the name people know it by (a module's display
 /// name, a tool's `initialize` name; hidden characters dropped, at most [`HOLDER_NAME_MAX`]
 /// characters), sorted, once each. Absent while nothing is held. Never lease ids or reasons.
+/// A name inside “ ” quotes is a program outside Hideout, by the name it gave itself: the hub
+/// has not checked it, so a reader shows it as that program's word and decides nothing by it.
 pub const HOLDERS_FACT: &str = "lease_holders";
 
 /// (v1.17) The longest holder name in [`HOLDERS_FACT`], in characters; a longer one is cut.
