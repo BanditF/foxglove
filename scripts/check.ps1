@@ -68,6 +68,9 @@ try {
     # Source lint, runs first and needs no build: no test may create a window, take focus or start a visible
     # console unless it is #[ignore]d or vetted in scripts/window_tests_allowlist.txt.
     Step 'lint: no window-creating tests' { python scripts/check_window_tests.py --self-test; if (!$LASTEXITCODE) { python scripts/check_window_tests.py } }
+    # Source lint (#1526): a volume or mute write is named only in the guarded files (a lab or test run
+    # never changes the PC's real audio); every .rs file, recursively.
+    Step 'lint: audio writes only behind the guard' { python scripts/check_audio_writes.py --self-test; if (!$LASTEXITCODE) { python scripts/check_audio_writes.py } }
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
     # The recurring ops scripts (#949) on fake inputs; window-free, no network.
     Step 'scripts: ops tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-ops.ps1 }

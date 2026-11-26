@@ -62,6 +62,37 @@ class AppLaunchesNeedOnCall(unittest.TestCase):
             if saved is not None:
                 os.environ['FOXGLOVE_LAB_REAL_MIC'] = saved
 
+    def test_only_the_microphone_cases_hand_the_switch_to_their_app(self):
+        """#1526: labkit.App drops FOXGLOVE_LAB_REAL_MIC from the test app's environment unless the
+        case passed real_mic=True and On-call set the switch. Nothing is started here."""
+        os.environ.setdefault('APPDATA', str(Path.home()))  # labkit reads it at import (CI is Linux)
+        sys.path.insert(0, str(LAB))
+        try:
+            import labkit
+        finally:
+            sys.path.pop(0)
+        name = 'FOXGLOVE_LAB_REAL_MIC'
+        saved = os.environ.pop(name, None)
+        try:
+            app = lambda **kw: labkit.App(SOME_EXE, Path('cfg'), **kw).env
+            # Not set by On-call: no case hands it on, not even through its own env.
+            self.assertNotIn(name, app())
+            self.assertNotIn(name, app(real_mic=True))
+            self.assertNotIn(name, app(env={name: '1'}, real_mic=True))
+            os.environ[name] = '1'
+            self.assertNotIn(name, app())
+            self.assertNotIn(name, app(env={name: '1'}))
+            self.assertEqual(app(real_mic=True)[name], '1')
+            self.assertEqual(os.environ[name], '1', "the harness's own environment is left alone")
+        finally:
+            os.environ.pop(name, None)
+            if saved is not None:
+                os.environ[name] = saved
+        # Only the two microphone cases opt in (labkit.py is where the argument is defined).
+        askers = [p.name for p in sorted(LAB.glob('*.py'))
+                  if p.name != 'labkit.py' and 'real_mic=' in p.read_text(encoding='utf-8')]
+        self.assertEqual(askers, ['api_tools.py', 'mic_mute.py'])
+
     def test_no_lab_case_reaches_the_real_audio_without_the_switch(self):
         """#1526: a lab script reaches Core Audio only through coreaudio.ps1, and each script that
         names it asks for the microphone switch before its first call."""

@@ -82,7 +82,7 @@ def ink():
 
 try:
     with App(args.app, cfg, {'FOXGLOVE_DEV_UNSIGNED_PLUGINS': '1', 'FOXGLOVE_PLUGINS_AUTOINSTALL': str(stage),
-                             'FOXGLOVE_DUMP_PANEL': str(dump)}, plugins=['mic-mute']) as app:
+                             'FOXGLOVE_DUMP_PANEL': str(dump)}, plugins=['mic-mute'], real_mic=True) as app:
         def facts():
             out = subprocess.run([str(cli), 'facts', 'mic.*'], capture_output=True, text=True, env=app.env).stdout
             return dict(re.findall(r'^(mic\.\w+) = (.*)$', out, re.M))

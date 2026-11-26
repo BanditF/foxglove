@@ -528,12 +528,17 @@ class Checks:
 class App:
     """Runs the build under test with `env`; stops the user's Foxglove for the duration."""
 
-    def __init__(self, exe, cfg, env=None, plugins=()):
+    def __init__(self, exe, cfg, env=None, plugins=(), real_mic=False):
         self.exe, self.cfg, self.plugins = tool(exe, '--app'), cfg, plugins
         # The lab's launch marker (FOXGLOVE_APP_OK=1) rides with the temp settings folder: together they
         # are a lab run to the app, whose pipe then grants the harness what it asks for without a dialog
         # (docs/local-api.md, #1449). __enter__ refuses to start anything unless On-call set the marker.
         self.env = {**os.environ, 'FOXGLOVE_CONFIG_DIR': str(cfg), 'FOXGLOVE_APP_OK': '1', **(env or {})}
+        # The microphone switch (#1526) reaches the test app only from a case that asked for it
+        # (`real_mic=True`, the two microphone cases) and only when On-call set it: any other case
+        # starts its app without it, whatever the shell or the case's own `env` says.
+        if not (real_mic and real_mic_ok()):
+            self.env.pop(REAL_MIC, None)
 
     def __enter__(self):
         require_app_ok()  # every app-level case launches Foxglove: On-call's OK only

@@ -59,7 +59,7 @@ check = Checks()
 
 saved, store = user_pc_lighting()
 cfg = temp_config('foxglove-apitools-', store)
-with App(args.app, cfg):
+with App(args.app, cfg, real_mic=True):  # reaches the app only when On-call set the switch (#1526)
     api = connect('test-lab-api-tools', ['facts.read:mic.*', 'audio.inputs.read', 'audio.inputs.mute', 'secrets',
                                          'devices.read', 'lighting.write'])
     print('granted:', api.granted, flush=True)

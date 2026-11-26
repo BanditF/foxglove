@@ -287,17 +287,14 @@ pub fn start(
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(suffix);
     // The host services (§8.10, §8.11, #1102): the network broker, and the microphone unless
-    // HIDEOUT_DISABLE lists `mic` (a lab switch: the installed build doesn't read it). Its
-    // first facts are in before any module starts.
+    // HIDEOUT_DISABLE lists `mic` (a lab switch: the installed build doesn't read it) or this hub
+    // may not touch the real one (#1526: a folder of its own or lab mode; the services say why).
+    // Its first facts are in before any module starts.
     let mic = !mic_disabled(lab_switch("HIDEOUT_DISABLE").as_deref());
-    hideout_services::start(&hub, mic);
+    let mic = hideout_services::start(&hub, mic, lab).mic.is_some();
     log::info!(
         "router: host services: net{}",
-        if mic {
-            ", mic"
-        } else {
-            " (mic off: HIDEOUT_DISABLE)"
-        }
+        if mic { ", mic" } else { " (mic off)" }
     );
     let (side, feed) = panel_feed::feed(hub.clone());
     // `hideout.appwatch` (§4.6, v1.7): only the apps the manifests ask about, by name from the

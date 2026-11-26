@@ -170,6 +170,11 @@ fn now() -> u64 {
 /// Starts a fresh copy and ends this one. Returns only when it can't (budget spent, a restart
 /// already under way, or the copy failed to start).
 fn restart(reason: &str) {
+    // A lab or test run never starts a copy of itself (#1526), whoever asks: the watcher
+    // (`start` doesn't run it there) or a window loop that ended (`window_failed`).
+    if super::lab_run::lab_run() {
+        return;
+    }
     if RESTARTING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -334,6 +339,31 @@ const STORE_OWNER: &str = "core";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1526: a lab or test run never starts a copy of itself. Both ways in (`window_failed`
+    /// and the watcher) go through `restart`, which asks first, before anything is logged,
+    /// counted or handed back.
+    #[test]
+    fn a_lab_run_never_restarts_itself() {
+        let src = include_str!("gpu_reset.rs").replace("\r\n", "\n");
+        let at = src.find("\nfn restart(reason: &str) {").unwrap();
+        let body = &src[at..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let asked = body.find("if super::lab_run::lab_run() {").unwrap();
+        for later in [
+            "RESTARTING.swap",
+            "app_log::early",
+            "imp::restart",
+            "planned_exit",
+        ] {
+            assert!(asked < body.find(later).unwrap(), "{later}");
+        }
+        // The only caller of the spawn is `restart`.
+        assert_eq!(src.matches("imp::restart(").count(), 2); // the call, and this line
+                                                             // A test build is a lab run: this returns at once and leaves the flag alone.
+        restart("a test");
+        assert!(!RESTARTING.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn history_round_trips_and_ignores_junk() {

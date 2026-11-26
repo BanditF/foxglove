@@ -49,7 +49,7 @@ fn lab_run_as(config_dir: Option<&Path>, real: Option<&Path>) -> bool {
 /// volumes and mutes; one log line when that isn't everything. Until this is called nothing is
 /// allowed (`foxglove_panel::audio_reach`).
 pub fn start() -> Reach {
-    let real_mic = std::env::var_os(REAL_MIC).is_some_and(|v| v == "1");
+    let real_mic = real_mic_asked(cfg!(test), std::env::var_os(REAL_MIC).as_deref());
     let reach = audio_reach::set(audio_reach::decide(lab_run(), real_mic));
     #[cfg(not(test))]
     match reach {
@@ -62,6 +62,12 @@ pub fn start() -> Reach {
         ),
     }
     reach
+}
+
+/// Whether the lab's microphone switch counts: only its value `1`, and never in a test build,
+/// whatever the environment of the shell that runs the tests says.
+fn real_mic_asked(test_build: bool, value: Option<&std::ffi::OsStr>) -> bool {
+    !test_build && value.is_some_and(|v| v == "1")
 }
 
 #[cfg(test)]
@@ -104,14 +110,28 @@ mod tests {
         let reach = start();
         assert_ne!(reach, Reach::Real);
         assert!(!reach.allows(Target::Output));
+        assert_eq!(reach, Reach::Off);
         assert_eq!(audio_reach::reach(), reach);
-        if reach == Reach::Off {
-            assert_eq!(
-                foxglove_panel::mic::set_mute(true),
-                Err(audio_reach::REFUSED.to_string())
-            );
-        }
+        assert_eq!(
+            foxglove_panel::mic::set_mute(true),
+            Err(audio_reach::REFUSED.to_string())
+        );
         assert!(foxglove_panel::sessions::output().is_err());
+    }
+
+    /// The lab's microphone switch is for a lab copy On-call starts, never for a test build:
+    /// tests run in whatever shell, and that shell's environment must not arm them.
+    #[test]
+    fn a_test_build_ignores_the_microphone_switch() {
+        use std::ffi::OsStr;
+        let one = Some(OsStr::new("1"));
+        assert!(real_mic_asked(false, one));
+        assert!(!real_mic_asked(true, one));
+        assert!(!real_mic_asked(false, None));
+        assert!(!real_mic_asked(false, Some(OsStr::new("true"))));
+        // And `start` asks with this build's own answer, not a constant.
+        let src = include_str!("lab_run.rs");
+        assert!(src.contains("real_mic_asked(cfg!(test), std::env::var_os(REAL_MIC)"));
     }
 
     /// The run says what it may reach before any feature starts, and the knob (the one that

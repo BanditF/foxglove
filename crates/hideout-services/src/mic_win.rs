@@ -18,6 +18,7 @@ use windows::Win32::System::Com::{
 };
 
 use super::mic::{Backend, Endpoint, Event, MuteError};
+use super::mic_reach;
 
 #[implement(IAudioEndpointVolumeCallback)]
 struct Volume(Sender<Event>);
@@ -71,8 +72,10 @@ pub struct CoreAudio {
 }
 
 impl CoreAudio {
-    /// Joins the MTA, makes the enumerator and registers for device events.
+    /// Joins the MTA, makes the enumerator and registers for device events. Refused before
+    /// anything is reached in a hub that may not touch the real microphone (#1526).
     pub fn new(events: Sender<Event>) -> std::result::Result<CoreAudio, String> {
+        mic_reach::guard()?;
         // SAFETY: plain COM calls on this thread; the objects live as long as `CoreAudio`.
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -175,6 +178,8 @@ impl Backend for CoreAudio {
     }
 
     fn set_mute(&mut self, muted: bool, context: u128) -> std::result::Result<(), MuteError> {
+        // The one write to the real microphone: never without the hub's say (#1526).
+        mic_reach::guard().map_err(|_| MuteError::Refused)?;
         let context = GUID::from_u128(context);
         let v = self.bound.as_ref().ok_or(MuteError::Unavailable)?;
         // SAFETY: a live endpoint volume; the context GUID outlives the call.
