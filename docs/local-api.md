@@ -159,6 +159,13 @@ The params and results are in the schema. Notes:
   `wallpaper.control`. The fact `wallpaper_engine.paused_by` holds the live leases' reasons
   (absent when none), and the health view gains `paused N, played N, dropped plays N`. Wallpaper
   Engine has no "am I paused" query, so the user's pause is seen only through a paired wallpaper.
+  (#1519) A lab or test run never touches the user's Wallpaper Engine. A Foxglove started with
+  `FOXGLOVE_CONFIG_DIR` set to anything but the real settings folder decides this once at start
+  and says so in one log line. To it Wallpaper Engine is not installed and not running: these
+  calls answer error 1, no command is sent, no wallpaper is handed a pairing ticket, and none
+  of its folders is read. A lab case that needs the path sets `FOXGLOVE_WALLPAPER_ENGINE_DIR`
+  to a stand-in folder (not an installed copy, or it is ignored); then only that folder is read
+  and only a program inside it is run or counted as running.
   (#1142) A pause outlives nothing: while Foxglove's pause holds Wallpaper Engine the file
   `wallpaper-engine-paused` sits beside `foxglove.toml` (written before the `pause` goes out), and
   a Foxglove that starts and finds it (after a crash, a kill or a stopped sync worker) plays

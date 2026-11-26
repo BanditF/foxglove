@@ -1606,6 +1606,8 @@ struct Cli {
 
 impl Apply for Cli {
     fn ready(&mut self) -> bool {
+        // A lab or test run (#1519) sees no Wallpaper Engine: `running_now` is blind to the
+        // user's copy there, and `cli_exe` hands out no program this run may not start.
         if !super::wallpaper_engine::running_now() {
             return false;
         }
@@ -1643,7 +1645,11 @@ impl Apply for Cli {
     }
 
     fn tickets(&mut self) -> Option<super::live_pairing::Store> {
-        Some(super::live_pairing::store())
+        // No hand-over in a lab or test run without a stand-in (#1519): no ticket is made.
+        match super::wallpaper_engine::reach() {
+            super::wallpaper_engine::Reach::Off => None,
+            _ => Some(super::live_pairing::store()),
+        }
     }
 
     fn ticket_out(&mut self) {
@@ -1675,7 +1681,19 @@ const NONZERO_EXIT_FAILS: bool = true;
 /// is written only if that switch is ever turned off again.
 #[cfg(windows)]
 fn run_cli(exe: &std::path::Path, args: &[String], raw: &str, what: &str) -> Result<(), String> {
-    let code = run_cli_with(exe, args, raw, PUSH_LIMIT)?;
+    run_cli_as(super::wallpaper_engine::reach(), exe, args, raw, what)
+}
+
+/// [`run_cli`] under `reach`: what this run may do with Wallpaper Engine (#1519).
+#[cfg(windows)]
+fn run_cli_as(
+    reach: &super::wallpaper_engine::Reach,
+    exe: &std::path::Path,
+    args: &[String],
+    raw: &str,
+    what: &str,
+) -> Result<(), String> {
+    let code = run_cli_with(reach, exe, args, raw, PUSH_LIMIT)?;
     if let Some(odd) = exit_result(code, NONZERO_EXIT_FAILS)? {
         note_odd_exit(what, &odd);
     }
@@ -1694,10 +1712,16 @@ fn note_odd_exit(what: &str, odd: &str) {
     }
 }
 
+/// What a refused command says (#1519).
+const NOT_THIS_RUN: &str = "not run: a lab or test run never runs Wallpaper Engine";
+
 /// Runs the command and hands back its exit code. `Err` only when it couldn't start or didn't
-/// end within `limit` (it is stopped then).
+/// end within `limit` (it is stopped then). The one place a Wallpaper Engine program is
+/// started, so the last word is here: a program `reach` doesn't allow is refused before
+/// anything is built (#1519; a lab or test run never runs the installed program).
 #[cfg(windows)]
 fn run_cli_with(
+    reach: &super::wallpaper_engine::Reach,
     exe: &std::path::Path,
     args: &[String],
     raw: &str,
@@ -1708,6 +1732,9 @@ fn run_cli_with(
     use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
     use windows::Win32::System::Threading::{WaitForSingleObject, CREATE_NO_WINDOW};
 
+    if !reach.allows(exe) {
+        return Err(NOT_THIS_RUN.into());
+    }
     let mut command = std::process::Command::new(exe);
     command.args(args);
     if !raw.is_empty() {
@@ -1809,6 +1836,7 @@ fn interfaces() -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foxglove::wallpaper_engine::Reach;
     use crate::foxglove::windows_theme::AppMode;
     use foxglove_scene::{Layout, MonitorInfo};
 
@@ -2451,7 +2479,10 @@ mod tests {
             .unwrap();
         let props = properties_with(&live_state(), None, Supports::ALL, Some(&ticket));
         let (args, raw) = arguments(WE_LEFT, &props);
-        let done = run_cli(std::path::Path::new(&exe), &args, &raw, "push");
+        // The stand-in's own folder is all this run may start (#1519).
+        let exe = std::path::PathBuf::from(exe);
+        let reach = Reach::StandIn(exe.parent().unwrap().to_path_buf());
+        let done = run_cli_as(&reach, &exe, &args, &raw, "push");
         std::env::remove_var("WE_SHIM_TRACE");
         let captured = std::fs::read_to_string(&trace).unwrap_or_default();
         let _ = std::fs::remove_file(&trace);
@@ -2462,6 +2493,105 @@ mod tests {
             "{captured}"
         );
         assert!(captured.contains("foxglove_live:8768"), "{captured}");
+    }
+
+    /// #1519: a lab or test run never starts a Wallpaper Engine program. Windows' `cmd.exe`
+    /// plays the program; had it run, it would have left a file.
+    #[cfg(windows)]
+    #[test]
+    fn a_lab_run_starts_no_program_and_a_stand_in_run_only_its_own() {
+        let system =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        let cmd = system.join("cmd.exe");
+        let dir = std::env::temp_dir().join(format!("foxglove-we-reach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let proof = dir.join("ran.txt");
+        let args: Vec<String> = vec!["/c".into(), "echo".into(), "x".into(), ">".into()];
+        let args = [args, vec![proof.display().to_string()]].concat();
+        // Off, and a stand-in folder the program isn't in: refused, and nothing ran.
+        for reach in [Reach::Off, Reach::StandIn(dir.clone())] {
+            let refused = run_cli_with(&reach, &cmd, &args, "", PUSH_LIMIT);
+            assert_eq!(refused, Err(NOT_THIS_RUN.to_string()), "{reach:?}");
+            let refused = run_cli_as(&reach, &cmd, &args, "", "push");
+            assert_eq!(refused, Err(NOT_THIS_RUN.to_string()), "{reach:?}");
+            assert!(!proof.exists(), "{reach:?}: the program ran");
+        }
+        // The same command from the stand-in's own folder, and in a normal run: it runs.
+        for reach in [Reach::StandIn(system.clone()), Reach::Installed] {
+            let _ = std::fs::remove_file(&proof);
+            assert_eq!(
+                run_cli_with(&reach, &cmd, &args, "", PUSH_LIMIT),
+                Ok(Some(0)),
+                "{reach:?}"
+            );
+            assert!(proof.exists(), "{reach:?}: the program did not run");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1519: every test build is a lab run, so the app's own sender (the one the worker uses)
+    /// sees no Wallpaper Engine, sends nothing, pauses nothing and makes no ticket, whatever is
+    /// installed or running on this PC.
+    #[test]
+    fn in_a_lab_run_the_real_sender_sends_nothing_and_makes_no_ticket() {
+        let reach = crate::foxglove::wallpaper_engine::reach();
+        assert_ne!(*reach, Reach::Installed, "a test build is a lab run");
+        if *reach != Reach::Off {
+            eprintln!("skipped: FOXGLOVE_WALLPAPER_ENGINE_DIR names a stand-in");
+            return;
+        }
+        let mut cli = Cli::default();
+        assert!(!cli.ready());
+        assert!(cli.tickets().is_none(), "no ticket hand-over");
+        assert!(cli.apply(WE_LEFT, "{}").is_err());
+        for command in ["pause", "play", "stop"] {
+            assert!(cli.control(command).is_err(), "{command}");
+        }
+        // Even handed the path of a program, it is refused at the spawn.
+        cli.exe = Some(std::path::PathBuf::from(
+            r"C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine\wallpaper64.exe",
+        ));
+        assert!(!cli.ready());
+        // The whole sync, with a live feed that would hand out tickets: nothing goes out.
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let targets = vec![target(WE_LEFT, reef), target(WE_RIGHT, reef)];
+        let mut p = Pusher::new(cli);
+        let synced = p.sync_counted(&live_state(), &targets);
+        assert_eq!(synced, Synced::default());
+        p.quit();
+        // The lease calls of the local API and the hub: not installed, so no worker starts.
+        assert_eq!(pause(1, "test", "why").unwrap_err(), Fail::NotInstalled);
+        assert!(with(|s| s.wake.is_none()), "no worker was started");
+    }
+
+    /// #1519: one spawn site, behind the reach check, and no other way to a program.
+    #[test]
+    fn wallpaper_engine_is_started_in_one_guarded_place() {
+        let source = include_str!("wallpaper_sync.rs");
+        let app = source.split("\nmod tests {").next().unwrap();
+        assert_eq!(app.matches("Command::new").count(), 1, "one spawn site");
+        let (before, _) = app.split_once("Command::new").unwrap();
+        let body = before.rsplit("fn run_cli_with(").next().unwrap();
+        assert!(
+            body.contains("if !reach.allows(exe) {") && !body.contains("\nfn "),
+            "the spawn sits in run_cli_with, after the reach check"
+        );
+        // `run_cli_with` is called from `run_cli_as` only, and that from `run_cli` with the
+        // run's own reach.
+        assert_eq!(app.matches("run_cli_with(").count(), 2);
+        assert_eq!(app.matches("run_cli_as(").count(), 2);
+        assert!(app.contains("run_cli_as(super::wallpaper_engine::reach(), exe, args, raw, what)"));
+        // Nowhere else in the app is a process started with Wallpaper Engine's program.
+        for (name, text) in [
+            ("live_peer.rs", include_str!("live_peer.rs")),
+            ("live_feed.rs", include_str!("live_feed.rs")),
+            ("wallpaper.rs", include_str!("wallpaper.rs")),
+            ("wallpaper_engine.rs", include_str!("wallpaper_engine.rs")),
+            ("we_panel.rs", include_str!("we_panel.rs")),
+        ] {
+            assert!(!text.contains("Command::new"), "{name} starts a program");
+        }
     }
 
     #[test]
@@ -2494,8 +2624,11 @@ mod tests {
         let system =
             std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
         let cmd = system.join("cmd.exe");
+        // Windows' own folder plays the stand-in folder: the only one this run may start from.
+        let reach = Reach::StandIn(system.clone());
         let run = |code: &str| {
             run_cli_with(
+                &reach,
                 &cmd,
                 &["/c".into(), "exit".into(), code.into()],
                 "",
@@ -2507,14 +2640,29 @@ mod tests {
         // The whole path: a non-zero exit is a failure (#1399), for as long as
         // `NONZERO_EXIT_FAILS` is on.
         assert_eq!(
-            run_cli(&cmd, &["/c".into(), "exit".into(), "3".into()], "", "test").is_err(),
+            run_cli_as(
+                &reach,
+                &cmd,
+                &["/c".into(), "exit".into(), "3".into()],
+                "",
+                "test"
+            )
+            .is_err(),
             NONZERO_EXIT_FAILS
         );
-        let gone = run_cli_with(&system.join("no-such-program.exe"), &[], "", PUSH_LIMIT);
+        // A program that isn't there is in no folder: refused, or it can't start.
+        let gone = run_cli_with(
+            &Reach::Installed,
+            &system.join("no-such-program.exe"),
+            &[],
+            "",
+            PUSH_LIMIT,
+        );
         assert!(gone.unwrap_err().starts_with("couldn't start: "));
         // About four seconds of loopback pings against a 200 ms limit: stopped, and said so.
         let began = Instant::now();
         let slow = run_cli_with(
+            &reach,
             &system.join("PING.EXE"),
             &["-n".into(), "5".into(), "127.0.0.1".into()],
             "",

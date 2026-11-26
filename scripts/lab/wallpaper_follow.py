@@ -2,8 +2,9 @@
 runs on a temp FOXGLOVE_CONFIG_DIR with "Lights follow the wallpaper" on, and its wallpaper test
 hook (FOXGLOVE_WALLPAPER_OVERRIDE, wallpaper.rs: a watched file naming the wallpaper on screen)
 switches between installed Bandit wallpapers as Wallpaper Engine's config would. The manifests are
-the real ones in Wallpaper Engine's projects; nothing is sent to Wallpaper Engine (the hook has no
-monitors to sync). For each switch the underglow (RGB_STATE, both halves) must take the colour
+copies of the real ones in Wallpaper Engine's projects, in a stand-in folder without a program
+(labkit.we_stand_in, FOXGLOVE_WALLPAPER_ENGINE_DIR): a test app never reads the installed folder
+and never runs Wallpaper Engine (#1519). For each switch the underglow (RGB_STATE, both halves) must take the colour
 Foxglove follows and the log must say "Foxglove accent: applied h/s":
 - a wallpaper with a palette: its accent (palette.accent, else its most colourful stop): the
   fixture's colour, from its foxglove.json;
@@ -27,7 +28,7 @@ here; whether the colours look like the wallpaper is the sitting's one eyes step
 import argparse, json, os, re, tempfile, time
 from pathlib import Path
 from labkit import (App, Checks, TARGET, log_lines, require_app_ok, restore_lights, rgb, temp_config, tool_arg,
-                    users_keyboard, wait)
+                    users_keyboard, wait, we_stand_in)
 from wallpaper_check import STEAM_WE, colour, expected, manifest_accent, picked_accent, windows_accent
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -84,7 +85,8 @@ KEYBOARD = users_keyboard()
 print('remembered keyboard for the test app:', KEYBOARD.strip().replace('\n', '; ') or 'none', flush=True)
 cfg = temp_config('foxglove-wallpaper-follow-', '[lighting]\nfollow_wallpaper = true\n' + KEYBOARD)
 original = rgb(args.lab, dict(os.environ))
-with App(args.app, cfg, env={'FOXGLOVE_WALLPAPER_OVERRIDE': str(over)}) as app:
+with App(args.app, cfg, env={'FOXGLOVE_WALLPAPER_OVERRIDE': str(over),
+                             'FOXGLOVE_WALLPAPER_ENGINE_DIR': str(we_stand_in(args.we))}) as app:
     read = lambda: rgb(args.lab, app.env)
     hs = lambda h: (lambda s: len(s) == 2 and all(near((x['hue'], x['sat']), h) for x in s))
     left = lambda h: (lambda s: len(s) >= 1 and near((s[0]['hue'], s[0]['sat']), h))
