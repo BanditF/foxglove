@@ -367,10 +367,14 @@ def presets(args, check):
     names = preset_names(we)
     if not check('installed wallpapers describe their looks', bool(names), f'{len(names)} looks', blocked=not names):
         return
-    if args.app:  # the build under test on a temp config (its card reads the same manifests)
-        from labkit import App, require_app_ok, temp_config
+    shown = on_screen_ids(we)
+    if args.app:  # the build under test on a temp config (its card reads copies of the same manifests)
+        from labkit import App, require_app_ok, temp_config, we_stand_in
         require_app_ok()
-        with App(args.app, temp_config('foxglove-presets-')):
+        # A test app never reads the installed folder or runs Wallpaper Engine (#1519): it gets a
+        # stand-in folder with the manifests and no program, so to it nothing is on screen.
+        shown = []
+        with App(args.app, temp_config('foxglove-presets-'), env={'FOXGLOVE_WALLPAPER_ENGINE_DIR': str(we_stand_in(we))}):
             api = connect('test-lab-presets', ['devices.read'], api='1.10')
             try:
                 card = api.call('scenes.page', {})
@@ -386,11 +390,11 @@ def presets(args, check):
             api.close()
     rows = [w['name'] for w in card['wallpapers']]
     print(f'  the card\'s "Wallpapers": {rows}', flush=True)
-    missing, extra, wrong, untagged = card_check(card['wallpapers'], names, on_screen_ids(we))
+    missing, extra, wrong, untagged = card_check(card['wallpapers'], names, shown)
     check('H4: the Presets card lists every installed wallpaper look (#571)', not missing, missing or f'{len(rows)} rows')
     check('H4: and nothing else under "Wallpapers"', not extra, extra or 'none')
-    check('H4: "On screen" tags the wallpapers Wallpaper Engine shows', not wrong and not untagged,
-          {'tagged, not on screen': wrong, 'on screen, not tagged': untagged})
+    check('H4: "On screen" tags the wallpapers Wallpaper Engine shows' + (' (a test app: none)' if args.app else ''),
+          not wrong and not untagged, {'tagged, not on screen': wrong, 'on screen, not tagged': untagged})
     check('H4: the Effects group is there', bool(card['effects']), card['effects'])
 
 

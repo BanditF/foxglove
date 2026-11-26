@@ -2599,6 +2599,13 @@ fn process_running(names: &[&str]) -> bool {
 /// taken when a caller asks (a scan, a Refresh or a change event), never on a timer.
 #[cfg(target_os = "windows")]
 pub(crate) fn any_process_running(names: &[&str]) -> bool {
+    !process_ids(names).is_empty()
+}
+
+/// The ids of the processes with one of `names` (exe file names, any case), from one snapshot
+/// taken when a caller asks.
+#[cfg(target_os = "windows")]
+pub(crate) fn process_ids(names: &[&str]) -> Vec<u32> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -2606,13 +2613,13 @@ pub(crate) fn any_process_running(names: &[&str]) -> bool {
     };
     // SAFETY: a process snapshot handle, closed below on every path.
     let Ok(snap) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
-        return false;
+        return Vec::new();
     };
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
     };
-    let mut found = false;
+    let mut found = Vec::new();
     // SAFETY: `entry` is a valid PROCESSENTRY32W with dwSize set; `snap` is open.
     let mut more = unsafe { Process32FirstW(snap, &mut entry) }.is_ok();
     while more {
@@ -2623,8 +2630,7 @@ pub(crate) fn any_process_running(names: &[&str]) -> bool {
             .unwrap_or(entry.szExeFile.len());
         let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
         if names.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
-            found = true;
-            break;
+            found.push(entry.th32ProcessID);
         }
         // SAFETY: as above.
         more = unsafe { Process32NextW(snap, &mut entry) }.is_ok();

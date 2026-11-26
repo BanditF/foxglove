@@ -51,7 +51,8 @@ def _import_follow():
     lab = str(Path(labkit.__file__).resolve())
     sys.argv = ['wallpaper_follow.py', '--app', lab, '--lab', lab,
                 '--we', str(we), '--walls', 'w-a', 'w-b', 'w-c']
-    with mock.patch.object(labkit, 'require_app_ok', lambda: None),             mock.patch.object(labkit, 'Checks', Checks),             mock.patch.object(labkit, 'users_keyboard', lambda: ''),             mock.patch.object(labkit, 'temp_config', lambda prefix, store='': Path(tempfile.mkdtemp(prefix=prefix))),             mock.patch.object(labkit, 'rgb', lambda lab, env: state),             mock.patch.object(labkit, 'App', App),             mock.patch.object(labkit, 'restore_lights', lambda *a: None),             mock.patch.object(wallpaper_check, 'windows_accent', lambda: ((250, 191, 123), 'the test stub')),             mock.patch.object(wallpaper_check, 'picked_accent', lambda: (211, 159, 63)):
+    with mock.patch.object(labkit, 'require_app_ok', lambda: None),             mock.patch.object(labkit, 'Checks', Checks),             mock.patch.object(labkit, 'users_keyboard', lambda: ''),             mock.patch.object(labkit, 'temp_config', lambda prefix, store='': Path(tempfile.mkdtemp(prefix=prefix))),             mock.patch.object(labkit, 'rgb', lambda lab, env: state),             mock.patch.object(labkit, 'App', App), \
+            mock.patch.object(labkit, 'we_stand_in', lambda we: Path(we)),             mock.patch.object(labkit, 'restore_lights', lambda *a: None),             mock.patch.object(wallpaper_check, 'windows_accent', lambda: ((250, 191, 123), 'the test stub')),             mock.patch.object(wallpaper_check, 'picked_accent', lambda: (211, 159, 63)):
         import wallpaper_follow
     sys.argv = argv
     return wallpaper_follow
@@ -108,6 +109,25 @@ class Manifests(unittest.TestCase):
     def test_a_folder_with_no_manifests_is_empty(self):
         self.assertEqual(wallpaper_follow.manifests(self.we), {})
         self.assertEqual(wallpaper_follow.manifests(self.we / 'elsewhere'), {})
+
+    def test_the_stand_in_folder_has_the_manifests_and_no_program(self):
+        # #1519: what a test app gets instead of the installed Wallpaper Engine folder.
+        self.manifest('w-a', json.dumps({'id': 'w-a'}))
+        d = self.we / 'projects' / 'myprojects' / 'w-a'
+        (d / 'project.json').write_text('{}', encoding='utf-8')
+        (d / 'keyboard').mkdir()
+        (d / 'keyboard' / 'right.bin').write_bytes(b'x')
+        (d / 'scene.pkg').write_bytes(b'big')
+        (self.we / 'wallpaper64.exe').write_bytes(b'')
+        (self.we / 'config.json').write_text('{"user": 1}', encoding='utf-8')
+        out = labkit.we_stand_in(self.we)
+        self.assertNotEqual(out, self.we)
+        files = sorted(p.relative_to(out).as_posix() for p in out.rglob('*') if p.is_file())
+        self.assertEqual(files, ['config.json', 'projects/myprojects/w-a/foxglove.json',
+                                 'projects/myprojects/w-a/keyboard/right.bin',
+                                 'projects/myprojects/w-a/project.json'])
+        self.assertEqual((out / 'config.json').read_text(encoding='utf-8'), '{}')
+        self.assertEqual(wallpaper_follow.manifests(out), {'w-a': {'id': 'w-a'}})
 
 
 if __name__ == '__main__':

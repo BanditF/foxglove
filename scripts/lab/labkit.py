@@ -237,6 +237,26 @@ def temp_config(prefix, store=''):
     return cfg
 
 
+def we_stand_in(we):
+    """A stand-in Wallpaper Engine folder for a test app (#1519): copies of the wallpapers'
+    manifests (foxglove.json, project.json, keyboard/) from `we`'s projects, an empty config.json
+    and no program. A test app never reads the installed folder or runs its program; given this
+    folder as FOXGLOVE_WALLPAPER_ENGINE_DIR it reads these copies and has nothing to run."""
+    out = Path(tempfile.mkdtemp(prefix='foxglove-we-stand-in-')) / 'wallpaper_engine'
+    projects = out / 'projects' / 'myprojects'
+    projects.mkdir(parents=True)
+    (out / 'config.json').write_text('{}', encoding='utf-8')
+    for manifest in (Path(we) / 'projects' / 'myprojects').glob('*/foxglove.json'):
+        to = projects / manifest.parent.name
+        to.mkdir()
+        shutil.copy(manifest, to)
+        if (manifest.parent / 'project.json').is_file():
+            shutil.copy(manifest.parent / 'project.json', to)
+        if (manifest.parent / 'keyboard').is_dir():
+            shutil.copytree(manifest.parent / 'keyboard', to / 'keyboard')
+    return out
+
+
 def require_app_ok():
     """Lab cases that launch Foxglove run only with On-call's OK (FOXGLOVE_APP_OK=1): exit 2
     (BLOCKED) otherwise, before anything starts."""

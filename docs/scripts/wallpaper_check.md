@@ -42,6 +42,9 @@ AccentColor for the record). `presets` reads the running Foxglove's `scenes.page
 
 Writes: to stdout only, one line per check. `debug on|off` additionally runs `wallpaper64.exe -control applyProperties` on the running Wallpaper
 Engine for the one matching monitor; `presets --app` launches the given app on a temporary config.
+A test app never reads the installed Wallpaper Engine folder or runs its program (#1519), so
+`presets --app` gives it a stand-in folder (`FOXGLOVE_WALLPAPER_ENGINE_DIR`, a temp copy of the
+manifests with no program): its card must list the same looks and tag none as on screen.
 
 ## Example
 

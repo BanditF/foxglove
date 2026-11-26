@@ -12,9 +12,18 @@
 //! 3. every Steam library in `steamapps\libraryfolders.vdf`, the ones listing app 431960 first,
 //!    at the `installdir` its `appmanifest_431960.acf` names;
 //! 4. Steam's uninstall entry, `Steam App 431960` › `InstallLocation`.
+//!
+//! **A lab or test run never touches the user's Wallpaper Engine (#1519).** A Foxglove whose
+//! settings folder isn't the real one (`FOXGLOVE_CONFIG_DIR`, or any test build) is such a run;
+//! that is decided once, at start, from how the process was started ([`reach`]). In it nothing
+//! above is looked at: Wallpaper Engine is "not installed" and "not running", so no command is
+//! built or run, no ticket is handed over and none of its folders is read or watched. The one
+//! exception lets a lab case exercise the path: `FOXGLOVE_WALLPAPER_ENGINE_DIR` naming a
+//! stand-in folder that is not an installed copy. Then only that folder counts: its program is
+//! the only one run, and "running" means a program from that folder, never the user's copy.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// The wallpaper app's name as the section shows it: data, the one place it is spelled.
 #[cfg_attr(test, allow(dead_code))]
@@ -63,6 +72,105 @@ impl Presence {
     }
 }
 
+/// What this run may do with Wallpaper Engine (#1519).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// A normal run: the installed program, found as the module docs say.
+    Installed,
+    /// A lab or test run given a stand-in folder: only that folder and the programs in it.
+    StandIn(PathBuf),
+    /// A lab or test run: nothing. Not installed, not running, no command.
+    Off,
+}
+
+impl Reach {
+    /// Whether this run may start the program `exe`. Every spawn asks this last
+    /// (`wallpaper_sync::run_cli_with`), so no caller gets around it.
+    pub fn allows(&self, exe: &Path) -> bool {
+        match self {
+            Reach::Installed => true,
+            Reach::StandIn(dir) => {
+                foxglove_plugin::owner::inside(exe, dir, &foxglove_plugin::owner::NoRecords)
+            }
+            Reach::Off => false,
+        }
+    }
+}
+
+static REACH: OnceLock<Reach> = OnceLock::new();
+
+/// This run's reach, decided once on first use (at start: the art page and the wallpaper
+/// service both ask) and never again. One log line says so when it isn't the normal one.
+pub fn reach() -> &'static Reach {
+    REACH.get_or_init(|| {
+        let lab = lab_run();
+        // Only a lab run needs to know where the installed copies are (to refuse them).
+        let installed = if lab {
+            candidates(&Places::installed())
+        } else {
+            Vec::new()
+        };
+        let reach = decide(lab, stand_in_env(), &installed);
+        #[cfg(not(test))]
+        match &reach {
+            Reach::Installed => {}
+            Reach::StandIn(_) => eprintln!(
+                "Foxglove: wallpaper sync: a lab or test run; only the stand-in Wallpaper Engine folder is used, the installed one never"
+            ),
+            Reach::Off => eprintln!(
+                "Foxglove: wallpaper sync: off for this run (a lab or test run); Wallpaper Engine is never run"
+            ),
+        }
+        reach
+    })
+}
+
+/// Whether this process was started as a lab or test run: its settings folder is set and isn't
+/// the real one. The same rule as the plugin auto-install hook (`plugin_install`), asked there.
+fn lab_run() -> bool {
+    let config_dir = match super::store::test_sandbox() {
+        Some(dir) => Some(dir.to_path_buf()),
+        None => std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from),
+    };
+    let real =
+        directories::ProjectDirs::from("", "", "Foxglove").map(|d| d.config_dir().to_path_buf());
+    super::plugin_install::autoinstall_allowed(true, config_dir.as_deref(), real.as_deref()).is_ok()
+}
+
+fn stand_in_env() -> Option<PathBuf> {
+    std::env::var_os("FOXGLOVE_WALLPAPER_ENGINE_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// [`reach`]'s rule. `installed`: every place an installed copy may be; a stand-in that is one
+/// of them, lies inside one or holds one is refused.
+fn decide(lab: bool, stand_in: Option<PathBuf>, installed: &[PathBuf]) -> Reach {
+    if !lab {
+        return Reach::Installed;
+    }
+    match stand_in {
+        Some(dir) if !installed.iter().any(|i| overlap(&dir, i)) => Reach::StandIn(dir),
+        _ => Reach::Off,
+    }
+}
+
+/// Whether one folder is the other or lies inside it, on resolved paths where they resolve
+/// (a path that doesn't is compared as written), any case.
+fn overlap(a: &Path, b: &Path) -> bool {
+    let key = |p: &Path| {
+        let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let s = p.to_string_lossy().replace('/', "\\").to_lowercase();
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        s.trim_end_matches('\\').to_string()
+    };
+    let (a, b) = (key(a), key(b));
+    let within = |x: &str, y: &str| {
+        x == y || (x.starts_with(y) && x.as_bytes().get(y.len()) == Some(&b'\\'))
+    };
+    within(&a, &b) || within(&b, &a)
+}
+
 static PRESENCE: Mutex<Option<Presence>> = Mutex::new(None);
 
 /// Wallpaper Engine as last found (found now on first use).
@@ -88,13 +196,18 @@ pub fn running_now() -> bool {
 /// The program that takes Wallpaper Engine's command line (`-control ...`): the 64-bit one when
 /// it is there.
 pub fn cli_exe(presence: &Presence) -> Option<PathBuf> {
+    cli_exe_as(reach(), presence)
+}
+
+/// [`cli_exe`] under `reach`: a program this run may not start is never handed out (#1519).
+fn cli_exe_as(reach: &Reach, presence: &Presence) -> Option<PathBuf> {
     let Presence::Installed { dir, .. } = presence else {
         return None;
     };
     ["wallpaper64.exe", "wallpaper32.exe"]
         .iter()
         .map(|p| dir.join(p))
-        .find(|p| p.is_file())
+        .find(|p| p.is_file() && reach.allows(p))
 }
 
 /// The folder of the program Foxglove drives (#1445: the live feed pairs only with programs
@@ -105,7 +218,24 @@ pub fn host_dir() -> Option<PathBuf> {
 }
 
 fn look() -> Presence {
-    match find(&Places::system()) {
+    look_as(reach(), Places::system, running)
+}
+
+/// [`look`] under `reach` (#1519). Off: nothing is looked at. A stand-in: only its folder.
+fn look_as(
+    reach: &Reach,
+    system: impl FnOnce() -> Places,
+    running: impl FnOnce() -> bool,
+) -> Presence {
+    let places = match reach {
+        Reach::Installed => system(),
+        Reach::StandIn(dir) => Places {
+            custom: vec![dir.clone()],
+            ..Places::default()
+        },
+        Reach::Off => return Presence::Missing,
+    };
+    match find(&places) {
         Some(dir) => Presence::Installed {
             dir,
             running: running(),
@@ -114,13 +244,26 @@ fn look() -> Presence {
     }
 }
 
-#[cfg(target_os = "windows")]
 fn running() -> bool {
-    super::pc_lights::any_process_running(PROCESSES)
+    running_as(reach())
+}
+
+/// Whether Wallpaper Engine runs, as this run may see it (#1519): the user's copy is not the
+/// lab's, so a lab run sees only a program started from its stand-in folder, or none.
+#[cfg(target_os = "windows")]
+fn running_as(reach: &Reach) -> bool {
+    match reach {
+        Reach::Installed => super::pc_lights::any_process_running(PROCESSES),
+        Reach::StandIn(_) => super::pc_lights::process_ids(PROCESSES)
+            .into_iter()
+            .filter_map(foxglove_plugin::owner::image_and_birth)
+            .any(|(image, _)| reach.allows(&image)),
+        Reach::Off => false,
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn running() -> bool {
+fn running_as(_reach: &Reach) -> bool {
     let _ = PROCESSES;
     false
 }
@@ -134,17 +277,22 @@ pub struct Places {
 }
 
 impl Places {
+    /// Where an installed copy may be, without the custom folders.
+    fn installed() -> Self {
+        Places {
+            custom: Vec::new(),
+            steam: steam_path(),
+            uninstall: uninstall_locations(),
+        }
+    }
+
     fn system() -> Self {
         #[derive(serde::Deserialize, Default)]
         #[serde(default)]
         struct Section {
             folder: Option<PathBuf>,
         }
-        let mut custom: Vec<PathBuf> = std::env::var_os("FOXGLOVE_WALLPAPER_ENGINE_DIR")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .into_iter()
-            .collect();
+        let mut custom: Vec<PathBuf> = stand_in_env().into_iter().collect();
         custom.extend(
             super::store::section(STORE_OWNER, "wallpaper_engine")
                 .try_load::<Section>()
@@ -152,8 +300,7 @@ impl Places {
         );
         Places {
             custom,
-            steam: steam_path(),
-            uninstall: uninstall_locations(),
+            ..Places::installed()
         }
     }
 }
@@ -202,6 +349,11 @@ fn is_install(dir: &Path) -> bool {
 
 /// The Wallpaper Engine folder, in the order the module docs give.
 pub fn find(places: &Places) -> Option<PathBuf> {
+    candidates(places).into_iter().find(|d| is_install(d))
+}
+
+/// Every folder Wallpaper Engine may be in, in the order the module docs give.
+fn candidates(places: &Places) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = places.custom.clone();
     if let Some(steam) = &places.steam {
         candidates.push(steam.join("steamapps/common/wallpaper_engine"));
@@ -220,7 +372,7 @@ pub fn find(places: &Places) -> Option<PathBuf> {
         }
     }
     candidates.extend(places.uninstall.iter().cloned());
-    candidates.into_iter().find(|d| is_install(d))
+    candidates
 }
 
 /// The library folders in a `libraryfolders.vdf`, the ones listing Wallpaper Engine first.
@@ -482,6 +634,113 @@ mod tests {
             ..Places::default()
         };
         assert_eq!(find(&places), Some(we));
+    }
+
+    /// A folder that looks like Wallpaper Engine: its config and its 64-bit program.
+    fn stand_in(t: &Temp, name: &str) -> PathBuf {
+        let dir = t.0.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), b"{}").unwrap();
+        std::fs::write(dir.join("wallpaper64.exe"), b"").unwrap();
+        dir
+    }
+
+    /// #1519: how the process was started decides, nothing a script has to remember.
+    #[test]
+    fn a_lab_run_reaches_a_stand_in_folder_or_nothing() {
+        let t = Temp::new("reach");
+        let installed = stand_in(&t, "Steam/steamapps/common/wallpaper_engine");
+        let fake = stand_in(&t, "stand-in");
+        let known = [installed.clone()];
+        // A normal run: unchanged, whatever the variable says.
+        assert_eq!(decide(false, None, &known), Reach::Installed);
+        assert_eq!(decide(false, Some(fake.clone()), &known), Reach::Installed);
+        // A lab run: nothing, or the stand-in.
+        assert_eq!(decide(true, None, &known), Reach::Off);
+        assert_eq!(
+            decide(true, Some(fake.clone()), &known),
+            Reach::StandIn(fake.clone())
+        );
+        // Never the installed copy: itself, in another spelling, a folder in it or one holding it.
+        let upper = PathBuf::from(installed.display().to_string().to_uppercase());
+        for dir in [
+            installed.clone(),
+            upper,
+            installed.join("bin"),
+            t.0.join("Steam"),
+            t.0.clone(),
+        ] {
+            assert_eq!(
+                decide(true, Some(dir.clone()), &known),
+                Reach::Off,
+                "{dir:?}"
+            );
+        }
+        // A sibling whose name starts the same is another folder.
+        let sibling = stand_in(&t, "Steam/steamapps/common/wallpaper_engine_fake");
+        assert_eq!(
+            decide(true, Some(sibling.clone()), &known),
+            Reach::StandIn(sibling)
+        );
+        // Every test build is a lab run.
+        assert!(lab_run());
+        assert_ne!(*reach(), Reach::Installed);
+    }
+
+    #[test]
+    fn a_lab_run_sees_no_installed_or_running_wallpaper_engine() {
+        let t = Temp::new("blind");
+        let installed = stand_in(&t, "installed");
+        let fake = stand_in(&t, "stand-in");
+        let system = || Places {
+            custom: vec![installed.clone()],
+            ..Places::default()
+        };
+        // Off: nowhere is looked at and nothing is asked whether it runs.
+        let nowhere = || -> Places { panic!("a lab run looked for the installed program") };
+        let unasked = || -> bool { panic!("a lab run asked whether the user's copy runs") };
+        assert_eq!(look_as(&Reach::Off, nowhere, unasked), Presence::Missing);
+        assert!(!running_as(&Reach::Off));
+        // A stand-in: only its folder, never the system's places.
+        let only = Reach::StandIn(fake.clone());
+        assert_eq!(
+            look_as(&only, nowhere, || false),
+            Presence::Installed {
+                dir: fake.clone(),
+                running: false
+            }
+        );
+        // No program from this test's folder runs, whatever else does on this PC.
+        assert!(!running_as(&only));
+        // A normal run: as before.
+        let found = look_as(&Reach::Installed, system, || true);
+        assert_eq!(
+            found,
+            Presence::Installed {
+                dir: installed.clone(),
+                running: true
+            }
+        );
+        // The program is handed out only where this run may start it.
+        let exe = Some(installed.join("wallpaper64.exe"));
+        assert_eq!(cli_exe_as(&Reach::Installed, &found), exe);
+        assert_eq!(cli_exe_as(&Reach::Off, &found), None);
+        assert_eq!(cli_exe_as(&only, &found), None, "not the stand-in's");
+        let stood = look_as(&only, nowhere, || false);
+        assert_eq!(
+            cli_exe_as(&only, &stood),
+            Some(fake.join("wallpaper64.exe"))
+        );
+        assert!(only.allows(&fake.join("wallpaper64.exe")));
+        assert!(!only.allows(&installed.join("wallpaper64.exe")));
+        assert!(!Reach::Off.allows(&fake.join("wallpaper64.exe")));
+        // This test build itself: nothing installed, nothing running, no program, no folder.
+        if *reach() == Reach::Off {
+            assert_eq!(presence(), Presence::Missing);
+            assert_eq!(refresh(), Presence::Missing);
+            assert!(!running_now());
+            assert_eq!(host_dir(), None);
+        }
     }
 
     #[test]

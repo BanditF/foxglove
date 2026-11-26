@@ -239,6 +239,12 @@ integration follows the same rules:
    - every library in Steam's `libraryfolders.vdf` (the ones listing app 431960 first, at the
      `installdir` from `appmanifest_431960.acf`);
    - Steam's `Steam App 431960` uninstall entry.
+
+   A lab or test run (`FOXGLOVE_CONFIG_DIR` not the real settings folder, #1519) looks in none
+   of these: the program is "not installed", so the user's copy is never run, read or counted
+   as running. Only a stand-in folder named by `FOXGLOVE_WALLPAPER_ENGINE_DIR` counts there,
+   and never one that is an installed copy. A new integration that can run or change the
+   user's program needs the same rule, decided once at start.
 2. **Look at start and on Refresh, never on a timer.** Its watcher's change events may look
    again (Wallpaper Engine's running check rides on a wallpaper change), and a Refresh that
    finds it somewhere new moves the folder watch there. Cache the answer as
