@@ -183,7 +183,11 @@ fn a_turn_off_that_changes_containment_reaches_the_app_that_runs() {
         fact(&h, id, "state"),
         Value::String("install-failed".into())
     );
-    assert_eq!(fact(&h, id, "failed"), Value::String("apply".into()));
+    assert_eq!(fact(&h, id, "failed"), Value::String("unsaved".into()));
+    assert_eq!(
+        fact(&h, id, "reason"),
+        Value::String(words::STOPPED_UNSAVED.into())
+    );
     assert_eq!(fact(&h, id, "restarted"), Value::Null);
     // Nothing runs now: a second failure has nothing to stop and says so.
     let e = revoke_items_in(&home, &h, id, Some(&["hub.notify".to_string()])).unwrap_err();

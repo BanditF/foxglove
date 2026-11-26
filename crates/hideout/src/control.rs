@@ -139,15 +139,16 @@ fn turned_off_text(off: hideout_supervisor::driver::TurnedOff, wait: Duration) -
     out
 }
 
-/// What a revoke that could not be recorded prints: the error and, when the running app was
-/// stopped for it, that and what to do next.
+/// What a revoke that could not be recorded prints: that it holds for now only and what to do
+/// next (with the stop, when the running app was stopped for it), then the error.
 fn not_turned_off_text(e: &hideout_supervisor::driver::NotTurnedOff) -> String {
-    let mut out = format!("hideout: {e}\n");
-    if e.stopped {
-        out.push_str(hideout_supervisor::words::PIPE_STOPPED_UNSAVED);
-        out.push('\n');
-    }
-    out
+    use hideout_supervisor::words;
+    let line = if e.stopped {
+        words::PIPE_STOPPED_UNSAVED
+    } else {
+        words::PIPE_NOT_SAVED
+    };
+    format!("{line}\nhideout: {e}\n")
 }
 
 /// Runs one request line (`grant|deny|revoke <id> ...`) in the hub. `caller_ok` is the result
@@ -852,10 +853,13 @@ mod tests {
             why: "Io".into(),
             stopped,
         };
-        assert_eq!(not_turned_off_text(&e(false)), "hideout: Io\n");
+        assert_eq!(
+            not_turned_off_text(&e(false)),
+            "not saved: turned off for now; it may be on again after a restart; turn it off again\nhideout: Io\n"
+        );
         assert_eq!(
             not_turned_off_text(&e(true)),
-            "hideout: Io\nstopped: the change couldn't be saved; start it again from the Apps page\n"
+            "stopped: the change couldn't be saved; it may be on again after a restart; turn it off again\nhideout: Io\n"
         );
         for l in [
             words::PIPE_RESTARTED,
@@ -864,6 +868,7 @@ mod tests {
             words::PIPE_STILL_RESTARTING,
             words::PIPE_UNREACHED,
             words::PIPE_STOPPED_UNSAVED,
+            words::PIPE_NOT_SAVED,
         ] {
             assert!(!l.is_empty() && !l.contains('\n'), "{l:?}");
         }

@@ -33,7 +33,7 @@ pub fn take_turned_off() -> bool {
     TURNED_OFF.swap(false, Ordering::Relaxed)
 }
 
-pub const NOT_SAVED: &str = "Turned off, but the change couldn't be saved.";
+pub const NOT_SAVED: &str = hideout_supervisor::words::NOT_SAVED;
 
 /// What a turn-off meant for the app that runs, as far as the page says it.
 #[derive(Clone, Copy)]

@@ -561,6 +561,12 @@ pub fn row_changed(
             true,
             primary(words::START_AGAIN, Does::StartAgain),
         ),
+        // Stopped because a turn-off couldn't be saved: the same row, its own words.
+        Some("install-failed") if get("failed").as_deref() == Some("unsaved") => (
+            words::stopped_unsaved_row(),
+            true,
+            primary(words::START_AGAIN, Does::StartAgain),
+        ),
         Some("install-failed") if get("failed").as_deref() == Some("launch") => (
             words::COULDNT_START.into(),
             true,
@@ -618,6 +624,10 @@ pub fn row_changed(
             && get("failed").as_deref() == Some("apply")
         {
             Some(words::stopped_to_apply_said(&m.name))
+        } else if state.as_deref() == Some("install-failed")
+            && get("failed").as_deref() == Some("unsaved")
+        {
+            Some(words::stopped_unsaved_said(&m.name))
         } else {
             None
         },
@@ -1584,6 +1594,38 @@ mod tests {
         // Checklist 7.
         assert_eq!(r.label, words::row_label(&a.name, &r.state));
         // Above a running app that sorts before it by name.
+        let mut rows = vec![row(&b, &|_: &str| None, None), r];
+        order(&mut rows);
+        assert_eq!(rows[0].id, a.id);
+
+        // Stopped because the turn-off couldn't be saved: the same row with its own words.
+        let id = format!("module.{}.", a.id);
+        let fact = move |k: &str| -> Option<Value> {
+            match k.strip_prefix(&id)? {
+                "state" => Some("install-failed".into()),
+                "failed" => Some("unsaved".into()),
+                "reason" => Some(words::STOPPED_UNSAVED.into()),
+                _ => None,
+            }
+        };
+        let r = row(&a, &fact, None);
+        assert_eq!(
+            r.state,
+            "Stopped \u{b7} Your change couldn't be saved. Start it again to try again."
+        );
+        assert!(r.stopped && !r.off);
+        assert_eq!(
+            r.primary,
+            Some(Primary {
+                label: words::START_AGAIN.into(),
+                does: Does::StartAgain,
+            })
+        );
+        assert_eq!(
+            r.restarted_said.as_deref(),
+            Some(format!("{} stopped. Your change couldn't be saved.", a.name).as_str())
+        );
+        assert_eq!(r.label, words::row_label(&a.name, &r.state));
         let mut rows = vec![row(&b, &|_: &str| None, None), r];
         order(&mut rows);
         assert_eq!(rows[0].id, a.id);

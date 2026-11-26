@@ -1341,7 +1341,7 @@ fn the_planned_restart_row_has_no_count_and_the_crash_row_keeps_it() {
 fn a_row_restarted_to_apply_keeps_its_visible_line_as_its_label() {
     let app = installed()[0].clone();
     let all = [app.clone()];
-    let cases: [(&[(&str, serde_json::Value)], &str); 3] = [
+    let cases: [(&[(&str, serde_json::Value)], &str); 4] = [
         (
             &[
                 ("state", serde_json::json!("running")),
@@ -1362,6 +1362,13 @@ fn a_row_restarted_to_apply_keeps_its_visible_line_as_its_label() {
                 ("failed", serde_json::json!("apply")),
             ],
             "Stopped \u{b7} Couldn't restart to apply your change. Start it again.",
+        ),
+        (
+            &[
+                ("state", serde_json::json!("install-failed")),
+                ("failed", serde_json::json!("unsaved")),
+            ],
+            "Stopped \u{b7} Your change couldn't be saved. Start it again to try again.",
         ),
     ];
     for (facts, want) in cases {

@@ -822,12 +822,17 @@ impl Policy {
         }
     }
 
-    /// [`Ev::StopUnapplied`]: the running instance is ended and stays ended.
+    /// [`Ev::StopUnapplied`]: the running instance is ended and stays ended. So does one
+    /// that has ended already: nothing that waits to start it again (a restart after a crash,
+    /// a held helper, a start after its end) brings it back as it was allowed before.
     fn stop_unapplied(&mut self, id: &str, now: Instant, out: &mut Vec<Cmd>) {
         let Some(s) = self.slots.get_mut(id) else {
             return;
         };
-        if s.ended {
+        let comes_back = s.restart_at.is_some() || s.then_launch || s.held;
+        if s.ended && !comes_back {
+            // Nothing runs and nothing is due: ended once more all the same.
+            out.push(Cmd::Kill { id: id.into() });
             return;
         }
         s.then_launch = false;
@@ -841,7 +846,10 @@ impl Policy {
         self.note(id, now, "turned off but not recorded: stopped".into());
         out.push(Cmd::Kill { id: id.into() });
         if enabled {
-            self.stopped_to_apply(id, out);
+            // No restart was tried: the row says what happened, not "couldn't restart".
+            let reason = words::STOPPED_UNSAVED.to_string();
+            self.set_state(id, State::InstallFailed, Some(reason), out);
+            publish(out, format!("module.{id}.failed"), json!("unsaved"));
         }
     }
 
@@ -1972,6 +1980,10 @@ impl Policy {
                     instance,
                 });
                 out.push(Cmd::Kill { id: id.clone() });
+                // Loud: it may still be there as it was allowed before.
+                log::error!(
+                    "supervisor: {id}: ended to apply a turn-off and NOT SEEN TO EXIT; ended again, shown as stopped"
+                );
                 self.note(
                     &id,
                     now,
@@ -3649,11 +3661,14 @@ mod rebuild_tests {
         assert!(c.contains(&Cmd::Kill { id: ID.into() }), "{c:?}");
         assert_eq!(launches(&c), 0);
         assert_eq!(p.state(ID), Some(State::InstallFailed));
-        assert_eq!(fact(&c, "failed"), Some(json!("apply")));
+        // Its own value and words: no restart was tried.
+        assert_eq!(fact(&c, "failed"), Some(json!("unsaved")));
+        assert_eq!(fact(&c, "reason"), Some(json!(words::STOPPED_UNSAVED)));
         assert_eq!(p.restart_at(ID), None);
         assert_eq!(launches(&exited(&mut p, t, 1, 1)), 0);
         assert_eq!(p.crashes(ID, t), 0);
-        assert!(stop(&mut p, t).is_empty(), "already stopped");
+        // Already stopped: ended once more, and nothing else is said.
+        assert_eq!(stop(&mut p, t), [Cmd::Kill { id: ID.into() }]);
         // Start again is the way back.
         assert_eq!(launches(&p.handle(Ev::StartAgain { id: ID.into() }, t)), 1);
         // A restart to apply that is under way hears Stopped.
@@ -3663,6 +3678,32 @@ mod rebuild_tests {
         let c = stop(&mut p, t);
         assert_eq!(applied(&c), [Applied::Stopped]);
         assert_eq!(launches(&exited(&mut p, t, 1, 1)), 0);
+    }
+
+    /// A turn-off that can't be recorded while the app is gone and due to come back (a
+    /// restart after a crash): nothing starts it as it was allowed before.
+    #[test]
+    fn a_turn_off_that_cant_be_recorded_drops_a_pending_restart() {
+        let (mut p, t) = (Policy::new(), Instant::now());
+        running(&mut p, t);
+        assert_eq!(launches(&exited(&mut p, t, 1, 1)), 0);
+        let due = p
+            .restart_at(ID)
+            .expect("a restart after the crash is pending");
+        let c = p.handle(Ev::StopUnapplied { id: ID.into() }, t);
+        assert!(c.contains(&Cmd::Kill { id: ID.into() }), "{c:?}");
+        assert_eq!(launches(&c), 0);
+        assert_eq!(p.restart_at(ID), None);
+        assert_eq!(p.next_deadline(), None);
+        assert_eq!(p.state(ID), Some(State::InstallFailed));
+        assert_eq!(fact(&c, "failed"), Some(json!("unsaved")));
+        assert_eq!(launches(&p.tick(due)), 0);
+        assert_eq!(launches(&p.tick(due + Duration::from_secs(600))), 0);
+        // Start again is the way back.
+        assert_eq!(
+            launches(&p.handle(Ev::StartAgain { id: ID.into() }, due)),
+            1
+        );
     }
 
     /// The driver's check after a start counts for that instance only.

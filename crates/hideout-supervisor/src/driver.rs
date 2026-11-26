@@ -1495,7 +1495,10 @@ impl Supervisor {
             .lock()
             .unwrap()
             .handle(Ev::StopUnapplied { id: id.into() }, Instant::now());
-        let stopped = cmds.iter().any(|c| matches!(c, Cmd::Kill { .. }));
+        // It is ended either way; "stopped" is the row saying so (something ran or was due).
+        let stopped = cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Publish { key, .. } if key.ends_with(".failed")));
         self.run(cmds);
         self.0.lab.stepped();
         stopped

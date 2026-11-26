@@ -1384,7 +1384,7 @@ impl PermUi {
             let note = if e.stopped {
                 hideout_supervisor::words::NOT_SAVED_STOPPED
             } else {
-                "Turned off, but the change couldn't be saved."
+                hideout_supervisor::words::NOT_SAVED
             };
             self.note(id, note.to_string());
         }

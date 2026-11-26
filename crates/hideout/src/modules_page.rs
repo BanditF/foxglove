@@ -810,7 +810,13 @@ impl ModulesPage {
             let applied = r.restarted_said.as_ref().map(|_| {
                 match facts(&format!("module.{}.restarted", r.id)).filter(|v| !v.is_null()) {
                     Some(v) => format!("restarted {v}"),
-                    None => "stopped".to_string(),
+                    // A stop: one key per reason it was stopped for.
+                    None => format!(
+                        "stopped {}",
+                        facts(&format!("module.{}.failed", r.id))
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_default()
+                    ),
                 }
             });
             let said = r.rebuilt_said.as_ref().or(r.restarted_said.as_ref());
@@ -2010,6 +2016,14 @@ mod tests {
         assert_eq!(
             p.take_said(),
             ["Art stopped. Couldn't restart to apply your change."]
+        );
+        // Stopped because a turn-off couldn't be saved: its own line, told once.
+        set("install-failed", None, Some("unsaved"));
+        p.rows();
+        p.rows();
+        assert_eq!(
+            p.take_said(),
+            ["Art stopped. Your change couldn't be saved."]
         );
     }
 

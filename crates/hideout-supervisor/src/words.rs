@@ -630,6 +630,10 @@ pub fn every_string() -> Vec<String> {
         turned_off_restarts("Art"),
         turned_off_unreached("Art"),
         NOT_SAVED_STOPPED.into(),
+        NOT_SAVED.into(),
+        STOPPED_UNSAVED.into(),
+        stopped_unsaved_row(),
+        stopped_unsaved_said("Art"),
         DEV_CHIP_SAID.into(),
         NEW_BUILD_HELD_FOR_GAME.into(),
         NEW_BUILD_READY.into(),
@@ -721,6 +725,20 @@ pub fn stopped_to_apply_said(name: &str) -> String {
     format!("{name} stopped. Couldn't restart to apply your change.")
 }
 
+/// `module.<id>.reason` when the app was stopped because a turn-off could not be saved (no
+/// restart was tried): `module.<id>.failed` is "unsaved".
+pub const STOPPED_UNSAVED: &str = "Your change couldn't be saved. Start it again to try again.";
+
+/// The row's state line for [`STOPPED_UNSAVED`]; its button is [`START_AGAIN`].
+pub fn stopped_unsaved_row() -> String {
+    format!("Stopped \u{b7} {STOPPED_UNSAVED}")
+}
+
+/// What a screen reader is told, once, when that happens.
+pub fn stopped_unsaved_said(name: &str) -> String {
+    format!("{name} stopped. Your change couldn't be saved.")
+}
+
 /// The Access page's status after a turn-off that restarts the running app.
 pub fn turned_off_restarts(name: &str) -> String {
     format!("Turned off. {name} restarts to apply.")
@@ -741,11 +759,17 @@ pub const PIPE_UNREACHED: &str =
 /// The control pipe's line after the error of a turn-off that couldn't be saved, when the
 /// running app was stopped for it.
 pub const PIPE_STOPPED_UNSAVED: &str =
-    "stopped: the change couldn't be saved; start it again from the Apps page";
+    "stopped: the change couldn't be saved; it may be on again after a restart; turn it off again";
+/// The same, when nothing was stopped.
+pub const PIPE_NOT_SAVED: &str =
+    "not saved: turned off for now; it may be on again after a restart; turn it off again";
+
+/// A turn-off that holds for now and couldn't be saved (the Access page, an app's page).
+pub const NOT_SAVED: &str = "Turned off for now, but the change couldn't be saved. It may be on again after Hideout restarts. Turn it off again.";
 
 /// A turn-off that couldn't be saved, and the running app was stopped so it doesn't keep
 /// running as it was allowed before.
-pub const NOT_SAVED_STOPPED: &str = "Turned off, but the change couldn't be saved. The app was stopped. Start it again from the Apps page.";
+pub const NOT_SAVED_STOPPED: &str = "Turned off for now, but the change couldn't be saved. The app was stopped. Starting it again may allow it again, so turn it off again first.";
 
 /// The Access page's line for a turn-off when nothing could tell whether the app runs.
 pub fn turned_off_unreached(name: &str) -> String {
@@ -1102,6 +1126,23 @@ mod tests {
             stopped_to_apply_said("Foxglove"),
             "Foxglove stopped. Couldn't restart to apply your change."
         );
+        // Stopped for a change that couldn't be saved: no restart was tried, and none is named.
+        assert_eq!(
+            stopped_unsaved_row(),
+            "Stopped \u{b7} Your change couldn't be saved. Start it again to try again."
+        );
+        assert_eq!(
+            stopped_unsaved_said("Foxglove"),
+            "Foxglove stopped. Your change couldn't be saved."
+        );
+        assert_eq!(
+            NOT_SAVED,
+            "Turned off for now, but the change couldn't be saved. It may be on again after Hideout restarts. Turn it off again."
+        );
+        assert_eq!(
+            NOT_SAVED_STOPPED,
+            "Turned off for now, but the change couldn't be saved. The app was stopped. Starting it again may allow it again, so turn it off again first."
+        );
         assert_eq!(
             turned_off_restarts("Foxglove"),
             "Turned off. Foxglove restarts to apply."
@@ -1229,6 +1270,10 @@ mod tests {
             PIPE_UNREACHED.into(),
             PIPE_STOPPED_UNSAVED.into(),
             NOT_SAVED_STOPPED.into(),
+            NOT_SAVED.into(),
+            PIPE_NOT_SAVED.into(),
+            stopped_unsaved_row(),
+            stopped_unsaved_said("Foxglove"),
             turned_off_unreached("Foxglove"),
             NEW_BUILD_HELD_FOR_GAME.into(),
             NEW_BUILD_READY.into(),
