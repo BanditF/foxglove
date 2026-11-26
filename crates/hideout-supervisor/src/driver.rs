@@ -2503,12 +2503,15 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
             job.kill(1);
         }
         // A stop during the hold ends the job through `Cmd::Kill`, which ends this wait too.
+        // The job is listed with the module's ended instances' jobs for as long as it holds
+        // anything.
         let give_up = Instant::now() + crate::policy::HELPER_WAIT_CAP;
         while Instant::now() < give_up && job.active_processes().is_ok_and(|n| n > 0) {
             std::thread::sleep(Duration::from_millis(100));
         }
-        // The hold is over (the helper finished, or the wait gave up): nothing stays behind.
-        job.kill(1);
+        // The helper finished, or the wait gave up. Giving up ends nothing: an installer that
+        // takes longer than the cap runs on, and its job stays listed as this module's, so a
+        // later stop or Remove ends it (`end_all`, `finish_remove`).
         // The installer has finished (or the wait gave up): the new program file is in place
         // before the module starts again, so the grant is carried over first (#1179).
         if planned {

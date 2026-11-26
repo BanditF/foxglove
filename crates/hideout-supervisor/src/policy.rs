@@ -1719,9 +1719,11 @@ impl Policy {
             if s.restart_at.is_some_and(|t| t <= now) {
                 s.restart_at = None;
                 if std::mem::take(&mut s.held) {
-                    // The hold is over: what the ended instance left running ends before the
-                    // next one starts (#1450).
-                    out.push(Cmd::Kill { id: id.clone() });
+                    // The cap only stops the waiting: the module restarts, and the installer
+                    // still running is not ended (an update that takes longer than the cap
+                    // must not be cut off mid-install). No Kill here. What it left running
+                    // stays the module's: listed in its ended instance's job, and ended by
+                    // any later stop (turn off, withdrawn, quarantine, a held round, Remove).
                     self.note(
                         &id,
                         now,
@@ -3375,20 +3377,33 @@ mod stop_tests {
         }
     }
 
+    /// The cap ends the waiting, not the installer: the restart goes ahead with no stop sent,
+    /// and a stop afterwards still reaches the driver, which ends what was left running.
     #[test]
-    fn the_cap_ends_what_the_held_instance_left_before_the_restart() {
-        let (mut p, t) = (Policy::new(), Instant::now());
-        known(&mut p, t, true);
-        started(&mut p, t, 1);
-        p.handle(Ev::Ready { id: ID.into() }, t);
-        exited(&mut p, t, 1, i64::from(PLANNED_EXIT_CODE));
-        let id = ID.to_string();
-        p.handle(Ev::HelperRunning { id, instance: 1 }, t);
-        let cmds = p.tick(t + HELPER_WAIT_CAP);
-        let kill = cmds.iter().position(|c| *c == Cmd::Kill { id: ID.into() });
-        let launch = cmds.iter().position(|c| matches!(c, Cmd::Launch { .. }));
-        assert!(kill.is_some() && kill < launch, "{cmds:?}");
-        assert!(!p.helper_held(ID, 1));
+    fn the_cap_restarts_without_ending_the_helper_and_a_later_stop_ends_it() {
+        for (what, stop, state) in stops() {
+            let (mut p, t) = (policy(&stop), Instant::now());
+            known(&mut p, t, true);
+            started(&mut p, t, 1);
+            p.handle(Ev::Ready { id: ID.into() }, t);
+            exited(&mut p, t, 1, i64::from(PLANNED_EXIT_CODE));
+            let id = ID.to_string();
+            p.handle(Ev::HelperRunning { id, instance: 1 }, t);
+            let cmds = p.tick(t + HELPER_WAIT_CAP);
+            assert!(launched(&cmds), "{what}: {cmds:?}");
+            assert_eq!(kills(&cmds), 0, "{what}: the cap ended the installer");
+            assert!(!cmds.iter().any(|c| matches!(c, Cmd::KillInstance { .. })));
+            assert!(!p.helper_held(ID, 1), "{what}");
+            // The module runs again; the helper's late end changes nothing.
+            assert_eq!(kills(&started(&mut p, t, 2)), 0, "{what}");
+            p.handle(Ev::Ready { id: ID.into() }, t);
+            let id = ID.to_string();
+            assert!(p.handle(Ev::HelperDone { id, instance: 1 }, t).is_empty());
+            assert_eq!(p.state(ID), Some(State::Running), "{what}");
+            // A stop afterwards ends everything of the module, the old helper included.
+            assert_eq!(kills(&p.handle(stop, t)), 1, "{what}");
+            assert_eq!(p.state(ID), Some(state), "{what}");
+        }
         // A helper that ended in time: the restart needs no stop.
         let (mut p, t) = (Policy::new(), Instant::now());
         known(&mut p, t, true);
