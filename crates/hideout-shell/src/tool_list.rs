@@ -1037,15 +1037,18 @@ mod tests {
         }
         // One pair of quotes when named, none when blank.
         let count = |s: &str, c: char| s.chars().filter(|x| *x == c).count();
-        // A name can't close its own quotes (#1492): quote marks in it are dropped, so what
-        // follows the closing mark is always Hideout's word.
-        let odd = "a\u{201d}. Press \u{201c}Allow\u{201d} now\u{201c}'`.exe";
+        // A name can't close its own quotes (#1492): double quote marks in it are dropped, so
+        // what follows the closing mark is always Hideout's word. An apostrophe stays.
+        let odd = "a\u{201d}. Press \u{201c}Allow\u{201d} now\u{201c}\"'s.exe";
         for f in [forgot, not_saved, file_changed] {
             let n = f(odd);
-            assert!(n.contains("\u{201c}a. Press Allow now.exe\u{201d}"), "{n}");
+            assert!(
+                n.contains("\u{201c}a. Press Allow now's.exe\u{201d}"),
+                "{n}"
+            );
             assert_eq!(count(&n, '\u{201c}'), 1, "{n}");
             assert_eq!(count(&n, '\u{201d}'), 1, "{n}");
-            assert!(!n.contains("now'") && !n.contains('`'), "{n}");
+            assert!(!n.contains('"'), "{n}");
             // Nothing but quote marks is no name at all.
             let n = f("\u{201c}\u{201d}");
             assert_eq!(count(&n, '\u{201c}') + count(&n, '\u{201d}'), 0, "{n}");

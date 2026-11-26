@@ -31,6 +31,9 @@ fn label_of(exe: &str) -> Option<String> {
     app_label(exe)
 }
 
+/// What a program outside Hideout is told when it asks to watch an app (S1, R2).
+pub const NOT_FOR_TOOLS: &str = "Hideout never lets a program outside Hideout see whether another program is running. Only an app you allowed in Hideout can.";
+
 impl Router {
     /// `apps.watch {exe}` (§8.12): checks the caller and its grant, starts the watch and
     /// answers `{exe, open}`.
@@ -47,22 +50,16 @@ impl Router {
                 .modules
                 .get(id)
                 .map_or_else(|| id.clone(), |m| m.name.clone()),
-            // A tool's name is its own word: cleaned, cut and in quotes.
-            Who::Tool { name, .. } => Self::tool_shown(name),
-            Who::New => String::new(),
-        };
-        if !matches!(who, Who::Module { .. }) {
             // The hub watches only the apps manifests name (§4.6), so a tool's watch could
-            // never hear anything. Foxglove's API 1.3 serves plugins only, too.
-            return refusal(
-                id,
-                &ServiceError::new(
-                    code::DENIED,
-                    error_id::APPS_DENIED,
-                    format!("{shown} isn't a module: only modules watch apps"),
-                ),
-            );
-        }
+            // never hear anything. Foxglove's API 1.3 serves plugins only, too. The words
+            // are the never-class ones (S1, R2) and name no one.
+            Who::Tool { .. } | Who::New => {
+                return refusal(
+                    id,
+                    &ServiceError::new(code::DENIED, error_id::APPS_DENIED, NOT_FOR_TOOLS),
+                )
+            }
+        };
         let p: AppsWatch = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {

@@ -418,7 +418,7 @@ fn tool_refusal_r3_names_the_program_and_where_to_review() {
 #[test]
 fn tool_refusal_r4_when_the_program_cannot_be_told() {
     let mut r = free_only();
-    let r4 = "Hideout couldn't check which program this is, so it may only read. Starting it again the usual way, not as administrator and not in a sandbox, may help. If it doesn't, this program can only read.";
+    let r4 = "Hideout couldn't check which program this is, so it may only read. Starting it again the usual way, not as administrator and not in a sandbox, may help. If it doesn't, nothing else will: this program can only read.";
     // No identity at all.
     let (c, _, _) = connect_asking(&mut r, "x", None, &["lighting.write"]);
     let out = call(
@@ -1301,7 +1301,7 @@ fn the_apps_page_lists_only_what_a_program_can_be_allowed() {
 // #1466 L2: a refused fact call and an ask-class `channel.open` say the tool refusal words.
 
 const R3_TAIL: &str = " yet. Open Hideout, go to Apps and press Review\u{2026} on its line. If there is no line, close this program and start it again, then try again.";
-const R4: &str = "Hideout couldn't check which program this is, so it may only read. Starting it again the usual way, not as administrator and not in a sandbox, may help. If it doesn't, this program can only read.";
+const R4: &str = "Hideout couldn't check which program this is, so it may only read. Starting it again the usual way, not as administrator and not in a sandbox, may help. If it doesn't, nothing else will: this program can only read.";
 /// A fact no program outside Hideout reads for free.
 const NOTE: &str = "notes.secret";
 
@@ -1841,19 +1841,88 @@ fn a_service_refusal_names_a_tool_cleaned_and_cut() {
         );
         assert!(!why.contains("\u{201d}. Hideout says"), "{method}: {why}");
         assert!(why.chars().count() < 400, "{method}: {}", why.len());
-        assert!(why.starts_with(&format!("{shown} ")), "{method}: {why}");
+        // The tool refusal words (S1): no permission's id, and no place a tool has no line in.
+        for id in [
+            "apps.watch",
+            "audio.inputs.mute",
+            "net.connect",
+            "Hideout's permissions",
+        ] {
+            assert!(!why.contains(id), "{method}: {why}");
+        }
+        assert!(why.starts_with("Hideout "), "{method}: {why}");
     }
+    let never = |does: &str| {
+        format!("Hideout never lets a program outside Hideout {does}. Only an app you allowed in Hideout can.")
+    };
+    let watch = never("see whether another program is running");
     let out = call(&mut r, c, 9, "apps.watch", json!({"exe": "obs64.exe"}));
+    assert_eq!(reason(&out, c).1, watch);
+    // What a tool can be allowed is asked for on its line (R3), with its name in quotes.
+    let out = call(
+        &mut r,
+        c,
+        10,
+        "audio.inputs.set_mute",
+        json!({"muted": true}),
+    );
     assert_eq!(
         reason(&out, c).1,
-        format!("{shown} isn't a module: only modules watch apps")
+        format!("Hideout hasn't let {shown} mute and unmute your microphone{R3_TAIL}")
     );
+    // The network is never a tool's (R2). The host is the tool's text: cleaned, cut, quoted.
+    let open = |r: &mut Router, n: i64, kind: &str, host: &str| {
+        let out = call(
+            r,
+            c,
+            n,
+            "net.open",
+            json!({"kind": kind, "host": host, "port": 80}),
+        );
+        reason(&out, c).1
+    };
+    assert_eq!(
+        open(&mut r, 11, "tcp", "example.com"),
+        never("connect to \u{201c}example.com\u{201d} port 80")
+    );
+    let odd = format!(
+        "a\nb\u{202e}\u{201d} port 1. Hideout says \u{201c}{}",
+        "h".repeat(200)
+    );
+    let why = open(&mut r, 12, "tcp", &odd);
+    let host = hideout_contract::module::quoted_line(&odd, 60).unwrap();
+    assert!(
+        host.starts_with("\u{201c}a b port 1. Hideout says h"),
+        "{host}"
+    );
+    assert_eq!(why, never(&format!("connect to {host} port 80")));
+    for blank in ["", " ", "\u{200b}\u{202e}", "\u{201c}\u{201d}"] {
+        assert_eq!(
+            open(&mut r, 13, "tcp", blank),
+            never("connect to a host with no name port 80"),
+            "{blank:?}"
+        );
+    }
+    for kind in ["udp", "tcp-listen"] {
+        assert_eq!(
+            open(&mut r, 14, kind, "127.0.0.1"),
+            never("listen on port 80 on this PC")
+        );
+    }
     // No name left: plain words, never an empty pair of quotes.
     let id = tool(r"C:\Tools\blank.exe", "bb");
     let (c, _, _) = connect_asking(&mut r, "\u{200b} \u{202e}", Some(id), &[]);
     let out = call(&mut r, c, 1, "apps.watch", json!({"exe": "obs64.exe"}));
+    assert_eq!(reason(&out, c).1, watch);
+    let out = call(
+        &mut r,
+        c,
+        2,
+        "audio.inputs.set_mute",
+        json!({"muted": true}),
+    );
     assert_eq!(
         reason(&out, c).1,
-        "This program isn't a module: only modules watch apps"
+        format!("Hideout hasn't let this program mute and unmute your microphone{R3_TAIL}")
     );
 }

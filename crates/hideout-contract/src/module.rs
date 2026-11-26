@@ -1449,15 +1449,15 @@ pub fn clean_line(raw: &str, max: usize) -> Option<String> {
     Some(format!("{}\u{2026}", cut.trim_end()))
 }
 
-/// Every mark that reads as a quote mark: dropped from text that is shown inside quotes.
+/// Every mark that reads as a double quote mark: dropped from text that is shown inside
+/// “ ” quotes. An apostrophe and the other single marks stay: names have them ("Bob's Tool"),
+/// and one alone can't end the quotes Hideout writes.
 pub const QUOTE_MARKS: &[char] = &[
-    '"', '\'', '`', '\u{ab}', '\u{bb}', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}', '\u{201c}',
-    '\u{201d}', '\u{201e}', '\u{201f}', '\u{2032}', '\u{2033}', '\u{2035}', '\u{2036}', '\u{2039}',
-    '\u{203a}', '\u{275b}', '\u{275c}', '\u{275d}', '\u{275e}', '\u{301d}', '\u{301e}', '\u{301f}',
-    '\u{ff02}', '\u{ff07}',
+    '"', '\u{ab}', '\u{bb}', '\u{201c}', '\u{201d}', '\u{201e}', '\u{201f}', '\u{2033}',
+    '\u{2036}', '\u{275d}', '\u{275e}', '\u{301d}', '\u{301e}', '\u{301f}', '\u{ff02}',
 ];
 
-/// [`clean_line`] with every quote mark in the text dropped first ([`QUOTE_MARKS`]), for text
+/// [`clean_line`] with every double quote mark in the text dropped first ([`QUOTE_MARKS`]), for text
 /// the caller puts inside quotes of its own. `None` when nothing is left.
 pub fn unquoted_line(raw: &str, max: usize) -> Option<String> {
     let raw: String = raw.chars().filter(|c| !QUOTE_MARKS.contains(c)).collect();
@@ -1858,6 +1858,15 @@ mod line_tests {
         assert_eq!(q, "\u{201c}ab. Hideout says c\u{201d}");
         let marks = q.chars().filter(|c| QUOTE_MARKS.contains(c)).count();
         assert_eq!(marks, 2, "{q}");
+        // An apostrophe is part of a name and stays, as every single mark does.
+        assert_eq!(
+            quoted_line("Bob's Tool.exe", 40).as_deref(),
+            Some("\u{201c}Bob's Tool.exe\u{201d}")
+        );
+        assert_eq!(
+            unquoted_line("Bob\u{2019}s `Tool`.exe", 40).as_deref(),
+            Some("Bob\u{2019}s `Tool`.exe")
+        );
         // The cut counts what is inside the quotes.
         let long = quoted_line(&"y".repeat(90), 40).unwrap();
         assert_eq!(long.chars().count(), 42, "{long}");

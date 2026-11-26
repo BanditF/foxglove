@@ -521,7 +521,7 @@ pub fn fact_words(read: bool, pattern: &str) -> String {
         Some("") => format!("{verb} every status any app shares"),
         Some(prefix) => match shown(prefix) {
             Some(q) => format!("{verb} every status whose name starts with {q}"),
-            None => format!("{verb} every status with a name that can't be shown"),
+            None => format!("{verb} every status whose name Hideout can't show"),
         },
         None => match shown(pattern) {
             Some(q) => format!("{verb} the status called {q}"),
@@ -1211,7 +1211,7 @@ mod outside_words_tests {
                 } else {
                     assert_eq!(
                         w,
-                        format!("{verb} every status with a name that can't be shown"),
+                        format!("{verb} every status whose name Hideout can't show"),
                         "{blank:?}"
                     );
                 }

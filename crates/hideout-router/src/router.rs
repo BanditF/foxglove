@@ -2505,12 +2505,6 @@ impl Router {
         hideout_contract::module::quoted_line(raw, max)
     }
 
-    /// A tool's own name at the start of a refusal a service writes: [`Self::quoted_name`] at
-    /// the length the other refusal words use, "This program" when nothing is left.
-    pub(crate) fn tool_shown(raw: &str) -> String {
-        Self::quoted_name(raw, Self::LOG_NAME_MAX).unwrap_or_else(|| "This program".into())
-    }
-
     /// The most characters of a status key, a pattern or a permission's own text that a log
     /// line keeps.
     pub const LOG_TEXT_MAX: usize = hideout_contract::permission::FACT_NAME_MAX;
@@ -3022,9 +3016,14 @@ impl Router {
     /// The refusal text for a call the caller has no permission for: names the module the call
     /// goes to and says where to allow it.
     fn needs_permission(&self, conn: ConnId, who: &Who, method: &str, params: &Value) -> String {
-        if let Who::Tool { name, .. } = who {
-            return self.tool_refusal(conn, name, method, params);
-        }
+        let caller = match who {
+            Who::Tool { name, .. } => return self.tool_refusal(conn, name, method, params),
+            Who::Module { id, .. } => self
+                .modules
+                .get(id)
+                .map_or_else(|| id.clone(), |m| m.name.clone()),
+            Who::New => String::new(),
+        };
         let target = self
             .routes
             .iter()
@@ -3044,14 +3043,6 @@ impl Router {
         let target = target
             .and_then(|t| self.modules.get(&t).map(|m| m.name.clone()))
             .unwrap_or_else(|| "this app".into());
-        let caller = match who {
-            Who::Tool { name, .. } => Self::tool_shown(name),
-            Who::Module { id, .. } => self
-                .modules
-                .get(id)
-                .map_or_else(|| id.clone(), |m| m.name.clone()),
-            Who::New => String::new(),
-        };
         format!(
             "{caller} needs permission to call {method} on {target}. Allow it in Hideout's permissions for {caller}."
         )
@@ -3101,7 +3092,7 @@ impl Router {
                 "Hideout never lets a program outside Hideout {does}. Only an app you allowed in Hideout can."
             )
         } else if self.tool_identity(conn).is_none() {
-            "Hideout couldn't check which program this is, so it may only read. Starting it again the usual way, not as administrator and not in a sandbox, may help. If it doesn't, this program can only read.".to_string()
+            "Hideout couldn't check which program this is, so it may only read. Starting it again the usual way, not as administrator and not in a sandbox, may help. If it doesn't, nothing else will: this program can only read.".to_string()
         } else if self.conns.get(&conn).is_some_and(|c| c.forgotten) {
             let who = Self::quoted_name(name, 40).unwrap_or_else(|| "this program".to_string());
             format!(
