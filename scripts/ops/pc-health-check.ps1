@@ -84,6 +84,29 @@ function Get-GuiCounts {
     $r
 }
 
+# Global atom table (limit 16384, ids 0xC000..0xFFFF): used count and how many carry a name starting
+# 'WindowOnEdge' (the real names are WindowOnEdge:<hwnd>:<n>, one per window) (a Windows shell string that leaked 16k dead-window atoms on 2026-11-17 and made
+# every new window fail with 0x80070008). Pure counting over names; Get-AtomNames reads the table.
+function Get-AtomSummary {
+    param([string[]]$Names)
+    $used = @($Names | Where-Object { $_ })
+    [pscustomobject]@{
+        atoms = $used.Count
+        window_on_edge = @($used | Where-Object { $_ -like 'WindowOnEdge*' }).Count
+    }
+}
+
+function Get-AtomNames {
+    Add-Type -ErrorAction SilentlyContinue -Namespace OpsNative -Name Atom -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern uint GlobalGetAtomName(ushort a, System.Text.StringBuilder b, int n);
+'@
+    $sb = New-Object System.Text.StringBuilder 256
+    foreach ($a in 0xC000..0xFFFF) {
+        [void]$sb.Clear()
+        if ([OpsNative.Atom]::GlobalGetAtomName([uint16]$a, $sb, 256) -gt 0) { $sb.ToString() }
+    }
+}
+
 function Get-StandbyEvents([datetime]$Since) {
     try {
         Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-Power'; Id = 506, 507; StartTime = $Since } -ErrorAction Stop |
@@ -140,8 +163,13 @@ if ($MyInvocation.InvocationName -ne '.') {
         Add-Content -Encoding UTF8 $stretchCsv (($leak | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1))
     }
     $flags = @(Get-HealthFlags -Now $now -Prev $prev -Leak $leak)
+    $atom = Get-AtomSummary (Get-AtomNames)
+    $atomCsv = Join-Path $dir 'atom-log.csv'
+    if (-not (Test-Path $atomCsv)) { Set-Content -Encoding UTF8 $atomCsv 'time,atoms,window_on_edge' }
+    Add-Content -Encoding UTF8 $atomCsv ('{0},{1},{2}' -f $now.time, $atom.atoms, $atom.window_on_edge)
+    if ($atom.atoms -gt 12000) { $flags += "global atoms $($atom.atoms)/16384 (WindowOnEdge $($atom.window_on_edge)): new windows fail near the limit; sign out or reboot" }
     $rate = if ($leak -and "$($leak.gdi_per_standby_h)" -ne '') { ", GDI $($leak.gdi_per_standby_h)/standby h" } else { '' }
-    $text = "GDI $($now.explorer_gdi), nonpaged $($now.nonpaged_mb) MB, nv $($now.nvcontainer_max_handles), RAM free $($now.free_ram_gb) GB, C: $($now.c_free_gb) GB$rate"
+    $text = "GDI $($now.explorer_gdi), nonpaged $($now.nonpaged_mb) MB, nv $($now.nvcontainer_max_handles), RAM free $($now.free_ram_gb) GB, C: $($now.c_free_gb) GB, atoms $($atom.atoms)$rate"
     if ($flags.Count) { Stop-OpsJob -Status 'FLAG' -Text ("$text | " + ($flags -join '; ')) -Code 1 }
     Stop-OpsJob -Status 'ok' -Text $text
 }
