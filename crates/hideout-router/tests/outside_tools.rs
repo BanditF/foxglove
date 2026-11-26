@@ -1727,7 +1727,7 @@ fn a_refusal_for_an_empty_key_says_so_in_plain_words() {
         assert_eq!(code, 5, "{key:?}");
         assert_eq!(
             why,
-            format!("Hideout hasn't let \u{201c}Notes\u{201d} see a status with no name{R3_TAIL}"),
+            format!("Hideout hasn't let \u{201c}Notes\u{201d} see an unnamed status{R3_TAIL}"),
             "{key:?}"
         );
         let out = call(
@@ -1741,9 +1741,7 @@ fn a_refusal_for_an_empty_key_says_so_in_plain_words() {
         assert_eq!(code, 5, "{key:?}");
         assert_eq!(
             why,
-            format!(
-                "Hideout hasn't let \u{201c}Notes\u{201d} share a status with no name{R3_TAIL}"
-            ),
+            format!("Hideout hasn't let \u{201c}Notes\u{201d} share an unnamed status{R3_TAIL}"),
             "{key:?}"
         );
     }
@@ -1899,7 +1897,7 @@ fn a_service_refusal_names_a_tool_cleaned_and_cut() {
     for blank in ["", " ", "\u{200b}\u{202e}", "\u{201c}\u{201d}"] {
         assert_eq!(
             open(&mut r, 13, "tcp", blank),
-            never("connect to a host with no name port 80"),
+            never("connect to an unnamed host port 80"),
             "{blank:?}"
         );
     }

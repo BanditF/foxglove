@@ -1602,16 +1602,16 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   so there is nothing to allow." and is never put up for review.
   (#1492) Host services answer a tool with the same words and show no permission's id:
   `apps.watch` is R2 with "see whether another program is running"; `net.open` is R2 with
-  "connect to “{host}” port {port}" ("connect to a host with no name port {port}" when no
+  "connect to “{host}” port {port}" ("connect to an unnamed host port {port}" when no
   host is left; "listen on port {port} on this PC" for `udp` and `tcp-listen`);
   `audio.inputs.set_mute` is R3, R4 or R5 with "mute and unmute your microphone".
   (#1492) Everything a tool sent is shown cleaned, on one line, cut and inside “ ” quotes:
   its name (40 characters), a status key or pattern and a host (60). Double quote marks in
   it are dropped, so the words after the closing mark are always Hideout's; an apostrophe
   stays ("Bob's Tool.exe"). When nothing is left the words say so and never show empty
-  quotes: "this program", "see a status with no name" / "share a status with no name",
-  "see every status whose name Hideout can't show" (a pattern ending in `*`), and for a
-  permission with no plain words "use “{permission}”" or "use something Hideout can't show".
+  quotes: "this program", "see an unnamed status" / "share an unnamed status",
+  "see every status with an unreadable name" (a pattern ending in `*`), and for a
+  permission with no plain words "use “{permission}”" or "use something unreadable".
   R5 (#1470; ask-class, on a connection that was open when the user pressed Forget for its
   program and lost something; also the answer to its `channel.open`): "Hideout no longer lets “{name}” {does}. This program was
   forgotten on Hideout's Apps page. Close this program and start it again, then allow it in

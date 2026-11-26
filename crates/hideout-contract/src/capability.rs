@@ -292,7 +292,7 @@ pub fn tool_phrase(cap: &Capability) -> String {
         // The permission's own text, which its sender wrote: cleaned, cut and in quotes.
         other => match crate::module::quoted_line(&other.to_string(), TOOL_PHRASE_RAW_MAX) {
             Some(q) => format!("use {q}"),
-            None => "use something Hideout can't show".into(),
+            None => "use something unreadable".into(),
         },
     }
 }

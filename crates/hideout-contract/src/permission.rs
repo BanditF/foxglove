@@ -521,11 +521,11 @@ pub fn fact_words(read: bool, pattern: &str) -> String {
         Some("") => format!("{verb} every status any app shares"),
         Some(prefix) => match shown(prefix) {
             Some(q) => format!("{verb} every status whose name starts with {q}"),
-            None => format!("{verb} every status whose name Hideout can't show"),
+            None => format!("{verb} every status with an unreadable name"),
         },
         None => match shown(pattern) {
             Some(q) => format!("{verb} the status called {q}"),
-            None => format!("{verb} a status with no name"),
+            None => format!("{verb} an unnamed status"),
         },
     }
 }
@@ -1204,14 +1204,14 @@ mod outside_words_tests {
             let verb = if read { "see" } else { "share" };
             for blank in ["", " ", "\u{200b}", "\n", "\u{201c}\u{201d}"] {
                 let w = fact_words(read, blank);
-                assert_eq!(w, format!("{verb} a status with no name"), "{blank:?}");
+                assert_eq!(w, format!("{verb} an unnamed status"), "{blank:?}");
                 let w = fact_words(read, &format!("{blank}*"));
                 if blank.is_empty() {
                     assert_eq!(w, format!("{verb} every status any app shares"));
                 } else {
                     assert_eq!(
                         w,
-                        format!("{verb} every status whose name Hideout can't show"),
+                        format!("{verb} every status with an unreadable name"),
                         "{blank:?}"
                     );
                 }

@@ -97,7 +97,7 @@ fn net_needs(p: &NetOpen) -> String {
 
 /// The host of a `net.open` for a refusal: the caller's text, cleaned, cut and in quotes.
 fn host_shown(p: &NetOpen) -> String {
-    quoted_line(&p.host, FACT_NAME_MAX).unwrap_or_else(|| "a host with no name".into())
+    quoted_line(&p.host, FACT_NAME_MAX).unwrap_or_else(|| "an unnamed host".into())
 }
 
 /// What an app is told when its grant doesn't cover a `net.open` of `p`.
@@ -337,7 +337,7 @@ mod tests {
         };
         assert_eq!(
             net_needs_words("Art", &blank),
-            "Art needs permission net.connect::80 to open a host with no name:80. Allow it in Hideout's permissions for Art."
+            "Art needs permission net.connect::80 to open an unnamed host:80. Allow it in Hideout's permissions for Art."
         );
     }
 }
